@@ -71,7 +71,12 @@ class ApkAnalysisMixin:
         return session.require_target(TargetKind.APK)
 
     def _jadx_out_dir(self, session_id: str) -> Path:
-        if not session_id or Path(session_id).name != session_id:
+        # "" / "." / ".." and anything with a separator are path-escape shapes.
+        # Path(..).name != id catches most, but ".." is its own name, so name
+        # the dot segments out explicitly -- otherwise "jadx"/".." collapses to
+        # the artifact root. Every current caller does registry.get first, but
+        # this builder must not depend on that ordering to stay in-tree.
+        if not session_id or session_id in {".", ".."} or Path(session_id).name != session_id:
             raise ApkError("invalid_params", "invalid session id")
         root = self.settings.artifact_root.expanduser().resolve()
         return root / "jadx" / session_id
@@ -251,7 +256,12 @@ class ApkAnalysisMixin:
         )
 
     def _repack_dir(self, session_id: str) -> Path:
-        if not session_id or Path(session_id).name != session_id:
+        # This one mkdir()s and returns the tree that repack/sign then treat as
+        # the containment base, so a ".." that collapsed "apktool"/".." to the
+        # artifact root would hand every session's tree to one caller. Path(..)
+        # .name != id lets ".." through (it is its own name); reject the dot
+        # segments explicitly before touching disk.
+        if not session_id or session_id in {".", ".."} or Path(session_id).name != session_id:
             raise ApkError("invalid_params", "invalid session id")
         root = self.settings.artifact_root.expanduser().resolve() / "apktool" / session_id
         root.mkdir(parents=True, exist_ok=True)

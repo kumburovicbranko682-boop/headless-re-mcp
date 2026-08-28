@@ -25,6 +25,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import pytest
+
+from headless_re_mcp.backends.apk import ApkError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 
@@ -81,6 +84,49 @@ def _service_with_apk_session(tmp_path: Path) -> tuple[AnalysisService, str, _Tr
 
 def _apktool_tree(service: AnalysisService, session_id: str) -> Path:
     return service.settings.artifact_root.expanduser().resolve() / "apktool" / session_id
+
+
+def _artifact_tree(root: Path) -> set[str]:
+    if not root.exists():
+        return set()
+    return {str(path.relative_to(root)) for path in root.rglob("*")}
+
+
+def test_apk_path_builders_refuse_traversal_shaped_session_ids(tmp_path: Path) -> None:
+    """The path builders must be self-guarding, not lean on a prior registry.get.
+
+    apk.decode/decompile/repack/sign all call registry.get(session_id) at the
+    top of the public method, so a "." or ".." fails as session_not_found before
+    ever reaching these builders today. But each builder turns the id into a
+    filesystem path -- and _repack_dir mkdir()s it and hands it back as the
+    containment base that repack/sign then trust -- so a bare ".." collapsing
+    "<cat>"/".." to the artifact root would let one caller own every session's
+    tree if that call ordering ever changed. Pin the builders directly: every
+    path-escape shape is refused as invalid_params before any mkdir, and the
+    artifact root is left untouched. A plain id still builds an in-tree path, so
+    this is a shape gate, not a blanket refusal.
+    """
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    root = settings.artifact_root.expanduser().resolve()
+    hostile_ids = ["", ".", "..", "../../etc", "a/b", "apktool/../../secret", "/etc/passwd"]
+    try:
+        baseline = _artifact_tree(root)
+        for session_id in hostile_ids:
+            for builder in (service._jadx_out_dir, service._repack_dir):
+                with pytest.raises(ApkError) as caught:
+                    builder(session_id)
+                assert caught.value.code == "invalid_params", (session_id, builder.__name__)
+                assert "session id" in caught.value.message, (session_id, builder.__name__)
+        assert _artifact_tree(root) == baseline
+        assert not (tmp_path / "etc").exists()
+        assert not (root.parent / "secret").exists()
+
+        good = uuid4().hex
+        assert service._jadx_out_dir(good) == root / "jadx" / good
+        assert service._repack_dir(good) == root / "apktool" / good
+    finally:
+        service.close_all()
 
 
 def test_apk_repack_refuses_a_decoded_dir_outside_the_session_tree(tmp_path: Path) -> None:
