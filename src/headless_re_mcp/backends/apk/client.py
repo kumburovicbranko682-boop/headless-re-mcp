@@ -44,6 +44,11 @@ _MAX_MANIFEST_CHARS = 200_000
 # apk.subclasses pages its merged subtype list; keep the ceiling equal to the
 # tool schema maximum so the MCP and agent paths agree on the largest page.
 _MAX_SUBTYPES_PAGE = 1000
+# apk.class_xrefs dedups usage edges into a set before paging; cap the set so a
+# heavily-referenced class (a framework type used everywhere) cannot make one
+# reply hold an unbounded edge list, and page at the tool-schema maximum.
+_MAX_CLASS_XREFS_COLLECT = 20_000
+_MAX_CLASS_XREFS_PAGE = 1000
 
 
 class ApkError(RuntimeError):
@@ -1181,6 +1186,100 @@ class ApkClient:
             # A caller deciding "these are all the refs" has to know whether the
             # enumeration ended or merely stopped.
             "has_more": has_more,
+        }
+
+    def class_xrefs(
+        self,
+        path: Path,
+        class_name: str,
+        *,
+        direction: str = "from",
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        """Class-level cross references: who uses a class, or what a class uses.
+
+        apk.xrefs walks the call graph by method name and apk.subclasses walks
+        the inheritance tree; this is the type *usage* edge neither shows.
+        ``direction="from"`` (the default) answers who references the class --
+        every site that instantiates it (REF_NEW_INSTANCE), names it
+        (REF_CLASS_USAGE) or invokes one of its methods -- which is how you find
+        where an obfuscated or crypto class is actually put to work.
+        ``direction="to"`` answers what classes this class depends on. The target
+        need not be defined in the DEX: a framework type such as
+        ``javax/crypto/Cipher`` still carries inbound edges, so "who uses Cipher"
+        resolves. Resolve by class_name (dotted or ``Lsmali/`` form); a name the
+        DEX neither defines nor references anywhere is a clean not_found.
+
+        Answers with xrefs -- edges of {class, method, kind, offset}, where class
+        is the class at the other end of the edge, method the method that carries
+        the reference, kind the androguard REF_TYPE name (REF_NEW_INSTANCE,
+        REF_CLASS_USAGE, INVOKE_VIRTUAL, ...) and offset the bytecode offset --
+        deduplicated and sorted, plus count, total, offset and has_more for
+        paging, target (the resolved smali form), direction, and scan_capped once
+        the 20000-edge collection ceiling was hit. The list field is xrefs.
+        """
+        if direction not in ("from", "to"):
+            raise ApkError(
+                "invalid_params", "direction must be from or to", direction=direction
+            )
+        target = class_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "class_name is required")
+        parsed = self._parsed(path)
+        smali = _dotted_to_smali(target)
+        found = [
+            klass
+            for klass in parsed.analysis.get_classes()
+            if klass.name == target or klass.name == smali
+        ]
+        if not found:
+            raise ApkError("not_found", "class not found", class_name=class_name)
+        edges: set[tuple[str, str, str, int]] = set()
+        scan_capped = False
+        for klass in found:
+            mapping = klass.get_xref_from() if direction == "from" else klass.get_xref_to()
+            try:
+                items = list(mapping.items())
+            except AttributeError:
+                items = []
+            for other, refs in items:
+                other_name = str(getattr(other, "name", ""))
+                for ref in refs:
+                    if not isinstance(ref, tuple) or len(ref) < 3:
+                        continue
+                    ref_kind, ref_method, ref_offset = ref[0], ref[1], ref[2]
+                    kind = str(getattr(ref_kind, "name", "") or ref_kind)
+                    method = str(getattr(ref_method, "name", ""))
+                    try:
+                        off = int(ref_offset)
+                    except (TypeError, ValueError):
+                        off = -1
+                    if len(edges) >= _MAX_CLASS_XREFS_COLLECT:
+                        scan_capped = True
+                        break
+                    edges.add((other_name, method, kind, off))
+                if scan_capped:
+                    break
+            if scan_capped:
+                break
+        ordered = sorted(edges)
+        start = max(0, int(offset))
+        cap = min(max(1, int(limit)), _MAX_CLASS_XREFS_PAGE)
+        window = ordered[start : start + cap]
+        return {
+            "class_name": found[0].name,
+            "target": smali,
+            "direction": direction,
+            "xrefs": [
+                {"class": cls, "method": method, "kind": kind, "offset": off}
+                for cls, method, kind, off in window
+            ],
+            "count": len(window),
+            "total": len(ordered),
+            "offset": start,
+            "has_more": start + len(window) < len(ordered),
+            "scan_capped": scan_capped,
         }
 
 

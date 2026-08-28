@@ -164,6 +164,46 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.apk_subclasses(session_id, class_name, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="apk.class_xrefs")
+    def apk_class_xrefs(
+        session_id: str,
+        class_name: str,
+        direction: str = "from",
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Class-level cross references: who uses a class, or what a class uses.
+
+        apk.xrefs walks the call graph by method name and apk.subclasses walks
+        the inheritance tree; this is the type usage edge neither shows.
+        direction="from" (the default) answers who references the class -- every
+        site that instantiates it (REF_NEW_INSTANCE), names it (REF_CLASS_USAGE)
+        or invokes one of its methods -- the way to find where an obfuscated or
+        crypto class is actually put to work. direction="to" answers what classes
+        this class depends on. The target need not be defined in the DEX: a
+        framework type like javax.crypto.Cipher still has inbound edges, so "who
+        uses Cipher" resolves. Resolve by class_name (dotted com.example.Foo or
+        Lsmali/form); a name the DEX neither defines nor references is a clean
+        not_found.
+
+        Answers with xrefs -- edges of {class, method, kind, offset}, where class
+        is the class at the other end, method the method carrying the reference,
+        kind the androguard REF_TYPE name (REF_NEW_INSTANCE, REF_CLASS_USAGE,
+        INVOKE_VIRTUAL, ...) and offset the bytecode offset -- deduplicated and
+        sorted, plus count, total, offset and has_more for paging, target (the
+        resolved smali form), direction and scan_capped (set once the 20000-edge
+        ceiling was hit). The list field is xrefs, not results.
+        """
+        return _dump(
+            analysis.apk_class_xrefs(
+                session_id,
+                class_name,
+                direction=direction,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
     @tools.tool(name="apk.methods")
     def apk_methods(
         session_id: str,
