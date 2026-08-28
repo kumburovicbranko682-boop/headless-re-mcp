@@ -5,6 +5,26 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（.NET 元数据四张表的行宽用错了索引类型，会在真实样本上错位）
+
+- `dotnet/metadata_enum.py` 的 `_table_row_size` 按 ECMA-335 II.22 计算每张元数据表
+  的行宽，而行宽又喂给 `_table_start`/行步进——任何一列宽了或窄了 2 字节，都会让它之后
+  的所有表在解析时整体错位。有四列用错了索引类型：
+  - `InterfaceImpl`（0x09，II.22.23）的 Interface 是 `TypeDefOrRef` 编码索引，却被当成
+    `MethodDef` 简单索引；当编码索引变宽时行被算窄。
+  - `MethodSemantics`（0x18，II.22.28）的 Method 是普通 `MethodDef` 简单索引，却被当成
+    `MethodDefOrRef` 编码索引；当 `MemberRef` 把编码索引撑到 4 字节而 `MethodDef` 仍为
+    2 字节时行被算宽。
+  - `AssemblyRef`（0x23，II.22.5）被完全照抄 `Assembly`（0x20）的布局：多算了开头本不存在
+    的 `HashAlgId`(4)，又漏了结尾的 `HashValue` blob——两头都错。
+  - `NestedClass`（0x29，II.22.32）的 EnclosingClass 是 `TypeDef` 简单索引，却被当成
+    `Implementation` 编码索引；当该编码索引变宽时行被算宽。
+  这些错误只在索引跨越 2↔4 字节边界的较大程序集上才显现，小 fixture 里所有索引都是
+  2 字节，因此长期未被发现。四列均按规范改正。新增
+  `tests/unit/test_metadata_row_sizes_ecma.py`：为每一列构造恰好把对应编码索引推过边界、
+  而相邻简单索引仍为 2 字节的行计数，钉住改正后的行宽（6/6/20/4）区别于此前的错误值
+  （4/8/22/6），并加一例在同一份"敌意"行计数下同时验证四列，确保每处修复只读自己的那一列。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

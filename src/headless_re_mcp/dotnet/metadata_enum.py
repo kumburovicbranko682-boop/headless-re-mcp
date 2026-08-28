@@ -471,7 +471,11 @@ def _table_row_size(meta: _MetaCtx, table: int) -> int:
         0x06: 4 + 2 + 2 + s + b + _simple_index_size(rc, 0x08),  # MethodDef
         0x07: _simple_index_size(rc, 0x08),  # ParamPtr
         0x08: 2 + 2 + s,  # Param
-        0x09: _simple_index_size(rc, 0x02) + _simple_index_size(rc, 0x06),
+        # InterfaceImpl (II.22.23): Class is a TypeDef index; Interface is a
+        # TypeDefOrRef coded index, not a MethodDef index. Using the MethodDef
+        # index here undersizes the row whenever the coded index is wider,
+        # misaligning every table parsed after InterfaceImpl.
+        0x09: _simple_index_size(rc, 0x02) + type_def_or_ref,
         0x0A: member_ref_parent + s + b,  # MemberRef
         0x0B: 2 + has_constant + b,  # Constant
         0x0C: has_custom_attribute + custom_attribute_type + b,
@@ -486,7 +490,11 @@ def _table_row_size(meta: _MetaCtx, table: int) -> int:
         0x15: _simple_index_size(rc, 0x02) + _simple_index_size(rc, 0x17),
         0x16: _simple_index_size(rc, 0x17),  # PropertyPtr
         0x17: 2 + s + b,  # Property
-        0x18: 2 + method_def_or_ref + has_semantics,  # MethodSemantics
+        # MethodSemantics (II.22.28): Semantics(2) + Method (a plain MethodDef
+        # index) + Association (HasSemantics coded index). Method is not a
+        # MethodDefOrRef coded index; using one oversizes the row when MemberRef
+        # pushes the coded index to 4 bytes while MethodDef stays at 2.
+        0x18: 2 + _simple_index_size(rc, 0x06) + has_semantics,  # MethodSemantics
         0x19: (
             _simple_index_size(rc, 0x02) + method_def_or_ref + method_def_or_ref
         ),
@@ -497,13 +505,20 @@ def _table_row_size(meta: _MetaCtx, table: int) -> int:
         0x20: 4 + 2 + 2 + 2 + 2 + 4 + b + s + s,  # Assembly
         0x21: 4,  # AssemblyProcessor
         0x22: 12,  # AssemblyOS
-        0x23: 4 + 2 + 2 + 2 + 2 + 4 + b + s + s,  # AssemblyRef
+        # AssemblyRef (II.22.5): Major/Minor/Build/Rev (2 each) + Flags(4) +
+        # PublicKeyOrToken(blob) + Name(str) + Culture(str) + HashValue(blob).
+        # It has no leading HashAlgId (that is Assembly, 0x20) and it carries a
+        # trailing HashValue blob; sizing it like Assembly is wrong on both ends.
+        0x23: 2 + 2 + 2 + 2 + 4 + b + s + s + b,  # AssemblyRef
         0x24: 4 + _simple_index_size(rc, 0x23),  # AssemblyRefProcessor
         0x25: 12 + _simple_index_size(rc, 0x23),  # AssemblyRefOS
         0x26: 4 + s + implementation,  # File
         0x27: 0,  # ExportedType; fixed below
         0x28: 4 + 4 + s + implementation,  # ManifestResource
-        0x29: _simple_index_size(rc, 0x02) + implementation,  # NestedClass
+        # NestedClass (II.22.32): both NestedClass and EnclosingClass are TypeDef
+        # indexes. The second is not an Implementation coded index; using one
+        # oversizes the row when File/AssemblyRef/ExportedType widen it to 4 bytes.
+        0x29: _simple_index_size(rc, 0x02) + _simple_index_size(rc, 0x02),  # NestedClass
         0x2A: 0,  # GenericParam; fixed below
         0x2B: _simple_index_size(rc, 0x2A) + type_def_or_ref,
         0x2C: method_def_or_ref + b,  # MethodSpec
