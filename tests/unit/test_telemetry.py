@@ -179,6 +179,50 @@ def test_totals_survive_window_eviction_while_sampled_counts_do_not() -> None:
     assert metrics["failures_total"] == 3, "the process-wide lifetime failures are whole"
 
 
+def test_a_tool_fully_evicted_from_the_window_still_reports_its_lifetime_totals() -> None:
+    """A tool with zero recent records must still surface its lifetime counters.
+
+    The sibling test above drives *one* tool past the window, so that tool always
+    keeps records in the ring and is reached through the sampled buckets. This
+    pins the harder case the buckets alone cannot answer: a tool whose every
+    recent record was evicted by *another* tool's traffic. ``metrics()`` walks
+    ``sorted(set(buckets) | set(totals))`` precisely so such a tool is still
+    reported -- from the lifetime totals, with sampled ``calls`` and the
+    percentiles reading zero because the window holds nothing for it. The obvious
+    simplification, iterating the sampled buckets alone, would pass every other
+    telemetry test while silently dropping an aged-out tool and the whole
+    ``calls_total`` / ``failures_total`` an error budget is built on -- so the
+    disappearance would be invisible exactly when a quiet-but-failing tool most
+    needs to stay on the dashboard. A two-slot window takes two calls for the
+    quiet tool (one a failure) and is then flooded by a louder tool, evicting both
+    of the quiet tool's records before metrics are read.
+    """
+    ring = TelemetryRing(capacity=2)
+    record_tool_call("quiet.tool", ok=False, duration_ms=7.0, ring=ring)
+    record_tool_call("quiet.tool", ok=True, duration_ms=9.0, ring=ring)
+    for _ in range(3):
+        record_tool_call("loud.tool", ok=True, duration_ms=1.0, ring=ring)
+
+    metrics = ring.metrics()
+    by_tool = {item["tool"]: item for item in metrics["tools"]}
+
+    assert "quiet.tool" in by_tool, "an aged-out tool must not vanish from the report"
+    quiet = by_tool["quiet.tool"]
+    assert quiet["calls"] == 0, "no recent records survive the window for the quiet tool"
+    assert quiet["failures"] == 0, "its lone failure was evicted from the window"
+    assert quiet["calls_total"] == 2, "the lifetime call counter outlives the window"
+    assert quiet["failures_total"] == 1, "the lifetime failure counter outlives the window"
+    assert quiet["p50_ms"] == 0.0, "percentiles read zero with no sampled latencies"
+    assert quiet["p95_ms"] == 0.0
+    assert quiet["max_ms"] == 0.0
+
+    # The loud tool is the only one still in the window, so it is the sole
+    # distinct-sampled tool even though two tools are reported.
+    assert by_tool["loud.tool"]["calls"] == 2
+    assert metrics["distinct_tools"] == 1
+    assert metrics["calls_total"] == 5, "the process-wide lifetime total keeps both tools"
+
+
 def test_metrics_percentiles_come_from_the_sampled_latencies() -> None:
     """p50/p95/max are read from the sorted window by nearest-rank.
 
