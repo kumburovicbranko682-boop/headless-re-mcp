@@ -387,6 +387,58 @@ async def test_completion_rejects_a_tool_call_that_never_named_a_function() -> N
             pass
 
 
+# A payload nested well past the JSON decoder's recursion limit but far under
+# the 4 MiB tool-call/SSE-line caps, so the guard under test is what stops it.
+_DEEPLY_NESTED_JSON = "[" * 50_000 + "]" * 50_000
+
+
+@pytest.mark.asyncio
+async def test_completion_rejects_tool_arguments_nested_past_the_recursion_limit() -> None:
+    """A model can emit tool arguments nested past the interpreter's recursion
+    limit; json.loads raises RecursionError there -- not the JSONDecodeError the
+    completion tail caught -- so before the guard it escaped the agent run as an
+    unhandled error instead of this named 'invalid tool arguments' fault."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        chunk = {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c",
+                                "function": {"name": "n", "arguments": _DEEPLY_NESTED_JSON},
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        return httpx.Response(200, text=_sse_body(chunk))
+
+    with pytest.raises(ValueError, match="invalid tool arguments at index 0"):
+        async for _ in _provider(respond).stream_chat(messages=[], tools=[], model="m"):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_completion_rejects_a_stream_chunk_nested_past_the_recursion_limit() -> None:
+    """The per-chunk json.loads hits RecursionError, not JSONDecodeError, on a
+    deeply nested SSE payload; the guard names it a non-JSON chunk rather than
+    letting the RecursionError escape the stream."""
+    body = f"data: {_DEEPLY_NESTED_JSON}\n\ndata: [DONE]\n\n"
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, text=body)
+
+    with pytest.raises(ValueError, match="not JSON"):
+        async for _ in _provider(respond).stream_chat(messages=[], tools=[], model="m"):
+            pass
+
+
 @pytest.mark.asyncio
 async def test_completion_synthesizes_a_call_id_when_the_provider_omits_one() -> None:
     def respond(request: httpx.Request) -> httpx.Response:
@@ -460,3 +512,29 @@ async def test_list_models_reraises_a_bare_status_when_the_body_is_empty() -> No
     with pytest.raises(httpx.HTTPStatusError) as caught:
         await _provider(respond).list_models()
     assert "503" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_list_models_rejects_a_non_json_body() -> None:
+    """A 200 whose body is not JSON (an HTML error page) used to surface as a
+    bare JSONDecodeError; it is now the named provider fault."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, content=b"<html>not json</html>")
+
+    with pytest.raises(ValueError, match="not JSON"):
+        await _provider(respond).list_models()
+
+
+@pytest.mark.asyncio
+async def test_list_models_rejects_a_body_nested_past_the_recursion_limit() -> None:
+    """A deeply nested 200 body makes json.loads raise RecursionError, which was
+    unguarded here and escaped list_models as an unhandled error."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, content=_DEEPLY_NESTED_JSON.encode())
+
+    with pytest.raises(ValueError, match="not JSON"):
+        await _provider(respond).list_models()

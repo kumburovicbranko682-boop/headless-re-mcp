@@ -380,7 +380,12 @@ class OpenAICompatibleProvider:
                     break
                 try:
                     chunk = _normalize_chunk(json.loads(data))
-                except json.JSONDecodeError as exc:
+                except (json.JSONDecodeError, RecursionError) as exc:
+                    # json.loads raises RecursionError -- not a JSONDecodeError,
+                    # and not a ValueError -- on a payload nested past the
+                    # interpreter's limit. A buggy or hostile provider can send
+                    # one, and uncaught it escapes the agent run as an unhandled
+                    # error rather than this named provider fault.
                     raise ValueError(
                         f"provider emitted a stream chunk that is not JSON: {data[:200]}"
                     ) from exc
@@ -431,7 +436,12 @@ class OpenAICompatibleProvider:
         for index, item in sorted(tool_fragments.items()):
             try:
                 arguments = json.loads(item["arguments"] or "{}")
-            except json.JSONDecodeError as exc:
+            except (json.JSONDecodeError, RecursionError) as exc:
+                # A model can emit tool-call arguments nested past the
+                # interpreter's recursion limit; json.loads raises RecursionError
+                # there, which is not the JSONDecodeError this caught, so it
+                # escaped the agent completion loop as an unhandled error instead
+                # of this named "invalid tool arguments" fault.
                 raise ValueError(f"provider emitted invalid tool arguments at index {index}") from exc
             if not isinstance(arguments, dict) or not item["name"]:
                 raise ValueError(f"provider emitted incomplete tool call at index {index}")
@@ -485,7 +495,15 @@ class OpenAICompatibleProvider:
                     raise ValueError(
                         f"provider models response exceeded {_MAX_MODELS_BODY_BYTES} bytes"
                     )
-            payload = json.loads(body)
+            try:
+                payload = json.loads(body)
+            except (json.JSONDecodeError, RecursionError) as exc:
+                # A non-JSON body (an HTML error page slipped past a 200) raises
+                # JSONDecodeError, and a payload nested past the interpreter's
+                # limit raises RecursionError -- neither a clean signal from
+                # list_models. Name both rather than letting a bare decode error
+                # (or an unhandled RecursionError) surface.
+                raise ValueError("provider models response is not JSON") from exc
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list):
             return []
