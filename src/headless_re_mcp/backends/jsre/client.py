@@ -696,6 +696,148 @@ def parse_wasm_sections(path: Path, *, offset: int = 0, limit: int = 100) -> Jso
     }
 
 
+_MAX_WASM_SUMMARY_NAMES = 100
+
+
+def parse_wasm_summary(path: Path) -> JsonObject:
+    """Profile a WebAssembly module in one call (its shape at a glance), wabt-free.
+
+    The "read this first" companion to wasm.sections: where that lists the
+    section table and the per-kind tools (wasm.imports/exports/functions/
+    globals/memory/tables/elements/data/start/custom_sections) each drill into
+    one section, this walks the module once in pure Python -- no wabt -- and
+    rolls their headline counts into a single overview, so a triage does not
+    need ten calls to learn a module's size and capabilities. Reports types
+    (function-signature count); imports and exports each as total plus a
+    by-kind split (func/table/memory/global); functions, tables, memories and
+    globals each as imported (from the import section) + defined (the module's
+    own) = total, matching the WASM index space where imports come first;
+    element_segments and data_segments; start (present and the auto-run
+    function index, or null); custom_sections (count and the first names) with
+    has_name_section flagging a debug symbol table; and sections, the section
+    names in binary order. Also input_bytes, scan_capped when a very large or
+    custom-section-heavy module hit a collect cap (the counts are then a
+    floor), and truncated when a malformed or short module cut the walk (the
+    counts gathered so far still stand). A file that is not a WebAssembly
+    module is refused as invalid_params, one over 16 MiB as too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
+
+    truncated = False
+    scan_capped = False
+    sections: list[str] = []
+    custom_names: list[str] = []
+    custom_total = 0
+    has_name_section = False
+    types = 0
+    imports_total = 0
+    exports_total = 0
+    imp_kinds = {"func": 0, "table": 0, "memory": 0, "global": 0}
+    exp_kinds = {"func": 0, "table": 0, "memory": 0, "global": 0}
+    defined = {"function": 0, "table": 0, "memory": 0, "global": 0}
+    element_segments = 0
+    data_segments = 0
+    start_present = False
+    start_function: int | None = None
+
+    try:
+        pos = 8  # 4-byte magic + 4-byte version
+        total = len(raw)
+        while pos < total:
+            if len(sections) >= _MAX_WASM_SECTIONS_COLLECT:
+                scan_capped = True
+                break
+            sec_id = raw[pos]
+            pos += 1
+            size, pos = _read_uleb(raw, pos)
+            body_start = pos
+            end = body_start + size
+            if end > total:
+                truncated = True
+                sections.append(_WASM_SECTION_NAMES.get(sec_id, "unknown"))
+                break
+            body = raw[body_start:end]
+            sections.append(_WASM_SECTION_NAMES.get(sec_id, "unknown"))
+            if sec_id == 0:
+                custom_total += 1
+                cname = _custom_section_name(body)
+                if cname == "name":
+                    has_name_section = True
+                if cname is not None and len(custom_names) < _MAX_WASM_SUMMARY_NAMES:
+                    custom_names.append(cname)
+            elif sec_id == 1:
+                types = _section_entry_count(body) or 0
+            elif sec_id == _WASM_IMPORT_SECTION_ID:
+                imports_total = _section_entry_count(body) or 0
+                rows, more, body_truncated = _parse_import_section(body)
+                scan_capped = scan_capped or more
+                truncated = truncated or body_truncated
+                for row in rows:
+                    kind = row["kind"]
+                    if kind in imp_kinds:
+                        imp_kinds[kind] += 1
+            elif sec_id == 3:
+                defined["function"] = _section_entry_count(body) or 0
+            elif sec_id == 4:
+                defined["table"] = _section_entry_count(body) or 0
+            elif sec_id == 5:
+                defined["memory"] = _section_entry_count(body) or 0
+            elif sec_id == 6:
+                defined["global"] = _section_entry_count(body) or 0
+            elif sec_id == _WASM_EXPORT_SECTION_ID:
+                exports_total = _section_entry_count(body) or 0
+                rows, more, body_truncated = _parse_export_section(body)
+                scan_capped = scan_capped or more
+                truncated = truncated or body_truncated
+                for row in rows:
+                    kind = row["kind"]
+                    if kind in exp_kinds:
+                        exp_kinds[kind] += 1
+            elif sec_id == _WASM_START_SECTION_ID:
+                start_present = True
+                try:
+                    start_function, _ = _read_uleb(body, 0)
+                except _WasmParseError:
+                    truncated = True
+            elif sec_id == 9:
+                element_segments = _section_entry_count(body) or 0
+            elif sec_id == 11:
+                data_segments = _section_entry_count(body) or 0
+            pos = end
+    except _WasmParseError:
+        truncated = True
+
+    def kind_total(kind: str, defined_key: str) -> JsonObject:
+        imported = imp_kinds[kind]
+        made = defined[defined_key]
+        return {"imported": imported, "defined": made, "total": imported + made}
+
+    return {
+        "types": types,
+        "imports": {"total": imports_total, **imp_kinds},
+        "exports": {"total": exports_total, **exp_kinds},
+        "functions": kind_total("func", "function"),
+        "tables": kind_total("table", "table"),
+        "memories": kind_total("memory", "memory"),
+        "globals": kind_total("global", "global"),
+        "element_segments": element_segments,
+        "data_segments": data_segments,
+        "start": {"present": start_present, "function": start_function},
+        "custom_sections": {"total": custom_total, "names": custom_names},
+        "has_name_section": has_name_section,
+        "sections": sections,
+        "input_bytes": len(raw),
+        "scan_capped": scan_capped,
+        "truncated": truncated,
+    }
+
+
 def parse_wasm_custom_sections(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
     """List a module's custom sections and route them to a decoder, wabt-free.
 

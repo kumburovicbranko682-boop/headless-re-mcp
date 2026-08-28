@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **292（175 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **293（176 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -837,6 +837,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `count/total/offset/has_more` 的 `custom_sections`;`total` 上限 5000、越限置 `scan_capped`;段声明大小越过
   模块或自定义名畸形时 `truncated` 为真(仍记一条 name 为 null 的尽力行)。非 WebAssembly 文件按
   `invalid_params` 拒绝,超过 16 MiB 按 `too_large` 拒绝。
+- `wasm.summary`：一次调用给出模块全貌（一眼看清"形状"），纯 Python、**不需要 wabt**。`wasm.sections` 列段表、
+  各分项工具(`wasm.imports/exports/functions/globals/memory/tables/elements/data/start/custom_sections`)各钻一段;
+  本工具单遍走完模块、把它们的头部计数汇成一个答案,triage 无需十次调用就能知道模块的规模与能力。返回 `types`
+  (函数签名数);`imports` 与 `exports` 各含 `total` 及 func/table/memory/global 分类拆分;`functions`/`tables`/
+  `memories`/`globals` 各为 `imported`(来自 import 段)+`defined`(模块自有)=`total`,与"导入项先编号"的 WASM 索引
+  空间一致;`element_segments` 与 `data_segments`;`start`(是否存在及自动运行的函数索引,或 null);`custom_sections`
+  (数量与前若干名字)并以 `has_name_section` 标出调试符号表(`wasm.names`);以及按二进制序的段名 `sections`。另有
+  `input_bytes`、超大或自定义段过多触及 collect 上限时置 `scan_capped`(此时计数为下限),模块畸形或过短截断遍历时
+  置 `truncated`(已收集计数仍有效)。非 WebAssembly 文件按 `invalid_params` 拒绝,超过 16 MiB 按 `too_large` 拒绝。
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。

@@ -647,6 +647,32 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_start(path))
 
+    @tools.tool(name="wasm.summary")
+    def wasm_summary(path: str) -> dict[str, Any]:
+        """Profile a WebAssembly module in one call -- its shape at a glance, wabt-free.
+
+        The "read this first" overview that saves ten calls: where wasm.sections
+        lists the section table and each per-kind tool (wasm.imports/exports/
+        functions/globals/memory/tables/elements/data/start/custom_sections)
+        drills into one section, this walks the module once in pure Python -- no
+        wabt -- and rolls their headline counts into a single answer, enough to
+        size a module and read its capabilities before deciding which tool to
+        run next. Returns types (function-signature count); imports and exports
+        each as total plus a func/table/memory/global split; functions, tables,
+        memories and globals each as imported (from the import section) +
+        defined (the module's own) = total, matching the WASM index space where
+        imports are numbered first; element_segments and data_segments; start
+        (present, and the auto-run function index or null); custom_sections
+        (total and the first names) with has_name_section flagging a debug
+        symbol table (wasm.names); and sections, the section names in binary
+        order. Also input_bytes, scan_capped when a very large or custom-heavy
+        module hit a collect cap (the counts are then a floor) and truncated
+        when a malformed or short module cut the walk (the counts so far still
+        stand). A file that is not a WebAssembly module is refused as
+        invalid_params, one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_summary(path))
+
     @tools.tool(name="wasm.opcodes")
     def wasm_opcodes(path: str) -> dict[str, Any]:
         """Tally a WebAssembly module's instruction mix by family, wabt-free.

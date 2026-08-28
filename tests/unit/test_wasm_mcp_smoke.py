@@ -46,6 +46,7 @@ _SERVICE_CASES: tuple[tuple[str, str, dict[str, int]], ...] = (
     ("wasm_opcodes", "categories", {}),
     ("wasm_locals", "functions", {}),
     ("wasm_custom_sections", "custom_sections", {}),
+    ("wasm_summary", "sections", {}),
 )
 
 # The payload key each dotted tool name must return, and the extra call kwargs
@@ -71,6 +72,7 @@ _TOOL_KEYS: dict[str, str] = {
     "wasm.opcodes": "categories",
     "wasm.locals": "functions",
     "wasm.custom_sections": "custom_sections",
+    "wasm.summary": "sections",
 }
 _TOOL_EXTRA: dict[str, dict[str, int]] = {"wasm.callers": {"function": 0}}
 _WABT_TOOLS = {"wasm.info", "wasm.wat"}
@@ -92,9 +94,7 @@ def analysis() -> Iterator[AnalysisService]:
         service.close_all()
 
 
-def test_service_methods_succeed_on_a_real_module(
-    analysis: AnalysisService, module: Path
-) -> None:
+def test_service_methods_succeed_on_a_real_module(analysis: AnalysisService, module: Path) -> None:
     for method_name, key, extra in _SERVICE_CASES:
         method = getattr(analysis, method_name)
         result = method(str(module), **extra)
@@ -136,8 +136,7 @@ def test_bound_tool_handlers_round_trip_the_envelope(module: Path) -> None:
         wasm_handlers = {
             binding.name: binding.handler
             for binding in bindings
-            if binding.name.startswith("wasm.")
-            and binding.name not in _WABT_TOOLS
+            if binding.name.startswith("wasm.") and binding.name not in _WABT_TOOLS
         }
 
         # Every pure-Python wasm tool is covered here; a new one must be added.
