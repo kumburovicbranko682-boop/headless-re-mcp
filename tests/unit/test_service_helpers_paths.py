@@ -855,3 +855,153 @@ def test_stealth_set_reports_plugin_missing_for_an_unconfigured_arch(tmp_path: P
 
     assert not result.ok and result.error is not None
     assert result.error.code == "plugin_missing"
+
+
+# ---------------------------------------------------------------------------
+# unpack-cancel latches
+# ---------------------------------------------------------------------------
+
+
+def test_unpack_cancel_event_reuses_a_live_sessions_latch(tmp_path: Path) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = AnalysisService(_settings(tmp_path))
+    session_id = _create(service, binary)
+
+    first = service._unpack_cancel_event(session_id)
+    assert first is service._unpack_cancel_event(session_id)
+
+    service._signal_unpack_cancel(session_id)
+    assert first.is_set()
+
+    replaced = service._reset_unpack_cancel(session_id)
+    assert replaced is not first
+    assert not replaced.is_set()
+
+    service._clear_unpack_cancel(session_id)
+    assert replaced.is_set()
+
+
+def test_unpack_cancel_event_refuses_a_terminal_session(tmp_path: Path) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = AnalysisService(_settings(tmp_path))
+    session_id = _create(service, binary)
+    assert service.close_session(session_id).ok
+
+    with pytest.raises(InvalidStateTransition, match="closed state"):
+        service._unpack_cancel_event(session_id)
+    with pytest.raises(InvalidStateTransition):
+        service._reset_unpack_cancel(session_id)
+
+
+# ---------------------------------------------------------------------------
+# _close_session arms
+# ---------------------------------------------------------------------------
+
+
+class _CloseFailWorker(FakeDynamicWorker):
+    def close(self, *, timeout: float = 15.0) -> None:
+        del timeout
+        raise RuntimeError("worker refused to close")
+
+
+def test_close_session_reports_already_closed(tmp_path: Path) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = AnalysisService(_settings(tmp_path))
+    session_id = _create(service, binary)
+    assert service.close_session(session_id).ok
+
+    second = service.close_session(session_id)
+
+    assert second.ok and second.data is not None
+    assert second.data["already_closed"] is True
+
+
+def test_close_session_surfaces_a_worker_close_failure(tmp_path: Path) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    worker = _CloseFailWorker()
+    service = _facade(tmp_path, dynamic_workers=[worker])
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    result = service.close_session(session_id)
+
+    assert not result.ok and result.error is not None
+    assert result.error.details["close_error_count"] == 1
+    assert result.error.details["state"] == SessionState.CLOSED.value
+    assert worker.terminated
+    assert service.registry.get(session_id).state is SessionState.CLOSED
+
+
+# ---------------------------------------------------------------------------
+# session_health / readiness / close_all
+# ---------------------------------------------------------------------------
+
+
+def test_session_health_reports_no_backends_as_none(tmp_path: Path) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = AnalysisService(_settings(tmp_path))
+    session_id = _create(service, binary)
+
+    result = service.session_health(session_id)
+
+    assert result.ok and result.data is not None
+    assert result.data["count"] == 0
+    assert result.data["healthy"] is None
+
+
+def test_session_health_rejects_an_unknown_session(tmp_path: Path) -> None:
+    service = AnalysisService(_settings(tmp_path))
+
+    result = service.session_health("does-not-exist")
+
+    assert not result.ok and result.error is not None
+
+
+def test_backend_health_snapshot_is_passive(tmp_path: Path) -> None:
+    service = AnalysisService(_settings(tmp_path))
+    assert service.backend_health_snapshot() == []
+
+
+def test_readiness_reports_open_session_count(tmp_path: Path) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = AnalysisService(_settings(tmp_path))
+    _create(service, binary)
+
+    result = service.readiness()
+
+    assert result.ok and result.data is not None
+    assert result.data["ready"] is True
+    assert "build" in result.data
+
+
+def test_close_all_closes_every_session(tmp_path: Path) -> None:
+    service = AnalysisService(_settings(tmp_path))
+    for name in ("a.exe", "b.exe"):
+        binary = tmp_path / name
+        _write_pe(binary)
+        _create(service, binary)
+
+    result = service.close_all()
+
+    assert result.ok and result.data is not None
+    assert result.data["closed"] == 2
+
+
+def test_close_all_reports_sessions_that_failed_to_close(tmp_path: Path) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = _facade(tmp_path, dynamic_workers=[_CloseFailWorker()])
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    result = service.close_all()
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "close_all_failed"
+    assert result.error.details["errors"][0]["session_id"] == session_id
