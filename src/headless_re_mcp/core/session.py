@@ -694,6 +694,23 @@ _NT_GNU_BUILD_ID = 3
 # ABI: x.y.z", so the toolchain gate can cross-check it. Every gcc/clang build
 # carries it, so it is a reliable "which Unix, how old a kernel" triage fact.
 _NT_GNU_ABI_TAG = 1
+# The GNU property note (NT_GNU_PROPERTY_TYPE_0) carries the forward-edge CFI
+# and shadow-stack posture -- the ELF pair to PE's cfg bit: gcc/clang
+# -fcf-protection stamps IBT and SHSTK on x86, -mbranch-protection stamps BTI
+# and PAC on arm64, and the loader/CPU enforce only what the note declares.
+# The descriptor is an array of {pr_type, pr_datasz, pr_data} entries padded
+# to the word size; the *_FEATURE_1_AND types hold the feature bitmask.
+# readelf -n prints the same names ("x86 feature: IBT, SHSTK"), so the gate
+# cross-checks them. A binary with no feature entry (or no note at all) was
+# built without the protection: an empty census is that real answer.
+_NT_GNU_PROPERTY_TYPE_0 = 5
+_GNU_PROPERTY_X86_FEATURE_1_AND = 0xC0000002
+_GNU_PROPERTY_AARCH64_FEATURE_1_AND = 0xC0000000
+_ELF_CF_FEATURES = {
+    _GNU_PROPERTY_X86_FEATURE_1_AND: ((1, "ibt"), (2, "shstk")),
+    _GNU_PROPERTY_AARCH64_FEATURE_1_AND: ((1, "bti"), (2, "pac")),
+}
+_ELF_MAX_PROPERTIES = 64
 _ELF_ABI_OS = {
     0: "linux",
     1: "hurd",
@@ -5652,6 +5669,11 @@ def _elf_layout_facts(
         if abi_os is not None:
             facts["abi_os"] = abi_os
             facts["min_kernel"] = min_kernel
+        # Forward-edge CFI / shadow-stack posture off the GNU property note --
+        # the ELF pair to PE's cfg bit, the fifth checksec answer after
+        # nx/relro/canary/pie. Always present alongside them: an empty list is
+        # the real "compiled without -fcf-protection" answer.
+        facts["cf_protection"] = _elf_cf_protection(stream, order, bits, program["notes"])
     stripped = _elf_is_stripped(stream, order, bits, shoff, shentsize, shnum)
     if stripped is not None:
         facts["stripped"] = stripped
@@ -6170,6 +6192,43 @@ def _elf_abi_tag(
             sub = int.from_bytes(desc[12:16], order)  # type: ignore[arg-type]
             return _ELF_ABI_OS.get(os_id, f"os_{os_id}"), f"{major}.{minor}.{sub}"
     return None, None
+
+
+def _elf_cf_protection(
+    stream: BinaryIO, order: str, bits: int, notes: list[tuple[int, int]]
+) -> list[str]:
+    """The branch-protection features the GNU property note declares, sorted.
+
+    ``ibt``/``shstk`` on x86 (gcc -fcf-protection), ``bti``/``pac`` on arm64
+    (-mbranch-protection) -- the forward-edge CFI and shadow-stack posture the
+    loader and CPU enforce, the ELF pair to PE's cfg bit and the rest of this
+    reader's checksec answers. The note's descriptor is a property array whose
+    entries are padded to the word size; only the *_FEATURE_1_AND masks are
+    read, and a note carrying no such entry (gcc -fcf-protection=none still
+    writes an ISA-needed property) reads the same as no note at all: an empty
+    list, the real "compiled without it" answer.
+    """
+    align = 8 if bits == 64 else 4
+    features: set[str] = set()
+    for ntype, name, desc in _elf_iter_notes(stream, order, notes):
+        if ntype != _NT_GNU_PROPERTY_TYPE_0 or name != b"GNU":
+            continue
+        pos = 0
+        for _ in range(_ELF_MAX_PROPERTIES):
+            if pos + 8 > len(desc):
+                break
+            pr_type = int.from_bytes(desc[pos : pos + 4], order)  # type: ignore[arg-type]
+            pr_datasz = int.from_bytes(desc[pos + 4 : pos + 8], order)  # type: ignore[arg-type]
+            data = desc[pos + 8 : pos + 8 + pr_datasz]
+            if len(data) < pr_datasz:
+                break
+            masks = _ELF_CF_FEATURES.get(pr_type)
+            if masks is not None and pr_datasz >= 4:
+                value = int.from_bytes(data[0:4], order)  # type: ignore[arg-type]
+                features.update(label for bit, label in masks if value & bit)
+            pos += 8 + pr_datasz
+            pos += -pos % align
+    return sorted(features)
 
 
 def _elf_is_stripped(

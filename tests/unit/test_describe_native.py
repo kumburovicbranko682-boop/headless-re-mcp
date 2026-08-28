@@ -2525,6 +2525,74 @@ class TestDebugInfo:
         assert facts["debug_info"] == {"present": False, "sections": [], "size": 0}
 
 
+def _property_note(entries: list[tuple[int, bytes]], align: int = 8) -> bytes:
+    # NT_GNU_PROPERTY_TYPE_0 (type 5): an array of {pr_type, pr_datasz,
+    # pr_data} entries, each padded so the next starts word-aligned.
+    body = b""
+    for pr_type, data in entries:
+        body += pr_type.to_bytes(4, "little") + len(data).to_bytes(4, "little") + data
+        body += b"\x00" * (-len(body) % align)
+    return _elf_note(5, b"GNU", body)
+
+
+class TestElfCfProtection:
+    """describe_native reads the branch-protection posture off the property note.
+
+    The ELF pair to PE's cfg bit: gcc -fcf-protection stamps IBT/SHSTK on
+    x86, -mbranch-protection stamps BTI/PAC on arm64, and readelf -n prints
+    the same names. An image with no feature entry -- or no property note at
+    all -- was built without the protection, so an empty list is that real
+    answer, present whenever the program headers parsed.
+    """
+
+    def test_ibt_and_shstk_read_from_the_x86_feature_mask(self, tmp_path: Path) -> None:
+        note = _property_note([(0xC0000002, (3).to_bytes(4, "little"))])
+        facts = describe_native(_write(tmp_path, "cet.elf", _elf64_with_notes(note)))["native"]
+        assert facts["cf_protection"] == ["ibt", "shstk"]
+
+    def test_a_branch_only_build_reads_ibt_alone(self, tmp_path: Path) -> None:
+        note = _property_note([(0xC0000002, (1).to_bytes(4, "little"))])
+        facts = describe_native(_write(tmp_path, "ibt.elf", _elf64_with_notes(note)))["native"]
+        assert facts["cf_protection"] == ["ibt"]
+
+    def test_bti_and_pac_read_from_the_aarch64_mask(self, tmp_path: Path) -> None:
+        note = _property_note([(0xC0000000, (3).to_bytes(4, "little"))])
+        facts = describe_native(_write(tmp_path, "bp.elf", _elf64_with_notes(note)))["native"]
+        assert facts["cf_protection"] == ["bti", "pac"]
+
+    def test_a_note_with_no_feature_entry_reads_empty(self, tmp_path: Path) -> None:
+        # gcc -fcf-protection=none still writes a property note (ISA-needed,
+        # pr_type 0xc0008002): a note without the feature mask is unprotected.
+        note = _property_note([(0xC0008002, (1).to_bytes(4, "little"))])
+        facts = describe_native(_write(tmp_path, "none.elf", _elf64_with_notes(note)))["native"]
+        assert facts["cf_protection"] == []
+
+    def test_no_property_note_at_all_reads_empty(self, tmp_path: Path) -> None:
+        facts = describe_native(
+            _write(tmp_path, "old.elf", _elf64_with_notes(_abi_note(0, 3, 2, 0)))
+        )["native"]
+        assert facts["cf_protection"] == []
+
+    def test_the_feature_mask_is_read_past_a_padded_entry(self, tmp_path: Path) -> None:
+        # A 4-byte property on ELF64 pads to 8 before the next entry; the
+        # feature mask sitting second proves the walk honours the alignment.
+        note = _property_note(
+            [
+                (0xC0008002, (1).to_bytes(4, "little")),
+                (0xC0000002, (2).to_bytes(4, "little")),
+            ]
+        )
+        facts = describe_native(_write(tmp_path, "pad.elf", _elf64_with_notes(note)))["native"]
+        assert facts["cf_protection"] == ["shstk"]
+
+    def test_unknown_feature_bits_are_not_named(self, tmp_path: Path) -> None:
+        # Bit 2 (LAM_U48 and friends) has no census name; only the recognised
+        # features are reported, never an invented label.
+        note = _property_note([(0xC0000002, (4 | 1).to_bytes(4, "little"))])
+        facts = describe_native(_write(tmp_path, "lam.elf", _elf64_with_notes(note)))["native"]
+        assert facts["cf_protection"] == ["ibt"]
+
+
 class TestUrlCensus:
     """describe_native reports the endpoint literals baked into the image.
 

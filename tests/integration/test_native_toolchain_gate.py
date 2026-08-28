@@ -41,6 +41,13 @@ Two triage themes the other native gates cannot cover from system binaries:
   name; the Mach-O fixture's external nlist entries are what llvm-nm
   --defined-only / --undefined-only --extern-only print (GNU nm cannot read
   Mach-O), and the reader must make the identical split.
+- The branch-protection posture (ELF NT_GNU_PROPERTY_TYPE_0) -- the forward-
+  edge CFI / shadow-stack answer that pairs with PE's cfg bit: gcc
+  -fcf-protection stamps IBT/SHSTK feature bits the loader and CPU enforce,
+  and readelf -n prints the same names. Three real compiles (full / branch /
+  none) must read back as exactly the feature sets readelf decodes -- the
+  "none" build still carries a property note (ISA-needed), so it also proves
+  the reader distinguishes "note without the feature entry" from "protected".
 - The overlay (data appended past the mapped image), the PE line's classic
   dropper-payload fact brought to ELF and Mach-O: the image end is re-derived
   from readelf's header/section decode (ELF) and llvm-objdump's segment and
@@ -398,6 +405,77 @@ def test_elf_abi_tag_agrees_with_readelf(tmp_path: Path) -> None:
         assert native["min_kernel"] == readelf_kernel
     finally:
         if session_id is not None:
+            service.close_session(session_id)
+
+
+# readelf -n renders the *_FEATURE_1_AND property as one "x86 feature: IBT,
+# SHSTK" (or "AArch64 feature: BTI, PAC") line; other property types print
+# differently ("x86 feature used:", "x86 ISA needed:"), so the bare "feature:"
+# match is specific to the mask this gate checks.
+_READELF_CF_FEATURE_RE = re.compile(r"\b(?:x86|AArch64) feature: ([^\n]+)")
+
+
+def _readelf_cf_features(readelf: str, binary: Path) -> set[str]:
+    """The branch-protection feature names readelf -n decodes, lowercased."""
+    result = subprocess.run(
+        [readelf, "-n", str(binary)], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    features: set[str] = set()
+    for match in _READELF_CF_FEATURE_RE.finditer(result.stdout):
+        features.update(part.strip().lower() for part in match.group(1).split(",") if part.strip())
+    return features
+
+
+@pytest.mark.integration
+def test_elf_cf_protection_agrees_with_readelf(tmp_path: Path) -> None:
+    """The cf_protection census against readelf -n over three real compiles.
+
+    gcc -fcf-protection={full,branch,none} produces the three postures a
+    triage must tell apart: IBT+SHSTK, IBT alone, and unprotected. The "none"
+    build still carries a GNU property note (the ISA-needed entry), so the
+    empty answer proves the reader walks the property array rather than
+    keying on the note's mere presence.
+    """
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    if gcc is None:
+        pytest.skip("no C compiler installed — cf-protection gate not run (skip != pass)")
+    readelf = shutil.which("readelf")
+    if readelf is None:
+        pytest.skip("readelf (binutils) not installed — cf-protection gate not run (skip != pass)")
+
+    source = tmp_path / "probe.c"
+    source.write_text(_PROBE_C)
+    probes: dict[str, Path] = {}
+    for mode in ("full", "branch", "none"):
+        out = tmp_path / f"probe_cf_{mode}"
+        result = subprocess.run(
+            [gcc, f"-fcf-protection={mode}", str(source), "-o", str(out)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            # Non-x86 toolchains reject the flag; the posture cannot be built.
+            pytest.skip("gcc does not support -fcf-protection — gate not run (skip != pass)")
+        probes[mode] = out
+
+    service = AnalysisService()
+    sessions: list[str] = []
+    try:
+        for mode, expected in (("full", {"ibt", "shstk"}), ("branch", {"ibt"}), ("none", set())):
+            truth = _readelf_cf_features(readelf, probes[mode])
+            # readelf really sees the posture the compile asked for -- the
+            # referee is reading the note, not echoing the request.
+            assert truth == expected, (mode, truth)
+            session_id, native = _session_native(service, probes[mode])
+            sessions.append(session_id)
+            # The tool-free property walk and readelf -n name the same
+            # features -- including the empty answer for the unprotected
+            # build, whose note still carries an ISA-needed property.
+            assert native["cf_protection"] == sorted(truth), mode
+    finally:
+        for session_id in sessions:
             service.close_session(session_id)
 
 
