@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Web doctor 探针把没装浏览器的 Playwright 误报为可用）
+
+- Web 线的 doctor 探针过去只做 `probe_python_module("playwright", ...)`，即 `playwright` 模块可 import
+  就报 `detected`。但 Web 后端跑的是 Playwright 自带的 Chromium（`pw.chromium.launch()`），而浏览器是
+  与 Python 包**分开**安装的（`playwright install chromium`）——只查模块的探针会在浏览器缺失时仍说 Web 线
+  就绪，而每个会话都在启动时以 "Executable doesn't exist" 失败，正是 Ghidra JDK 那类"壳在、运行时不在"的
+  假信号。新增专用 `probe_playwright`：在有界子进程里问 Playwright 它实际会启动的 Chromium 路径并确认其存在，
+  浏览器在则报 `ready`（附可执行路径），模块在而浏览器缺失则报 `detected` 并给出 `playwright install chromium`
+  的修复建议；驱动无法启动或路径解析不出时保持 `detected`、绝不凭空判就绪。已在真机三态验证：无模块 →
+  `missing`；有模块无浏览器 → `detected`；模块加 Chromium 151 → `ready`。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /

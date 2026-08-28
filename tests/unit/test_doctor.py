@@ -20,6 +20,7 @@ from headless_re_mcp.doctor import (
     probe_die,
     probe_exeinfope,
     probe_optional_tool,
+    probe_playwright,
     probe_upx,
     probe_x64dbg_binaries,
     probe_x64dbg_source,
@@ -598,3 +599,83 @@ def test_linux_hidden_desktop_setting_is_not_an_isolation_signal(tmp_path: Path)
     assert probe.status == ProbeStatus.MISSING
     assert probe.details["hidden_desktop"] is True
     assert probe.details["hidden_desktop_supported"] is False
+
+
+def _playwright_spec(monkeypatch: pytest.MonkeyPatch, present: bool) -> None:
+    import importlib.util as importlib_util
+    from types import SimpleNamespace
+
+    real = importlib_util.find_spec
+
+    def fake(name: str, *args: object, **kwargs: object) -> object:
+        if name == "playwright":
+            return SimpleNamespace(origin="/x/playwright/__init__.py") if present else None
+        return real(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(doctor_module.importlib.util, "find_spec", fake)
+
+
+def test_playwright_probe_missing_when_module_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    _playwright_spec(monkeypatch, present=False)
+    probe = probe_playwright()
+
+    assert probe.status == ProbeStatus.MISSING
+    assert "playwright install" in (probe.remediation or "")
+
+
+def test_playwright_probe_ready_only_when_the_browser_is_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _playwright_spec(monkeypatch, present=True)
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        payload = '{"executable": "/root/.cache/ms-playwright/chromium-1/chrome", "exists": true}'
+        return subprocess.CompletedProcess(command, 0, stdout=payload + "\n", stderr="")
+
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
+    probe = probe_playwright()
+
+    assert probe.status == ProbeStatus.READY
+    assert probe.details["chromium_installed"] is True
+
+
+def test_playwright_probe_detected_when_browser_is_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Module present but browser missing is the Playwright footgun.
+
+    A session would fail at launch with "Executable doesn't exist"; the probe
+    must flag that the browser install step is still needed rather than reading
+    as usable.
+    """
+    _playwright_spec(monkeypatch, present=True)
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        payload = '{"executable": "/root/.cache/ms-playwright/chromium-1/chrome", "exists": false}'
+        return subprocess.CompletedProcess(command, 0, stdout=payload + "\n", stderr="")
+
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
+    probe = probe_playwright()
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.details["chromium_installed"] is False
+    assert "playwright install chromium" in (probe.remediation or "")
+
+
+def test_playwright_probe_detected_when_driver_output_is_unusable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A driver that fails to report leaves status unknown, not falsely ready."""
+    _playwright_spec(monkeypatch, present=True)
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="driver crashed")
+
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
+    probe = probe_playwright()
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.details["chromium_installed"] is False

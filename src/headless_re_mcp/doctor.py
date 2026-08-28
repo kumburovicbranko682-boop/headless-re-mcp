@@ -203,7 +203,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         probe_optional_tool("apktool", current, "apktool", ("apktool", "apktool.bat")),
         probe_optional_tool("apksigner", current, "apksigner", ("apksigner", "apksigner.bat")),
         # Web reverse-engineering (all optional).
-        probe_python_module("playwright", "playwright"),
+        probe_playwright(),
         probe_python_module("mitmproxy", "mitmproxy"),
         probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
         probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
@@ -1106,6 +1106,91 @@ def probe_python_module(name: str, module: str) -> Probe:
         ProbeStatus.DETECTED,
         f"Optional Python module {module} detected",
         {"origin": spec.origin},
+    )
+
+
+def probe_playwright() -> Probe:
+    """Report the web backend as usable only when its browser is installed too.
+
+    The web line launches Playwright's bundled Chromium (``pw.chromium.launch``),
+    and the browser is a *separate* install from the Python package
+    (``playwright install chromium``). A probe that only imported the module
+    reported the web line detected while every session failed at launch with
+    "Executable doesn't exist" -- the same wrapper-present/runtime-absent false
+    signal the Ghidra JDK check fixed. Ask Playwright for the exact Chromium it
+    would launch and confirm it exists on disk.
+    """
+    spec = importlib.util.find_spec("playwright")
+    if spec is None:
+        return Probe(
+            "playwright",
+            ProbeStatus.MISSING,
+            "Optional Python module playwright is not installed",
+            {},
+            "pip install playwright, then 'playwright install chromium' for the web backend.",
+        )
+    details: dict[str, Any] = {"origin": spec.origin}
+    # Starting the node driver can wedge, and this is a command run *because* the
+    # machine is misbehaving, so bind it in a child with a deadline rather than
+    # starting Playwright in-process where a hang would take the doctor with it.
+    probe_code = (
+        "import json;"
+        "from pathlib import Path;"
+        "from playwright.sync_api import sync_playwright;"
+        "p = sync_playwright().start();"
+        "exe = p.chromium.executable_path;"
+        "p.stop();"
+        "print(json.dumps({'executable': exe, 'exists': bool(exe) and Path(exe).exists()}))"
+    )
+    try:
+        result = _probe_run([sys.executable, "-c", probe_code], timeout=30)
+    except (OSError, TimedOut) as exc:
+        details["error"] = f"{type(exc).__name__}: {exc}"
+        return Probe(
+            "playwright",
+            ProbeStatus.DETECTED,
+            "playwright is importable but its browser driver did not respond",
+            details,
+            "Reinstall playwright and run 'playwright install chromium'.",
+        )
+    payload: dict[str, Any] = {}
+    for line in result.stdout.splitlines():
+        candidate = line.strip()
+        if candidate.startswith("{"):
+            try:
+                payload = json.loads(candidate)
+            except json.JSONDecodeError:
+                payload = {}
+    executable = payload.get("executable") if payload else None
+    installed = bool(payload.get("exists")) if payload else False
+    details["chromium_executable"] = executable
+    details["chromium_installed"] = installed
+    if result.returncode != 0 or not payload:
+        details.setdefault("error", _bounded_text(result.stderr, result.stdout, limit=2000))
+        return Probe(
+            "playwright",
+            ProbeStatus.DETECTED,
+            "playwright is importable but its browser status could not be determined",
+            details,
+            "Run 'playwright install chromium'; the web backend launches Playwright's Chromium.",
+        )
+    if not installed:
+        return Probe(
+            "playwright",
+            ProbeStatus.DETECTED,
+            "playwright is installed but its Chromium browser is not",
+            details,
+            (
+                "Run 'playwright install chromium'; the web backend launches "
+                "Playwright's bundled Chromium."
+            ),
+        )
+    return Probe(
+        "playwright",
+        ProbeStatus.READY,
+        "playwright and its Chromium browser are available",
+        details,
+        None,
     )
 
 
