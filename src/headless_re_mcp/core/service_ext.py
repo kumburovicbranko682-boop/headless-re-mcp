@@ -688,6 +688,14 @@ class ExtAnalysisMixin(UiDriveMixin):
         self, session_id: str | None = None, offset: int = 0, limit: int = 50
     ) -> Result[JsonObject]:
         try:
+            # session_id here is an optional filter, not a lookup, so it never
+            # meets SessionRegistry.get's refusal of non-string ids. A list or
+            # dict reached sqlite parameter binding and the InterfaceError was
+            # filed as storage_unavailable -- a store outage the caller might
+            # retry against, when their argument was wrong -- and an int
+            # silently matched nothing because session ids are a TEXT column.
+            if session_id is not None and not isinstance(session_id, str):
+                raise ValueError("session_id must be a string")
             return _success(
                 self.services.artifacts.list_artifacts(
                     session_id,
@@ -700,6 +708,13 @@ class ExtAnalysisMixin(UiDriveMixin):
 
     def artifacts_describe(self, artifact_id: str) -> Result[JsonObject]:
         try:
+            # artifact_id is schema-typed as a string, but the agent transport
+            # binds it raw. A list/dict reached sqlite parameter binding and the
+            # InterfaceError was filed as storage_unavailable, while an int
+            # silently matched nothing (ids are a TEXT column). Neither is a
+            # store outage: refuse the wrong type as the caller fault it is.
+            if not isinstance(artifact_id, str):
+                raise ValueError("artifact_id must be a string")
             item = self.services.artifacts.describe_artifact(artifact_id)
         except BaseException as exc:
             return _failure(exc)
@@ -711,6 +726,10 @@ class ExtAnalysisMixin(UiDriveMixin):
         self, artifact_id: str, offset: int = 0, limit: int = 4096
     ) -> Result[JsonObject]:
         try:
+            # Same refusal as artifacts_describe: an unbindable artifact_id must
+            # not read as a store outage.
+            if not isinstance(artifact_id, str):
+                raise ValueError("artifact_id must be a string")
             return self._artifacts_read(artifact_id, offset=offset, limit=limit)
         except BaseException as exc:
             return _failure(exc)
@@ -834,6 +853,11 @@ class ExtAnalysisMixin(UiDriveMixin):
         self, session_id: str | None = None, offset: int = 0, limit: int = 50
     ) -> Result[JsonObject]:
         try:
+            # Same refusal as artifacts_list: the optional session_id filter
+            # never meets the registry, and an unbindable one was filed as
+            # storage_unavailable by sqlite parameter binding.
+            if session_id is not None and not isinstance(session_id, str):
+                raise ValueError("session_id must be a string")
             return _success(
                 self.services.artifacts.list_audit(
                     session_id,

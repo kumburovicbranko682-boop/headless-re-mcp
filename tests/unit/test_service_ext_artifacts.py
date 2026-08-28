@@ -332,6 +332,37 @@ def test_artifacts_describe_maps_a_store_failure(tmp_path: Path) -> None:
     assert result.error.code == "internal_error"
 
 
+@pytest.mark.parametrize("bad_id", [["x"], {"a": 1}, 5, True])
+def test_store_bound_id_arguments_reject_a_non_string(tmp_path: Path, bad_id: Any) -> None:
+    """An unbindable id must not read as a store outage or silently match nothing.
+
+    artifact_id and the optional session_id filter never meet
+    SessionRegistry.get's refusal (a filter needn't name a live session), so a
+    list/dict reached sqlite parameter binding and the InterfaceError was filed
+    as storage_unavailable -- a store outage the caller might retry against,
+    when their argument was wrong -- while an int silently matched nothing
+    because ids are TEXT columns. All must read as invalid_request.
+    """
+    service = _Service(tmp_path)
+
+    for result in (
+        service.artifacts_list(cast(Any, bad_id)),
+        service.audit_list(cast(Any, bad_id)),
+        service.artifacts_describe(cast(Any, bad_id)),
+        service.artifacts_read(cast(Any, bad_id)),
+    ):
+        assert not result.ok and result.error is not None
+        assert result.error.code == "invalid_request"
+
+
+def test_listings_keep_a_none_session_filter_as_all_sessions(tmp_path: Path) -> None:
+    """The type refusal must not disturb the documented unfiltered listing."""
+    service = _Service(tmp_path)
+
+    assert service.artifacts_list(None).ok
+    assert service.audit_list(None).ok
+
+
 def test_artifacts_gc_reports_the_collection_summary(tmp_path: Path) -> None:
     service = _Service(tmp_path)
     blob = tmp_path / "old.bin"
