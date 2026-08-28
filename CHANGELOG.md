@@ -38,9 +38,10 @@ until 1.0 the tool surface may still change between minor versions.
   秒）。即全部合入后，本通道无需任何再调整即可把新 Gate 全部纳管。
 - 追加：通道再补一步"满配环境单测"（`pytest tests/unit`）。既有单测通道只装
   `test,dev,web`，把"可选依赖没装"编码成环境事实的用例在 CI 永远绿——本通道装齐
-  extras 后实测当场揪出 7 个这样的用例（另一分支已修，全量 6045 通过 0 失败）。
-  从此单测在"依赖缺席"（linux-quality）与"依赖在场"（本通道）两侧都被钉住，
-  job 上限相应提到 40 分钟。
+  extras 后实测当场揪出 7 个这样的用例（全量 6045 通过 0 失败），修复在
+  `cursor/pin-dep-absence-in-new-path-tests-4586` 上。合并顺序注意：该修复分支
+  应先于（或随同）本分支合入，否则此步会如实红在 main 现有的那 7 个用例上——
+  这正是该步存在的意义。job 上限相应提到 40 分钟。
 
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
