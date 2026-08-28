@@ -485,6 +485,24 @@ def test_check_available_true_when_mitmproxy_imports(monkeypatch: pytest.MonkeyP
     assert backend._available is True
 
 
+def test_check_available_refuses_without_mitmproxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With mitmproxy unimportable, _check_available refuses the capability.
+
+    The ``.[proxy]`` extra installs mitmproxy, so a test keying off it merely
+    being uninstalled never runs the except arm the moment a developer (or a
+    full-extras CI job) actually has it -- skip != pass, and neither does
+    "happens to be uninstalled". Force the import to fail with a ``None`` sentinel
+    in ``sys.modules`` so the degradation branch (availability cached False, then
+    the capability_unavailable refusal) runs on every host.
+    """
+    monkeypatch.setitem(sys.modules, "mitmproxy", None)
+    backend = ProxyBackend()
+    with pytest.raises(ProxyError) as excinfo:
+        backend._check_available()
+    assert excinfo.value.code == "capability_unavailable"
+    assert backend._available is False
+
+
 def test_start_rejects_a_port_out_of_range(monkeypatch: pytest.MonkeyPatch) -> None:
     """A port outside 1..65535 is refused once the capability is available."""
     _install_fake_mitmproxy(monkeypatch)
