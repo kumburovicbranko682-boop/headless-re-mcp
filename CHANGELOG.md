@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（doctor 的 radare2 探针与 R2Client 的发现名对齐，消除虚假的 MISSING）
+
+- 审计 doctor 与各后端"实际发现逻辑"是否一致时发现漂移:`R2Client._discover()` 按
+  `("r2", "rizin", "radare2")` 三个名字在 PATH 上找,而 doctor 的 radare2 探针只查
+  `("r2", "rizin")`——少了 `radare2`。于是在只把二进制装成 `radare2`(部分发行版/安装如此)的机器上,
+  客户端能找到、`r2.*` 可用,doctor 却报 MISSING——正是 doctor 应避免的"言行不一"读数
+  (参见 `probe_import_backend` 的设计注释:探针要如实反映后端行为)。
+- 根因是两处硬编码的名字列表各写各的、发生漂移。抽出单一常量 `R2_BINARY_NAMES`(在 `r2/client.py`),
+  `_discover` 与 doctor 的 radare2 探针都用它,二者不可能再分叉。
+- 新增按 `R2_BINARY_NAMES` 参数化的 `test_doctor_detects_every_name_the_r2_client_discovers`:
+  逐个把"仅该名字在 PATH"喂给真实 `run_doctor`,断言 radare2 探针 DETECTED——探针从此不可能比客户端搜索更窄的
+  集合。mutation 验证(把 doctor 改回 `("r2", "rizin")`,`radare2` 那例即失败,`r2`/`rizin` 仍过)。
+  同步把该文件里三处显式写 `("r2", "rizin")` 的 radare2 用例改用共享常量。doctor+r2 单测 83 passed。
+  (注:wabt 探针对"配置成目录"的情形也与客户端 `_resolve_wabt_tool` 略有出入,但通用探针的简化尚属合理,
+  留待后续。)
+
 ### 修复（adb launch/force_stop 的失败信息带上目标包名，并清掉误导的死代码）
 
 - 顺着超时归类这条线复查 adb,发现 `launch` 与 `force_stop` 各有一段永不触发的死代码:两者把

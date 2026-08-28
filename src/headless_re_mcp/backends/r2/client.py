@@ -192,8 +192,17 @@ class R2Client:
         return enrich_r2_payload(payload, binary=binary)
 
 
+# The binaries r2.* auto-discovery accepts, in preference order: radare2's own
+# ``r2``, rizin's ``rizin``, and the long ``radare2`` name some installs ship.
+# Exported so doctor's radare2 probe can search the exact same set -- a probe
+# that checked fewer names would report MISSING on a host where the client
+# actually finds the tool and r2.* works, the dishonest readout doctor exists to
+# prevent.
+R2_BINARY_NAMES: tuple[str, ...] = ("r2", "rizin", "radare2")
+
+
 def _discover() -> Path | None:
-    for name in ("r2", "rizin", "radare2"):
+    for name in R2_BINARY_NAMES:
         found = shutil.which(name)
         if found:
             return Path(found)

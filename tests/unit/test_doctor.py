@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 import headless_re_mcp.doctor as doctor_module
+from headless_re_mcp.backends.r2.client import R2_BINARY_NAMES
 from headless_re_mcp.backends.x64dbg.gate import XdbgHeadlessGateResult
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Architecture
@@ -102,9 +103,39 @@ def test_radare2_probe_falls_back_to_path(
     )
     settings = replace(_settings(None, tmp_path / "artifacts"), r2=None)
 
-    probe = probe_optional_tool("radare2", settings, "r2", ("r2", "rizin"))
+    probe = probe_optional_tool("radare2", settings, "r2", R2_BINARY_NAMES)
 
     assert probe.status == ProbeStatus.DETECTED
+
+
+@pytest.mark.parametrize("binary_name", R2_BINARY_NAMES)
+def test_doctor_detects_every_name_the_r2_client_discovers(
+    binary_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """doctor's radare2 probe must find whatever R2Client._discover would.
+
+    _discover walks R2_BINARY_NAMES ("r2", "rizin", "radare2") and r2.* works off
+    the first hit, so a host with only ``radare2`` (or only ``rizin``) on PATH runs
+    r2.* fine. The probe used to search only ("r2", "rizin"), so such a host was
+    reported MISSING while the backend worked -- the dishonest readout doctor
+    exists to prevent. Both now share R2_BINARY_NAMES; drive the real run_doctor
+    with exactly one discovery name present and assert it is DETECTED, once per
+    name so the probe can never again search a narrower set than the client.
+    """
+    on_path = tmp_path / binary_name
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_module.shutil,
+        "which",
+        lambda cmd: str(on_path) if cmd == binary_name else None,
+    )
+    settings = replace(_settings(None, tmp_path / "artifacts"), r2=None)
+
+    report = run_doctor(settings)
+
+    probe = next(p for p in report.probes if p.name == "radare2")
+    assert probe.status == ProbeStatus.DETECTED, binary_name
+    assert probe.details.get(binary_name) == str(on_path)
 
 
 def test_radare2_probe_missing_when_neither_configured_nor_on_path(
@@ -113,7 +144,7 @@ def test_radare2_probe_missing_when_neither_configured_nor_on_path(
     monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
     settings = replace(_settings(None, tmp_path / "artifacts"), r2=None)
 
-    probe = probe_optional_tool("radare2", settings, "r2", ("r2", "rizin"))
+    probe = probe_optional_tool("radare2", settings, "r2", R2_BINARY_NAMES)
 
     assert probe.status == ProbeStatus.MISSING
 
@@ -197,7 +228,7 @@ def test_non_jvm_tool_probe_needs_no_java_hint(
     )
     settings = replace(_settings(None, tmp_path / "artifacts"), r2=None)
 
-    probe = probe_optional_tool("radare2", settings, "r2", ("r2", "rizin"))
+    probe = probe_optional_tool("radare2", settings, "r2", R2_BINARY_NAMES)
 
     assert probe.status == ProbeStatus.DETECTED
     assert probe.remediation is None

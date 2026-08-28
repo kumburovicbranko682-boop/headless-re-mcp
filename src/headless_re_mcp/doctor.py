@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.r2.client import R2_BINARY_NAMES
 from headless_re_mcp.backends.x64dbg.gate import run_command_loop_gate
 from headless_re_mcp.config import (
     Settings,
@@ -190,7 +191,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             "radare2",
             current,
             "r2",
-            ("r2", "rizin"),
+            R2_BINARY_NAMES,
             install_hint=(
                 "Install radare2 and put r2 on PATH (e.g. apt install radare2, "
                 "brew install radare2)."
