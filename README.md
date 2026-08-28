@@ -390,9 +390,16 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 80 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
-  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
+  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄、
+  timeline 与 audit 取证分工经真实 MCP 端到端(裸机无后端确定性)：两份日志各答不同问题——
+  timeline.list 是单会话「留痕史」(开/关/写/驱 UI)，只读操作不留痕，故一个只分析不改动的会话在
+  timeline 里只有 open(关闭后再加 close、按时间先后)；即便期间做了 knowledge.record 与 report.generate
+  也不进 timeline;audit.list 是跨会话操作账本，带参数摘要与结果(params_summary/ok/result_summary)
+  以回答「哪些会话跑过、如何收尾」;字段名本身是契约:timeline 只给 events(无 entries)、audit 只给
+  entries(无 events);对不存在的会话两份日志故意不同答——timeline 报 session_not_found(而非空事件表)、
+  audit 作为全局日志的过滤器返回空页(而非报错)，且全局 audit 里仍有该会话的记录）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
   wabt（1）、以及 2 个有文档说明的故意跳过
 - 264 个工具（全部 265 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
