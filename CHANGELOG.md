@@ -5,6 +5,27 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（Android 设备线首次对着真模拟器端到端跑通 info/packages/logcat/截图/推拉/forward）
+
+上一条证明的是「无设备时链路通、错误契约硬」；这条把**有设备**时的另一半补上。在本机用 KVM 拉起一台
+无头 Android 模拟器（aosp_atd, android-31, x86_64），新增
+`tests/integration/test_android_device_live_gate.py`，对真设备把设备控制面端到端跑一遍——这是
+mock 子进程的单测永远够不到的部分：
+
+- **device.info ↔ getprop 自洽**：`device.info` 报的 sdk 与 `device.properties` 的
+  `ro.build.version.sdk` 必须一致（两条不同代码路径读同一台设备），且 abi/model 非空。
+- **packages/logcat**：`pm list packages` 至少列出一个 `com.android.*` 系统包；`logcat -d` 真回
+  行。
+- **screenshot**：截图落地为一个带 PNG 魔数的真实文件，而不是空文件或错误文本。
+- **push/pull 字节往返**：推一段随机字节上去、再拉回来，断言拉回的字节与推上去的完全相等——证明
+  sync 传输两个方向都真的работает，而不只是调用返回了。
+- **forward 及 tcp:0 硬拒**：`forward tcp:0` 必须在碰服务端之前就以 `invalid_params` 被拒（否则会
+  漏一个无法追踪的监听端口），而一个具体本地端口能正常 forward、并在 close_all 时被
+  `release_forwards` 回收。
+
+skip ≠ pass：adbutils 缺失或没有设备接入时干净 skip（无头 CI 上即如此），仅当真有设备时才实跑。
+已在 KVM 上的 aosp_atd android-31 x86_64 模拟器上五条全部实跑通过（非 skip）。
+
 ### 测试（Android 设备线首次真机证明 adb 客户端↔服务端链路在 Linux 上确实通了）
 
 `test_android_re_gate.py` 对 `device.list` 的断言只有 `ok or error is not None`——对任何
