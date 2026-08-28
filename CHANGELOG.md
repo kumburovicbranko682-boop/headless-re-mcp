@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（补齐 adb / frida / apk-repack 三条非 PE 后端的实机 gate——此前只有 mock 单测，无人证明真能驱动真实工具）
+
+- 三个非 PE 实机 gate 此前只存在于 `cursor/mature-nonpe-lines-4586` 聚合分支上（该聚合因 Ghidra
+  契约演进已被 main 超越、无法直接合入），一旦被放弃就随之丢失。拆出为独立、可直接合入当前 main 的
+  最小分支：
+  - `test_adb_live_gate.py`：在无真机的前提下，直接压 adbutils 的 device-server 层（空设备列表、
+    拒绝连接、恶意输入与缺失设备的错误），并验证 service 层把「连接已死」如实封成 failure 信封。
+  - `test_frida_live_gate.py`：attach 一个本地进程，真跑 modules/exports/memory.read/hook，并压
+    pid 授权边界与设备路径（enumerate_devices、`_authorize` 允许集、本地设备 noop hook）。
+  - `test_android_repack_gate.py`：用 apktool 解包/回编一个真实 APK 做往返，再用 apksigner 以
+    debug keystore 签名并独立校验。skip != pass：apktool/apksigner 缺席时点名跳过。
+- 本机实测：frida、adbutils 均在位，adb 与 frida 两个 gate 实跑通过（真实 attach + 真实 device-server
+  层），apk-repack 在无 apktool 时干净 skip，`ruff` 干净。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
