@@ -101,6 +101,16 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
         # The entry point resolved to a name, not just a token -- the method
         # monodis marks .entrypoint, which its gate cross-checks.
         assert report["entry_point_name"] == "Sample::Run"
+        # The CodeView PDB reference from the debug directory: the per-build
+        # GUID/age (the symbol-server key, the managed build-id analogue) and
+        # the PDB path the linker baked in. The debug gate cross-checks these
+        # same values against objdump's independent PE decode.
+        assert report["pdb"] == {
+            "guid": "a1b2c3d4-e5f6-4788-99aa-bbccddeeff00",
+            "age": 1,
+            "path": r"C:\build\headless\MyAssembly.pdb",
+            "signature": "A1B2C3D4E5F6478899AABBCCDDEEFF001",
+        }
         stats = report["metadata_stats"]
         assert stats["type_count"] == 2
         assert stats["method_count"] == 2

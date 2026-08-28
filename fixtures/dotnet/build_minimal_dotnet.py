@@ -13,9 +13,12 @@ custom-attribute value (the TargetFrameworkAttribute every compiler stamps on
 an assembly), the assembly's strong-name public key and genuine member
 signatures (monodis asserts on malformed ones, so real blobs are what let it
 fully disassemble the fixture and mark the .entrypoint the entrypoint gate
-cross-checks), and two method bodies with actual CIL. No compiler is required;
-the output is deterministic and committed as ``minimal_assembly.exe`` next to
-this file.
+cross-checks), and two method bodies with actual CIL. It also carries a
+CodeView RSDS debug directory (a per-build PDB GUID, age and path) so the
+managed build-fingerprint fact -- the symbol-server key, the analogue of an
+ELF build-id -- has a positive case a strict PE decoder (llvm-readobj /
+objdump) confirms. No compiler is required; the output is deterministic and
+committed as ``minimal_assembly.exe`` next to this file.
 
 Run ``python fixtures/dotnet/build_minimal_dotnet.py`` to regenerate it.
 """
@@ -30,6 +33,17 @@ _SECTION_RVA = 0x2000
 _FILE_BASE = 0x200
 _SECTION_ALIGN = 0x2000
 _FILE_ALIGN = 0x200
+_IMAGE_DEBUG_DIRECTORY_SIZE = 28
+_IMAGE_DEBUG_TYPE_CODEVIEW = 2
+
+# The CodeView PDB reference the linker stamps into the debug directory: a
+# per-build GUID, an age counter and the PDB path. The GUID+age is the
+# symbol-server key for the build (the managed analogue of an ELF build-id),
+# and the path is the sort of build-machine directory that leaks in the wild.
+# Fixed here so the reader and the llvm-readobj/objdump gate assert exact bytes.
+PDB_GUID = uuid.UUID("a1b2c3d4-e5f6-4788-99aa-bbccddeeff00")
+PDB_AGE = 1
+PDB_PATH = r"C:\build\headless\MyAssembly.pdb"
 
 # Public identifiers the metadata carries, so tests can assert on real names.
 MODULE_NAME = "MyModule.dll"
@@ -168,6 +182,20 @@ def build() -> bytes:
     il_run = bytes([0x28]) + _u32(CALL_TARGET_TOKEN) + bytes([0x2A])  # call ; ret
     body_run = _u8((len(il_run) << 2) | 0x02) + il_run
 
+    # ---- CodeView RSDS debug record (ties the assembly to its PDB) ----
+    # An IMAGE_DEBUG_DIRECTORY (28 bytes) of type 2 (CodeView) pointing at an
+    # RSDS blob: the per-build PDB GUID, an age, and the PDB path the linker
+    # baked in -- the managed build fingerprint (symbol-server key) and the
+    # kind of build-machine path that regularly leaks. bytes_le layout so the
+    # GUID round-trips through Python's uuid the way the runtime lays it out.
+    rsds = (
+        b"RSDS"
+        + PDB_GUID.bytes_le
+        + _u32(PDB_AGE)
+        + PDB_PATH.encode("utf-8")
+        + b"\x00"
+    )
+
     # ---- section layout: CLR header, method bodies (4-aligned), metadata ----
     cursor = 72  # after the 72-byte COR20 header
     cursor = (cursor + 3) & ~3
@@ -176,6 +204,12 @@ def build() -> bytes:
     cursor = (cursor + 3) & ~3
     rva_run = _SECTION_RVA + cursor
     cursor += len(body_run)
+    cursor = (cursor + 3) & ~3
+    rva_debug_dir = _SECTION_RVA + cursor
+    cursor += _IMAGE_DEBUG_DIRECTORY_SIZE
+    cursor = (cursor + 3) & ~3
+    rva_rsds = _SECTION_RVA + cursor
+    cursor += len(rsds)
     cursor = (cursor + 3) & ~3
     rva_meta = _SECTION_RVA + cursor
 
@@ -305,12 +339,28 @@ def build() -> bytes:
         clr += _u32(0) + _u32(0)
     assert len(clr) == 72, len(clr)
 
+    # ---- IMAGE_DEBUG_DIRECTORY entry (28 bytes) ----
+    # Characteristics, TimeDateStamp, Major/Minor, Type=2 (CodeView),
+    # SizeOfData, AddressOfRawData (RVA) and PointerToRawData (file offset)
+    # both pointing at the RSDS blob laid down just after it.
+    ptr_rsds = _FILE_BASE + (rva_rsds - _SECTION_RVA)
+    debug_dir = (
+        _u32(0) + _u32(0) + _u16(0) + _u16(0)
+        + _u32(_IMAGE_DEBUG_TYPE_CODEVIEW)
+        + _u32(len(rsds)) + _u32(rva_rsds) + _u32(ptr_rsds)
+    )
+    assert len(debug_dir) == _IMAGE_DEBUG_DIRECTORY_SIZE, len(debug_dir)
+
     # ---- assemble the section body ----
     section = bytearray(clr)
     section += b"\x00" * ((rva_add - _SECTION_RVA) - len(section))
     section += body_add
     section += b"\x00" * ((rva_run - _SECTION_RVA) - len(section))
     section += body_run
+    section += b"\x00" * ((rva_debug_dir - _SECTION_RVA) - len(section))
+    section += debug_dir
+    section += b"\x00" * ((rva_rsds - _SECTION_RVA) - len(section))
+    section += rsds
     section += b"\x00" * ((rva_meta - _SECTION_RVA) - len(section))
     section += metadata
 
@@ -351,6 +401,7 @@ def build() -> bytes:
     opt += _u32(0)  # loader flags
     opt += _u32(16)  # number of data directories
     directories = [(0, 0)] * 16
+    directories[6] = (rva_debug_dir, _IMAGE_DEBUG_DIRECTORY_SIZE)  # debug directory
     directories[14] = (_SECTION_RVA, 72)  # COM descriptor -> COR20 header
     for rva, size in directories:
         opt += _u32(rva) + _u32(size)

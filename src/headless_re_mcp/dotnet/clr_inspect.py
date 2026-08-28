@@ -24,6 +24,21 @@ JsonObject = dict[str, Any]
 
 _DIRECTORY_COM_DESCRIPTOR = 14
 _CLR_METADATA_SIG = b"BSJB"
+# The PE debug directory (data directory 6) carries the CodeView record that
+# ties a managed assembly to its PDB: an RSDS blob of a per-build GUID, an age
+# counter and the PDB path the linker baked in. The GUID+age pair is the true
+# symbol-server key for the build (what every symbol server and Microsoft's
+# symbol store index the PDB by), the managed analogue of an ELF build-id or a
+# Mach-O UUID; the path frequently leaks the build machine's directory layout.
+# Each IMAGE_DEBUG_DIRECTORY entry is 28 bytes; CodeView is type 2.
+_DIRECTORY_DEBUG = 6
+_IMAGE_DEBUG_DIRECTORY_SIZE = 28
+_IMAGE_DEBUG_TYPE_CODEVIEW = 2
+_CODEVIEW_RSDS_SIG = b"RSDS"
+# A real image carries one or two debug entries; the cap only bounds a lying
+# directory size. The PDB path is a filesystem path, bounded like any string.
+_MAX_DEBUG_ENTRIES = 64
+_MAX_PDB_PATH = 1024
 # A real app references a few dozen assemblies at most; the cap bounds a
 # hostile row count without losing anything from an honest image.
 _MAX_ASSEMBLY_REFS = 64
@@ -152,6 +167,12 @@ class DotnetInspectReport:
     # (token 0), a File-token entry point in another module, or a token the
     # tables cannot back.
     entry_point_name: str | None = None
+    # The CodeView PDB reference from the PE debug directory: {"guid", "age",
+    # "path", "signature"} where signature is the GUID's 32 hex digits plus the
+    # age -- the symbol-server key for the build, the managed analogue of an ELF
+    # build-id / Mach-O UUID. None when the assembly ships no debug directory
+    # (a release build stripped of it, or a hand-built image).
+    pdb: JsonObject | None = None
 
     def to_dict(self) -> JsonObject:
         return {
@@ -177,6 +198,7 @@ class DotnetInspectReport:
             "target_framework": self.target_framework,
             "public_key_token": self.public_key_token,
             "entry_point_name": self.entry_point_name,
+            "pdb": self.pdb,
             "metadata_stats": (
                 self.metadata_stats.to_dict() if self.metadata_stats is not None else None
             ),
@@ -304,6 +326,8 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
         except PeFormatError:
             note = "COR20 MetaData RVA not mappable"
 
+    pdb = _read_codeview_pdb(pe_mod, layout, data)
+
     kind = _classify_kind(verified=verified, flags=flags)
     report = DotnetInspectReport(
         path=str(target),
@@ -328,6 +352,7 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
         target_framework=target_framework,
         public_key_token=public_key_token,
         entry_point_name=entry_point_name,
+        pdb=pdb,
         note=note,
         metadata_stats=metadata_stats,
     )
@@ -338,6 +363,89 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
             details=report.to_dict(),
         )
     return report
+
+
+def _read_codeview_pdb(pe_mod: Any, layout: Any, data: bytes) -> JsonObject | None:
+    """The CodeView PDB reference from the PE debug directory, or None.
+
+    Walks the IMAGE_DEBUG_DIRECTORY entries (data directory 6) for the first
+    CodeView (type 2) record, follows it to the RSDS blob and reads the PDB
+    GUID, age and path. ``signature`` is the symbol-server key: the GUID's 32
+    hex digits (upper-case) followed by the age -- the same string symstore
+    and every symbol server index the PDB by. Fail-closed and bounded: an
+    absent directory, an unmappable pointer or a foreign/truncated record
+    yields None, never an exception, so a hostile image degrades to "no PDB
+    reference" rather than a raised error.
+    """
+    rva, size = pe_mod._directory(layout, _DIRECTORY_DEBUG)  # noqa: SLF001
+    if rva == 0 or size < _IMAGE_DEBUG_DIRECTORY_SIZE:
+        return None
+    count = min(size // _IMAGE_DEBUG_DIRECTORY_SIZE, _MAX_DEBUG_ENTRIES)
+    try:
+        table_off = pe_mod._rva_to_offset(  # noqa: SLF001
+            layout, rva, size=count * _IMAGE_DEBUG_DIRECTORY_SIZE
+        )
+    except PeFormatError:
+        return None
+    for index in range(count):
+        entry_off = table_off + index * _IMAGE_DEBUG_DIRECTORY_SIZE
+        try:
+            entry = pe_mod._slice(data, entry_off, _IMAGE_DEBUG_DIRECTORY_SIZE)  # noqa: SLF001
+        except PeFormatError:
+            return None
+        if int.from_bytes(entry[12:16], "little") != _IMAGE_DEBUG_TYPE_CODEVIEW:
+            continue
+        data_size = int.from_bytes(entry[16:20], "little")
+        addr_rva = int.from_bytes(entry[20:24], "little")
+        ptr_raw = int.from_bytes(entry[24:28], "little")
+        # 4-byte RSDS sig + 16-byte GUID + 4-byte age + at least a NUL path.
+        if data_size < 25 or data_size > _MAX_PDB_PATH + 24:
+            continue
+        # A debug record's raw data is addressed both ways; the file pointer is
+        # authoritative on disk, the RVA the fallback when a linker left it 0.
+        blob = _read_debug_blob(pe_mod, layout, data, ptr_raw, addr_rva, data_size)
+        pdb = _parse_rsds(blob)
+        if pdb is not None:
+            return pdb
+    return None
+
+
+def _read_debug_blob(
+    pe_mod: Any, layout: Any, data: bytes, ptr_raw: int, addr_rva: int, size: int
+) -> bytes:
+    """The debug entry's raw bytes, preferring the file pointer over the RVA."""
+    for offset in (
+        ptr_raw if ptr_raw else None,
+        _safe_rva(pe_mod, layout, addr_rva, size) if addr_rva else None,
+    ):
+        if offset is None:
+            continue
+        try:
+            blob: bytes = pe_mod._slice(data, offset, size)  # noqa: SLF001
+            return blob
+        except PeFormatError:
+            continue
+    return b""
+
+
+def _safe_rva(pe_mod: Any, layout: Any, rva: int, size: int) -> int | None:
+    try:
+        return int(pe_mod._rva_to_offset(layout, rva, size=size))  # noqa: SLF001
+    except PeFormatError:
+        return None
+
+
+def _parse_rsds(blob: bytes) -> JsonObject | None:
+    if len(blob) < 25 or blob[:4] != _CODEVIEW_RSDS_SIG:
+        return None
+    guid = uuid.UUID(bytes_le=blob[4:20])
+    age = int.from_bytes(blob[20:24], "little")
+    path = blob[24:].split(b"\x00", 1)[0].decode("utf-8", errors="replace") or None
+    # The symbol-server key: the GUID's 32 hex digits in record order (the
+    # canonical field layout, upper-case) with the age appended in hex, exactly
+    # what symstore names the directory and what a symbol server expects.
+    signature = f"{guid.hex.upper()}{age:X}"
+    return {"guid": str(guid), "age": age, "path": path, "signature": signature}
 
 
 def _classify_kind(*, verified: bool, flags: int) -> DotnetKind:

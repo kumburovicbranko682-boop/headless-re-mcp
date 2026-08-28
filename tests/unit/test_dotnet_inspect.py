@@ -272,6 +272,91 @@ def test_a_zero_entry_token_is_a_library_not_a_name(tmp_path: Path) -> None:
     assert report.entry_point_name is None
 
 
+def _data_dir_offset(raw: bytes, index: int) -> int:
+    """File offset of PE data directory entry ``index`` (each 8 bytes)."""
+    e_lfanew = struct.unpack_from("<I", raw, 0x3C)[0]
+    optional = e_lfanew + 24
+    magic = struct.unpack_from("<H", raw, optional)[0]
+    directories = optional + (112 if magic == 0x20B else 96)
+    return directories + index * 8
+
+
+def test_inspect_reads_the_committed_fixture_pdb_reference() -> None:
+    # The CodeView RSDS record the fixture bakes into its debug directory: the
+    # per-build GUID and age (the symbol-server key, the managed build-id
+    # analogue) and the PDB path. objdump cross-checks these same values.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    report = inspect_dotnet(fixture)
+    assert report.pdb == {
+        "guid": "a1b2c3d4-e5f6-4788-99aa-bbccddeeff00",
+        "age": 1,
+        "path": r"C:\build\headless\MyAssembly.pdb",
+        "signature": "A1B2C3D4E5F6478899AABBCCDDEEFF001",
+    }
+    assert report.to_dict()["pdb"] == report.pdb
+
+
+def test_no_debug_directory_reports_no_pdb(tmp_path: Path) -> None:
+    # Zeroing data directory 6 is a release build stripped of its debug
+    # directory: no PDB reference, reported as None rather than guessed.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    raw = bytearray(fixture.read_bytes())
+    struct.pack_into("<II", raw, _data_dir_offset(bytes(raw), 6), 0, 0)
+    path = tmp_path / "no_debug.exe"
+    path.write_bytes(bytes(raw))
+
+    report = inspect_dotnet(path)
+    assert report.pdb is None
+    # And the rest of the assembly still parses -- the debug read is isolated.
+    assert report.assembly_name == "MyAssembly"
+
+
+def test_a_non_codeview_debug_entry_reports_no_pdb(tmp_path: Path) -> None:
+    # A debug directory whose only entry is some other type (e.g. POGO, 13)
+    # carries no CodeView record, so there is no PDB reference to report.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    raw = bytearray(fixture.read_bytes())
+    dir_rva = struct.unpack_from("<I", raw, _data_dir_offset(bytes(raw), 6))[0]
+    entry_off = dir_rva - 0x2000 + 0x200
+    struct.pack_into("<I", raw, entry_off + 12, 13)  # Type: POGO, not CodeView
+    path = tmp_path / "pogo.exe"
+    path.write_bytes(bytes(raw))
+
+    report = inspect_dotnet(path)
+    assert report.pdb is None
+
+
+def test_a_truncated_rsds_blob_reports_no_pdb(tmp_path: Path) -> None:
+    # A CodeView entry whose data is too short for even an empty-path RSDS
+    # (sig + GUID + age + one NUL) yields None, not a partial or crashing read.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    raw = bytearray(fixture.read_bytes())
+    dir_rva = struct.unpack_from("<I", raw, _data_dir_offset(bytes(raw), 6))[0]
+    entry_off = dir_rva - 0x2000 + 0x200
+    struct.pack_into("<I", raw, entry_off + 16, 10)  # SizeOfData: below the RSDS minimum
+    path = tmp_path / "short_rsds.exe"
+    path.write_bytes(bytes(raw))
+
+    report = inspect_dotnet(path)
+    assert report.pdb is None
+
+
+def test_synthetic_verified_image_has_no_pdb(tmp_path: Path) -> None:
+    # The synthetic verified CLR PE carries no debug directory at all; the PDB
+    # fact is absent (None), the same as any image built without one.
+    path = tmp_path / "synthetic.exe"
+    _write_verified_clr_pe(path)
+    assert inspect_dotnet(path).pdb is None
+
+
 def _rowcount_offset(raw: bytes, table_bit: int) -> int:
     """File offset of a table's row count inside the fixture's #~ header.
 
