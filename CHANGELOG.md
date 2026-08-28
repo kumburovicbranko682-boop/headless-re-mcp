@@ -101,6 +101,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（adb“缺 adbutils 就降级”测试把跳过当通过、在装了 extra 处不跑）
+
+- `test_missing_adbutils_degrades_instead_of_raising_import_error` 先构造 `AdbBackend()`,
+  若 `backend.available` 为真便 `pytest.skip("adbutils installed — degradation path not exercised
+  (skip != pass)")`。adbutils 是 `android` extra 的依赖,本仓的 android 测试安装(以及任何装了该
+  extra 的机器)里它恒在,于是这个用例在这些环境里一律跳过——`__init__` 里“`import adbutils` 失败
+  即降级、绝不让 ImportError 冒出构造函数”的那条 except 分支从不被驱动,恰是它自己消息里点名的
+  “skip != pass”。改为用 `monkeypatch.setitem(sys.modules, "adbutils", None)` 主动制造缺席:
+  `None` 条目让 `import adbutils` 在任何环境下都抛错,于是构造函数的 except 分支被确定性地驱动
+  (与 frida 兄弟用例以 `_available=False` 强制“不可用”态一脉相承),随后断言 `available is False`
+  且 `list_devices()` 报 `capability_unavailable`。变异实测:删掉 `__init__` 的 `except`(让
+  ImportError 冒穿构造),改后用例当场失败(旧用例在装了 extra 处会跳过、什么都逮不到)。装了
+  extra 的本环境与 CI(不装 android extra、adbutils 真缺席)两侧结果一致。产品代码
+  `backends/adb/client.py` 未改。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

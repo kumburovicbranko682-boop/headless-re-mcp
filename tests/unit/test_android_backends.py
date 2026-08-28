@@ -6,6 +6,7 @@ happy paths (which need a real device and live in the integration gates).
 
 from __future__ import annotations
 
+import sys
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -71,10 +72,20 @@ class TestAdbArgumentValidation:
     def test_valid_package_names_pass(self, package: str) -> None:
         assert _check_package(package) == package
 
-    def test_missing_adbutils_degrades_instead_of_raising_import_error(self) -> None:
+    def test_missing_adbutils_degrades_instead_of_raising_import_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Force the module-absent state rather than depend on adbutils being
+        # uninstalled. adbutils ships in the android extra, so on any machine
+        # that has it -- this repo's own android test install included -- the
+        # old skip left the ImportError-degradation branch in __init__
+        # unexercised, exactly the "skip != pass" its message named. A None
+        # entry in sys.modules makes `import adbutils` raise, so construction
+        # runs its except branch on every environment (the frida sibling
+        # forces its absent state the same way, via _available=False).
+        monkeypatch.setitem(sys.modules, "adbutils", None)
         backend = AdbBackend()
-        if backend.available:
-            pytest.skip("adbutils installed — degradation path not exercised (skip != pass)")
+        assert backend.available is False
         with pytest.raises(AdbError) as info:
             backend.list_devices()
         assert info.value.code == "capability_unavailable"
