@@ -394,7 +394,14 @@ class GhidraClient:
         script_path = _SCRIPT_DIR / script_name
         env = os.environ.copy()
         env["GHIDRA_INSTALL_DIR"] = str(self.home)
-        env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap}"
+        # Prepend the heap bound, do not overwrite -- exactly as the Jython path
+        # does. PyGhidra is modern Ghidra's only launch route, and Ghidra >= 11.3
+        # runs on JDK 17/21 where the operator's JAVA_TOOL_OPTIONS carries the
+        # --add-opens the JVM needs (plus any proxy or encoding). Clobbering it
+        # with only -Xmx silently dropped those on the very installs that require
+        # them; the JVM parses -Xmx last, so an explicit operator -Xmx still wins.
+        existing = env.get("JAVA_TOOL_OPTIONS", "").strip()
+        env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap} {existing}".strip()
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         cmd = [
             sys.executable,
