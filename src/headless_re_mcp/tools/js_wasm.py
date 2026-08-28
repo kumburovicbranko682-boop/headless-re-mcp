@@ -121,6 +121,36 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.js_endpoints(path, offset=offset, limit=limit))
 
+    @tools.tool(name="js.imports")
+    def js_imports(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Extract a JavaScript file's module dependencies, node-free.
+
+        The "what does this bundle pull in" pivot: it surfaces the module
+        specifiers a script imports -- ESM import / export ... from, dynamic
+        import() and CommonJS require() -- the dependency surface you map before
+        trusting a bundle. It tokenizes the source comment- and string-aware, so
+        an import word inside a comment or string is never miscounted, and needs
+        no webcrack or Node. Each specifier is reported with its kind (bare
+        package like react / @scope/pkg, relative ./x, absolute /x or a url) and
+        the syntax that referenced it (import, export, dynamic, require); a
+        computed specifier (a template literal with ${...}) is skipped since it
+        is not statically knowable. It does not fully parse JS: regex literals
+        are not tracked, so a divide/regex ambiguity can occasionally misread
+        one. Results are de-duplicated by specifier in first-appearance order.
+        Answers with input_bytes and imports (each row spec, kind and syntax)
+        with count, total, offset and has_more so a filled page is not read as
+        every dependency; total is capped at 10000 with scan_capped when more
+        may exist (also set when the source is so large the token ceiling is
+        hit), and truncated is true when the text ended inside an open literal
+        or block comment. A missing file is not_found, one over 16 MiB
+        too_large.
+        """
+        return _dump(analysis.js_imports(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.callers")
     def wasm_callers(
         path: str,

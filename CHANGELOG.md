@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **286（169 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **287（170 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -631,6 +631,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `url` 与 `host`(`://` 后到首个 `/?#` 的 authority,去掉 `userinfo@`);按 `url` 去重、首见排序。返回
   `input_bytes` 与含 `count/total/offset/has_more` 的 `endpoints`；`total` 上限 10000、越限(含字面量扫描
   自身触顶)置 `scan_capped`;`truncated` 在文本于未闭合字面量或块注释中戛然而止时为真。缺文件报
+  not_found、超 16 MiB 报 too_large。
+- `js.imports`：提取 JS 的模块依赖面——ESM `import`/`export ... from`、动态 `import()` 与 CommonJS
+  `require()`,纯 Python、**不需要 webcrack 或 Node**。以带注释/字符串感知的方式词法化源码,故注释或字符串
+  里的 `import` 一词不会被误计。每条依赖返回 `spec`、`kind`(裸包如 `react`/`@scope/pkg`、相对 `./x`、
+  绝对 `/x` 或 url)与 `syntax`(import/export/dynamic/require);含 `${...}` 的模板字面量视作动态、无法静态
+  确定而跳过。不完整解析 JS:不追踪正则字面量,故除法/正则歧义偶尔会误读一个。按 `spec` 去重、首见排序。返回
+  `input_bytes` 与含 `count/total/offset/has_more` 的 `imports`；`total` 上限 10000、越限(含源码过大触及
+  token 上限)置 `scan_capped`;`truncated` 在文本于未闭合字面量或块注释中戛然而止时为真。缺文件报
   not_found、超 16 MiB 报 too_large。
 - `wasm.imports`：纯 Python 解析 .wasm 的 import 段，列出模块的导入，**不需要 wabt**（`wasm.info/
   wat` 依赖 wabt CLI）。导入就是模块从宿主拿的东西——它离不开的 JS 函数、内存、表与全局量——读它是

@@ -51,6 +51,13 @@ _MAX_JS_STRING_LEN = 2048
 # decoded. Its own dedup and caps sit on top of the literal scan's.
 _MAX_JS_ENDPOINTS_COLLECT = 10000
 _MAX_JS_ENDPOINTS_PAGE = 1000
+# js.imports tokenizes the source (comment/string-aware) and reads the module
+# specifier out of import/export-from, dynamic import() and require() forms.
+# The token cap bounds memory on a pathological minified blob; hitting it, like
+# the dedup cap, folds into scan_capped.
+_MAX_JS_IMPORTS_COLLECT = 10000
+_MAX_JS_IMPORTS_PAGE = 1000
+_MAX_JS_TOKENS = 4_000_000
 # Every WebAssembly binary opens with these four bytes. Checking them before
 # launching wasm2wat / wasm-objdump turns a cryptic tool failure and a wasted
 # subprocess into a precise invalid_params -- the same reason the size cap
@@ -2477,6 +2484,251 @@ def scan_js_endpoints(path: Path, *, offset: int = 0, limit: int = 100) -> JsonO
     window = found[start : start + cap]
     return {
         "endpoints": window,
+        "input_bytes": len(raw),
+        "count": len(window),
+        "total": len(found),
+        "offset": start,
+        "has_more": start + len(window) < len(found),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+# Punctuation js.imports' grammar cares about; every other operator run collapses
+# into one "o" token so a minified blob does not explode the token list.
+_JS_PUNCT = frozenset("(){},*.")
+# A specifier is a URL when it carries a scheme (http://, ...) or is
+# protocol-relative (//cdn/...); those, relative (./ ../), rooted (/) and bare
+# package names ("react", "@scope/pkg") are the four kinds reported.
+_JS_SPEC_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://")
+
+
+def _tokenize_js(text: str) -> tuple[list[tuple[str, str]], bool, bool]:
+    """Lex JS into (kind, value) tokens for the import grammar (best-effort).
+
+    Kinds are ``w`` (identifier/keyword), ``s`` (string, value decoded), ``p``
+    (one of ``(){},*.``) and ``o`` (any other operator run, value unused). It
+    skips ``//`` and ``/* */`` comments and consumes ``'``/``"``/``` `` ```
+    literals whole so an ``import`` word inside a comment or string is never
+    read as code. Like the string scan it does not track regex literals, so a
+    divide/regex ambiguity can misread one. Returns (tokens, truncated, capped):
+    truncated when the text ends inside an open literal or block comment, capped
+    when the token ceiling is hit (the tail is not tokenized).
+    """
+    tokens: list[tuple[str, str]] = []
+    truncated = False
+    capped = False
+    n = len(text)
+    i = 0
+    while i < n:
+        if len(tokens) >= _MAX_JS_TOKENS:
+            capped = True
+            break
+        char = text[i]
+        if char == "/" and i + 1 < n and text[i + 1] == "/":
+            nl = text.find("\n", i + 2)
+            i = n if nl == -1 else nl + 1
+            continue
+        if char == "/" and i + 1 < n and text[i + 1] == "*":
+            close = text.find("*/", i + 2)
+            if close == -1:
+                truncated = True
+                break
+            i = close + 2
+            continue
+        if char in "'\"`":
+            quote = char
+            i += 1
+            chars: list[str] = []
+            closed = False
+            while i < n:
+                cur = text[i]
+                if cur == "\\":
+                    decoded, i = _decode_js_escape(text, i + 1)
+                    chars.append(decoded)
+                    continue
+                if cur == quote:
+                    closed = True
+                    i += 1
+                    break
+                chars.append(cur)
+                i += 1
+            if not closed:
+                truncated = True
+                break
+            tokens.append(("s", "".join(chars)))
+            continue
+        if char.isalpha() or char in "_$":
+            j = i + 1
+            while j < n and (text[j].isalnum() or text[j] in "_$"):
+                j += 1
+            tokens.append(("w", text[i:j]))
+            i = j
+            continue
+        if char in _JS_PUNCT:
+            tokens.append(("p", char))
+            i += 1
+            continue
+        if char.isspace():
+            i += 1
+            continue
+        # Collapse a run of "other" bytes into one token, stopping before a
+        # comment, string, identifier, whitespace or tracked punctuation.
+        j = i + 1
+        while j < n:
+            nxt = text[j]
+            if nxt.isspace() or nxt in _JS_PUNCT or nxt.isalnum() or nxt in "_$'\"`":
+                break
+            if nxt == "/" and j + 1 < n and text[j + 1] in "/*":
+                break
+            j += 1
+        tokens.append(("o", ""))
+        i = j
+    return tokens, truncated, capped
+
+
+def _classify_js_specifier(spec: str) -> str:
+    """Bucket a module specifier as url, relative, absolute or bare."""
+    if _JS_SPEC_SCHEME_RE.match(spec) or spec.startswith("//"):
+        return "url"
+    if spec.startswith("./") or spec.startswith("../") or spec in (".", ".."):
+        return "relative"
+    if spec.startswith("/"):
+        return "absolute"
+    return "bare"
+
+
+def _scan_from_clause(tokens: list[tuple[str, str]], start: int) -> tuple[str, int] | None:
+    """Match an ``import``/``export`` binding clause up to ``from 'spec'``.
+
+    From ``start`` (just past the keyword) it accepts only the tokens a binding
+    clause is made of -- identifiers, ``{`` ``}`` ``,`` ``*`` -- until the
+    ``from`` keyword, whose following string is the specifier. Any other token
+    first (``(``, ``=``, an ``o`` run, a bare string) means this was not an
+    ``import/export ... from`` and it returns None. Returns (spec, next_index).
+    """
+    j = start
+    n = len(tokens)
+    while j < n:
+        kind, value = tokens[j]
+        if kind == "w" and value == "from":
+            if j + 1 < n and tokens[j + 1][0] == "s":
+                return tokens[j + 1][1], j + 2
+            return None
+        if kind == "w" or (kind == "p" and value in "{},*"):
+            j += 1
+            continue
+        return None
+    return None
+
+
+def _extract_js_imports(
+    tokens: list[tuple[str, str]], *, collect_cap: int
+) -> tuple[list[JsonObject], bool]:
+    """Read module specifiers off the token stream (best-effort).
+
+    Recognizes ``require('x')``, dynamic ``import('x')``, side-effect
+    ``import 'x'`` and ``import``/``export ... from 'x'``. Specifiers are
+    de-duplicated in first-seen order, keeping the first syntax that referenced
+    them; a specifier carrying a ``${`` (an unresolved template substitution) is
+    skipped as computed. Returns (rows, scan_more), rows being spec/kind/syntax
+    and scan_more True once collect_cap distinct specifiers are held and another
+    is seen.
+    """
+    found: dict[str, str] = {}
+    scan_more = False
+    n = len(tokens)
+    i = 0
+
+    def _add(spec: str, syntax: str) -> bool:
+        nonlocal scan_more
+        if not spec or "${" in spec or spec in found:
+            return True
+        if len(found) >= collect_cap:
+            scan_more = True
+            return False
+        found[spec] = syntax
+        return True
+
+    while i < n:
+        kind, value = tokens[i]
+        if kind == "w" and value == "require":
+            if i + 2 < n and tokens[i + 1] == ("p", "(") and tokens[i + 2][0] == "s":
+                if not _add(tokens[i + 2][1], "require"):
+                    break
+                i += 3
+                continue
+        elif kind == "w" and value == "import":
+            if i + 2 < n and tokens[i + 1] == ("p", "(") and tokens[i + 2][0] == "s":
+                if not _add(tokens[i + 2][1], "dynamic"):
+                    break
+                i += 3
+                continue
+            if i + 1 < n and tokens[i + 1][0] == "s":
+                if not _add(tokens[i + 1][1], "import"):
+                    break
+                i += 2
+                continue
+            clause = _scan_from_clause(tokens, i + 1)
+            if clause is not None:
+                if not _add(clause[0], "import"):
+                    break
+                i = clause[1]
+                continue
+        elif kind == "w" and value == "export":
+            clause = _scan_from_clause(tokens, i + 1)
+            if clause is not None:
+                if not _add(clause[0], "export"):
+                    break
+                i = clause[1]
+                continue
+        i += 1
+
+    rows: list[JsonObject] = [
+        {"spec": spec, "kind": _classify_js_specifier(spec), "syntax": syntax}
+        for spec, syntax in found.items()
+    ]
+    return rows, scan_more
+
+
+def scan_js_imports(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """Extract a JavaScript file's module dependencies, node-free.
+
+    The "what does this bundle pull in" pivot: it surfaces the module
+    specifiers a script imports -- ESM ``import``/``export ... from``, dynamic
+    ``import()`` and CommonJS ``require()`` -- the dependency surface you map
+    before trusting a bundle. It tokenizes the source comment- and string-aware,
+    so an ``import`` word inside a comment or string is never miscounted, and
+    needs no webcrack or Node. Each specifier is reported with its kind (bare
+    package like ``react``/``@scope/pkg``, relative ``./x``, absolute ``/x`` or
+    a url) and the syntax that referenced it (import, export, dynamic, require);
+    a computed specifier (a template literal with ``${...}``) is skipped since
+    it is not statically knowable. It does not fully parse JS: regex literals
+    are not tracked, so a divide/regex ambiguity can occasionally misread one.
+    Results are de-duplicated by specifier in first-appearance order. Answers
+    with input_bytes and imports with count, total, offset and has_more so a
+    filled page is not read as every dependency; total is capped at 10000 with
+    scan_capped when more may exist (also set when the source is so large the
+    token ceiling is hit), and truncated is true when the text ended inside an
+    open literal or block comment. A missing file is not_found, one over 16 MiB
+    too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
+    text = raw.decode("utf-8", errors="replace")
+    tokens, truncated, token_capped = _tokenize_js(text)
+    found, dedup_more = _extract_js_imports(tokens, collect_cap=_MAX_JS_IMPORTS_COLLECT)
+    # Either ceiling -- the dedup cap or the token cap that truncated lexing --
+    # means more dependencies may exist, so both fold into scan_capped.
+    scan_more = dedup_more or token_capped
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_JS_IMPORTS_PAGE))
+    window = found[start : start + cap]
+    return {
+        "imports": window,
         "input_bytes": len(raw),
         "count": len(window),
         "total": len(found),

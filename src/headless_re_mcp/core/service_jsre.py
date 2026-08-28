@@ -35,6 +35,7 @@ from headless_re_mcp.backends.jsre import (
     parse_wasm_strings,
     parse_wasm_tables,
     scan_js_endpoints,
+    scan_js_imports,
     scan_js_strings,
 )
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
@@ -159,6 +160,15 @@ class JsReAnalysisMixin:
     def js_endpoints(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             data = scan_js_endpoints(Path(path), offset=offset, limit=limit)
+            return _success(data, backend="jsre")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def js_imports(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
+        try:
+            data = scan_js_imports(Path(path), offset=offset, limit=limit)
             return _success(data, backend="jsre")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
