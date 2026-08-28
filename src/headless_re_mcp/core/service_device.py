@@ -211,6 +211,15 @@ class DeviceAnalysisMixin:
         return result
 
     def device_pull(self, serial: str, remote_path: str) -> Result[JsonObject]:
+        # remote_path is a handler kwarg the device.pull tool schema types as a
+        # string, but the agent and OpenAI-bridge transports call the handler
+        # straight from model arguments with no pydantic coercion. _safe_pull_suffix
+        # runs before _adb_wrap's try/except, so a non-string remote_path made
+        # PurePosixPath() raise TypeError that escaped device_pull entirely and was
+        # filed as an internal_error incident. Refuse it up front as a clean
+        # invalid_params, before touching the filesystem or the device.
+        if not isinstance(remote_path, str):
+            return _failure(_as_rpc(AdbError("invalid_params", "remote_path must be a string")))
         out = self._device_artifact_path("pull", _safe_pull_suffix(remote_path))
         result = self._adb_wrap("pull", serial=serial, remote_path=remote_path, local_path=out)
         if result.ok:

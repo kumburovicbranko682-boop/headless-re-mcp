@@ -125,6 +125,25 @@ def test_an_adb_error_keeps_its_code_and_details(tmp_path: Path) -> None:
     assert result.error.details.get("serial") == "emulator-5554"
 
 
+@pytest.mark.parametrize("bad_path", [["/sdcard/x"], 5, None, {"p": "/sdcard/x"}])
+def test_device_pull_refuses_a_non_string_remote_path(
+    tmp_path: Path, bad_path: object
+) -> None:
+    """A non-string remote_path is a clean invalid_params, not an internal_error.
+
+    _safe_pull_suffix runs before _adb_wrap's try/except, so a non-string
+    remote_path slipping past the schema on the agent path made PurePosixPath()
+    raise TypeError that escaped device_pull with no envelope at all -- the
+    transport then filed an internal_error incident. The guard folds it into a
+    clean invalid_params before any filesystem or device work.
+    """
+    host = _BareHost(tmp_path)
+    result = host.device_pull("emulator-5554", bad_path)  # type: ignore[arg-type]
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "invalid_params"
+
+
 # ---------------------------------------------------------------------------
 # oversized screenshot / pull refusal still prunes the directory
 
