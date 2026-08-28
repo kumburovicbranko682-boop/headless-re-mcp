@@ -5,6 +5,10 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（`measure_usage` 制品树遍历上限只数文件,纯目录树（空目录洪水）永不触顶,遍历因而不受限——就绪/用量探针会被拖住）
+
+- `core/retention.py` 的 `measure_usage` 用 `rglob("*")` 走制品树,`rglob` 同样产出目录,可它只在遇到*文件*时才自增 `files`,并以 `files >= file_limit` 作为遍历上限。于是一棵基本或全部是空目录的树——反编译/拆包步骤本就可能留下,恶意归档更能造出海量空目录——永远触不到上限,会被完整走完,正是这条上限要避免的“用量/就绪探针别成为最慢一环”被反噬(该 walk 由后台就绪/用量探针调用)。改为对走过的*每个条目*计数(新增 `seen`,含目录):命中 `file_limit` 即返回 `truncated=True`;`files` 仍只报文件数,对外形状不变。带外验证:把上限判断改回 `files >= file_limit` → 新用例失败(纯空目录树 `truncated` 应为 True 却为 False,遍历未被截断),复原后全绿。补 `tests/unit/test_measure_usage_flood.py`(空目录洪水触顶、正常小树不误判两条)。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
