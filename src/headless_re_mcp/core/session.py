@@ -206,6 +206,13 @@ class SessionRegistry:
                 coff_symbols = _pe_coff_symbols(path)
                 if coff_symbols is not None:
                     metadata["pe"]["coff_symbol_count"] = coff_symbols
+                # The .pdata RUNTIME_FUNCTION count -- the function census
+                # that survives stripping, the PE member of the family with
+                # an ELF .eh_frame_hdr and Mach-O LC_FUNCTION_STARTS. Absent
+                # on x86, whose SEH walks the stack and has no table.
+                exception_functions = _pe_exception_functions(path)
+                if exception_functions is not None:
+                    metadata["pe"]["exception_functions"] = exception_functions
                 # VS_VERSIONINFO -- the self-declared identity (versions,
                 # CompanyName/ProductName strings); a claim, not a verdict.
                 metadata["pe"].update(_pe_version_info(path))
@@ -771,6 +778,21 @@ _DF_1_PIE = 0x08000000
 # cross-check the stdlib reading against real analysis.
 _PT_GNU_RELRO = 0x6474E552
 _PT_GNU_STACK = 0x6474E551
+# PT_GNU_EH_FRAME maps the .eh_frame_hdr the unwinder binary-searches: a
+# 4-byte encoding header, the .eh_frame pointer, then an fde_count and the
+# search table -- one FDE per function with unwind info, which on modern
+# x86-64/aarch64 (where -fasynchronous-unwind-tables is the default) means
+# essentially every function. strip does not touch it, so fde_count is the
+# function census that survives stripping: the ELF member of the family with
+# a PE .pdata table and Mach-O LC_FUNCTION_STARTS. llvm-dwarfdump --eh-frame
+# parses the .eh_frame it indexes, so the gate cross-checks the count against
+# an independent structure.
+_PT_GNU_EH_FRAME = 0x6474E550
+# DWARF exception-header encodings (the low nibble sizes the value; 0xFF
+# omits it). Only the sizes matter here: the fde_count is a count, not an
+# address, so the high-nibble application modifiers never change its value.
+_EH_PE_OMIT = 0xFF
+_EH_PE_SIZES = {0x02: 2, 0x03: 4, 0x04: 8, 0x0A: 2, 0x0B: 4, 0x0C: 8}
 _PF_X = 0x1
 # PF_W with PF_X on the same PT_LOAD is the W^X violation: a mapping the
 # process can both write and run -- the packer/self-modifying-code tell (a
@@ -931,6 +953,15 @@ _LC_CODE_SIGNATURE = 0x1D
 _LC_DYLD_INFO = 0x22
 _LC_DYLD_INFO_ONLY = 0x80000022
 _LC_DYLD_EXPORTS_TRIE = 0x80000033
+# LC_FUNCTION_STARTS: a linkedit_data_command whose payload is a
+# zero-terminated ULEB128 run -- the first value an offset into __TEXT, each
+# later one a delta -- marking where every function begins. dyld and the
+# crash reporter read it, strip keeps it, so its entry count is the function
+# census that survives stripping: the Mach-O pair to a PE .pdata table and an
+# ELF .eh_frame_hdr, and for a stripped image the honest size of the analysis
+# surface. llvm-objdump --macho --function-starts decodes the same run.
+_LC_FUNCTION_STARTS = 0x26
+_MACHO_MAX_FUNC_STARTS_SIZE = 4 * 1024 * 1024
 _MACHO_MAX_TRIE_SIZE = 4 * 1024 * 1024
 _MACHO_MAX_TRIE_NODES = 8192
 _MACHO_MAX_TRIE_NAME = 512
@@ -4156,6 +4187,19 @@ _PE_MAX_RSDS = 1024 + 24
 # hostile array degrades to a shorter count rather than an unbounded read.
 _PE_TLS_DIR = 9
 _PE_MAX_TLS_CALLBACKS = 64
+# The exception data directory (index 3) is the .pdata table: one fixed-size
+# RUNTIME_FUNCTION per function with unwind info, which on x64 (where SEH
+# dispatch is table-driven, not stack-walked) means every non-leaf function.
+# The loader and the unwinder need it, so strip cannot remove it: its entry
+# count is the function census that survives stripping -- the PE member of
+# the family with an ELF .eh_frame_hdr fde_count and Mach-O
+# LC_FUNCTION_STARTS -- and for a stripped image the honest size of the
+# analysis surface. Entry sizes are per-machine (x64: 12 bytes, ARM64/ARMNT:
+# 8); x86 has no table at all, so no fact is reported there. pefile's
+# DIRECTORY_ENTRY_EXCEPTION and llvm-readobj --unwind decode the same table.
+_PE_EXCEPTION_DIR = 3
+_PE_RUNTIME_FUNCTION_SIZES = {0x8664: 12, 0xAA64: 8, 0x1C4: 8}
+_PE_MAX_EXCEPTION_FILE = 64 * 1024 * 1024
 # The load-config data directory (index 10) carries the mitigations the
 # DllCharacteristics bits don't: SecurityCookie -- the /GS stack cookie's VA,
 # the PE canary, the exact pair to the ELF/Mach-O ``canary`` facts -- and, on
@@ -6421,6 +6465,50 @@ def _pe_coff_symbols(path: Path) -> int | None:
     return count
 
 
+def _pe_exception_functions(path: Path) -> int | None:
+    """How many RUNTIME_FUNCTIONs the exception directory holds; None when N/A.
+
+    The .pdata table (data directory 3) carries one fixed-size entry per
+    function with unwind info -- on x64, where SEH dispatch is table-driven,
+    that is every non-leaf function -- and the unwinder needs it at runtime,
+    so strip cannot remove it: the count is the function census that survives
+    stripping, the PE member of the family with an ELF .eh_frame_hdr
+    fde_count and Mach-O LC_FUNCTION_STARTS. Per-machine entry sizes come
+    from _PE_RUNTIME_FUNCTION_SIZES; None means no table can exist here (a
+    non-PE, or an x86 image, whose SEH walks the stack instead), while 0 --
+    including a directory whose bytes are not actually in the file -- means
+    a machine that has the table declared none.
+    """
+    try:
+        if path.stat().st_size > _PE_MAX_EXCEPTION_FILE:
+            return None
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    view = _pe_header_view(raw)
+    if view is None:
+        return None
+    e_lfanew = int.from_bytes(raw[0x3C:0x40], "little")
+    machine = int.from_bytes(raw[e_lfanew + 4 : e_lfanew + 6], "little")
+    entry_size = _PE_RUNTIME_FUNCTION_SIZES.get(machine)
+    if entry_size is None:
+        return None
+    _, dir_count, dir_off, sections, _ = view
+    if dir_count <= _PE_EXCEPTION_DIR:
+        return 0
+    entry_off = dir_off + _PE_EXCEPTION_DIR * 8
+    if entry_off + 8 > len(raw):
+        return 0
+    rva = int.from_bytes(raw[entry_off : entry_off + 4], "little")
+    size = int.from_bytes(raw[entry_off + 4 : entry_off + 8], "little")
+    if rva == 0 or size == 0:
+        return 0
+    table_off = _pe_rva_to_offset(sections, rva)
+    if table_off is None or table_off + size > len(raw):
+        return 0
+    return size // entry_size
+
+
 def _pe_checksum(path: Path) -> dict[str, Any] | None:
     """The declared optional-header CheckSum and whether it matches, or None.
 
@@ -7225,6 +7313,16 @@ def _elf_layout_facts(
             )
         if program["interp"] is not None:
             facts["interpreter"] = program["interp"]
+        # The .eh_frame_hdr fde_count -- the function census that survives
+        # stripping, the ELF member of the family with a PE .pdata table and
+        # Mach-O LC_FUNCTION_STARTS. Present only when the segment exists and
+        # its header decodes cleanly.
+        if program["eh_frame_hdr"] is not None:
+            eh_functions = _elf_eh_frame_functions(
+                stream, order, bits, program["eh_frame_hdr"]
+            )
+            if eh_functions is not None:
+                facts["eh_frame_functions"] = eh_functions
         build_id = _elf_build_id(stream, order, program["notes"])
         if build_id is not None:
             facts["build_id"] = build_id
@@ -7337,6 +7435,7 @@ def _elf_program_headers(
     loads: list[tuple[int, int, int]] = []
     notes: list[tuple[int, int]] = []
     wx_loads = 0
+    eh_frame_hdr: tuple[int, int] | None = None
     for i in range(phnum):
         entry = table[i * entsize : i * entsize + want]
         if len(entry) < want:
@@ -7373,6 +7472,8 @@ def _elf_program_headers(
             gnu_stack_exec = bool(p_flags & _PF_X)
         elif p_type == _PT_GNU_RELRO:
             has_gnu_relro = True
+        elif p_type == _PT_GNU_EH_FRAME and eh_frame_hdr is None and p_offset > 0:
+            eh_frame_hdr = (p_offset, p_filesz)
     return {
         "has_interp": has_interp,
         "has_dynamic": has_dynamic,
@@ -7385,7 +7486,52 @@ def _elf_program_headers(
         "loads": loads,
         "notes": notes,
         "wx_loads": wx_loads,
+        "eh_frame_hdr": eh_frame_hdr,
     }
+
+
+def _elf_eh_frame_functions(
+    stream: BinaryIO, order: str, bits: int, eh_frame_hdr: tuple[int, int]
+) -> int | None:
+    """The .eh_frame_hdr fde_count; None when absent or in an unknown encoding.
+
+    PT_GNU_EH_FRAME maps the unwinder's binary-search index: version, three
+    one-byte DWARF encodings (for the .eh_frame pointer, the count and the
+    table), then the pointer and the fde_count. One FDE per function with
+    unwind info -- essentially every function on modern x86-64/aarch64, where
+    -fasynchronous-unwind-tables is on by default -- and strip keeps the
+    segment, so the count is the function census that survives stripping: the
+    ELF member of the family with a PE .pdata table and Mach-O
+    LC_FUNCTION_STARTS. Only the encodings GNU linkers emit are decoded
+    (fixed-width values, plus absptr for the pointer); anything else, or a
+    count encoded as omitted, fails closed to None rather than a guess.
+    """
+    offset, size = eh_frame_hdr
+    if size < 6:
+        return None
+    try:
+        stream.seek(offset)
+        header = stream.read(min(size, 32))
+    except OSError:
+        return None
+    if len(header) < 6 or header[0] != 1:
+        return None
+    ptr_enc, count_enc = header[1], header[2]
+    pos = 4
+    if ptr_enc != _EH_PE_OMIT:
+        # Skip the eh_frame_ptr: fixed-width per its low nibble, or
+        # pointer-sized for absptr (low nibble 0). LEB-encoded pointers are
+        # nothing a GNU linker emits; fail closed on them.
+        ptr_size = _EH_PE_SIZES.get(ptr_enc & 0x0F) if ptr_enc & 0x0F else bits // 8
+        if ptr_size is None:
+            return None
+        pos += ptr_size
+    if count_enc == _EH_PE_OMIT:
+        return None
+    count_size = _EH_PE_SIZES.get(count_enc & 0x0F) if count_enc & 0x0F else bits // 8
+    if count_size is None or pos + count_size > len(header):
+        return None
+    return int.from_bytes(header[pos : pos + count_size], order)  # type: ignore[arg-type]
 
 
 def _elf_dynamic_pie(
@@ -8742,6 +8888,15 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
             dyld_exports = _macho_exports_trie(stream, trie[0], trie[1])
             if dyld_exports:
                 facts["dyld_exports"] = dyld_exports
+        # The LC_FUNCTION_STARTS entry count -- the function census that
+        # survives stripping, the Mach-O member of the family with a PE
+        # .pdata table and an ELF .eh_frame_hdr. Present only when the image
+        # carries the table and it decodes cleanly.
+        starts = lc["function_starts"]
+        if starts is not None:
+            function_count = _macho_function_starts(stream, starts[0], starts[1])
+            if function_count is not None:
+                facts["function_starts"] = function_count
         # Whether the local symbols strip removes are gone -- the Mach-O pair
         # to the ELF stripped fact; omitted when there is no symbol table to
         # measure, present as True/False otherwise.
@@ -9022,6 +9177,54 @@ def _macho_exports_trie(stream: BinaryIO, dataoff: int, datasize: int) -> list[s
     return names
 
 
+def _macho_function_starts(stream: BinaryIO, dataoff: int, datasize: int) -> int | None:
+    """How many functions LC_FUNCTION_STARTS marks; None when unreadable.
+
+    The payload is a zero-terminated ULEB128 run: the first value is the
+    offset of the first function into __TEXT, each later value the delta to
+    the next, so counting the non-zero values counts the functions. strip
+    keeps the table (dyld and the crash reporter need it), which makes this
+    the function census that survives stripping -- the Mach-O pair to a PE
+    .pdata table and an ELF .eh_frame_hdr, and for a stripped image the
+    honest size of the analysis surface. llvm-objdump --macho
+    --function-starts decodes the same run, so the gate cross-checks the
+    count. Fail-closed: a malformed ULEB (more than ten bytes, or one cut off
+    by the end of the blob) reads None rather than a guess.
+    """
+    if dataoff <= 0 or not 0 < datasize <= _MACHO_MAX_FUNC_STARTS_SIZE:
+        return None
+    try:
+        stream.seek(dataoff)
+        blob = stream.read(datasize)
+    except OSError:
+        return None
+    if len(blob) < datasize:
+        return None
+    count = 0
+    pos = 0
+    while pos < len(blob):
+        value = 0
+        shift = 0
+        ok = False
+        for _ in range(10):
+            if pos >= len(blob):
+                return None
+            byte = blob[pos]
+            pos += 1
+            value |= (byte & 0x7F) << shift
+            shift += 7
+            if not byte & 0x80:
+                ok = True
+                break
+        if not ok:
+            return None
+        if value == 0:
+            # The terminator; linkers pad the rest of the blob with zeros.
+            break
+        count += 1
+    return count
+
+
 def _macho_stripped(
     stream: BinaryIO, symtab: tuple[int, int, int, int] | None, bits: int, order: str
 ) -> bool | None:
@@ -9162,6 +9365,9 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
         # (dataoff, datasize) of the dyld exports trie, from LC_DYLD_INFO's
         # export pair or LC_DYLD_EXPORTS_TRIE; None when the image has none.
         "exports_trie": None,
+        # (dataoff, datasize) of the LC_FUNCTION_STARTS ULEB128 run; None
+        # when the image carries none.
+        "function_starts": None,
         "rpaths": [],
         "platform": None,
         "min_os": None,
@@ -9302,6 +9508,12 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
             trie_size = int.from_bytes(cmds[pos + 12 : pos + 16], order)  # type: ignore[arg-type]
             if trie_off and trie_size:
                 result["exports_trie"] = (trie_off, trie_size)
+        elif cmd == _LC_FUNCTION_STARTS and result["function_starts"] is None and cmdsize >= 16:
+            # linkedit_data_command: dataoff/datasize locate the ULEB128 run.
+            fs_off = int.from_bytes(cmds[pos + 8 : pos + 12], order)  # type: ignore[arg-type]
+            fs_size = int.from_bytes(cmds[pos + 12 : pos + 16], order)  # type: ignore[arg-type]
+            if fs_off and fs_size:
+                result["function_starts"] = (fs_off, fs_size)
         elif cmd == _LC_SEGMENT_64 and cmdsize >= 56:
             # segname(16) then vmaddr/vmsize/fileoff/filesize as u64s.
             segments.append(

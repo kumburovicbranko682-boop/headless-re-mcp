@@ -3526,3 +3526,123 @@ class TestEntrySection:
             pytest.skip(f"fixture missing: {fixture}")
         facts = describe_native(fixture)["native"]
         assert facts["entry_section"] == "__text"
+
+
+def _lc_function_starts(dataoff: int, datasize: int) -> bytes:
+    # linkedit_data_command: LC_FUNCTION_STARTS names where the ULEB128 run lives.
+    cmd = bytearray(16)
+    cmd[0:4] = (0x26).to_bytes(4, "little")
+    cmd[4:8] = (16).to_bytes(4, "little")
+    cmd[8:12] = dataoff.to_bytes(4, "little")
+    cmd[12:16] = datasize.to_bytes(4, "little")
+    return bytes(cmd)
+
+
+def _elf64_with_eh_frame_hdr(header: bytes) -> bytes:
+    # A single PT_GNU_EH_FRAME mapping the .eh_frame_hdr bytes.
+    ph_off = 64
+    blob_off = ph_off + 56
+    program = _phdr64(0x6474E550, blob_off, len(header))
+    return _ehdr64(2, phoff=ph_off, phnum=1, shoff=0, shnum=0) + program + header
+
+
+def _eh_frame_hdr(
+    fde_count: int,
+    *,
+    version: int = 1,
+    ptr_enc: int = 0x1B,
+    count_enc: int = 0x03,
+    count_size: int = 4,
+) -> bytes:
+    # The GNU shape: version, ptr/count/table encodings, a 4-byte pcrel
+    # sdata4 eh_frame_ptr, then the count in the given width.
+    return (
+        bytes([version, ptr_enc, count_enc, 0x3B])
+        + (0x1000).to_bytes(4, "little")
+        + fde_count.to_bytes(count_size, "little")
+    )
+
+
+class TestFunctionCensus:
+    """The function census that survives stripping, on its native members.
+
+    strip removes symbol tables but not what the runtime itself needs: ELF
+    keeps the .eh_frame_hdr the unwinder binary-searches (fde_count, one FDE
+    per function), Mach-O keeps LC_FUNCTION_STARTS (dyld and the crash
+    reporter read it). Both counts are the honest size of the analysis
+    surface for a stripped image -- the family PE joins through its .pdata
+    table. Gated against llvm-dwarfdump's FDE walk and llvm-objdump's
+    --function-starts decode.
+    """
+
+    def test_a_gcc_shaped_eh_frame_hdr_reads_its_fde_count(self, tmp_path: Path) -> None:
+        data = _elf64_with_eh_frame_hdr(_eh_frame_hdr(7))
+        facts = describe_native(_write(tmp_path, "plain.elf", data))["native"]
+        assert facts["eh_frame_functions"] == 7
+
+    def test_an_absptr_count_is_read_pointer_sized(self, tmp_path: Path) -> None:
+        # DW_EH_PE_absptr (0x00) sizes the count by the ELF class: 8 bytes here.
+        data = _elf64_with_eh_frame_hdr(
+            _eh_frame_hdr(3, count_enc=0x00, count_size=8)
+        )
+        facts = describe_native(_write(tmp_path, "absptr.elf", data))["native"]
+        assert facts["eh_frame_functions"] == 3
+
+    def test_an_omitted_count_fails_closed(self, tmp_path: Path) -> None:
+        # DW_EH_PE_omit for the count: the header declares no count at all,
+        # and inventing one from the table would be a guess.
+        data = _elf64_with_eh_frame_hdr(_eh_frame_hdr(0, count_enc=0xFF, count_size=0))
+        facts = describe_native(_write(tmp_path, "omit.elf", data))["native"]
+        assert "eh_frame_functions" not in facts
+
+    def test_an_unknown_header_version_fails_closed(self, tmp_path: Path) -> None:
+        data = _elf64_with_eh_frame_hdr(_eh_frame_hdr(7, version=2))
+        facts = describe_native(_write(tmp_path, "v2.elf", data))["native"]
+        assert "eh_frame_functions" not in facts
+
+    def test_an_elf_without_the_segment_reports_nothing(self, tmp_path: Path) -> None:
+        data = _elf64_dynamic_pie()
+        facts = describe_native(_write(tmp_path, "noeh.elf", data))["native"]
+        assert "eh_frame_functions" not in facts
+
+    def test_a_macho_function_starts_run_counts_its_entries(self, tmp_path: Path) -> None:
+        # 0x1000, +0x40, +0x30, terminator: three functions.
+        blob = b"\x80\x20\x40\x30\x00"
+        data = _macho64_full(2, 0, _lc_function_starts(32 + 16, len(blob)), ncmds=1) + blob
+        facts = describe_native(_write(tmp_path, "fs.macho", data))["native"]
+        assert facts["function_starts"] == 3
+
+    def test_an_all_zero_run_counts_no_functions(self, tmp_path: Path) -> None:
+        # A present table with only the terminator: zero functions is a real
+        # answer (linkers pad the blob with zeros).
+        blob = b"\x00\x00\x00\x00"
+        data = _macho64_full(2, 0, _lc_function_starts(32 + 16, len(blob)), ncmds=1) + blob
+        facts = describe_native(_write(tmp_path, "empty.macho", data))["native"]
+        assert facts["function_starts"] == 0
+
+    def test_a_truncated_uleb_fails_closed(self, tmp_path: Path) -> None:
+        # The blob ends mid-value (continuation bit set on its last byte):
+        # the count cannot be trusted, so no fact rather than a guess.
+        blob = b"\x80\x20\x40\x80"
+        data = _macho64_full(2, 0, _lc_function_starts(32 + 16, len(blob)), ncmds=1) + blob
+        facts = describe_native(_write(tmp_path, "cut.macho", data))["native"]
+        assert "function_starts" not in facts
+
+    def test_a_table_past_the_end_of_the_file_fails_closed(self, tmp_path: Path) -> None:
+        data = _macho64_full(2, 0, _lc_function_starts(32 + 16, 4096), ncmds=1) + b"\x10\x00"
+        facts = describe_native(_write(tmp_path, "liar.macho", data))["native"]
+        assert "function_starts" not in facts
+
+    def test_the_committed_macho_fixture_carries_no_table(self) -> None:
+        # The hand-built fixture ships no LC_FUNCTION_STARTS: the fact must
+        # stay absent, not read 0 off some other command.
+        fixture = Path(__file__).resolve().parents[2] / "fixtures" / "native" / "minimal.macho"
+        if not fixture.is_file():
+            pytest.skip(f"fixture missing: {fixture}")
+        facts = describe_native(fixture)["native"]
+        assert "function_starts" not in facts
+
+    def test_a_session_over_an_elf_carries_the_count(self, tmp_path: Path) -> None:
+        path = _write(tmp_path, "app.elf", _elf64_with_eh_frame_hdr(_eh_frame_hdr(5)))
+        session = SessionRegistry().create(str(path))
+        assert session.metadata["native"]["eh_frame_functions"] == 5

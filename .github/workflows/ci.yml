@@ -245,10 +245,12 @@ jobs:
         # the independent (and strict) Mach-O decoders the toolchain gate
         # cross-checks the LC_RPATH, LC_BUILD_VERSION and exported-symbol facts
         # against, that the section-payload gate uses to plant and dump Mach-O
-        # sections (GNU binutils cannot read Mach-O at all), and that the
-        # entry-owner gate recomputes the LC_MAIN section from. The ELF arm of
-        # those gates uses binutils objcopy/readelf and file (libmagic), both
-        # on the runner.
+        # sections (GNU binutils cannot read Mach-O at all), that the
+        # entry-owner gate recomputes the LC_MAIN section from, and (with
+        # llvm-dwarfdump's FDE walk) the referees of the stripping-proof
+        # function census (.eh_frame_hdr fde_count, .pdata entries,
+        # LC_FUNCTION_STARTS). The ELF arm of those gates uses binutils
+        # objcopy/readelf and file (libmagic), both on the runner.
         # mono-mcs supplies mcs, whose compiled output gives the PE hardening
         # gate one real-producer binary (subsystem/DllCharacteristics/entry
         # written by Mono's linker, not by either test builder). osslsigncode

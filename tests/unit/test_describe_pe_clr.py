@@ -36,6 +36,7 @@ from headless_re_mcp.core.session import (
     _pe_coff_symbols,
     _pe_compute_checksum,
     _pe_debug_fingerprint,
+    _pe_exception_functions,
     _pe_hardening_facts,
     _pe_high_entropy_sections,
     _pe_imphash,
@@ -1358,6 +1359,86 @@ class TestPeCoffSymbols:
         path.write_bytes(self._with_coff_symbols(base, len(base), 5) + bytes(5 * 18))
         session = SessionRegistry().create(str(path))
         assert session.metadata["pe"]["coff_symbol_count"] == 5
+
+
+class TestPeExceptionFunctions:
+    """The .pdata RUNTIME_FUNCTION count: the function census strip cannot touch.
+
+    On x64 SEH dispatch is table-driven, so the exception directory carries
+    one 12-byte entry per non-leaf function and the unwinder needs it at
+    runtime -- symbol stripping never removes it. The count is the PE member
+    of the family with the ELF .eh_frame_hdr fde_count and Mach-O
+    LC_FUNCTION_STARTS: the honest size of the analysis surface for a
+    stripped image. x86 has no table at all (its SEH walks the stack), so the
+    fact is absent there rather than a fake zero.
+    """
+
+    def _with_pdata(self, count: int, *, lie: bool = False) -> bytes:
+        # An x64 PE whose .pdata section holds ``count`` 12-byte entries; a
+        # lying variant declares the directory at an RVA no section maps.
+        base = bytearray(_pe_with_posture(entry_rva=0x1000, sections=[(b".pdata", 0x3000, 0)]))
+        table = bytes(count * 12)
+        struct.pack_into("<II", base, len(base) - 40 + 8, len(table), 0x3000)
+        struct.pack_into("<II", base, len(base) - 40 + 16, len(table), len(base))
+        e_lfanew = int.from_bytes(base[0x3C:0x40], "little")
+        dir_entry = e_lfanew + 24 + 112 + 3 * 8  # PE32+ directory array, index 3
+        struct.pack_into("<II", base, dir_entry, 0x9000 if lie else 0x3000, len(table))
+        return bytes(base) + table
+
+    def test_an_x64_table_reads_its_entry_count(self, tmp_path: Path) -> None:
+        path = tmp_path / "app.exe"
+        path.write_bytes(self._with_pdata(9))
+        assert _pe_exception_functions(path) == 9
+
+    def test_an_empty_directory_reads_zero(self, tmp_path: Path) -> None:
+        # An x64 image without a table: legal (a resource-only DLL), and 0 is
+        # the real answer -- this machine would have one if it had functions.
+        path = tmp_path / "bare.exe"
+        path.write_bytes(_pe_with_posture(entry_rva=0x1000))
+        assert _pe_exception_functions(path) == 0
+
+    def test_a_directory_no_section_maps_reads_zero(self, tmp_path: Path) -> None:
+        # The header claims a table at an unmapped RVA: the lie cannot invent
+        # functions.
+        path = tmp_path / "liar.exe"
+        path.write_bytes(self._with_pdata(9, lie=True))
+        assert _pe_exception_functions(path) == 0
+
+    def test_an_x86_image_reads_no_fact(self, tmp_path: Path) -> None:
+        path = tmp_path / "x86.exe"
+        path.write_bytes(_pe_with_posture(entry_rva=0x1000, magic=0x10B, image_base=0x40_0000))
+        assert _pe_exception_functions(path) is None
+
+    def test_a_non_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _pe_exception_functions(path) is None
+
+    def test_the_fixtures_split_on_machine_and_packing(self) -> None:
+        # The MSVC x64 build carries a real table; upx packs .pdata away (0);
+        # the x86 pair has no table to have (absent, not zero).
+        root = Path(__file__).resolve().parents[2] / "fixtures" / "upx"
+        pre64 = root / "console_fixture-x64.pre-upx.exe"
+        packed64 = root / "console_fixture-x64.upx.exe"
+        pre86 = root / "console_fixture-x86.pre-upx.exe"
+        if not (pre64.is_file() and packed64.is_file() and pre86.is_file()):
+            pytest.skip(f"upx fixtures missing under {root}")
+        pre_count = _pe_exception_functions(pre64)
+        assert pre_count is not None and pre_count > 0
+        assert _pe_exception_functions(packed64) == 0
+        assert _pe_exception_functions(pre86) is None
+
+    def test_session_over_an_x64_pe_carries_the_count(self, tmp_path: Path) -> None:
+        path = tmp_path / "app.exe"
+        path.write_bytes(self._with_pdata(4))
+        session = SessionRegistry().create(str(path))
+        assert session.metadata["pe"]["exception_functions"] == 4
+
+    def test_session_over_an_x86_pe_omits_the_fact(self, tmp_path: Path) -> None:
+        path = tmp_path / "x86.exe"
+        path.write_bytes(_pe_with_posture(entry_rva=0x1000, magic=0x10B, image_base=0x40_0000))
+        session = SessionRegistry().create(str(path))
+        assert "exception_functions" not in session.metadata["pe"]
 
 
 def _pe_with_tls(
