@@ -289,6 +289,24 @@ class TestWebNavTimeoutIsBounded:
                 _bound_nav_timeout(bad)
             assert info.value.code == "invalid_params"
 
+    def test_bound_nav_timeout_rejects_a_nan_deadline(self) -> None:
+        # ``nan <= 0`` is False, so a NaN slipped past the old positivity check
+        # and min(nan, MAX) returned nan -- which then reached
+        # Future.result(timeout=nan) and wedged the runner.
+        for bad in (float("nan"), "nan"):
+            with pytest.raises(WebError) as info:
+                _bound_nav_timeout(bad)  # type: ignore[arg-type]
+            assert info.value.code == "invalid_params"
+
+    def test_bound_nav_timeout_rejects_a_non_numeric_deadline(self) -> None:
+        # float() raises TypeError (null/object) or ValueError (a non-numeric
+        # string), neither a WebError -- so a bad timeout filed an
+        # internal_error incident instead of invalid_params.
+        for bad in (None, "soon", {}, [], object()):
+            with pytest.raises(WebError) as info:
+                _bound_nav_timeout(bad)  # type: ignore[arg-type]
+            assert info.value.code == "invalid_params"
+
     def test_a_negative_navigate_timeout_does_not_wedge_a_live_session(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

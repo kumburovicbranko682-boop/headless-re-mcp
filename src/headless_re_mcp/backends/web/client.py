@@ -72,9 +72,21 @@ def _bound_nav_timeout(timeout: float) -> float:
     as the page took. Reject the first and cap the second before any work is
     queued, so a stray timeout can never wedge a live browser.
     """
-    value = float(timeout)
-    if value <= 0:
-        raise WebError("invalid_params", "timeout must be positive")
+    try:
+        value = float(timeout)
+    except (TypeError, ValueError) as exc:
+        # timeout flows straight from model arguments on the agent transport with
+        # no schema coercion, so a non-numeric string, null, or object reaches
+        # float() and raises ValueError/TypeError -- not a WebError, and the
+        # TypeError is not mapped, so a bad timeout filed an internal_error
+        # incident instead of this invalid_params.
+        raise WebError("invalid_params", "timeout must be a number") from exc
+    if not value > 0:
+        # ``not value > 0`` rather than ``value <= 0`` so a NaN (from a JSON NaN
+        # or "nan") is rejected too: ``nan <= 0`` is False, so it slipped through
+        # and ``min(nan, MAX)`` returned nan, which then reached
+        # Future.result(timeout=nan) and wedged the runner. ``inf`` still clamps.
+        raise WebError("invalid_params", "timeout must be a positive number")
     return min(value, _MAX_NAV_TIMEOUT_S)
 
 
