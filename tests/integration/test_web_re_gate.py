@@ -39,6 +39,13 @@ _DATA_URL = (
     "<script>window.__x=1;console.log('gate-ready');</script>"
     "</head><body>hello</body></html>"
 )
+# A second page with a distinct title, so navigating to it and reading the
+# title back proves the live page actually changed.
+_DATA_URL_TWO = (
+    "data:text/html,"
+    "<html><head><title>gate-second</title></head>"
+    "<body>navigated</body></html>"
+)
 
 
 def _browser_available() -> bool:
@@ -77,6 +84,47 @@ def test_web_cdp_open_and_inspect() -> None:
             dom = service.web_dom_snapshot(session_id)
             assert dom.ok, dom.error
             assert "gate" in dom.data["title"]
+        finally:
+            service.web_close(session_id)
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_web_navigate_switches_the_live_page() -> None:
+    """web.navigate drives an already-open session to a new URL, live.
+
+    web.open only ever loads the session's initial URL; re-navigation had no
+    coverage. Open the first page, navigate to the second, and read the DOM
+    title back: the returned title plus the fresh snapshot both flipping to the
+    second page prove the browser actually moved, not that a value was echoed.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web navigate Gate not run (skip != pass)")
+    service = AnalysisService()
+    try:
+        created = service.create_session(_DATA_URL, target="web")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        opened = service.web_open(session_id, headless=True, timeout=30.0)
+        if not opened.ok:
+            pytest.skip(
+                f"chromium could not launch (browser not installed?): "
+                f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+            )
+        try:
+            first = service.web_dom_snapshot(session_id)
+            assert first.ok, first.error
+            assert first.data["title"] == "gate"
+
+            navigated = service.web_navigate(session_id, _DATA_URL_TWO, timeout=30.0)
+            assert navigated.ok, navigated.error
+            assert navigated.data["title"] == "gate-second"
+
+            after = service.web_dom_snapshot(session_id)
+            assert after.ok, after.error
+            assert after.data["title"] == "gate-second"
         finally:
             service.web_close(session_id)
     finally:
