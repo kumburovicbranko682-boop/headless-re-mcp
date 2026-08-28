@@ -84,6 +84,43 @@ def test_listing_stops_counting_at_the_file_ceiling(
     assert has_more is True
 
 
+def test_capped_listing_returns_the_alphabetical_prefix_not_the_walk_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A capped listing is the alphabetically first files, not the first walked.
+
+    rglob yields filesystem traversal order, so the old code kept the first
+    ``cap`` files it walked and then sorted only those -- a sorted view of an
+    arbitrary subset that read as the alphabetically first classes an agent
+    could scan. Driving the walk in reverse-sorted order, a cap of two must
+    return [a.java, b.java]; the sort-after-cap bug returned [b.java, c.java].
+    """
+
+    class _FakePath:
+        def __init__(self, rel: str) -> None:
+            self._rel = rel
+
+        def is_file(self) -> bool:
+            return True
+
+        def relative_to(self, _root: object) -> str:
+            return self._rel
+
+    class _FakeRoot:
+        def is_dir(self) -> bool:
+            return True
+
+        def rglob(self, _pattern: str) -> list[_FakePath]:
+            # Deliberately not sorted: the reader must impose its own order.
+            return [_FakePath(name) for name in ("c.java", "b.java", "a.java")]
+
+    names, total, has_more = _capped_java_listing(_FakeRoot(), cap=2)  # type: ignore[arg-type]
+
+    assert names == ["a.java", "b.java"]
+    assert total == 3
+    assert has_more is True
+
+
 def test_decompile_rejects_a_blank_class_name(tmp_path: Path) -> None:
     client, apk, out = _jadx(tmp_path)
 

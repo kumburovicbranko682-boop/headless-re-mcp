@@ -30,24 +30,30 @@ _MAX_COUNTED_FILES = 50_000
 
 
 def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
-    names: list[str] = []
-    total = 0
-    has_more = False
     if not root.is_dir():
         return [], 0, False
+    names: list[str] = []
+    total = 0
+    scan_capped = False
     for path in root.rglob("*.java"):
         if not path.is_file():
             continue
         total += 1
-        if len(names) < cap:
-            names.append(str(path.relative_to(root)))
-        else:
-            has_more = True
+        names.append(str(path.relative_to(root)))
         if total >= _MAX_COUNTED_FILES:
-            has_more = True
+            scan_capped = True
             break
+    # Sort the whole collected set, then cap. rglob yields filesystem traversal
+    # order, so the old code -- keep the first `cap`, then sort those -- returned
+    # a sorted view of an arbitrary subset while reading as the alphabetically
+    # first files. Every .java is written under out_dir regardless, but the
+    # summary listing an agent scans to decide which classes exist must be an
+    # honest prefix, not whichever files the walk happened to reach first. The
+    # collection is bounded by _MAX_COUNTED_FILES, so this holds at most that
+    # many path strings.
     names.sort()
-    return names, total, has_more
+    has_more = scan_capped or len(names) > cap
+    return names[:cap], total, has_more
 
 
 class JadxError(RuntimeError):

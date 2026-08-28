@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（`jadx.export_sources` 的文件清单先截断后排序，列的是任意子集）
+
+- `jadx/client.py::_capped_java_listing` 只把走到的前 `cap`（2000）个 `.java` 收进列表、再对
+  这批排序，而 `rglob` 吐的是文件系统遍历顺序、并非字母序。于是文件数超 `cap` 时，`java_files`
+  是"先到的那批"的排序视图，读起来却像"字母序最前的类"。虽然所有 `.java` 都已落盘到 out_dir、
+  可直接读取，但 agent 扫这份清单判断有哪些类时会被误导。
+- 改法：先把全部条目收进列表（仍以 `_MAX_COUNTED_FILES=50000` 封顶收集、超出置 `has_more`），
+  `sort()` 后再取前 `cap`，使清单成为诚实的字母序前缀。收集量由既有 50000 上限封顶，至多多持有
+  这么多路径串（一次性导出场景可接受）。`total`/`has_more` 语义不变。
+- 新增 `tests/unit/test_jadx_client_fallback_and_run_guards.py::test_capped_listing_returns_the_alphabetical_prefix_not_the_walk_order`：
+  用受控的逆序遍历（c/b/a.java）驱动，cap=2 必须返回 `[a.java, b.java]`。非空验证：临时退回
+  先截断后排序，得到 `[b.java, c.java]` 而报红。既有用例只断言数量与 has_more，故此前漏网。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
