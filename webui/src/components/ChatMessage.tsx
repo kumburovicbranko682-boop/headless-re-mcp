@@ -19,11 +19,18 @@ export function ChatMessage({ role, content, streaming = false }: Props) {
   const label = ROLE_LABEL[role] ?? role;
   const toolJson = role === "tool" ? prettyJson(content) : null;
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  const prevContentRef = useRef(content);
   const [overflows, setOverflows] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
-    setExpanded(false);
+    // A streaming reply grows purely by appending deltas, so each new content
+    // extends the previous one. Collapsing on every change (as this used to)
+    // snapped an expanded reply shut on the very next token, making a long
+    // streaming answer impossible to keep open. Only reset when this is a
+    // genuinely different message reusing the same element, not an append.
+    if (!content.startsWith(prevContentRef.current)) setExpanded(false);
+    prevContentRef.current = content;
     const node = bodyRef.current;
     if (!node) return;
     setOverflows(node.scrollHeight > 360);

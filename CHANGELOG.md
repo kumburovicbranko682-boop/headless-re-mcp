@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（流式回复展开后被下一个 token 立刻收起）
+
+- `ChatMessage` 在 `content` 变化的 effect 里无条件 `setExpanded(false)`。App 把正在流式
+  输出的助手回复渲染成一个 `content` 逐 token 增长的 `ChatMessage`（`streamingText`
+  在 reducer 里是纯追加、轮次间清空重挂载），于是用户点「展开全部」看长回复后，下一个
+  token 一到就把它收回夹紧态——长回复在流式期间根本没法保持展开。改法：记住上一次的
+  `content`，只有当新内容不是旧内容的前缀延展（即同一元素被复用来渲染另一条消息）时才
+  收起；纯追加的流式增长保持用户的展开状态。已提交消息按 id 带 key、内容定型后不再变，
+  行为不受影响。新增两个回归测试（mock `scrollHeight` 触发溢出）：追加 token 后回复保持
+  展开（旧代码「展开全部」会重现），非追加替换则照常重新夹紧。SPA 产物同步重建。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
