@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（_session_work_dir 是会话关闭清理交给 rmtree 的目录选择器，补钉其穿越防护 fail-closed：敌意 session_id 绝不能把工作目录塌回共享父目录而误删邻居会话或制品根）
+
+- 关闭会话时,`_forget_session_work_dirs` 把 `_session_work_dir(kind, session_id)` 选出的 jadx / apktool / ghidra 工作树\
+  交给 `shutil.rmtree`。happy path(关闭后回收本会话的树)已被 apk 关闭用例覆盖,但 fail-closed 的另一半——敌意 `session_id`\
+  不得把工作目录解析到共享父目录、进而在清理时删掉邻居会话的产物乃至制品根——从未被直接钉住。该防护是一对:\
+  `Path(session_id).name != session_id` 与 `relative_to` 容纳性检查,且缺一不可——`Path("..").name == ".."` 能溜过名字检查,\
+  只有 `relative_to` backstop 才拦得住(`<root>/<kind>/..` 塌成 `<root>`,不在 `<root>/<kind>` 之下)。一次把防护“精简”到只剩\
+  名字检查的重构会悄悄重开“删到树外”的洞。新增 `test_session_work_dir_traversal.py` 以轻量 stub 直接调这两个方法:钉合法\
+  单段 id 解析到 `<root>/<kind>/<id>`;`..` / `.` / `a/b` / `../../etc` / `/etc` / 空串一律选出 `None`(fail-closed);`..` 走\
+  `_forget` 时邻居 victim 树、`Main.java`、`jadx` / `apktool` 根全都存活;并以“合法 id 确实删掉自己的 jadx / apktool 树、\
+  但留下另一会话的”作反例,使上面的拒绝有意义。
+
 ### 测试（会话制品“所有权目录”补完整性守卫：任何 <root>/<类别>/<session_id> 写入路径都必须在 _session_artifact_roots 里登记，否则会话既不拥有也不清理它）
 
 - `_session_artifact_roots` 是“会话拥有哪些制品子树”的唯一真相:会话关闭时的清理只回收它列出的目录,所有权守卫\
