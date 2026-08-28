@@ -1468,7 +1468,9 @@ def test_workflow_cancel_stops_in_flight_navigation(tmp_path: Path) -> None:
     thread.join(5)
     assert not thread.is_alive()
     navigated = outcome["nav"]
+    assert isinstance(navigated, Result)
     assert navigated.ok
+    assert cancelled.data is not None
     workflow = cancelled.data["workflow"]
     assert isinstance(workflow, dict)
     assert workflow.get("status") == "cancelled" or _workflow_state(workflow).get(
@@ -1839,7 +1841,9 @@ def test_pe_headers_memory_fallback_uses_atomic_write(tmp_path: Path) -> None:
     assert not list(artifact.parent.glob("*.partial"))
 
 
-def _rebased_service(tmp_path: Path, runtime_base: int) -> tuple[object, str, FakeDynamicWorker]:
+def _rebased_service(
+    tmp_path: Path, runtime_base: int
+) -> tuple[AnalysisService, str, FakeDynamicWorker]:
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary)
     dynamic = FakeDynamicWorker(module_base=runtime_base)
@@ -2273,9 +2277,9 @@ def test_session_recover_rebuilds_a_dropped_connection_instead_of_reporting_it_k
 
     def reconnect() -> None:
         reconnects.append("reconnect")
-        worker.transport_connected = True
+        worker.transport_connected = True  # type: ignore[attr-defined]
 
-    worker.transport_connected = False
+    worker.transport_connected = False  # type: ignore[attr-defined]
     worker.reconnect = reconnect  # type: ignore[attr-defined]
 
     recovered = service.session_recover(session_id, ["x64dbg"])
@@ -2336,7 +2340,7 @@ def test_session_recover_reports_a_failed_reconnect_per_backend(tmp_path: Path) 
     def reconnect() -> None:
         raise XdbgRpcError("rpc_startup_timeout", "pipe never came back")
 
-    worker.transport_connected = False
+    worker.transport_connected = False  # type: ignore[attr-defined]
     worker.reconnect = reconnect  # type: ignore[attr-defined]
 
     recovered = service.session_recover(session_id, ["x64dbg"])
@@ -2588,6 +2592,7 @@ def test_navigate_cursor_desync_does_not_kill_the_debuggee(tmp_path: Path) -> No
     assert not thread.is_alive()
 
     navigated = outcome["nav"]
+    assert isinstance(navigated, Result)
     assert not navigated.ok and navigated.error is not None
     assert navigated.error.code == "event_cursor_inconsistent"
     assert not worker.terminated
