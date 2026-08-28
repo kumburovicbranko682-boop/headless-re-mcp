@@ -255,6 +255,27 @@ def _device_info_row(info: Any) -> JsonObject:
     return {"serial": serial, "state": state or "unknown"}
 
 
+def _scan_package_token(decoded: str) -> str | None:
+    """First non-framework, package-shaped token, preferring text near ``package``.
+
+    The AXML string pool stores the ``package`` attribute name next to the
+    application id, so a window after the first ``package`` occurrence usually
+    holds the real id before any class or library name; the whole text is the
+    fallback. Framework ids (``android.*`` / ``com.android.*``) are skipped.
+    """
+    window = decoded
+    marker = decoded.find("package")
+    if marker >= 0:
+        window = decoded[marker : marker + 400]
+    for blob in (window, decoded):
+        for candidate in _PACKAGE_IN_TEXT.findall(blob):
+            if candidate.startswith("android.") or candidate.startswith("com.android."):
+                continue
+            if _PACKAGE_RE.match(candidate):
+                return str(candidate)
+    return None
+
+
 def _apk_package_name(path: Path) -> str | None:
     """Best-effort package id from the APK, without pulling androguard in."""
     try:
@@ -267,25 +288,26 @@ def _apk_package_name(path: Path) -> str | None:
             data = manifest.read(_MAX_MANIFEST_BYTES)
     except Exception:  # noqa: BLE001
         return None
+    # A plain-text manifest -- or any AXML whose string pool is UTF-8, which
+    # aapt2 can emit -- decodes cleanly here, storing the id as literal ASCII
+    # bytes. Prefer a text manifest's explicit package="..." attribute, then run
+    # the same token scan the binary path uses. This arm used to try only the
+    # attribute form, so a UTF-8 string-pool AXML fell through to the UTF-16
+    # decode below, which read "com.example.app" as 16-bit garbage and found no
+    # id at all.
     try:
         text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = None
+    if text is not None:
         match = re.search(r'package="([^"]+)"', text)
         if match and _PACKAGE_RE.match(match.group(1)):
             return match.group(1)
-    except Exception:  # noqa: BLE001
-        pass
-    decoded = data.decode("utf-16-le", errors="ignore")
-    window = decoded
-    marker = decoded.find("package")
-    if marker >= 0:
-        window = decoded[marker : marker + 400]
-    for blob in (window, decoded):
-        for candidate in _PACKAGE_IN_TEXT.findall(blob):
-            if candidate.startswith("android.") or candidate.startswith("com.android."):
-                continue
-            if _PACKAGE_RE.match(candidate):
-                return str(candidate)
-    return None
+        found = _scan_package_token(text)
+        if found is not None:
+            return found
+    # Traditional UTF-16LE string pool: decode and scan the same way.
+    return _scan_package_token(data.decode("utf-16-le", errors="ignore"))
 
 
 def _pm_path(dev: Any, package: str) -> str | None:

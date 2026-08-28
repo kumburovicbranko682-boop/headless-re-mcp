@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（`_apk_package_name` 读不出 UTF-8 字符串池的 AXML 包名）
+
+- `adb/client.py::_apk_package_name` 的 UTF-8 分支此前只找文本清单的 `package="..."`
+  属性形式，token 扫描只对 UTF-16LE 解码结果跑。但 aapt2 可能产出 **UTF-8 字符串池**的
+  二进制 AXML，包名以字面 ASCII 字节存放、且没有 `package="..."` 属性——这类清单能以 UTF-8
+  干净解码，于是跳过属性匹配后直接落到下面的 UTF-16LE 解码，把 `com.example.app` 读成 16 位
+  乱码而一无所获，导致 `install` 校验降级为"无法确认已安装"。
+- 改法：抽出 `_scan_package_token`（marker 窗口 + 跳过 `android.*`/`com.android.*` 框架 id
+  的既有逻辑），对 UTF-8 解码结果也跑一遍——先属性形式、再 token 扫描——最后才回落到
+  UTF-16LE 扫描。UTF-16LE 池的 ASCII 字节在 UTF-8 视角里字符间夹 NUL，token 正则天然不匹配，
+  故仍正确回落，无回归。
+- 新增 `tests/unit/test_adb_client_paths.py::test_apk_package_name_reads_a_utf8_string_pool`：
+  一段全 <0x80 字节、含 `package`/`com.example.app`/`android.permission.INTERNET` 的清单，
+  断言返回 `com.example.app` 且跳过框架权限 id。非空验证：临时退回仅属性形式的 UTF-8 分支，
+  该用例得到 None 而报红。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

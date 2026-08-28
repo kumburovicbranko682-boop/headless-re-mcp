@@ -250,6 +250,23 @@ def test_apk_package_name_falls_back_to_the_utf16_scan(tmp_path: Path) -> None:
     assert _apk_package_name(apk) == "com.example.app"
 
 
+def test_apk_package_name_reads_a_utf8_string_pool(tmp_path: Path) -> None:
+    """A binary AXML whose string pool is UTF-8 must still yield the id.
+
+    aapt2 can emit a UTF-8 (not UTF-16LE) string pool, which stores the package
+    id as literal ASCII bytes with no package="..." attribute. The UTF-8 arm
+    used to try only the attribute form and hand the bytes to the UTF-16 decode,
+    which turned "com.example.app" into 16-bit garbage; the token scan now runs
+    on the UTF-8 decode too. The framework id android.permission.INTERNET that
+    follows must still be skipped.
+    """
+    # All bytes < 0x80, so this decodes cleanly as UTF-8 (like a UTF-8 pool)
+    # but never as the ASCII package under a UTF-16LE reinterpretation.
+    manifest = b"\x00\x01\x00\x00package\x00\x00com.example.app\x00android.permission.INTERNET"
+    apk = _zip_with_manifest(tmp_path / "utf8pool.apk", manifest)
+    assert _apk_package_name(apk) == "com.example.app"
+
+
 def test_apk_package_name_is_none_for_a_manifestless_zip(tmp_path: Path) -> None:
     apk = tmp_path / "empty.apk"
     with zipfile.ZipFile(apk, "w") as archive:
