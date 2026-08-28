@@ -15,6 +15,7 @@ import shutil
 import stat
 import threading
 import zipfile
+from contextlib import suppress
 from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
@@ -719,6 +720,7 @@ class AdbBackend:
         dev = self._device(serial)
         local_path.parent.mkdir(parents=True, exist_ok=True)
         cap = UNREGISTERED_CAPTURE_MAX_BYTES
+        expected_size: int | None = None
         sync = getattr(dev, "sync", None)
         if sync is not None:
             try:
@@ -741,6 +743,7 @@ class AdbBackend:
                         size=size,
                         cap=cap,
                     )
+                expected_size = size
         try:
             _call(dev.sync.pull, remote_path, str(local_path), timeout=_ADB_TRANSFER_TIMEOUT_S)
         except AdbError:
@@ -773,6 +776,21 @@ class AdbBackend:
                 remote=remote_path,
                 size=pulled,
                 cap=cap,
+            )
+        if expected_size is not None and expected_size > 0 and pulled == 0:
+            # The pre-pull stat saw a non-empty remote, yet nothing landed:
+            # adb sync can report a clean pull while writing an empty file (the
+            # remote vanished mid-transfer, or the transfer was interrupted).
+            # Returned as a size-0 success the caller opens the empty file and
+            # reads it as the remote's real content. Drop it and say the pull
+            # came up short rather than pass an empty file off as the file.
+            with suppress(OSError):
+                local_path.unlink()
+            raise AdbError(
+                "backend_error",
+                "pull produced an empty local file for a non-empty remote",
+                remote=remote_path,
+                remote_size=expected_size,
             )
         return {"remote": remote_path, "local": str(local_path), "size": pulled}
 
