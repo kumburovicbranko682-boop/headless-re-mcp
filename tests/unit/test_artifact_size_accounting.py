@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from headless_re_mcp.core import repository as repository_module
 from headless_re_mcp.core.repository import (
     InMemoryAnalysisRepository,
     SqliteAnalysisRepository,
 )
+from headless_re_mcp.core.store import sqlite_store as sqlite_store_module
 
 
 @pytest.mark.parametrize(
@@ -17,7 +21,16 @@ from headless_re_mcp.core.repository import (
 def test_artifact_registration_uses_the_file_size_not_an_untrusted_hint(
     tmp_path: Path,
     repository_type: type[SqliteAnalysisRepository] | type[InMemoryAnalysisRepository],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # gc protects whichever row sorts last by created_at, so back-to-back
+    # registrations stamped identically by a coarse Windows clock would make
+    # "which artifact is newest" unspecified; tick the clock explicitly.
+    ticks = iter(range(100))
+    base = datetime(2024, 1, 1, tzinfo=UTC)
+    fake_clock = SimpleNamespace(now=lambda tz=UTC: base + timedelta(seconds=next(ticks)))
+    monkeypatch.setattr(sqlite_store_module, "datetime", fake_clock)
+    monkeypatch.setattr(repository_module, "datetime", fake_clock)
     root = tmp_path / "artifacts"
     repository = repository_type(root)
     oldest = root / "oldest.bin"

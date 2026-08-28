@@ -14,6 +14,10 @@ until 1.0 the tool surface may still change between minor versions.
   对 `test_repository_inmemory_close_trim.py` 同名兄弟用例的修法一致:monkeypatch
   `sqlite_store.datetime` 为显式递增的假时钟,使"最新"有良定义。
 
+- 同类:`test_artifact_size_accounting.py` 背靠背注册两个 artifact 后断言 gc
+  留新汰旧,"最新"同样只由 `created_at` 决定;对 SQLite 与 InMemory 两个参数化
+  实现分别打上 `sqlite_store.datetime` / `repository.datetime` 假时钟。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
