@@ -45,6 +45,7 @@ from headless_re_mcp.backends.proxy.client import (
     _shutdown_loop,
     _uninstall_master_logging,
 )
+from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
 
 # --------------------------------------------------------------------------- #
 # byte-measuring helpers
@@ -756,7 +757,7 @@ def test_backend_flows_on_an_empty_capture() -> None:
 def _backend_with_flow(flow: Any) -> ProxyBackend:
     recorder = SimpleNamespace(raw=lambda flow_id: flow)
     backend = ProxyBackend()
-    backend._get = cast(
+    backend._get = cast(  # type: ignore[method-assign]
         Any, lambda session_id: SimpleNamespace(recorder=recorder, _master=None, _loop=None)
     )
     return backend
@@ -821,7 +822,7 @@ class _FakeLoop:
 def _replay_backend(flow: Any, master: Any, loop: Any) -> ProxyBackend:
     recorder = SimpleNamespace(raw=lambda flow_id: flow)
     backend = ProxyBackend()
-    backend._get = cast(
+    backend._get = cast(  # type: ignore[method-assign]
         Any, lambda session_id: SimpleNamespace(recorder=recorder, _master=master, _loop=loop)
     )
     return backend
@@ -877,7 +878,7 @@ def test_replay_times_out_when_the_command_never_runs(
 
 
 def test_export_har_refuses_over_the_cap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    huge = proxy_client.UNREGISTERED_CAPTURE_MAX_BYTES + 1
+    huge = UNREGISTERED_CAPTURE_MAX_BYTES + 1
     monkeypatch.setattr(
         proxy_client,
         "serialize_har",
@@ -914,7 +915,7 @@ def test_export_har_writes_a_bounded_file(tmp_path: Path) -> None:
 
 
 def test_ca_cert_path_finds_a_cert_or_none(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(proxy_client.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     assert ProxyBackend().ca_cert_path() is None
     certdir = tmp_path / ".mitmproxy"
     certdir.mkdir()
