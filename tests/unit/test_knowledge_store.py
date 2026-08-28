@@ -92,6 +92,37 @@ def test_knowledge_filters_by_kind_and_session(repository: Any) -> None:
     assert only_api["entries"][0]["value"] == {"module": "kernel32"}
 
 
+def test_kinds_is_session_wide_not_a_tally_of_the_returned_page(repository: Any) -> None:
+    """kinds must summarise the session, not whichever kinds landed on this page.
+
+    Entries are ordered by kind, so a page can be entirely one kind. A per-page
+    tally then reported {"aaa": 3} for a session that also holds bbb, hiding a
+    whole kind that sits on a later page -- the same partial-read-as-complete
+    that total already guards against. kinds counts the whole (filtered) session
+    and reads the same on every page.
+    """
+    for index in range(3):
+        repository.record_knowledge(
+            session_id="s1", kind="aaa", key=f"a{index}", value={"i": index}
+        )
+    for index in range(2):
+        repository.record_knowledge(
+            session_id="s1", kind="bbb", key=f"b{index}", value={"i": index}
+        )
+
+    first = repository.list_knowledge("s1", offset=0, limit=3)
+    assert [entry["kind"] for entry in first["entries"]] == ["aaa", "aaa", "aaa"]
+    assert first["kinds"] == {"aaa": 3, "bbb": 2}
+    assert sum(first["kinds"].values()) == first["total"] == 5
+
+    second = repository.list_knowledge("s1", offset=3, limit=3)
+    assert second["kinds"] == {"aaa": 3, "bbb": 2}
+
+    only_bbb = repository.list_knowledge("s1", kind="bbb")
+    assert only_bbb["kinds"] == {"bbb": 2}
+    assert only_bbb["total"] == 2
+
+
 def test_knowledge_paginates(repository: Any) -> None:
     for index in range(5):
         repository.record_knowledge(

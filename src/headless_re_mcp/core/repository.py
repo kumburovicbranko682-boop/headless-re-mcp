@@ -839,11 +839,16 @@ class InMemoryAnalysisRepository:
             ]
         entries.sort(key=lambda item: (str(item["kind"]), str(item["key"])))
         total = len(entries)
-        page = entries[offset : offset + limit]
+        # kinds is a session-wide facet count over the whole (filtered) match,
+        # not a tally of the returned page. Entries are ordered by kind, so a
+        # page can be entirely one kind; tallying the page would hide every
+        # other kind on later pages -- the same partial-read-as-complete the
+        # total guards against.
         kinds: dict[str, int] = {}
-        for item in page:
+        for item in entries:
             name = str(item["kind"])
             kinds[name] = kinds.get(name, 0) + 1
+        page = entries[offset : offset + limit]
         return {
             "session_id": session_id,
             "entries": page,

@@ -633,16 +633,32 @@ class SessionStore:
                     " ORDER BY kind ASC, key ASC LIMIT ? OFFSET ?",
                     (session_id, limit, offset),
                 ).fetchall()
+            # kinds is a session-wide facet count, not a tally of the current
+            # page: rows are ordered by kind, so a paged reply can be entirely
+            # one kind, and a per-page tally would hide every other kind that
+            # sits on a later page -- reporting {"aaa": 3} for a session that
+            # also holds bbb, the same "partial read as complete" the total
+            # guards against. Count over the whole (filtered) session instead.
+            if kind:
+                kind_rows = conn.execute(
+                    "SELECT kind, COUNT(*) AS c FROM knowledge"
+                    " WHERE session_id=? AND kind=? GROUP BY kind",
+                    (session_id, kind),
+                ).fetchall()
+            else:
+                kind_rows = conn.execute(
+                    "SELECT kind, COUNT(*) AS c FROM knowledge"
+                    " WHERE session_id=? GROUP BY kind",
+                    (session_id,),
+                ).fetchall()
+        kinds = {str(row["kind"]): int(row["c"]) for row in kind_rows}
         entries: list[JsonObject] = []
-        kinds: dict[str, int] = {}
         for row in rows:
             item = dict(row)
             raw = item.get("value")
             if isinstance(raw, str):
                 with suppress(json.JSONDecodeError):
                     item["value"] = json.loads(raw)
-            name = str(item["kind"])
-            kinds[name] = kinds.get(name, 0) + 1
             entries.append(item)
         return {
             "session_id": session_id,
