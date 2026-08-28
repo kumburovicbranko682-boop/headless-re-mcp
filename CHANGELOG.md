@@ -43,6 +43,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `web.dom.snapshot` 对超大 DOM 的处理一致。未超限的常见清单不写文件、不建空目录,回包形状保持不变。
 - 落盘尽力而为:清单本已解码在内存,溢出只是换个名字搬到磁盘;写失败(磁盘满/权限)只丢补救路径,\
   截断的内联副本与 `truncated` 标志照常返回——清单读取不因记账失败而变成失败。
+- 新的 `artifact_root/apk/<session_id>` 子树登记进 `_session_artifact_roots`(会话制品归属清单),与\
+  `web/`、`jadx/`、`proxy/` 等每一个每会话捕获目录一致:归属模型据此判定该目录属于本会话,`_apk_capture_dir`\
+  也像其它制品目录助手一样先用 `_is_safe_session_segment` 拒掉 `..` / `.` / `a/b` 等非单段 session id。
+- `tests/unit/test_session_artifact_ownership.py` 钉住 apk 溢出目录被判为会话自有;\
+  `test_web_proxy_artifact_dir_safety.py` 把 `_apk_capture_dir` 纳入段守卫用例。
 - `tests/unit/test_apk_manifest_reads_faults.py` 与 `test_apk_service_envelopes.py` 新增覆盖:超限且给\
   `spill_dir` 时落全文并带 `manifest_xml_path`、未超限不落盘且不建空目录、不给 `spill_dir` 保持旧形状(向后\
   兼容)、写失败降级为无路径,以及服务层把溢出文件注册成带 `artifact_id` 的制品。

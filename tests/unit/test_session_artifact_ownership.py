@@ -37,6 +37,20 @@ def test_a_path_under_the_sessions_own_tree_is_owned(tmp_path: Path) -> None:
         assert _session_owns_artifact_path(root, sid, owned_root / "x") is True
 
 
+def test_the_apk_manifest_spill_dir_is_session_owned(tmp_path: Path) -> None:
+    """apk.manifest spills an oversized manifest under artifact_root/apk/<id>.
+
+    That subtree must be advertised as session-owned like web/ and jadx/ are,
+    or the ownership model would treat a legitimate capture dir as foreign the
+    moment some guard starts consulting it.
+    """
+    root = tmp_path / "artifacts"
+    sid = "cafebabe" * 4
+    spill = root / "apk" / sid / "manifest-abc.xml"
+    assert (root / "apk" / sid) in _session_artifact_roots(root, sid)
+    assert _session_owns_artifact_path(root, sid, spill) is True
+
+
 def test_another_sessions_tree_is_not_owned(tmp_path: Path) -> None:
     """A session must not reach into a sibling session's artifacts."""
     root = tmp_path / "artifacts"

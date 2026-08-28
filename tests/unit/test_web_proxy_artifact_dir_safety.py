@@ -53,6 +53,7 @@ def test_dotdot_session_ids_are_rejected_by_the_segment_guard(tmp_path: Path) ->
         (service._proxy_artifact_dir, ProxyError, "proxy"),
         (service._jadx_out_dir, ApkError, "jadx"),
         (service._repack_dir, ApkError, "apktool"),
+        (service._apk_capture_dir, ApkError, "apk"),
     ]
     try:
         for segment in ("..", ".", "a/b", ""):
