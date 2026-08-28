@@ -108,7 +108,12 @@ export function useWorkbench() {
     const threadId = selectedThreadRef.current;
     if (threadId) {
       const result = await api<ThreadResponse>(`/api/agent/threads/${encodeURIComponent(threadId)}`).catch(() => null);
-      if (result) dispatch({ type: "messages", messages: result.messages });
+      // Same stale-response hazard as selectThread: if the user moved to another
+      // thread while this reload was in flight, these are the old thread's
+      // messages and must not replace the transcript the user is now reading.
+      if (result && selectedThreadRef.current === threadId) {
+        dispatch({ type: "messages", messages: result.messages });
+      }
     }
   }, []);
 
