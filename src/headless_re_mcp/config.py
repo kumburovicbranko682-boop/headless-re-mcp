@@ -8,6 +8,7 @@ import tempfile
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -650,9 +651,22 @@ def _as_float(raw: str | None, default: object, *, fallback: float = 0.0) -> flo
     # rather than raising out of configuration loading. The fallback is explicit
     # because silently returning 0 turned a typo into a disabled feature.
     for candidate in (raw, default):
+        if candidate is None:
+            continue
         try:
-            if candidate is not None:
-                return max(0.0, float(candidate))  # type: ignore[arg-type]
+            parsed = float(candidate)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             continue
+        # float() also accepts "inf"/"infinity"/"nan" and overflows "1e400" to
+        # inf without raising, and json.loads lands the same non-finite values
+        # from a config file. These are as unusable here as a typo: an infinite
+        # health/watchdog interval either sleeps forever (time.sleep(inf) raises
+        # OverflowError) or compares as never-due so self-healing silently stops,
+        # and an infinite isolation_timeout_s leaves the sandboxed child
+        # unbounded. NaN is worse -- every comparison against it is false. Treat
+        # a non-finite value like any other unreadable input and fall through to
+        # the default and then the explicit fallback.
+        if not isfinite(parsed):
+            continue
+        return max(0.0, parsed)
     return fallback

@@ -102,3 +102,27 @@ def test_an_explicit_zero_still_disables_the_monitor() -> None:
 
 def test_a_negative_interval_is_clamped_rather_than_rejected() -> None:
     assert _as_float("-3", 5.0, fallback=5.0) == 0.0
+
+
+@pytest.mark.parametrize("word", ["inf", "-inf", "infinity", "Infinity", "1e400", "nan", "NaN"])
+def test_a_non_finite_environment_value_falls_back_to_the_default(word: str) -> None:
+    # float() parses these without raising -- "inf"/"nan" directly and "1e400"
+    # by overflow -- so before the guard they reached the setting as inf/nan. An
+    # infinite interval makes time.sleep raise OverflowError out of the health
+    # loop, and both inf and nan compare so that a watchdog is never due; a
+    # nonsense value has to be ignored exactly like any other unreadable typo.
+    assert _as_float(word, 5.0, fallback=5.0) == 5.0
+
+
+def test_a_non_finite_file_default_falls_back_too() -> None:
+    # A config file supplies the default, and json.loads turns 1e400 / Infinity
+    # into a Python float("inf"), so the file path needs the same guard as the
+    # environment string one.
+    assert _as_float(None, float("inf"), fallback=5.0) == 5.0
+    assert _as_float(None, float("nan"), fallback=5.0) == 5.0
+
+
+def test_a_non_finite_environment_value_still_prefers_a_readable_file_default() -> None:
+    # The env var is unreadable, but the file default is a real number: it, not
+    # the fallback, is what a non-finite env override should defer to.
+    assert _as_float("inf", 7.0, fallback=5.0) == 7.0
