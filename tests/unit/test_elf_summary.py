@@ -7,9 +7,12 @@ tables are exact structures. These tests pin the readers on a hand-assembled ELF
 (portable, so they run on Windows CI too where no real ELF exists): the header,
 the section list, the shared-library dependencies/soname/runpath from .dynamic,
 the stripped flag, the 32-bit and big-endian header paths, the .dynsym page with
-its imported/exported classification and honest pagination, resilience to corrupt
-section and symbol offsets, refusal of a non-ELF, and the service routing that
-turns a bad file into a precise envelope rather than a fault.
+its imported/exported classification and honest pagination, the full .dynamic
+decode (every tag named, DT_FLAGS/DT_FLAGS_1 spelled out, the pie/bind_now/
+textrel verdicts, relro as full/partial/none, and the PT_DYNAMIC fallback for a
+section-stripped binary), resilience to corrupt section and symbol offsets,
+refusal of a non-ELF, and the service routing that turns a bad file into a
+precise envelope rather than a fault.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import pytest
 
 from headless_re_mcp.backends.common.elf import (
     ElfParseError,
+    list_elf_dynamic,
     list_elf_segments,
     list_elf_symbols,
     summarize_elf,
@@ -470,6 +474,280 @@ def test_list_segments_rejects_non_elf() -> None:
         list_elf_segments(b"MZ\x00\x00" + b"\x00" * 60)
 
 
+# --- dynamic array (.dynamic) ---------------------------------------------------
+
+_TAG = {
+    "NEEDED": 1,
+    "STRTAB": 5,
+    "STRSZ": 10,
+    "INIT": 12,
+    "SONAME": 14,
+    "RPATH": 15,
+    "DEBUG": 21,
+    "TEXTREL": 22,
+    "BIND_NOW": 24,
+    "RUNPATH": 29,
+    "FLAGS": 30,
+    "GNU_HASH": 0x6FFFFEF5,
+    "FLAGS_1": 0x6FFFFFFB,
+}
+
+
+def _build_elf_dynamic(
+    *,
+    tags: list[tuple[int, int | str]],
+    with_sections: bool = True,
+    with_phdrs: bool = False,
+    relro_segment: bool = False,
+    omit_dynstr_section: bool = False,
+    bits: int = 64,
+    endian: str = "<",
+) -> bytes:
+    """An ELF whose .dynamic array carries STRTAB/STRSZ plus exactly ``tags``.
+
+    A str value is placed in the dynamic string table and the entry's value
+    becomes its offset. With ``with_phdrs`` the file carries a PT_LOAD that
+    identity-maps it plus a PT_DYNAMIC, so ``with_sections=False`` exercises
+    the section-stripped fallback; ``relro_segment`` appends a PT_GNU_RELRO.
+    ``omit_dynstr_section`` drops .dynstr from the section table (the bytes
+    stay, unreferenced) to exercise the names-unavailable warning.
+    """
+    ehdr_size = 64 if bits == 64 else 52
+    phentsize = 56 if bits == 64 else 32
+    shentsize = 64 if bits == 64 else 40
+    dyn_fmt = endian + ("qQ" if bits == 64 else "iI")
+
+    dynstr = bytearray(b"\x00")
+
+    def add_str(text: str) -> int:
+        off = len(dynstr)
+        dynstr.extend(text.encode("ascii") + b"\x00")
+        return off
+
+    resolved = [
+        (tag, add_str(value) if isinstance(value, str) else value) for tag, value in tags
+    ]
+
+    phdr_types: list[str] = (["LOAD", "DYNAMIC"] if with_phdrs else [])
+    if relro_segment:
+        phdr_types.append("GNU_RELRO")
+    phnum = len(phdr_types)
+    phoff = ehdr_size if phnum else 0
+
+    dynstr_off = ehdr_size + phnum * phentsize
+    dynamic_off = dynstr_off + len(dynstr)
+    entries = [(_TAG["STRTAB"], dynstr_off), (_TAG["STRSZ"], len(dynstr)), *resolved, (0, 0)]
+    dynamic = b"".join(struct.pack(dyn_fmt, tag, value) for tag, value in entries)
+
+    phdrs = b""
+    for tname in phdr_types:
+        ptype = _PT[tname]
+        if tname == "LOAD":
+            poff, pvaddr, pfilesz, pflag = 0, 0, 0x10000, _pflags("r--")
+        elif tname == "DYNAMIC":
+            poff, pvaddr, pfilesz, pflag = dynamic_off, dynamic_off, len(dynamic), _pflags("rw-")
+        else:  # GNU_RELRO
+            poff, pvaddr, pfilesz, pflag = dynstr_off, dynstr_off, 8, _pflags("r--")
+        if bits == 64:
+            phdrs += struct.pack(
+                endian + "IIQQQQQQ", ptype, pflag, poff, pvaddr, pvaddr, pfilesz, pfilesz, 0x1000
+            )
+        else:
+            phdrs += struct.pack(
+                endian + "IIIIIIII", ptype, poff, pvaddr, pvaddr, pfilesz, pfilesz, pflag, 0x1000
+            )
+
+    shoff = 0
+    shnum = 0
+    shstrndx = 0
+    shstr = b""
+    sht = b""
+    if with_sections:
+        section_names = [".dynamic", ".shstrtab"]
+        if not omit_dynstr_section:
+            section_names.insert(0, ".dynstr")
+        shstr_buf = bytearray(b"\x00")
+        name_off: dict[str, int] = {}
+        for name in section_names:
+            name_off[name] = len(shstr_buf)
+            shstr_buf.extend(name.encode("ascii") + b"\x00")
+        shstr = bytes(shstr_buf)
+        shstr_off = dynamic_off + len(dynamic)
+        shoff = shstr_off + len(shstr)
+        records: list[tuple[int, int, int, int]] = [(0, 0, 0, 0)]
+        if not omit_dynstr_section:
+            records.append((name_off[".dynstr"], 3, dynstr_off, len(dynstr)))
+        records.append((name_off[".dynamic"], 6, dynamic_off, len(dynamic)))
+        records.append((name_off[".shstrtab"], 3, shstr_off, len(shstr)))
+        sh_fmt = endian + ("IIQQQQIIQQ" if bits == 64 else "IIIIIIIIII")
+        sht = b"".join(
+            struct.pack(sh_fmt, nameo, stype, 0, 0, off, size, 0, 0, 1, 0)
+            for nameo, stype, off, size in records
+        )
+        shnum = len(records)
+        shstrndx = shnum - 1
+
+    if bits == 64:
+        ehdr = struct.pack(
+            endian + "HHIQQQIHHHHHH",
+            3, 62, 1, 0x1000, phoff, shoff, 0,
+            ehdr_size, phentsize, phnum, shentsize, shnum, shstrndx,
+        )
+    else:
+        ehdr = struct.pack(
+            endian + "HHIIIIIHHHHHH",
+            3, 40, 1, 0x1000, phoff, shoff, 0,
+            ehdr_size, phentsize, phnum, shentsize, shnum, shstrndx,
+        )
+    return _elf_ident(bits, endian) + ehdr + phdrs + bytes(dynstr) + dynamic + shstr + sht
+
+
+def test_dynamic_full_decode() -> None:
+    out = list_elf_dynamic(
+        _build_elf_dynamic(
+            tags=[
+                (_TAG["NEEDED"], "libc.so.6"),
+                (_TAG["NEEDED"], "libm.so.6"),
+                (_TAG["SONAME"], "libfoo.so"),
+                (_TAG["RUNPATH"], "$ORIGIN/../lib"),
+                (_TAG["INIT"], 0x1000),
+                (_TAG["DEBUG"], 0),
+                (_TAG["GNU_HASH"], 0x2A0),
+                (_TAG["FLAGS"], 0x2 | 0x8),  # SYMBOLIC | BIND_NOW
+                (_TAG["FLAGS_1"], 0x1 | 0x8000000),  # NOW | PIE
+            ]
+        )
+    )
+    assert out["present"] is True
+    assert out["source"] == "section"
+    tags = [e["tag"] for e in out["entries"]]
+    assert tags[:2] == ["STRTAB", "STRSZ"]
+    assert {"NEEDED", "SONAME", "RUNPATH", "INIT", "DEBUG", "GNU_HASH", "FLAGS", "FLAGS_1"} <= set(
+        tags
+    )
+    needed_entries = [e for e in out["entries"] if e["tag"] == "NEEDED"]
+    assert [e["name"] for e in needed_entries] == ["libc.so.6", "libm.so.6"]
+    assert out["needed"] == ["libc.so.6", "libm.so.6"]
+    assert out["soname"] == "libfoo.so"
+    assert out["runpath"] == "$ORIGIN/../lib"
+    assert out["flags"] == ["SYMBOLIC", "BIND_NOW"]
+    assert out["flags_1"] == ["NOW", "PIE"]
+    assert out["pie"] is True
+    assert out["bind_now"] is True
+    assert out["textrel"] is False
+    assert out["relro"] == "none"  # bind-now alone is not RELRO: no PT_GNU_RELRO
+    assert out["warnings"] == []
+
+
+def test_relro_full_needs_segment_and_bind_now() -> None:
+    out = list_elf_dynamic(
+        _build_elf_dynamic(tags=[(_TAG["FLAGS_1"], 0x1)], relro_segment=True)
+    )
+    assert out["bind_now"] is True
+    assert out["relro"] == "full"
+
+
+def test_relro_segment_alone_is_partial() -> None:
+    out = list_elf_dynamic(_build_elf_dynamic(tags=[], relro_segment=True))
+    assert out["bind_now"] is False
+    assert out["relro"] == "partial"
+
+
+def test_legacy_bind_now_tag_counts() -> None:
+    out = list_elf_dynamic(
+        _build_elf_dynamic(tags=[(_TAG["BIND_NOW"], 0)], relro_segment=True)
+    )
+    assert out["bind_now"] is True
+    assert out["relro"] == "full"
+
+
+def test_df_bind_now_flag_counts() -> None:
+    out = list_elf_dynamic(_build_elf_dynamic(tags=[(_TAG["FLAGS"], 0x8)]))
+    assert out["bind_now"] is True
+    assert out["flags"] == ["BIND_NOW"]
+
+
+def test_textrel_from_tag_and_from_flag() -> None:
+    by_tag = list_elf_dynamic(_build_elf_dynamic(tags=[(_TAG["TEXTREL"], 0)]))
+    assert by_tag["textrel"] is True
+    by_flag = list_elf_dynamic(_build_elf_dynamic(tags=[(_TAG["FLAGS"], 0x4)]))
+    assert by_flag["textrel"] is True
+    assert by_flag["flags"] == ["TEXTREL"]
+
+
+def test_unknown_tag_is_rendered_as_hex() -> None:
+    out = list_elf_dynamic(_build_elf_dynamic(tags=[(0x12345678, 7)]))
+    entry = next(e for e in out["entries"] if e["tag_raw"] == 0x12345678)
+    assert entry["tag"] == "0x12345678"
+    assert entry["value"] == "0x7"
+
+
+def test_section_stripped_binary_falls_back_to_pt_dynamic() -> None:
+    out = list_elf_dynamic(
+        _build_elf_dynamic(
+            tags=[(_TAG["NEEDED"], "libc.so.6"), (_TAG["SONAME"], "libbar.so")],
+            with_sections=False,
+            with_phdrs=True,
+        )
+    )
+    assert out["present"] is True
+    assert out["source"] == "program header"
+    assert out["needed"] == ["libc.so.6"]  # names came through DT_STRTAB + PT_LOAD
+    assert out["soname"] == "libbar.so"
+    assert out["warnings"] == []
+
+
+def test_dynamic_32bit_entry_size() -> None:
+    out = list_elf_dynamic(
+        _build_elf_dynamic(tags=[(_TAG["NEEDED"], "libc.so.6")], bits=32)
+    )
+    assert out["class"] == "ELF32"
+    assert out["needed"] == ["libc.so.6"]
+
+
+def test_dynamic_big_endian() -> None:
+    out = list_elf_dynamic(
+        _build_elf_dynamic(tags=[(_TAG["NEEDED"], "libc.so.6")], endian=">")
+    )
+    assert out["endianness"] == "big"
+    assert out["needed"] == ["libc.so.6"]
+
+
+def test_static_binary_is_present_false_with_a_warning() -> None:
+    out = list_elf_dynamic(_build_elf_header_only())
+    assert out["present"] is False
+    assert out["source"] is None
+    assert out["entries"] == []
+    assert out["relro"] == "none"
+    assert any("statically linked" in w for w in out["warnings"])
+
+
+def test_missing_string_table_warns_instead_of_naming() -> None:
+    out = list_elf_dynamic(
+        _build_elf_dynamic(tags=[(_TAG["NEEDED"], "libc.so.6")], omit_dynstr_section=True)
+    )
+    assert out["needed"] == [""]  # the entry exists but its name cannot resolve
+    assert any("names unavailable" in w for w in out["warnings"])
+
+
+def test_a_truncated_dynamic_array_is_a_warning() -> None:
+    data = _build_elf_dynamic(
+        tags=[(_TAG["NEEDED"], "libc.so.6")], with_sections=False, with_phdrs=True
+    )
+    # Cut the file inside the dynamic array: PT_DYNAMIC still claims the full
+    # size, so the walk must stop with a warning instead of reading past EOF.
+    dyn = list_elf_dynamic(data)
+    assert dyn["entries_listed"] == 3  # sanity: STRTAB, STRSZ, NEEDED
+    out = list_elf_dynamic(data[: len(data) - 24])
+    assert out["entries_listed"] < 3
+    assert any("past end of file" in w for w in out["warnings"])
+
+
+def test_list_dynamic_rejects_non_elf() -> None:
+    with pytest.raises(ElfParseError):
+        list_elf_dynamic(b"MZ\x00\x00" + b"\x00" * 60)
+
+
 # --- service routing ----------------------------------------------------------
 
 
@@ -553,5 +831,34 @@ def test_service_segments_refuses_a_non_elf(tmp_path: Path) -> None:
 
 def test_service_segments_reports_missing_file(tmp_path: Path) -> None:
     result = _service(tmp_path).elf_segments(str(tmp_path / "nope.so"))
+    assert not result.ok
+    assert result.error.code == "not_found"
+
+
+def test_service_decodes_dynamic(tmp_path: Path) -> None:
+    binary = tmp_path / "libfoo.so"
+    binary.write_bytes(
+        _build_elf_dynamic(
+            tags=[(_TAG["NEEDED"], "libc.so.6"), (_TAG["FLAGS_1"], 0x1)],
+            relro_segment=True,
+        )
+    )
+    result = _service(tmp_path).elf_dynamic(str(binary))
+    assert result.ok, result.model_dump(mode="json")
+    assert result.data["needed"] == ["libc.so.6"]
+    assert result.data["bind_now"] is True
+    assert result.data["relro"] == "full"
+
+
+def test_service_dynamic_refuses_a_non_elf(tmp_path: Path) -> None:
+    junk = tmp_path / "not.so"
+    junk.write_bytes(b"this is not an ELF binary")
+    result = _service(tmp_path).elf_dynamic(str(junk))
+    assert not result.ok
+    assert result.error.code == "invalid_params"
+
+
+def test_service_dynamic_reports_missing_file(tmp_path: Path) -> None:
+    result = _service(tmp_path).elf_dynamic(str(tmp_path / "nope.so"))
     assert not result.ok
     assert result.error.code == "not_found"

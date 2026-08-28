@@ -4,12 +4,14 @@ Native code could only be opened here through r2 or Ghidra, external tools that
 are not always installed. The ELF header/section/program/dynamic/symbol tables
 are an exact binary format that reads with the stdlib alone. This gate drives
 the real stdio server end to end on a hand-assembled ELF (portable, so it runs
-anywhere) and pins the round trip: elf.summary, elf.symbols and elf.segments are
-advertised, the summary returns the class, machine, section list and shared-
-library dependencies, the symbol page classifies imports and exports, the
-segment list carries the program headers with the interp/nx/relro posture, and a
-file that is not an ELF fails with invalid_params rather than an internal fault.
-It needs no analysis backend, so it always runs.
+anywhere) and pins the round trip: elf.summary, elf.symbols, elf.segments and
+elf.dynamic are advertised, the summary returns the class, machine, section list
+and shared-library dependencies, the symbol page classifies imports and exports,
+the segment list carries the program headers with the interp/nx/relro posture,
+the dynamic decode names every tag with the DT_FLAGS/DT_FLAGS_1 words and the
+pie/bind_now/relro verdicts, and a file that is not an ELF fails with
+invalid_params rather than an internal fault. It needs no analysis backend, so
+it always runs.
 """
 
 from __future__ import annotations
@@ -43,7 +45,13 @@ def _build_elf64() -> bytes:
     off_soname = add("libgate.so")
     dynamic = b"".join(
         struct.pack("<qQ", tag, val)
-        for tag, val in [(1, off_libc), (14, off_soname), (0, 0)]
+        for tag, val in [
+            (1, off_libc),  # DT_NEEDED
+            (14, off_soname),  # DT_SONAME
+            (30, 0x8),  # DT_FLAGS: BIND_NOW
+            (0x6FFFFFFB, 0x8000000),  # DT_FLAGS_1: PIE
+            (0, 0),
+        ]
     )
     # .dynsym: the null symbol, one import (undefined) and one export (defined).
     dynsym = b"".join(
@@ -165,6 +173,7 @@ async def test_mcp_stdio_elf_summary(tmp_path: Path) -> None:
         assert "elf.summary" in tools
         assert "elf.symbols" in tools
         assert "elf.segments" in tools
+        assert "elf.dynamic" in tools
 
         full = await _call(client, "elf.summary", {"path": str(binary)})
         assert full["ok"] is True, full
@@ -205,6 +214,21 @@ async def test_mcp_stdio_elf_summary(tmp_path: Path) -> None:
             "GNU_RELRO",
         ]
 
+        dynamic = await _call(client, "elf.dynamic", {"path": str(binary)})
+        assert dynamic["ok"] is True, dynamic
+        dyn_data = dynamic["data"]
+        assert dyn_data["present"] is True
+        assert dyn_data["source"] == "section"
+        assert dyn_data["needed"] == ["libc.so.6"]
+        assert dyn_data["soname"] == "libgate.so"
+        assert dyn_data["flags"] == ["BIND_NOW"]
+        assert dyn_data["flags_1"] == ["PIE"]
+        assert dyn_data["pie"] is True
+        assert dyn_data["bind_now"] is True
+        assert dyn_data["relro"] == "none"  # this fixture carries no PT_GNU_RELRO
+        tags = [e["tag"] for e in dyn_data["entries"]]
+        assert {"NEEDED", "SONAME", "FLAGS", "FLAGS_1"} <= set(tags)
+
         bad = await _call(client, "elf.summary", {"path": str(junk)})
         assert bad["ok"] is False
         assert bad["error"]["code"] == "invalid_params"
@@ -216,3 +240,7 @@ async def test_mcp_stdio_elf_summary(tmp_path: Path) -> None:
         bad_symbols = await _call(client, "elf.symbols", {"path": str(junk)})
         assert bad_symbols["ok"] is False
         assert bad_symbols["error"]["code"] == "invalid_params"
+
+        bad_dynamic = await _call(client, "elf.dynamic", {"path": str(junk)})
+        assert bad_dynamic["ok"] is False
+        assert bad_dynamic["error"]["code"] == "invalid_params"

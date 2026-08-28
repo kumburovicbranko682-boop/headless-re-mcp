@@ -44,6 +44,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 新增（原生 ELF 离线速览，无需 r2/Ghidra）
 
+- 新增 `elf.dynamic`：纯 stdlib 完整解码 `.dynamic` 数组——即离线 `readelf -d` 加上分析者要自己下的结论。
+  `elf.summary` 只从 `.dynamic` 里抽链接基本面（NEEDED/SONAME/RPATH/RUNPATH），这里读**全部**：每个 tag 具名
+  （STRTAB/SYMTAB/INIT/FINI 数组/PLTGOT/GNU_HASH/VERNEED/DEBUG/RELACOUNT…）带原始值，字符串型 tag 就地经动态
+  字符串表解析出名字；DT_FLAGS（ORIGIN/SYMBOLIC/TEXTREL/BIND_NOW/STATIC_TLS）与 DT_FLAGS_1（NOW/NODELETE/
+  NOOPEN/PIE/…）两个标志字逐位展开成名字列表——这两个字段 `readelf` 也只给十六进制之外的缩写，人工解位最易错。
+  并直接给出四个结论字段：`pie`（DF_1_PIE，比"e_type 是 DYN"更准，能区分 PIE 可执行与普通 .so）、`bind_now`
+  （DT_BIND_NOW 旧 tag、DF_BIND_NOW、DF_1_NOW 三处任一）、`textrel`（DT_TEXTREL 或 DF_TEXTREL，加载期改写代码
+  段的信号）、以及升级为 **checksec 三态**的 `relro`——`full` 需 PT_GNU_RELRO 段加 bind-now，`partial` 只有段，
+  `none` 都没有（`elf.segments` 的布尔版只能说"有没有段"）。健壮性专门做了**节表剥离**场景：`.dynamic` 节找不到
+  时回退 PT_DYNAMIC 程序头定位，字符串表从 `.dynstr` 节回退到 DT_STRTAB 经 PT_LOAD 做 vaddr→offset 映射——恶意
+  样本常删节表，这条路径让它们照样可读（对节表清零的 `/usr/bin/ls` 验证：27 项全出、库名全解析）。静态链接
+  二进制返回 `present=false` 加 warning；数组越界记 warning 停步。已对真实系统二进制验证：`/usr/bin/ls`
+  （BIND_NOW+PIE，full RELRO）、`libc.so.6`（BIND_NOW+STATIC_TLS，full）、`/usr/bin/python3.12`（无标志，
+  partial）与 `readelf -d`/checksec 结论逐项一致。工具为**核心、按路径、只读**，各工作方向均可见。新增可移植
+  的手工汇编夹具单测（全量解码、RELRO 三态、旧 tag 与两标志字的 bind_now、textrel 两来源、未知 tag 十六进制、
+  节表剥离回退、32 位/大端、静态、字符串表缺失、截断、非 ELF 拒绝、服务三类信封）；ELF MCP stdio Gate 扩到
+  同时打 `elf.dynamic`（断言标志解码与结论字段）。
 - 新增 `elf.segments`：纯 stdlib 读取程序头表——即离线 `readelf -l`。`elf.summary` 读的是节表（链接器视图），
   这里读的是程序头（**内核实际映射的可加载视图**），互补:逐段给出类型（LOAD/DYNAMIC/INTERP/GNU_STACK/
   GNU_RELRO/GNU_EH_FRAME/TLS/PHDR/NOTE…）、rwx 权限、文件偏移、vaddr/paddr、filesz/memsz 与对齐;并抽出
@@ -149,7 +166,7 @@ until 1.0 the tool surface may still change between minor versions.
   先例：去掉 POSIX-only 前置断言，只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **273（156 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **274（157 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
