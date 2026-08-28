@@ -498,6 +498,38 @@ def test_pyghidra_launch_translates_analyzeheadless_flags(
     assert not (tmp_path / "project" / "pyghidra_project").exists()
 
 
+def test_pyghidra_preserves_operator_java_tool_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The PyGhidra launch must keep an operator's JAVA_TOOL_OPTIONS, not clobber it.
+
+    The analyzeHeadless (Jython) path already prepends -Xmx so an operator's
+    proxy, encoding, or the JDK 17+ --add-opens survives; its twin here did not,
+    overwriting JAVA_TOOL_OPTIONS with only -Xmx. PyGhidra is modern Ghidra's
+    only launch route, and Ghidra >= 11.3 runs on exactly the JDK 17/21 where
+    that --add-opens is required, so the clobber silently broke the launch on
+    the installs that need it most. Pin that the operator's options stay and the
+    heap bound is prepended (the JVM parses -Xmx last, so an explicit operator
+    -Xmx still wins) -- the same contract the analyzeHeadless path already keeps.
+    """
+    monkeypatch.setattr(ghidra_client.importlib.util, "find_spec", lambda name: object())
+    captured = _capture_env(monkeypatch)
+    monkeypatch.setenv(
+        "JAVA_TOOL_OPTIONS", "--add-opens=java.base/java.lang=ALL-UNNAMED -Xmx8G"
+    )
+    home = _fake_pyghidra_home(tmp_path)
+    client = ghidra_client.GhidraClient(home=home)
+    client.java = tmp_path / "java"
+    client.java.write_bytes(b"")
+    assert client.uses_pyghidra is True
+
+    client.functions(_binary(tmp_path), tmp_path / "project", limit=8)
+
+    opts = captured["env"]["JAVA_TOOL_OPTIONS"]
+    assert "--add-opens=java.base/java.lang=ALL-UNNAMED" in opts
+    assert opts.index("-Xmx2G") < opts.index("-Xmx8G")
+
+
 def test_pyghidra_analyze_drives_a_probe_script_instead_of_a_bare_repl(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
