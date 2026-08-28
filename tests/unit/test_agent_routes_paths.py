@@ -339,6 +339,46 @@ def test_event_history_and_terminal_stream(tmp_path: Path, monkeypatch: pytest.M
     assert "event: llm.completed" in streamed.text
 
 
+def test_event_stream_drains_the_tail_written_after_a_terminal_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exact interleave that closed the stream without its terminal event.
+
+    The generator polls events, then reads the run status. When that poll came
+    back empty and the orchestrator finished the run in the gap -- terminal
+    event, then terminal status -- the old loop broke on "terminal and the
+    poll was empty" and the run.failed the writer had already committed never
+    reached this stream. Reproduced deterministically by finishing the run
+    inside the poll itself: the empty result is computed first, the final
+    writes land before the generator's status read.
+    """
+    app, client = _build(tmp_path, monkeypatch)
+    store = app.state.agent_store
+
+    thread_id = store.create_thread(title="drain").id
+    run = store.create_run(thread_id, provider_profile="default", model="m", deadline_seconds=30)
+    store.append_event(run.id, "llm.started", {"round": 1})
+
+    real_list_events = store.list_events
+    fired = {"done": False}
+
+    def racy_list_events(target: str, *, after: int = 0, limit: int = 1000) -> Any:
+        batch = real_list_events(target, after=after, limit=limit)
+        if not batch and not fired["done"]:
+            fired["done"] = True
+            # The orchestrator finishes the run right after this empty poll:
+            # terminal event first, terminal status last (its write order).
+            store.append_event(run.id, "run.failed", {"status": "failed", "error": "boom"})
+            store.transition(run.id, RunStatus.FAILED, error="boom")
+        return batch
+
+    monkeypatch.setattr(store, "list_events", racy_list_events)
+    streamed = client.get(f"/api/agent/runs/{run.id}/events", headers=HEADERS)
+    assert streamed.status_code == 200
+    assert "event: llm.started" in streamed.text
+    assert "event: run.failed" in streamed.text
+
+
 def test_event_stream_emits_a_heartbeat_while_idle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -5,6 +5,28 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（SSE 事件流在收尾竞速里把终态事件永久漏掉）
+
+- run 事件流（`/api/agent/runs/{id}/events`）的循环是"先轮询事件、再读状态"，
+  退出条件为"状态终态且本轮轮询为空"。但事件轮询与状态读取不同刻：轮询读空
+  之后、状态读取之前，orchestrator 恰好收尾（落终态事件+切终态状态）的话，
+  这条流就带着未读的尾巴断开——`run.completed` / `run.failed` /
+  `run.cancelled` / `run.rejected` 这条**说明结局的事件**永远不进此流。更糟的
+  是四条终态路径的写序全部是**先 transition 后 append**（完成 480-481、失败
+  364-365、取消 371-372、拒绝 662-671），竞速窗不只是两读之间的间隙：状态一旦
+  提交，任何在事件落库前完成"读空+读状态"的流都中招；SQLite 忙等（busy_timeout
+  30s）下两笔写之间的间隙还可能被调度器写入拉长到肉眼可见。前端流结束后只回
+  拉 messages 不回拉 events，丢的终态事件在会话视图里就是永久缺失。修法两侧
+  缺一不可：(1) orchestrator 四条终态路径统一改为**先落终态事件、后切终态状
+  态**，让终态状态成为最后一笔写（store 的 `recover_after_restart` 在单事务内
+  原子提交，不受影响、不动）；(2) SSE 生成器观察到终态后**排干到一次空读**再
+  断流——两者合并后"读到终态"蕴含"所有事件已持久"，一次空读即为完备判据。回归
+  四条：routes 侧用包装 `list_events` 在"空批计算完成后、状态读取前"同步完成
+  收尾，确定性复现旧循环丢 `run.failed`（修前红）；orchestrator 侧用记录器钉
+  四条路径"事件先于状态"（完成走真跑，失败/取消直调 finisher，拒绝走审批拒绝
+  流，修前全红）。修后 4 条全绿；全部 agent 测试文件 + web 控制台 +
+  orchestrator 边缘共 440 passed + 1 合法 Windows-only skip，ruff / mypy 干净。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

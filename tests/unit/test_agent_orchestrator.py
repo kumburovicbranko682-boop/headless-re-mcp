@@ -1029,6 +1029,90 @@ class _ReasoningProvider:
         return ["fake"]
 
 
+def _record_terminal_writes(store: AgentStore) -> list[tuple[str, str]]:
+    """Record the relative order of status transitions and event appends.
+
+    The SSE stream closes when it observes a terminal run status, so on every
+    terminal path the status must be the store's last write -- otherwise a
+    stream whose (empty) event poll ran before the final writes and whose
+    status read ran after the transition closes without the terminal event.
+    """
+    calls: list[tuple[str, str]] = []
+    real_transition = store.transition
+    real_append = store.append_event
+
+    def spy_transition(run_id: str, target: RunStatus, *, error: str | None = None) -> Any:
+        calls.append(("status", target.value))
+        return real_transition(run_id, target, error=error)
+
+    def spy_append(run_id: str, event_type: str, data: JsonObject) -> Any:
+        calls.append(("event", event_type))
+        return real_append(run_id, event_type, data)
+
+    store.transition = spy_transition  # type: ignore[method-assign]
+    store.append_event = spy_append  # type: ignore[method-assign]
+    return calls
+
+
+def _assert_event_precedes_status(calls: list[tuple[str, str]], event_type: str, status: str) -> None:
+    assert ("event", event_type) in calls, calls
+    assert ("status", status) in calls, calls
+    assert calls.index(("event", event_type)) < calls.index(("status", status)), calls
+
+
+@pytest.mark.asyncio
+async def test_completed_event_lands_before_the_completed_status(tmp_path: Path) -> None:
+    store = AgentStore(tmp_path / "order-completed.db")
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "finish")
+    runner = AgentOrchestrator(
+        store, CommandCatalog([]), _configs(tmp_path), provider_factory=lambda _: FakeProvider([()])
+    )
+    calls = _record_terminal_writes(store)
+    run = await runner.start_run(thread.id)
+    assert await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED}) is RunStatus.COMPLETED
+    _assert_event_precedes_status(calls, "run.completed", "completed")
+
+
+@pytest.mark.asyncio
+async def test_failure_and_cancel_events_land_before_their_statuses(tmp_path: Path) -> None:
+    store = AgentStore(tmp_path / "order-finishers.db")
+    thread = store.create_thread()
+    runner = AgentOrchestrator(
+        store, CommandCatalog([]), _configs(tmp_path), provider_factory=lambda _: FakeProvider([])
+    )
+    calls = _record_terminal_writes(store)
+
+    failed = store.create_run(thread.id, provider_profile="default", model="fake", deadline_seconds=30)
+    await runner._finish_failure(failed.id, "boom", event="run.failed")
+    _assert_event_precedes_status(calls, "run.failed", "failed")
+
+    calls.clear()
+    cancelled = store.create_run(thread.id, provider_profile="default", model="fake", deadline_seconds=30)
+    await runner._finish_cancel(cancelled.id)
+    _assert_event_precedes_status(calls, "run.cancelled", "cancelled")
+
+
+@pytest.mark.asyncio
+async def test_rejected_event_lands_before_the_rejected_status(tmp_path: Path) -> None:
+    store = AgentStore(tmp_path / "order-rejected.db")
+    thread = store.create_thread()
+    provider = FakeProvider([(ProviderToolCall("danger", "test.tool", {}),), ()])
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True}, effect=ToolEffect.STATE_CHANGE)]),
+        _configs(tmp_path),
+        provider_factory=lambda _: provider,
+    )
+    calls = _record_terminal_writes(store)
+    run = await runner.start_run(thread.id)
+    assert await _wait_status(store, run["id"], {RunStatus.AWAITING_APPROVAL}) is RunStatus.AWAITING_APPROVAL
+    required = next(event for event in store.list_events(run["id"]) if event.type == "approval.required")
+    await runner.decide(run["id"], "danger", str(required.data["args_sha256"]), approved=False)
+    assert await _wait_status(store, run["id"], {RunStatus.REJECTED}) is RunStatus.REJECTED
+    _assert_event_precedes_status(calls, "run.rejected", "rejected")
+
+
 @pytest.mark.asyncio
 async def test_reasoning_deltas_are_flushed_to_the_event_log(tmp_path: Path) -> None:
     store = AgentStore(tmp_path / "reason.db")

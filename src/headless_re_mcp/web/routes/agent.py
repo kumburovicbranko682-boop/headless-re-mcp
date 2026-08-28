@@ -372,19 +372,39 @@ def register_agent_routes(
         if await asyncio.to_thread(store.get_run, run_id) is None:
             raise HTTPException(status_code=404, detail="run_not_found")
 
+        def _frames(batch: list[Any]) -> list[bytes]:
+            frames: list[bytes] = []
+            for event in batch:
+                payload = json.dumps(event.dump(), ensure_ascii=False, separators=(",", ":"), default=str)
+                frames.append(f"id: {event.seq}\nevent: {event.type}\ndata: {payload}\n\n".encode())
+            return frames
+
         async def generate() -> AsyncIterator[bytes]:
             cursor = after
             idle = 0
             while True:
                 batch = await asyncio.to_thread(store.list_events, run_id, after=cursor)
-                for event in batch:
-                    cursor = event.seq
-                    payload = json.dumps(event.dump(), ensure_ascii=False, separators=(",", ":"), default=str)
-                    yield f"id: {event.seq}\nevent: {event.type}\ndata: {payload}\n\n".encode()
+                if batch:
+                    cursor = batch[-1].seq
+                    for frame in _frames(batch):
+                        yield frame
                 run = await asyncio.to_thread(store.get_run, run_id)
                 if run is None:
                     break
-                if run.status in TERMINAL_RUN_STATUSES and not batch:
+                if run.status in TERMINAL_RUN_STATUSES:
+                    # Breaking on "terminal and the poll was empty" dropped the
+                    # terminal event: that poll ran before the orchestrator's
+                    # final writes, the status read after them. The status is
+                    # now the orchestrator's last write, so re-reading after
+                    # observing it is conclusive -- drain to one empty read,
+                    # then close. Everything is durable; no sleep needed.
+                    while True:
+                        tail = await asyncio.to_thread(store.list_events, run_id, after=cursor)
+                        if not tail:
+                            break
+                        cursor = tail[-1].seq
+                        for frame in _frames(tail):
+                            yield frame
                     break
                 if not batch:
                     idle += 1

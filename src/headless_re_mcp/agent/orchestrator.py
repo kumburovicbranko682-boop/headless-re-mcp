@@ -361,15 +361,19 @@ class AgentOrchestrator:
         run = self.store.get_run(run_id)
         if run is None or run.status in TERMINAL_RUN_STATUSES:
             return
-        self.store.transition(run_id, RunStatus.FAILED, error=error[:1000])
+        # Event before status on every terminal path: the SSE stream closes
+        # when it observes a terminal status, so the status must be the last
+        # write or the closing reader can miss the very event that says why.
         self.store.append_event(run_id, event, {"status": RunStatus.FAILED.value, "error": error[:1000]})
+        self.store.transition(run_id, RunStatus.FAILED, error=error[:1000])
 
     async def _finish_cancel(self, run_id: str) -> None:
         run = self.store.get_run(run_id)
         if run is None or run.status in TERMINAL_RUN_STATUSES:
             return
-        self.store.transition(run_id, RunStatus.CANCELLED, error="cancelled")
+        # Event before status; see _finish_failure.
         self.store.append_event(run_id, "run.cancelled", {"status": RunStatus.CANCELLED.value})
+        self.store.transition(run_id, RunStatus.CANCELLED, error="cancelled")
 
     async def _run_loop(self, run_id: str) -> None:
         run = self.store.get_run(run_id)
@@ -477,8 +481,9 @@ class AgentOrchestrator:
                 await self._finish_failure(run_id, RUN_ROUNDS_EXHAUSTED, event="run.failed")
                 return
             if not completed_calls:
-                self.store.transition(run_id, RunStatus.COMPLETED)
+                # Event before status; see _finish_failure.
                 self.store.append_event(run_id, "run.completed", {"status": RunStatus.COMPLETED.value})
+                self.store.transition(run_id, RunStatus.COMPLETED)
                 return
             assistant_tool_calls = []
             for call in completed_calls:
@@ -659,15 +664,16 @@ class AgentOrchestrator:
                 if current["approved"] is False:
                     rejection = {"ok": False, "error": {"code": "tool_rejected", "message": "user rejected this invocation"}}
                     self.store.complete_tool_call(run_id, call_id, rejection, ok=False)
-                    self.store.transition(
-                        run_id,
-                        RunStatus.REJECTED,
-                        error="dangerous tool invocation rejected",
-                    )
+                    # Event before status; see _finish_failure.
                     self.store.append_event(
                         run_id,
                         "run.rejected",
                         {"status": RunStatus.REJECTED.value, "tool_call_id": call_id},
+                    )
+                    self.store.transition(
+                        run_id,
+                        RunStatus.REJECTED,
+                        error="dangerous tool invocation rejected",
                     )
                     return rejection
                 if current["approved"] is True:
