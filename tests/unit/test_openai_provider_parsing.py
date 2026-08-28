@@ -374,6 +374,40 @@ async def test_completion_rejects_tool_arguments_that_are_not_json() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+async def test_completion_rejects_non_finite_tool_argument_constants(literal: str) -> None:
+    # json.loads accepts the non-standard tokens NaN/Infinity/-Infinity by
+    # default, so a malformed provider could smuggle a float nan/inf into a
+    # tool argument. Downstream assumes standard JSON: the args hash uses
+    # allow_nan=False and would abort the whole run with an opaque ValueError,
+    # and the stored row plus the replayed assistant turn would carry a bare
+    # NaN that a strict provider parser rejects. It must fail as the same clean
+    # "invalid tool arguments" error the parser raises for any other bad JSON.
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        chunk = {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c",
+                                "function": {"name": "n", "arguments": f'{{"x": {literal}}}'},
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        return httpx.Response(200, text=_sse_body(chunk))
+
+    with pytest.raises(ValueError, match="invalid tool arguments at index 0"):
+        async for _ in _provider(respond).stream_chat(messages=[], tools=[], model="m"):
+            pass
+
+
+@pytest.mark.asyncio
 async def test_completion_rejects_a_tool_call_that_never_named_a_function() -> None:
     def respond(request: httpx.Request) -> httpx.Response:
         del request

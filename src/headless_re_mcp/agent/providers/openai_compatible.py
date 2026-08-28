@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Sequence
 from threading import Lock
-from typing import Any
+from typing import Any, NoReturn
 
 from headless_re_mcp.agent.config import ProviderProfile
 from headless_re_mcp.agent.providers.base import ProviderEvent, ProviderToolCall
@@ -25,6 +25,22 @@ _reported_bad_proxy_env = False
 _ssl_context: Any = None
 _ssl_lock = Lock()
 _HIDDEN_DELTA_KEYS = ("reasoning_content", "reasoning", "thinking")
+
+
+def _reject_json_constant(token: str) -> NoReturn:
+    """Refuse the non-standard JSON constants ``json.loads`` accepts by default.
+
+    Python maps the bare tokens ``NaN``, ``Infinity`` and ``-Infinity`` to float
+    nan/inf through ``parse_constant``, but real OpenAI-compatible providers emit
+    standard JSON and everything downstream assumes it. A non-finite value that
+    slipped through was serialized back as a bare ``NaN`` twice -- into the stored
+    arguments row and into the assistant tool_calls turn replayed on the wire,
+    which a strict provider parser 400s on -- and the args hash, built with
+    ``allow_nan=False``, raised an opaque ValueError that aborted the run instead
+    of failing the one call. Rejecting the token here makes a malformed payload
+    the same clean "invalid tool arguments" error as any other bad JSON.
+    """
+    raise ValueError(f"non-finite JSON constant {token!r} is not permitted")
 
 
 def _plain_text(value: Any) -> str:
@@ -430,8 +446,10 @@ class OpenAICompatibleProvider:
         calls_out: list[ProviderToolCall] = []
         for index, item in sorted(tool_fragments.items()):
             try:
-                arguments = json.loads(item["arguments"] or "{}")
-            except json.JSONDecodeError as exc:
+                arguments = json.loads(item["arguments"] or "{}", parse_constant=_reject_json_constant)
+            except ValueError as exc:
+                # ValueError covers both a JSONDecodeError (its subclass) and the
+                # rejection raised for a non-finite constant above.
                 raise ValueError(f"provider emitted invalid tool arguments at index {index}") from exc
             if not isinstance(arguments, dict) or not item["name"]:
                 raise ValueError(f"provider emitted incomplete tool call at index {index}")
