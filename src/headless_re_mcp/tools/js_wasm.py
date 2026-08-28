@@ -440,4 +440,36 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.wasm_disassemble(path, function, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="wasm.callgraph")
+    def wasm_callgraph(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Build a .wasm module's static call graph (section 10).
+
+        wasm.disassemble reads one function; this reads how they wire together --
+        the whole-module structure needed to find the entry reach, the functions
+        that fan out into the imported host surface, and dead code. Each defined
+        function's `call` targets are collected (deduplicated, with imported
+        targets flagged so a call into wasi_snapshot_preview1.* or env.* stands
+        out) plus a count of `call_indirect` sites, which name no static target.
+        Reuses the disassembler, so a body that hits a SIMD/atomic or unknown
+        opcode is marked complete false with the edges found so far still real.
+        Pure Python, no wabt.
+
+        Answers with functions (paged over the defined functions), count, total,
+        offset, has_more, imported_count, edge_count (distinct direct call edges
+        over every scanned function), resolved (false when the code section will
+        not parse) and scan_capped. Each function carries index (absolute,
+        matching wasm.functions / wasm.disassemble), name, calls (each {index,
+        name, imported}), call_count (distinct direct callees, which can exceed
+        the listed calls when capped), callees_truncated, indirect_call_count and
+        complete.
+
+        A file that is not a WebAssembly module is refused as invalid_params and
+        one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_callgraph(path, offset=offset, limit=limit))
+
     return tools.bindings

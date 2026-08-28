@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **318（200 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **319（201 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -504,6 +504,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   为 false)与 `scan_capped`。每条指令带 `offset`(体内字节偏移)、`op`(助记符,或未命名数值操作码的 op_0xNN)、
   `opcode`(十六进制)与 `operands`(渲染后的立即数列表:索引、常量值、块类型、memarg 的 align/offset...)。非模块
   报 `invalid_params`,超 16 MiB 报 `too_large`。
+- 新增 `wasm.callgraph`:纯 Python 从代码节(节 10)构建模块的静态调用图。`wasm.disassemble` 读单个函数,这个读
+  函数彼此如何连接——找入口可达性、扇出到导入宿主面的函数与死代码所需的整模块结构。逐个解码定义函数并收集其
+  `call` 目标(去重,导入目标打标,于是调进 wasi_snapshot_preview1.* 或 env.* 一眼可辨),外加 `call_indirect`
+  站点计数(它不命名静态目标)。复用反汇编器,故某函数体遇 SIMD/atomic 或未知操作码时该行记 complete false,
+  截至该点找到的边仍为真。回 `functions`(分页于定义函数)、`count`/`total`/`offset`/`has_more`、`imported_count`、
+  `edge_count`(所有扫描函数上去重直接调用边之和)、`resolved`(代码节解析不了为 false)与 `scan_capped`。每个函数带
+  `index`(绝对,与 `wasm.functions`/`wasm.disassemble` 同编号)、`name`、`calls`(各 {index,name,imported})、
+  `call_count`(不同直接被调数,截断时可超过所列 calls)、`callees_truncated`、`indirect_call_count` 与 `complete`。
+  非模块报 `invalid_params`,超 16 MiB 报 `too_large`。
 - 新增 `wasm.globals`:纯 Python 列出模块定义的全局变量(节 6)。summary 只给计数,这里逐个命名:
   每行带 `index`(全局索引空间里的位置,导入全局在前故作为偏移加上)、`value_type`、`mutable`
   (可变全局常是加壳器藏栈指针/解密 key 的地方),与 `init`——初始化表达式首指令的解码:`{op}` 加

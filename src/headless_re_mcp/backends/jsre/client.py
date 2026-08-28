@@ -21,6 +21,7 @@ from headless_re_mcp.backends.common.bounded_run import (
 )
 from headless_re_mcp.backends.jsre.wasm_summary import (
     extract_wasm_strings,
+    list_wasm_callgraph,
     list_wasm_code,
     list_wasm_data,
     list_wasm_disassemble,
@@ -509,6 +510,23 @@ class WasmClient:
                 "backend_error", f"input unreadable: {exc}", path=str(resolved)
             ) from exc
         return list_wasm_disassemble(raw, function=function, offset=offset, limit=limit)
+
+    def callgraph(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """Build the module's static call graph from the code section (no wabt)."""
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        if not _looks_like_wasm(resolved):
+            raise JsReError(
+                "invalid_params",
+                "not a WebAssembly module: missing the \\0asm magic",
+                path=str(resolved),
+            )
+        try:
+            raw = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        return list_wasm_callgraph(raw, offset=offset, limit=limit)
 
 
 def _discover_webcrack() -> Path | None:

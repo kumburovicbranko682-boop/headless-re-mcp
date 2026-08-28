@@ -2075,3 +2075,171 @@ def list_wasm_disassemble(
     result["offset"] = start
     result["has_more"] = start + len(window) < len(instructions)
     return result
+
+
+# wasm.callgraph caps: bound how many function bodies are walked, how many rows
+# a page returns, and how many distinct callees are listed per function.
+_MAX_CALLGRAPH_COLLECT = 20_000
+_MAX_CALLGRAPH_PAGE = 1000
+_MAX_CALL_EDGES = 256
+
+
+def _resolve_func_name(
+    index: int,
+    imports: list[tuple[str, str, int]],
+    func_names: dict[int, str],
+) -> str:
+    """Name a function index: name-section debug name, else import module.field."""
+    if index in func_names:
+        return func_names[index]
+    if index < len(imports):
+        module, field, _ = imports[index]
+        return module + "." + field
+    return "func[" + str(index) + "]"
+
+
+def _direct_call_target(instruction: JsonObject) -> int | None:
+    """Pull the callee index out of a decoded `call` instruction's operands."""
+    operands = instruction.get("operands") or []
+    if not operands:
+        return None
+    try:
+        return int(str(operands[0]).split()[-1])
+    except (ValueError, IndexError):
+        return None
+
+
+def list_wasm_callgraph(data: bytes, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """Build the module's static call graph from the code section (section 10).
+
+    wasm.disassemble reads one function; this reads how the functions wire
+    together -- the whole-module structure view an analyst needs to find the
+    entry reach, the functions that fan out into the imported host surface, and
+    dead code. Each defined function is decoded and its `call` targets collected
+    (deduplicated, with imported targets flagged so a call into
+    wasi_snapshot_preview1.* or env.* stands out) along with a count of
+    `call_indirect` sites, which do not name a static target. Reuses the
+    disassembler, so on a SIMD/atomic or unknown opcode a body's decode stops
+    and that row is marked complete false -- its edges up to that point are
+    still real. Pure Python, no wabt.
+
+    Answers with functions (paged over the defined functions), count, total,
+    offset, has_more, imported_count, edge_count (distinct direct call edges
+    summed over every scanned function, not just the page), resolved (false when
+    the code section will not parse) and scan_capped. Each function carries index
+    (absolute, matching wasm.functions / wasm.disassemble), name, calls (each
+    {index, name, imported}), call_count (distinct direct callees, which may
+    exceed the listed calls when capped), callees_truncated, indirect_call_count
+    and complete.
+    """
+    result: JsonObject = {
+        "functions": [],
+        "count": 0,
+        "total": 0,
+        "offset": max(0, int(offset)),
+        "has_more": False,
+        "imported_count": 0,
+        "edge_count": 0,
+        "resolved": True,
+        "scan_capped": False,
+    }
+    sections, name_payload = _collect_sections(data)
+
+    imports: list[tuple[str, str, int]] = []
+    if 2 in sections:
+        try:
+            imports = _parse_func_imports(sections[2])
+        except (_WasmTruncated, _WasmMalformed):
+            imports = []
+    imported_count = len(imports)
+    result["imported_count"] = imported_count
+
+    func_names: dict[int, str] = {}
+    if name_payload is not None:
+        try:
+            func_names = _parse_function_names(name_payload)
+        except (_WasmTruncated, _WasmMalformed):
+            func_names = {}
+
+    if 10 not in sections:
+        return result
+
+    payload = sections[10]
+    try:
+        count, pos = _uleb(payload, 0)
+    except (_WasmTruncated, _WasmMalformed):
+        result["resolved"] = False
+        return result
+
+    rows: list[JsonObject] = []
+    capped = False
+    edge_total = 0
+    for i in range(count):
+        if len(rows) >= _MAX_CALLGRAPH_COLLECT:
+            capped = True
+            break
+        try:
+            body_size, pos = _uleb(payload, pos)
+            end = pos + body_size
+            if end > len(payload):
+                raise _WasmTruncated
+            bpos = pos
+            group_count, bpos = _uleb(payload, bpos)
+            for _ in range(group_count):
+                if bpos >= end:
+                    break
+                _, bpos = _uleb(payload, bpos)
+                _, bpos = _u8(payload, bpos)
+            instructions, stopped, _ = _decode_instructions(payload, bpos, end)
+            pos = end
+        except (_WasmTruncated, _WasmMalformed):
+            result["resolved"] = False
+            break
+        func_index = imported_count + i
+        callees: list[JsonObject] = []
+        seen: set[int] = set()
+        indirect = 0
+        edges_truncated = False
+        for instruction in instructions:
+            op = instruction["op"]
+            if op == "call":
+                target = _direct_call_target(instruction)
+                if target is None or target in seen:
+                    continue
+                seen.add(target)
+                if len(callees) < _MAX_CALL_EDGES:
+                    callees.append(
+                        {
+                            "index": target,
+                            "name": _resolve_func_name(target, imports, func_names),
+                            "imported": target < imported_count,
+                        }
+                    )
+                else:
+                    edges_truncated = True
+            elif op == "call_indirect":
+                indirect += 1
+        edge_total += len(seen)
+        rows.append(
+            {
+                "index": func_index,
+                "name": _resolve_func_name(func_index, imports, func_names),
+                "calls": callees,
+                "call_count": len(seen),
+                "callees_truncated": edges_truncated,
+                "indirect_call_count": indirect,
+                "complete": stopped is None,
+            }
+        )
+
+    result["total"] = len(rows)
+    result["edge_count"] = edge_total
+    result["scan_capped"] = capped
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_CALLGRAPH_PAGE))
+    window = rows[start : start + cap]
+    result["functions"] = window
+    result["count"] = len(window)
+    result["offset"] = start
+    result["has_more"] = start + len(window) < len(rows)
+    return result
