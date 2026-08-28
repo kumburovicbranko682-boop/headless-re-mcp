@@ -169,3 +169,18 @@ def test_m11_r2_live_elf_address_mapping(tmp_path: Path) -> None:
     assert disasm.get("parsed") is True
     assert disasm.get("address_va") == va
     assert disasm["address"]["rva"] == va - image_base
+
+    # imports (iij) on an ELF: the path must parse and map addresses, but unlike
+    # a PE the rows carry no lib -- an ELF resolves imports at runtime through
+    # DT_NEEDED, not per symbol -- so this pins the ELF contract the r2.imports
+    # docstring now states rather than asserting the PE-only lib key. A
+    # dynamically linked executable (a plain gcc build is one) always imports at
+    # least the libc startup functions, so the list is non-empty and each row
+    # names a symbol mapped through the same load base as the functions above.
+    imports = client.run(fixture, ["aa", "iij"], timeout=60.0)
+    assert imports.get("parsed") is True
+    import_items = imports.get("items") or []
+    assert import_items, "r2 found no imports in a dynamically linked ELF"
+    first_import = import_items[0]
+    assert isinstance(first_import.get("name"), str) and first_import["name"]
+    assert isinstance(first_import.get("address"), dict)
