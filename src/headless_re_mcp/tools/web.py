@@ -78,6 +78,7 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
         url_filter: str = "",
+        type_filter: str = "",
     ) -> dict[str, Any]:
         """List captured network requests.
 
@@ -97,10 +98,18 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         url_filter keeps only rows whose url contains that substring
         (case-insensitive), applied before paging so total is the match count --
         the way to find one endpoint on a page that captured hundreds.
+        type_filter keeps only rows whose resourceType equals that value
+        (case-insensitive, e.g. XHR or Fetch), the way to pull the API traffic
+        out of a capture buried under Image/Script/Stylesheet rows; it combines
+        with url_filter (both must pass) and also runs before paging.
         """
         return _dump(
             analysis.web_network_list(
-                session_id, offset=offset, limit=limit, url_filter=url_filter
+                session_id,
+                offset=offset,
+                limit=limit,
+                url_filter=url_filter,
+                type_filter=type_filter,
             )
         )
 

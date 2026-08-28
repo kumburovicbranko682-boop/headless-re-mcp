@@ -203,6 +203,30 @@ def test_web_network_list_filters_by_url_substring(monkeypatch: Any) -> None:
     assert "url_filter" in doc
 
 
+def test_web_network_list_filters_by_resource_type(monkeypatch: Any) -> None:
+    """type_filter isolates API traffic from asset noise, and combines with url."""
+    backend = WebBackend()
+    handle = _FakeHandle(0)
+    handle.requests = {
+        "1": {"requestId": "1", "url": "https://x/api/login", "resourceType": "XHR"},
+        "2": {"requestId": "2", "url": "https://x/app.js", "resourceType": "Script"},
+        "3": {"requestId": "3", "url": "https://x/api/data", "resourceType": "Fetch"},
+        "4": {"requestId": "4", "url": "https://x/img.png", "resourceType": "Image"},
+    }
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    # Case-insensitive exact match on resourceType.
+    xhr = backend.network_list("s", type_filter="xhr")
+    assert {row["url"] for row in xhr["requests"]} == {"https://x/api/login"}
+    assert xhr["total"] == 1
+    # Combines with url_filter: both must pass.
+    both = backend.network_list("s", type_filter="Fetch", url_filter="/api/")
+    assert {row["url"] for row in both["requests"]} == {"https://x/api/data"}
+    # A blank type_filter returns the whole capture.
+    assert backend.network_list("s", type_filter="  ")["total"] == 4
+    doc = _tool_docstring("web.network.list")
+    assert "type_filter" in doc
+
+
 def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     class _Cdp:
         def __init__(self) -> None:

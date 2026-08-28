@@ -945,7 +945,13 @@ class WebBackend:
         return {"closed": True, "clean": clean}
 
     def network_list(
-        self, session_id: str, *, offset: int = 0, limit: int = 100, url_filter: str = ""
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        url_filter: str = "",
+        type_filter: str = "",
     ) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
@@ -959,6 +965,17 @@ class WebBackend:
         needle = url_filter.strip().lower() if isinstance(url_filter, str) else ""
         if needle:
             items = [item for item in items if needle in str(item.get("url", "")).lower()]
+        # A resourceType exact match (case-insensitive), the way to pull the API
+        # traffic (XHR/Fetch) out of a capture otherwise buried under Image/
+        # Script/Stylesheet rows. Combines with url_filter -- both must pass --
+        # and, like it, runs before paging so total is the match count.
+        wanted_type = type_filter.strip().lower() if isinstance(type_filter, str) else ""
+        if wanted_type:
+            items = [
+                item
+                for item in items
+                if str(item.get("resourceType", "") or "").lower() == wanted_type
+            ]
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         # Headers ride on the ring entry so network.get and har.export can reach

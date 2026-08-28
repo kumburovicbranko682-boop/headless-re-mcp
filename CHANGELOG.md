@@ -261,6 +261,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`web.console` 没有类型过滤，报错淹没在海量 log 里**。延续 `url_filter` 的思路，给 `web.console` 加上 `type_filter`：对条目
   `type` 做大小写不敏感的精确匹配（`error`/`warning`/`log`…），在取尾之前应用，于是能把失败（包括折叠进来的未捕获异常，其
   type 为 error）从被 log 刷屏的控制台里单独拉出来；`has_more` 随之反映更早的匹配项，`dropped` 仍为环形缓冲淘汰计数。
+- **`web.network.list` 只能按 URL 过滤，抓包被 Image/Script/Stylesheet 淹没时挑不出 API 流量**。真实页面一次能抓到成百上千
+  条请求，绝大多数是静态资源；分析者最常要的下一步是「只看 XHR/Fetch」以聚焦接口调用。行里本就有 `resourceType`，故给
+  `web.network.list` 加上 `type_filter`：对 `resourceType` 做大小写不敏感的精确匹配（如 `XHR`/`Fetch`），与 `url_filter` 同处
+  分页之前、两者需同时满足，于是能把 API 流量从资源噪声里单独拉出来，`total` 即过滤后的匹配数，`dropped` 仍为环形缓冲淘汰计数。
 - **`apk.components` 的导出组件不带 intent-filter，看不到具体调用面**。知道某组件被导出后，分析者下一步要问的是"什么 intent
   能触发它"——`BOOT_COMPLETED`（持久化）、`SMS_RECEIVED`（拦截短信）这类 action，或 `BROWSABLE` 这类 category，正是导出组件的
   实际调用面。既然已在遍历清单树，就顺带用新增的 `_intent_filter_names` 收集每个导出组件各 `<intent-filter>` 的
