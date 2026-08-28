@@ -14,16 +14,20 @@ duck-typed data model, the same way the field tests do.
 
 from __future__ import annotations
 
+import sys
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from headless_re_mcp.backends.apk.client import (
+    _CACHE_LIMIT,
     ApkClient,
     ApkError,
     _cap_names,
     _dotted_to_smali,
+    _ParsedApk,
 )
 
 # --- input guard and pure helpers ----------------------------------------
@@ -316,3 +320,160 @@ def test_xrefs_reports_complete_when_under_the_cap() -> None:
     data = client.xrefs(Path("dummy.apk"), "doWork", limit=100)
     assert data["count"] == 1
     assert data["has_more"] is False
+
+
+# --- cache machinery: _apk / _parsed / _ParsedApk / release --------------
+#
+# The tests above stub _apk/_parsed, so the caching layer underneath -- the
+# cache-hit fast path, the one real parse per (path, mtime), LRU eviction, and
+# the parse/analyze failure mapping -- is never entered. These drive the real
+# methods with androguard's two entry points (APK, AnalyzeAPK) faked, on a fresh
+# per-test cache so nothing leaks between tests, and no APK is ever parsed.
+
+
+def _fresh_caches(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ApkClient, "_light_cache", OrderedDict())
+    monkeypatch.setattr(ApkClient, "_full_cache", OrderedDict())
+
+
+def _apk_file(tmp_path: Path) -> Path:
+    apk = tmp_path / "app.apk"
+    apk.write_bytes(b"PK\x03\x04")
+    return apk
+
+
+def test_parsed_apk_holds_its_three_slots() -> None:
+    parsed = _ParsedApk("APK", "ANALYSIS", "DEX")
+    assert parsed.apk == "APK"
+    assert parsed.analysis == "ANALYSIS"
+    assert parsed._dex == "DEX"
+
+
+def test_construction_degrades_when_androguard_cannot_be_imported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A None entry in sys.modules makes ``import androguard`` raise ImportError,
+    # modelling a host that lacks the optional dependency: the constructor must
+    # swallow it and mark the backend unavailable rather than propagate.
+    monkeypatch.setitem(sys.modules, "androguard", None)
+    client = ApkClient()
+    assert client.available is False
+    assert client._androguard is None
+
+
+def test_release_returns_false_when_the_path_cannot_be_resolved() -> None:
+    class _UnresolvablePath:
+        def expanduser(self) -> _UnresolvablePath:
+            return self
+
+        def resolve(self) -> Path:
+            raise OSError("cannot resolve")
+
+    # release() must report "nothing dropped" rather than let the OSError escape
+    # session close.
+    assert ApkClient.release(_UnresolvablePath()) is False  # type: ignore[arg-type]
+
+
+def test_apk_returns_a_cached_parse_without_reparsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fresh_caches(monkeypatch)
+    # Fail loudly if the parser is touched: a cache hit must not reach androguard.
+    monkeypatch.setattr("androguard.core.apk.APK", _boom_apk("light cache was missed"))
+    client = ApkClient()
+    resolved = client._require(_apk_file(tmp_path))
+    key = client._key(resolved)
+    sentinel = object()
+    ApkClient._light_cache[key] = sentinel
+
+    assert client._apk(_apk_file(tmp_path)) is sentinel
+
+
+def test_apk_parses_once_then_inserts_and_evicts_the_oldest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fresh_caches(monkeypatch)
+    made = object()
+    monkeypatch.setattr("androguard.core.apk.APK", lambda p: made)
+    # Prefill to the cap so the fresh insert has to evict the oldest entry.
+    for index in range(_CACHE_LIMIT):
+        ApkClient._light_cache[(f"/prefill/{index}", 0)] = object()
+    client = ApkClient()
+    resolved = client._require(_apk_file(tmp_path))
+    key = client._key(resolved)
+
+    result = client._apk(_apk_file(tmp_path))
+
+    assert result is made
+    assert ApkClient._light_cache[key] is made
+    assert len(ApkClient._light_cache) == _CACHE_LIMIT
+    assert ("/prefill/0", 0) not in ApkClient._light_cache  # oldest evicted
+
+
+def test_apk_maps_a_parse_failure_to_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fresh_caches(monkeypatch)
+    monkeypatch.setattr("androguard.core.apk.APK", _boom_apk("corrupt zip"))
+    client = ApkClient()
+    with pytest.raises(ApkError) as caught:
+        client._apk(_apk_file(tmp_path))
+    assert caught.value.code == "backend_error"
+    assert "failed to parse APK" in caught.value.message
+
+
+def test_parsed_returns_a_cached_analysis_without_reanalyzing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fresh_caches(monkeypatch)
+    monkeypatch.setattr("androguard.misc.AnalyzeAPK", _boom_apk("full cache was missed"))
+    client = ApkClient()
+    resolved = client._require(_apk_file(tmp_path))
+    key = client._key(resolved)
+    cached = _ParsedApk("a", "b", "c")
+    ApkClient._full_cache[key] = cached
+
+    assert client._parsed(_apk_file(tmp_path)) is cached
+
+
+def test_parsed_analyzes_once_then_inserts_and_evicts_the_oldest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fresh_caches(monkeypatch)
+    # AnalyzeAPK yields (apk, dex, analysis); the client stores them as a
+    # _ParsedApk with analysis and dex swapped into their named slots.
+    monkeypatch.setattr("androguard.misc.AnalyzeAPK", lambda p: ("APK", "DEX", "ANALYSIS"))
+    for index in range(_CACHE_LIMIT):
+        ApkClient._full_cache[(f"/prefill/{index}", 0)] = _ParsedApk("x", "y", "z")
+    client = ApkClient()
+    resolved = client._require(_apk_file(tmp_path))
+    key = client._key(resolved)
+
+    parsed = client._parsed(_apk_file(tmp_path))
+
+    assert parsed.apk == "APK"
+    assert parsed.analysis == "ANALYSIS"
+    assert parsed._dex == "DEX"
+    assert ApkClient._full_cache[key] is parsed
+    assert len(ApkClient._full_cache) == _CACHE_LIMIT
+    assert ("/prefill/0", 0) not in ApkClient._full_cache
+
+
+def test_parsed_maps_an_analysis_failure_to_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fresh_caches(monkeypatch)
+    monkeypatch.setattr("androguard.misc.AnalyzeAPK", _boom_apk("dex blew up"))
+    client = ApkClient()
+    with pytest.raises(ApkError) as caught:
+        client._parsed(_apk_file(tmp_path))
+    assert caught.value.code == "backend_error"
+    assert "failed to analyze APK" in caught.value.message
+
+
+def _boom_apk(message: str) -> Any:
+    def _raise(path: Any) -> Any:
+        del path
+        raise RuntimeError(message)
+
+    return _raise
