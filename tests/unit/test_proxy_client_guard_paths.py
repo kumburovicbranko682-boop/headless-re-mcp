@@ -454,9 +454,16 @@ def test_instance_run_falls_back_when_the_constructor_signature_differs(
     assert calls["dumpmaster"] == 2
 
 
-def test_instance_run_records_an_import_failure() -> None:
-    """With mitmproxy absent, the run thread records the import error."""
-    assert "mitmproxy" not in sys.modules
+def test_instance_run_records_an_import_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With mitmproxy absent, the run thread records the import error.
+
+    Force the absence rather than asserting the dependency is unimported: the
+    [proxy] extra keeps mitmproxy in sys.modules, so the old ``not in
+    sys.modules`` guard failed the moment the suite ran with it installed. A
+    None parent makes ``from mitmproxy import ...`` raise ImportError, which is
+    exactly the failure _run is meant to catch and record.
+    """
+    monkeypatch.setitem(sys.modules, "mitmproxy", None)
     inst = _free_instance()
     _run_in_thread(inst)
     assert inst._error is not None
