@@ -21,6 +21,7 @@ import pytest
 from headless_re_mcp.core.models import Architecture, TargetKind
 from headless_re_mcp.core.session import (
     SessionRegistry,
+    _dotnet_assembly_refs,
     _dotnet_high_entropy_resources,
     _dotnet_resource_payloads,
     _pe_authenticode,
@@ -2249,6 +2250,48 @@ def test_session_over_the_dotnet_fixture_carries_the_facts() -> None:
     assert session.target is TargetKind.PE
     assert session.metadata["dotnet"]["is_dotnet"] is True
     assert session.metadata["dotnet"]["metadata_version"] == "v4.0.30319"
+
+
+class TestDotnetAssemblyRefs:
+    """_dotnet_assembly_refs reads the managed dependency surface.
+
+    The .NET pair to an ELF DT_NEEDED list, a Mach-O dylib list and a PE
+    import table: the AssemblyRef rows naming which assemblies this one links
+    against, the same rows monodis --assemblyref prints. None -- fact absent
+    -- for anything that is not a walkable managed PE.
+    """
+
+    def test_the_committed_fixture_references_its_runtime_library(self) -> None:
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        assert _dotnet_assembly_refs(_DOTNET_FIXTURE) == [
+            {"name": "mscorlib", "version": "4.0.0.0"}
+        ]
+
+    def test_an_assembly_with_resources_reads_the_same_refs(self, tmp_path: Path) -> None:
+        # Extra ManifestResource rows change the table walk behind AssemblyRef
+        # but must not move the 0x23 offset in front of it.
+        path = tmp_path / "resourced.exe"
+        path.write_bytes(_dotnet_with_resources([("payload.bin", b"\x00" * 64)]))
+        assert _dotnet_assembly_refs(path) == [{"name": "mscorlib", "version": "4.0.0.0"}]
+
+    def test_a_native_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "native.exe"
+        path.write_bytes(_native_pe())
+        assert _dotnet_assembly_refs(path) is None
+
+    def test_a_non_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _dotnet_assembly_refs(path) is None
+
+    def test_session_over_a_managed_pe_carries_the_dependency_surface(self) -> None:
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        session = SessionRegistry().create(str(_DOTNET_FIXTURE))
+        assert session.metadata["dotnet"]["assembly_refs"] == [
+            {"name": "mscorlib", "version": "4.0.0.0"}
+        ]
 
 
 def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path: Path) -> None:

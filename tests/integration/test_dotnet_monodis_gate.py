@@ -352,3 +352,75 @@ def test_pinvoke_imports_agree_with_monodis_implmap(tmp_path: Path) -> None:
         assert mono_rows[0][0] == "NativeBeep"  # the wrapper Mono names differs
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_session_assembly_refs_agree_with_monodis(tmp_path: Path) -> None:
+    """The session-level managed dependency surface against Mono's decode.
+
+    ``assembly_refs`` is the tool-free session fact -- the .NET pair to ELF
+    needed / Mach-O dylibs / PE imports, the same rows the dotnet.inspect deep
+    reader lists. The row-sizing walk to the 0x23 table is the reader's own,
+    so Mono's independent ``--assemblyref`` decode referees it row for row,
+    name and version both, in table order.
+    """
+    if not _FIXTURE.is_file():
+        pytest.skip(
+            "minimal .NET fixture missing; run fixtures/dotnet/build_minimal_dotnet.py"
+            " (skip != pass)"
+        )
+    if shutil.which("monodis") is None:
+        pytest.skip("monodis (mono-utils) not installed — .NET cross-check not run (skip != pass)")
+
+    assemblyref_dump = _monodis("--assemblyref")
+    mono_refs = [(name, version) for version, name in _ASSEMBLYREF_RE.findall(assemblyref_dump)]
+    assert mono_refs, assemblyref_dump
+
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(_FIXTURE))
+        assert created.ok, created.error
+        refs = created.data["session"]["metadata"]["dotnet"]["assembly_refs"]
+        assert [(ref["name"], ref["version"]) for ref in refs] == mono_refs
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_session_assembly_refs_of_an_mcs_assembly_agree_with_monodis(tmp_path: Path) -> None:
+    """The same fact on a compiler's assembly neither builder controls.
+
+    mcs links hello.exe against the runtime library on its own terms (its
+    mscorlib's real version, not our fixture's planted 4.0.0.0), so agreement
+    here proves the walk on metadata laid out by a real compiler -- more
+    tables, wider heaps -- rather than by either of our builders.
+    """
+    if shutil.which("monodis") is None:
+        pytest.skip("monodis (mono-utils) not installed — .NET cross-check not run (skip != pass)")
+    mcs = shutil.which("mcs")
+    if mcs is None:
+        pytest.skip("mcs (mono-mcs) not installed — compiler assembly gate not run (skip != pass)")
+
+    source = tmp_path / "hello.cs"
+    source.write_text('class P { static void Main() { System.Console.WriteLine("hi"); } }\n')
+    binary = tmp_path / "hello.exe"
+    subprocess.run(
+        [mcs, f"-out:{binary}", str(source)], check=True, capture_output=True, timeout=120
+    )
+
+    dump = subprocess.run(
+        ["monodis", "--assemblyref", str(binary)], capture_output=True, text=True, timeout=60
+    )
+    assert dump.returncode == 0, dump.stderr or dump.stdout
+    mono_refs = [(name, version) for version, name in _ASSEMBLYREF_RE.findall(dump.stdout)]
+    # Referee sanity: a real hello-world links at least its runtime library.
+    assert ("mscorlib" in {name for name, _v in mono_refs}) or mono_refs, dump.stdout
+
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok, created.error
+        refs = created.data["session"]["metadata"]["dotnet"]["assembly_refs"]
+        assert [(ref["name"], ref["version"]) for ref in refs] == mono_refs
+    finally:
+        service.close_all()
