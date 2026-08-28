@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（原生启动器的参数派发）
+
+- `native_app/__main__.py` 的 `_main`/`main` 此前 0% 覆盖：它解析一小组标志，`--cli` 走终端
+  首次设置向导（`run_cli_setup`），否则走 GUI（`run_native_gui`），`main` 再把整个调用包进
+  `run_cli_safely`（`context="native-app"`）。GUI 模块需要 PySide6，Linux 测试机上没有，所以
+  默认路径在惰性 import 触发前先往 `sys.modules` 注入一个假的 `native_app.gui` 模块来驱动。
+  新增 `tests/unit/test_native_app_entrypoint.py`：验证默认路由到 GUI、`--cli` 以默认 kwargs
+  路由到向导、`--skip-pip/--non-interactive/--no-activate-ida` 正确映射（`--no-activate-ida`
+  反转为 `activate_ida=False`），以及 `main` 经错误边界执行并带上 `native-app` 上下文。
+  模块补齐至 100% 行覆盖，只加测试、不改源码。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
