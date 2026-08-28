@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（快速连点两个对话时，先点的迟到响应会把界面翻回旧对话）
+
+- `webui/src/app/useWorkbench.ts` 的 `selectThread` 先 `await` 线程详情再无条件
+  `dispatch`。两次快速点击会让两个 GET 竞速：重对话（消息/事件多，见
+  `list_thread_events` 的 4000 条/字节上限）响应慢、轻对话响应快，用户点了 A 再点 B，
+  B 先渲染，随后 A 的过期响应落地，把已选对话、消息记录、事件缓冲乃至绑定会话
+  （`setSessionId`/`markLost` 的后续分支）整体翻回 A——界面停在用户已经离开的对话上。
+  改法：每次选择自增一个令牌（`selectTokenRef`），续体在每个 `await` 之后校验令牌，
+  过期即退出而不落任何状态；`send` 新建对话与 `removeThread` 清空选择这两处绕过
+  `selectThread` 的直接选择也自增令牌，令在途的过期续体一并失效。
+- 回归测试：新增 `useWorkbench.test.tsx`，用可控 Promise 让"先点的慢、后点的快"，
+  断言慢响应落地后选中对话仍是后点的那个。旧代码下如实失败
+  （`expected 'slow' to be 'fast'`）。与既有分支 `webui-abort-stream-on-thread-switch`
+  互补：那个分支停掉切换时的旧 SSE 流，本修复挡住选择请求本身的过期响应。
+
 ### 修复（audit trim 测试假设时钟每次调用严格递增）
 
 - main 新落的 `test_repository_inmemory_close_trim.py::test_audit_log_trims_to_the_newest_rows`
