@@ -23,6 +23,18 @@ def _write_minimal_pe(path: Path, machine: int = 0x8664) -> None:
     path.write_bytes(image)
 
 
+def _write_minimal_elf(path: Path, machine: int = 62) -> None:
+    """Header-only ELF: enough for classify_target + create to make an ELF session."""
+    image = bytearray(0x40)
+    image[:4] = b"\x7fELF"
+    image[4] = 2  # ELFCLASS64
+    image[5] = 1  # little-endian
+    image[6] = 1
+    image[0x10:0x12] = (2).to_bytes(2, "little")  # ET_EXEC
+    image[0x12:0x14] = machine.to_bytes(2, "little")
+    path.write_bytes(image)
+
+
 def _settings(tmp_path: Path) -> Settings:
     return Settings(
         ida_home=None,
@@ -756,5 +768,64 @@ def test_nonpe_tools_reject_a_session_they_cannot_analyse(tmp_path: Path) -> Non
         ghidra_on_web = service.ghidra_analyze(web_id)
         assert ghidra_on_web.error is not None
         assert ghidra_on_web.error.code == "target_mismatch"
+    finally:
+        service.close_all()
+
+
+def test_an_elf_session_reaches_the_portable_backends_and_refuses_the_pe_tools(
+    tmp_path: Path,
+) -> None:
+    """The ELF target's whole point: portable backends reachable, PE tools not.
+
+    An ELF used to be force-classified as a PE and then fail create outright
+    ("not a PE file"), so radare2/Ghidra/Frida could never open a native Linux
+    binary through a session. Now an ELF is its own target kind. This pins both
+    halves of that contract at the service level, where a stray require_pe() on
+    a portable tool -- or a missing guard on a PE tool -- would slip past the
+    classification unit tests: the PE-only surface must answer target_mismatch,
+    while r2/ghidra must get *past* the target guard (they gate on
+    require_binary, not require_pe). r2/ghidra are not installed here, so they
+    answer capability_unavailable -- crucially not target_mismatch, which is the
+    proof they are reachable; the live gate exercises the analysis itself.
+    """
+    elf = tmp_path / "a.out"
+    _write_minimal_elf(elf)
+
+    service = AnalysisService(_settings(tmp_path))
+    try:
+        created = service.create_session(str(elf))
+        assert created.ok and created.data is not None
+        session = created.data["session"]
+        assert isinstance(session, dict)
+        assert session["target"] == "elf"
+        assert session["architecture"] == "x64"
+        elf_id = str(session["id"])
+
+        # PE-only tools must stop at the target guard, not fail deep in a backend.
+        pe_only: dict[str, Callable[[], Result[JsonObject]]] = {
+            "static_functions": lambda: service.static_functions(elf_id),
+            "dynamic_state": lambda: service.dynamic_state(elf_id),
+            "detect_scan": lambda: service.detect_scan(elf_id),
+        }
+        for name, call in pe_only.items():
+            result = call()
+            assert not result.ok, f"{name} unexpectedly ran on an ELF session"
+            assert result.error is not None, name
+            assert result.error.code == "target_mismatch", f"{name}: {result.error.code}"
+
+        # The portable backends must get past the target guard. Absent r2/ghidra
+        # that surfaces as capability_unavailable; the one thing it must never be
+        # is target_mismatch, which would mean an ELF was locked out of them.
+        for name, call in {
+            "r2_open": lambda: service.r2_open(elf_id),
+            "r2_functions": lambda: service.r2_functions(elf_id),
+            "ghidra_analyze": lambda: service.ghidra_analyze(elf_id),
+        }.items():
+            result = call()
+            if not result.ok:
+                assert result.error is not None, name
+                assert result.error.code != "target_mismatch", (
+                    f"{name} wrongly rejected an ELF as a target mismatch"
+                )
     finally:
         service.close_all()
