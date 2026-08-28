@@ -242,20 +242,41 @@ def record_tool_call(
     return record
 
 
+_ALERT_LEVELS = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "warn": logging.WARNING,
+    "error": logging.ERROR,
+    "critical": logging.CRITICAL,
+}
+
+
 def record_alert(
     kind: str,
     *,
     severity: str = "warning",
     fields: dict[str, Any] | None = None,
 ) -> None:
-    """Emit one alert onto the telemetry stream.
+    """Emit one alert onto the telemetry stream at its declared severity.
 
     Alerts go down the same channel as tool calls so an external collector
     already tailing that log sees them without being told about a second
     endpoint. Nothing here notifies anyone directly: choosing who to wake is the
     operator's, and a service that mails people is a service with credentials.
+
+    The Python log level is taken from ``severity`` rather than always being
+    WARNING. Recovery alerts are deliberately raised as ``info`` -- the watchdog
+    reconnecting, a provider retry finally succeeding, artifact collection or the
+    event drain catching up -- and emitting those at WARNING paged operators
+    whose pipeline routes on level (the usual "alert on WARNING+" convention) for
+    good news, the exact inversion the severity field exists to prevent. An
+    unrecognised severity stays WARNING, since an unknown state is likelier to
+    need a look than routine.
     """
-    _LOGGER.warning(
+    level = _ALERT_LEVELS.get(str(severity).strip().lower(), logging.WARNING)
+    _LOGGER.log(
+        level,
         json.dumps(
             {
                 "event": "alert",
@@ -266,7 +287,7 @@ def record_alert(
             },
             ensure_ascii=False,
             default=str,
-        )
+        ),
     )
 
 

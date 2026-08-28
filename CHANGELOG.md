@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（record_alert 的 Python 日志级别现在跟随声明的 severity）
+
+- `telemetry.py` 的 `record_alert` 此前无论 `severity` 是什么都调用 `_LOGGER.warning`，
+  于是被 watchdog 等刻意标成 `severity="info"` 的「恢复」告警（会话健康恢复、worker 重连、
+  provider 重试终于成功、artifact 回收与事件排空追上）全部落在 Python WARNING 级别。运维
+  若按级别路由（几乎通用的「WARNING+ 才告警」约定）就会为好消息被叫醒——正是 severity
+  字段要避免的反转。改为按 `severity` 映射日志级别（info→INFO、warning→WARNING、
+  error→ERROR、critical→CRITICAL），未识别的 severity 仍按 WARNING 处理（未知状态更该看
+  一眼）；JSON 行里的 `severity` 字段原样保留，文件消费者不受影响。新增
+  `test_telemetry.py::test_alert_python_level_matches_its_declared_severity`
+  钉死 info/warning/未知三种取值的实际日志级别（去掉修复即因 info 落在 WARNING 抛断言，
+  非空覆盖）。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

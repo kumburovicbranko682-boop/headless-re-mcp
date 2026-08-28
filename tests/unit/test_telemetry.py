@@ -6,7 +6,12 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.telemetry import TelemetryRing, instrument, record_tool_call
+from headless_re_mcp.telemetry import (
+    TelemetryRing,
+    instrument,
+    record_alert,
+    record_tool_call,
+)
 
 
 def test_ring_is_bounded_and_returns_newest_first() -> None:
@@ -137,3 +142,28 @@ def test_record_emits_structured_json_log(caplog: pytest.LogCaptureFixture) -> N
     assert payload["ok"] is True
 
     assert payload["duration_ms"] == 1.5
+
+
+def test_alert_python_level_matches_its_declared_severity(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A severity="info" recovery alert must not be emitted at WARNING level.
+
+    record_alert used to call _LOGGER.warning unconditionally, so a recovery the
+    watchdog deliberately marks "info" (health back, worker reconnected) landed
+    at Python WARNING. An operator routing on level -- the usual "page on
+    WARNING+" -- was then paged for good news. The record's level now follows the
+    severity field, while an unknown severity stays WARNING as a safe default.
+    """
+    with caplog.at_level(logging.INFO, logger="headless_re_mcp.telemetry"):
+        record_alert("session_health_recovered", severity="info", fields={"n": 1})
+        record_alert("session_health_lost", severity="warning")
+        record_alert("weird", severity="not-a-level")
+
+    by_kind = {json.loads(rec.message)["kind"]: rec for rec in caplog.records}
+    assert by_kind["session_health_recovered"].levelno == logging.INFO
+    assert by_kind["session_health_lost"].levelno == logging.WARNING
+    # An unrecognised severity is treated as WARNING, not silently downgraded.
+    assert by_kind["weird"].levelno == logging.WARNING
+    # The JSON payload still carries the declared severity verbatim.
+    assert json.loads(by_kind["session_health_recovered"].message)["severity"] == "info"
