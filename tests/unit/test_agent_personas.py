@@ -92,6 +92,33 @@ def test_persona_path_import_rejects_invalid_content(
         store.import_path(source)
 
 
+def test_import_of_a_leading_underscore_title_does_not_crash(tmp_path: Path) -> None:
+    """A title/filename that sanitizes to a leading-underscore stem must import.
+
+    ``_slug`` keeps underscores and only stripped ``-`` from the ends, so a title
+    like ``_notes`` (or a file named ``_readme.md`` handed to ``import_path``)
+    produced ``_notes-<hex>`` -- an id whose leading ``_`` fails
+    ``_PERSONA_ID_RE``, making ``_body_path`` raise and the whole import fail with
+    ``persona_id_invalid``. The id must start with an alnum char and the persona
+    must be created.
+    """
+    store = PersonaStore(tmp_path / "personas", seed_paths=())
+
+    imported = store.import_markdown(title="_notes", body="keep hashes")
+    assert imported["current"] == "notes-" + imported["current"].split("-", 1)[1]
+    assert imported["current"][0].isalnum()
+
+    source = tmp_path / "_readme.md"
+    source.write_text("persona body from an underscore file", encoding="utf-8")
+    listed = store.import_path(source)
+    assert listed["current"].startswith("readme-")
+    assert listed["current"][0].isalnum()
+
+    # A stem that is only underscores collapses to the "persona" fallback.
+    only_underscores = store.import_markdown(title="___", body="edge")
+    assert only_underscores["current"].startswith("persona-")
+
+
 def test_persona_index_and_prompt_reads_are_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
