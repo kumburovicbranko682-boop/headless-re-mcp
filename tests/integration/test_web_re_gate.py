@@ -451,7 +451,9 @@ def test_wasm_overlay_marks_bytes_wabt_also_rejects(tmp_path: Path) -> None:
         created = service.create_session(str(padded))
         assert created.ok, created.error
         wasm = created.data["session"]["metadata"]["wasm"]
-        assert wasm["overlay"] == {"offset": len(_ADD_WASM), "size": len(payload)}
+        # Magicless prose is not any known format, so ``kind`` is None -- a
+        # real answer (the encrypted/opaque payload), not a parse failure.
+        assert wasm["overlay"] == {"offset": len(_ADD_WASM), "size": len(payload), "kind": None}
         assert wasm["well_formed"] is False
         # The real sections still read: the payload hides after the module,
         # not instead of it.
@@ -465,6 +467,21 @@ def test_wasm_overlay_marks_bytes_wabt_also_rejects(tmp_path: Path) -> None:
         )
         assert result.returncode != 0, result.stdout
         assert "error" in (result.stderr + result.stdout).lower()
+
+        # And when the smuggled bytes do carry a magic, the overlay names it:
+        # a nested ZIP (PK\x03\x04) past the module reads as kind "zip", the
+        # same sniff every format's overlay fact runs.
+        zip_payload = b"PK\x03\x04nested-container-bytes"
+        zipped = tmp_path / "with_zip.wasm"
+        zipped.write_bytes(_ADD_WASM + zip_payload)
+        created = service.create_session(str(zipped))
+        assert created.ok, created.error
+        wasm = created.data["session"]["metadata"]["wasm"]
+        assert wasm["overlay"] == {
+            "offset": len(_ADD_WASM),
+            "size": len(zip_payload),
+            "kind": "zip",
+        }
     finally:
         service.close_all()
 
