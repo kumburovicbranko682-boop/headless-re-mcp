@@ -72,6 +72,28 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_strings(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.strings_all")
+    def r2_strings_all(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Strings from the whole file (izzj), not just the data sections.
+
+        Where r2.strings (izj) scans only sections flagged as data, this scans
+        the entire binary (izzj), the "strings -a" pass. On a typical ELF izj
+        can return nothing while this surfaces the imported symbol names
+        (printf, __libc_start_main), the interpreter path, library
+        dependencies (libc.so.6, GLIBC tags) and any text hiding in code,
+        packed regions or unflagged sections -- the string landscape triage
+        actually starts from. Answers with items, each carrying string,
+        section (empty when the hit is between sections), type, vaddr and
+        address (va/rva/module), plus count. Broader than r2.strings, so
+        expect more noise; reach for r2.strings when you want only the clean
+        data-section set. Read items_truncated, items_total and items_limit
+        when the list filled the cap (4096). There is no integer address,
+        strings, truncated or has_more field.
+        """
+        return _dump(analysis.r2_strings_all(session_id, timeout=timeout))
+
     @tools.tool(name="r2.imports")
     def r2_imports(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0

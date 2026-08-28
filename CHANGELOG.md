@@ -5,7 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
+### 新增（r2.strings_all：全文件字符串扫描，补 r2.strings 只扫数据段的盲区）
+
+- 新工具 `r2.strings_all(session_id)`：执行 `izzj` 扫描整个文件，而不是像
+  `r2.strings`（`izj`）那样只扫被标记为数据的段——即 `strings -a` 那一遍。
+  实测一个普通 ELF 上 `izj` 可能一条都没有，而 `izzj` 能捞出导入符号名
+  （`printf`、`__libc_start_main`）、解释器路径、依赖库名（`libc.so.6`、GLIBC
+  版本标签）以及藏在代码段/加壳区/未标记段里的文本——三查（triage）真正
+  的起点。返回 `items`（各带 `string`、`section`、`type`、`vaddr` 与映射后的
+  `address`）与 `count`，超过 4096 上限时给 `items_truncated`/`items_total`/
+  `items_limit`。命令 `izzj` 进入白名单。比 `r2.strings` 更全但也更吵，要干净
+  的数据段集合仍用 `r2.strings`。工具总数 265→266（只读 148→149）。
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
   `_ProxyInstance.start()/_run()` 的串行化 bring-up 改造（`_STARTUP_LOCK` +
