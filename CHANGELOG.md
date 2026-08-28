@@ -28,7 +28,7 @@ until 1.0 the tool surface may still change between minor versions.
   先例：去掉 POSIX-only 前置断言，只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -687,6 +687,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **静态**：`js.deobfuscate/beautify/unpack_bundle`（webcrack）、`wasm.info/wat`（wabt）。
   WASM 反编译复用现有 `ghidra.*` 加 ghidra-wasm-plugin——wabt 的 `wasm-decompile` 已于
   2026-06 被上游删除，不再作为路径。
+- 新增 `wasm.summary`：纯 stdlib 直接解析 WebAssembly 二进制格式，汇总模块结构，**无需 wabt**。
+  此前整条 WASM 检查面（`wasm.info`/`wasm.wat` 都走 wabt CLI）在没装 wabt 的机器上一律
+  `capability_unavailable`——而这正是新装 Linux 的常态；`wasm.summary` 填上这个洞，且返回可被
+  Agent 直接过滤/推理的结构化 JSON，而非 objdump 文本。汇总面含 `version`、`size`、`sections`
+  （每段 id/name/size，custom 段带 `custom_name`）、`counts`（types/imports/functions/tables/
+  memories/globals/exports/elements/data/custom）、`imports`（module/name/kind）与
+  `exports`（name/kind/index）及各自的 total/truncated、`custom_sections`、`has_names_section`。
+  段遍历（一字节 id + LEB128 size）简单可靠，import/export 向量的逐条解析才是畸形/截断模块
+  会踩的地方，因此按段防御式解析：解不动的段记 `warnings` 并在其已知末尾续跑，而不是整份汇总
+  失败；名字与列表长度有界。非 WebAssembly 模块报 `invalid_params`，超 16 MiB 上限报 `too_large`。
+  新增真实 MCP stdio Gate（`test_wasm_summary_gate.py`，无需任何后端，始终执行）与
+  `test_wasm_summary.py` 单测覆盖（含手工汇编的模块、逐类 import 描述符跳过、畸形段续跑）。
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。
