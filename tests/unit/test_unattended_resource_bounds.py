@@ -239,12 +239,13 @@ class TestProxyStartHonesty:
         timeout and leaves a half-built proxy behind, for an answer that was
         available before the thread was ever created.
         """
+        import errno
         import socket
         import time
 
         from headless_re_mcp.backends.proxy.client import (
             ProxyError,
-            _port_bindable,
+            _bind_probe,
             _ProxyInstance,
         )
 
@@ -253,7 +254,10 @@ class TestProxyStartHonesty:
         port = holder.getsockname()[1]
         try:
             assert _port_accepts("127.0.0.1", port, timeout=0.2) is False
-            assert _port_bindable("127.0.0.1", port) is False
+            # A port an active socket already holds cannot be re-bound: the probe
+            # returns the EADDRINUSE that start() reads as a real port clash.
+            clash = _bind_probe("127.0.0.1", port)
+            assert clash is not None and clash.errno == errno.EADDRINUSE
 
             instance = _ProxyInstance("127.0.0.1", port)
             started = time.monotonic()
@@ -270,13 +274,13 @@ class TestProxyStartHonesty:
     def test_a_free_port_is_reported_bindable(self) -> None:
         import socket
 
-        from headless_re_mcp.backends.proxy.client import _port_bindable
+        from headless_re_mcp.backends.proxy.client import _bind_probe
 
         probe = socket.socket()
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
         probe.close()
-        assert _port_bindable("127.0.0.1", port) is True
+        assert _bind_probe("127.0.0.1", port) is None
 
     def test_startup_only_catches_signature_mismatches_at_construction(self) -> None:
         """A TypeError from a running proxy must not start a second master."""

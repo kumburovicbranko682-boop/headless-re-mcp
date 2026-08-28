@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import errno
 import logging
 import os
 import socket
@@ -83,24 +84,31 @@ def _port_accepts(host: str, port: int, timeout: float = 0.25) -> bool:
     return False
 
 
-def _port_bindable(host: str, port: int) -> bool:
-    """True when a listener could take host:port right now.
+def _bind_probe(host: str, port: int) -> OSError | None:
+    """``None`` when a listener could take host:port right now; otherwise the
+    ``OSError`` that stopped it, so the caller can name the real fault.
 
     ``_port_accepts`` answers a different question -- whether somebody is
     serving -- and says "free" for a port held by a socket that is not
     accepting: one whose backlog is full, one bound without ``listen``, one
     behind a filter. Believing it there means mitmproxy is started on a port it
     cannot bind, and the caller waits out the whole readiness timeout for an
-    answer that was available immediately.
+    answer that was available immediately. Returning the error instead of a
+    bool lets ``start`` tell a real port clash (``EADDRINUSE``) apart from a
+    host this machine cannot bind at all -- an address no local interface owns
+    (``EADDRNOTAVAIL``), a name that will not resolve, a privileged bind --
+    which are opposite fixes: "stop the other listener" versus "fix the host".
     """
-    with contextlib.suppress(OSError), socket.socket() as probe:
-        # Match what asyncio will do when it binds for real, so this probe never
-        # refuses a port the server itself would have taken.
-        if os.name != "nt":
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        probe.bind((host, port))
-        return True
-    return False
+    try:
+        with socket.socket() as probe:
+            # Match what asyncio will do when it binds for real, so this probe
+            # never refuses a port the server itself would have taken.
+            if os.name != "nt":
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind((host, port))
+        return None
+    except OSError as exc:
+        return exc
 
 
 def _uninstall_master_logging(
@@ -506,13 +514,37 @@ class _ProxyInstance:
         # below would see the foreign listener and call it success, which is the
         # same lie in a different disguise. Both questions have to be asked: a
         # holder that never accepts is invisible to the connect probe.
-        if _port_accepts(self.host, self.port) or not _port_bindable(self.host, self.port):
+        if _port_accepts(self.host, self.port):
             raise ProxyError(
                 "invalid_state",
                 "port is already in use; stop the existing listener first",
                 host=self.host,
                 port=self.port,
             )
+        bind_error = _bind_probe(self.host, self.port)
+        if bind_error is not None:
+            # A bind failure has two opposite causes and the caller needs them
+            # told apart. EADDRINUSE is a genuine port clash the accept-probe
+            # above could not see (a socket bound without listen, a full
+            # backlog, a filtered listener), so "stop the other listener" still
+            # holds. Anything else -- EADDRNOTAVAIL for an address no local
+            # interface owns, a hostname that will not resolve, a privileged
+            # bind -- is a bad host argument, not a busy port. Blaming the port
+            # for a mistyped host (the old code called every bind failure "port
+            # in use") sent the caller to kill a listener that was never there.
+            if bind_error.errno == errno.EADDRINUSE:
+                raise ProxyError(
+                    "invalid_state",
+                    "port is already in use; stop the existing listener first",
+                    host=self.host,
+                    port=self.port,
+                ) from bind_error
+            raise ProxyError(
+                "invalid_params",
+                f"cannot bind to host {self.host!r}: {bind_error}",
+                host=self.host,
+                port=self.port,
+            ) from bind_error
         self._thread = threading.Thread(
             target=self._run, name=f"mitmproxy-{self.port}", daemon=True
         )

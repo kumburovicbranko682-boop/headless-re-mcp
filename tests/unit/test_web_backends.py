@@ -309,6 +309,30 @@ class TestProxyScoping:
             backend.start("s", port=99999)
         assert info.value.code == "invalid_params"
 
+    def test_start_blames_the_host_not_the_port_for_an_unbindable_address(self) -> None:
+        """A host no local interface owns is a bad argument, not a busy port.
+
+        The bind probe used to collapse every failure to a bool, so start()
+        reported "port is already in use; stop the existing listener first" for a
+        mistyped or non-local host -- sending the caller to kill a listener that
+        was never there. 240.0.0.1 is a class-E reserved address the kernel will
+        not bind (EADDRNOTAVAIL) while the accept-probe sees nobody serving, so
+        it exercises the bad-host branch without depending on a taken port. It
+        must surface as invalid_params naming the host, not invalid_state.
+        """
+        backend = ProxyBackend()
+        try:
+            backend._check_available()
+        except ProxyError:
+            pytest.skip("mitmproxy not installed — host validation not reached (skip != pass)")
+        with pytest.raises(ProxyError) as info:
+            backend.start("s", host="240.0.0.1", port=8080)
+        assert info.value.code == "invalid_params", info.value.code
+        assert "host" in info.value.message
+        # The failed start must not leave the session reserved: a retry with a
+        # good host has to be able to reuse the same session id.
+        assert backend.status("s") == {"running": False}
+
 
 class _FakeNavPage:
     """Records the timeout Playwright's goto would have received."""
