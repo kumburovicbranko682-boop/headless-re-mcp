@@ -13,7 +13,7 @@ import os
 import struct
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -801,6 +801,44 @@ def test_score_oep_without_a_session_scores_supplied_observations(tmp_path: Path
     assert result.data["authoritative"] is False
     assert result.data["auto_collected"] is False
     assert result.data["unpack"] is None
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"observations": 5},  # non-iterable: list(5) raised a TypeError
+        {"observations": "abc"},  # a str iterated to ["a", "b", "c"] and scored nothing
+        {"observations": {"a": 1}},  # a dict iterated to its keys
+        {"observations": _OBSERVATIONS, "stub_rva_ranges": 5},
+        {"previous_regions": 7},
+        {"observations": _OBSERVATIONS, "max_candidates": "8"},  # "8" <= 0 raised TypeError
+        {"observations": _OBSERVATIONS, "max_candidates": 1.5},  # candidates[:1.5] crashes
+        {"observations": _OBSERVATIONS, "max_candidates": True},  # a bool is not a count
+    ],
+)
+def test_score_oep_rejects_wrong_shaped_arguments(tmp_path: Path, kwargs: dict[str, Any]) -> None:
+    """Malformed array/count arguments are the caller's mistake, not internal_error.
+
+    A non-iterable observations/stub_rva_ranges/previous_regions escaped list(...)
+    as a raw TypeError, a str/dict was silently iterated into an empty score, and a
+    non-int max_candidates crashed the scorer's ``<= 0`` compare or ``candidates[:n]``
+    slice. All must read as an invalid_request the caller can fix.
+    """
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+
+    result = service.unpack_score_oep(
+        session_id,
+        module_base=_MODULE_BASE,
+        module_size=_MODULE_SIZE,
+        **cast(Any, kwargs),
+    )
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
 
 
 def test_score_oep_transitions_a_running_session(tmp_path: Path) -> None:

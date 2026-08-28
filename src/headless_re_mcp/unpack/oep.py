@@ -71,8 +71,12 @@ def score_oep_candidates(
         raise ValueError("module_base must be a positive integer")
     if type(module_size) is not int or module_size <= 0:
         raise ValueError("module_size must be a positive integer")
-    if max_candidates <= 0:
-        raise ValueError("max_candidates must be positive")
+    # max_candidates reaches here straight from the caller. A non-int (a bool
+    # slices candidates[:True], a float crashed candidates[:1.5], a str "8"
+    # crashed "8" <= 0 with a raw TypeError); ``type is not int`` rejects all of
+    # them -- including bool -- so a bad count is a ValueError, not a surprise.
+    if type(max_candidates) is not int or max_candidates <= 0:
+        raise ValueError("max_candidates must be a positive integer")
 
     buckets: dict[int, list[OepSignal]] = {}
     roles: dict[int, str] = {}

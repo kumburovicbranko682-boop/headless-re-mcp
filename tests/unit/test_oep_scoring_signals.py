@@ -11,7 +11,7 @@ Heuristic candidates are never authoritative.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -38,6 +38,23 @@ def test_rejects_invalid_module_geometry_and_budget() -> None:
     with pytest.raises(ValueError, match="max_candidates"):
         score_oep_candidates(
             module_base=_BASE, module_size=_SIZE, observations=[], max_candidates=0
+        )
+
+
+@pytest.mark.parametrize("max_candidates", ["8", 1.5, True, None])
+def test_rejects_a_non_integer_max_candidates(max_candidates: object) -> None:
+    """max_candidates must be an int, not whatever survives ``<= 0`` and slicing.
+
+    A str "8" crashed ``"8" <= 0`` with a raw TypeError, a float crashed the
+    ``candidates[:n]`` slice once enough candidates existed, and a bool silently
+    sliced to one -- so the type is the invariant, not just the sign.
+    """
+    with pytest.raises(ValueError, match="max_candidates"):
+        score_oep_candidates(
+            module_base=_BASE,
+            module_size=_SIZE,
+            observations=[],
+            max_candidates=cast(Any, max_candidates),
         )
 
 

@@ -1529,6 +1529,26 @@ class UnpackMixin:
             blocked = self._guard_unpack_active(session_id, stage="score_oep")
             if blocked is not None:
                 return blocked
+            # These are schema-typed as arrays, but the agent and OpenAI-bridge
+            # transports bind them straight from model output with no pydantic
+            # coercion, and list(x or [...]) below only guards against emptiness.
+            # A non-iterable (int, float, bool) raised a raw TypeError out of
+            # list(...) that the service filed as a logged internal_error incident;
+            # a str or dict was silently iterated as its characters or keys, so
+            # observations="abc" quietly scored the strings "a", "b", "c" (none a
+            # dict, so nothing) and reported ok with an empty result. Refuse the
+            # wrong shape as the invalid_argument caller fault it is.
+            for label, value in (
+                ("observations", observations),
+                ("stub_rva_ranges", stub_rva_ranges),
+                ("previous_regions", previous_regions),
+            ):
+                if value is not None and not isinstance(value, list):
+                    return _failure(
+                        ValueError(f"{label} must be a list"),
+                        session_id=session_id,
+                        backend="unpack",
+                    )
             state = self._unpack_owner.get(session_id)
 
             collected_note: str | None = None
