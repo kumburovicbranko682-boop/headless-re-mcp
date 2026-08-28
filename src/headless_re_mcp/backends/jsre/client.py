@@ -180,12 +180,23 @@ class JsClient:
 
     @property
     def available(self) -> bool:
-        return self.executable is not None
+        # Mirror the other CLI clients (r2/jadx/apktool): a configured path
+        # that is not a file cannot run, and treating it as available meant a
+        # typo in HEADLESS_RE_WEBCRACK surfaced as an opaque spawn-time
+        # backend_error instead of the capability_unavailable every other
+        # backend reports for the same misconfiguration.
+        return self.executable is not None and self.executable.is_file()
 
     def _require_input(self, path: Path) -> Path:
         if self.executable is None:
             raise JsReError(
                 "capability_unavailable", "webcrack is not configured (needs Node 22/24)"
+            )
+        if not self.available:
+            raise JsReError(
+                "capability_unavailable",
+                "webcrack configured path is not a file",
+                executable=str(self.executable),
             )
         return _require_existing_file(path, missing="input file not found")
 

@@ -270,6 +270,30 @@ class TestJsReDegradation:
             client.deobfuscate(source)
         assert info.value.code == "capability_unavailable"
 
+    def test_a_dangling_configured_webcrack_degrades_to_capability_unavailable(
+        self, tmp_path: Path
+    ) -> None:
+        """A configured path that is not a file is a config problem, not a tool crash.
+
+        available used to check only ``is not None``, so a typo in
+        HEADLESS_RE_WEBCRACK sailed past the gate and failed at spawn as an
+        opaque ``backend_error: failed to launch ...`` -- while r2/jadx/apktool
+        report capability_unavailable for the identical state and the doctor
+        now reads it as MISSING. Pin the classification and that the error
+        names the bad path so the operator can fix the setting.
+        """
+        dangling = tmp_path / "vendor" / "webcrack"  # never created
+        source = tmp_path / "a.js"
+        source.write_text("var a=1;", encoding="utf-8")
+
+        client = JsClient(dangling)
+
+        assert client.available is False
+        with pytest.raises(JsReError) as info:
+            client.deobfuscate(source)
+        assert info.value.code == "capability_unavailable"
+        assert info.value.details["executable"] == str(dangling)
+
     def test_missing_wabt_degrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
