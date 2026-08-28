@@ -227,6 +227,54 @@ def test_js_unpack_bundle_splits_modules_when_webcrack_present(tmp_path: Path) -
 
 
 @pytest.mark.integration
+def test_js_deobfuscate_truncation_recovers_via_unpack_bundle(tmp_path: Path) -> None:
+    """A deobfuscation past the inline buffer must be recoverable in full.
+
+    js.deobfuscate returns code capped at the inline buffer with truncated set
+    and bytes carrying the true length, so a large result silently loses its
+    tail in the reply. The documented recovery is js.unpack_bundle, which writes
+    the complete output to disk. Build an input whose unminified form clears the
+    cap, prove deobfuscate truncates (bytes > the returned code, truncated True),
+    then prove unpack_bundle on the same file recovers every byte -- the sum of
+    the written files equals bytes. Summing files rather than naming
+    deobfuscated.js keeps this robust across webcrack's plain-file vs bundle
+    layout. skip != pass.
+    """
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS truncation-recovery Gate not run (skip != pass)")
+    from headless_re_mcp.backends.jsre.client import _MAX_INLINE
+
+    src = tmp_path / "big.js"
+    # Many independent functions: webcrack unminifies each, so the output clears
+    # the inline buffer by a wide margin without any single huge token.
+    body = "\n".join(f"function f{i}(a,b){{var c=a+b;return c*{i};}}" for i in range(20000))
+    src.write_text(body, encoding="utf-8")
+    service = AnalysisService()
+    try:
+        deob = service.js_deobfuscate(str(src))
+        assert deob.ok, deob.error
+        total_bytes = deob.data["bytes"]
+        assert deob.data["truncated"] is True, "a result over the buffer must be flagged truncated"
+        assert total_bytes > _MAX_INLINE, total_bytes
+        assert len(deob.data["code"].encode("utf-8")) <= _MAX_INLINE
+        # The tail really is missing from the inline reply.
+        assert total_bytes > len(deob.data["code"].encode("utf-8"))
+
+        recovered = service.js_unpack_bundle(str(src))
+        assert recovered.ok, recovered.error
+        out_dir = Path(recovered.data["output_dir"])
+        on_disk = sum(p.stat().st_size for p in out_dir.rglob("*") if p.is_file())
+        # The tail deobfuscate dropped is really on disk: the written output far
+        # exceeds the inline cap and recovers essentially the whole reported
+        # length. A byte or two of slack absorbs webcrack writing a file without
+        # the trailing newline its stdout carried -- not a lost tail.
+        assert on_disk > _MAX_INLINE, on_disk
+        assert on_disk >= total_bytes - 4, f"lost the tail: {on_disk} vs {total_bytes}"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_js_beautify_expands_a_minified_one_liner_when_webcrack_present(tmp_path: Path) -> None:
     """js.beautify must reformat packed code into multiple readable lines.
 

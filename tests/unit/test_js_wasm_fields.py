@@ -171,6 +171,11 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "Answers with code" in _tool_docstring("js.deobfuscate")
     assert "Answers with code" in _tool_docstring("js.beautify")
     assert "bytes" in _tool_docstring("js.beautify")
+    # A truncated result loses its tail in the reply; both webcrack text tools
+    # must point at the recovery path (js.unpack_bundle writes the full output
+    # to disk) so an agent that hits the cap is not left with a dead end.
+    assert "js.unpack_bundle" in _tool_docstring("js.deobfuscate")
+    assert "js.unpack_bundle" in _tool_docstring("js.beautify")
     assert "output_dir" in _tool_docstring("js.unpack_bundle")
     assert "has_more" in _tool_docstring("js.unpack_bundle")
     # listing_truncated is produced by the client (the 50k counting cap) and
