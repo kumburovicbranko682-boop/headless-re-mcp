@@ -24,6 +24,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（ui.virtual_desktop.capture 未过 session id 路径守卫）
+
+- `ui.virtual_desktop.capture` 把 `session_id` 直接拼进 `<artifact_root>/sessions/<id>/desktop/
+  window-<hwnd>.bmp` 的输出路径，却没走 `ui.screenshot` / `ui.ocr` 早已接上的
+  `_is_safe_session_segment` 守卫——恶意 `session_id`（如 `../../x` 或单个 `..`，后者能骗过
+  裸 `Path(...).name` 比较）可把 BMP 写到 artifact 根之外或根本身。现与两个同门 UI 采集口一致，
+  在平台闸之前先过共享分段守卫：路径逃逸的 id 在任何平台都读作 `invalid_request`（不再在
+  Linux 上先被平台限制挡掉），守卫因此在 POSIX 上也可被测试覆盖。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、

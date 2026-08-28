@@ -304,6 +304,20 @@ class UiAutomationMixin:
         hwnd: int | None = None,
     ) -> Result[JsonObject]:
         """Capture one authorized hidden-desktop window without switching desktops."""
+        from headless_re_mcp.core.service import _is_safe_session_segment
+
+        # Same ordering as ui.screenshot/ui.ocr: a path-escaping session id must
+        # read as invalid_request on every platform, not as a Linux platform
+        # limitation. The shared segment guard, not a bare Path(...).name check:
+        # ".." passes the name comparison yet collapses <root>/sessions/<id>/
+        # desktop -- where this method writes window-<hwnd>.bmp -- toward the
+        # artifact root.
+        if not _is_safe_session_segment(session_id):
+            return _failure(
+                ValueError("invalid session id for UI capture path"),
+                session_id=session_id,
+                backend=BackendKind.X64DBG.value,
+            )
         if os.name != "nt":
             return _unsupported_ui(session_id, "ui.virtual_desktop.capture")
         try:
