@@ -157,7 +157,16 @@ def _ingest_tool_calls(
     for raw_call in calls:
         if not isinstance(raw_call, dict):
             continue
-        index = int(raw_call.get("index", 0))
+        try:
+            index = int(raw_call.get("index", 0))
+        except (TypeError, ValueError, OverflowError):
+            # The provider owns this field. A non-integer index -- a string,
+            # null, or the float inf a bare 1e999 parses to (OverflowError, not
+            # the ValueError a string raises) -- otherwise escaped int() here
+            # and ended the run as an incident. Skip the malformed call rather
+            # than fold it onto a real one's slot; this is orthogonal to how a
+            # legitimately absent index is assigned a slot.
+            continue
         if index not in tool_fragments and len(tool_fragments) >= _MAX_TOOL_CALLS:
             raise ValueError(
                 "provider tool-call count exceeded "

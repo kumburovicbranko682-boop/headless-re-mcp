@@ -40,6 +40,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   仍能取到 7）。两个缺陷各有"修复前必失败"的端到端回归（MockTransport 构造敌意
   chunk），加上边界参数化共五条新测试。
 
+### 修复（provider 敌意 tool_call index 让整条流崩成事故）
+
+- `agent/providers/openai_compatible.py` 的 `_ingest_tool_calls` 用无守卫的
+  `int(raw_call.get("index", 0))` 读取 provider 完全可控的 `index` 字段。非整数 index——
+  字符串、null,或裸 `1e999` 解析成的 `float('inf')`——会从这里抛异常:字符串抛
+  `ValueError`,而 inf 抛 `OverflowError`,直接逃出 tool-call 组装、经 orchestrator 的
+  `except BaseException` 记成 run 级 incident。现把该 `int()` 包进 try,`TypeError`/
+  `ValueError`/`OverflowError` 均视为畸形调用并 fail-closed 跳过(不折叠到某个真实调用的
+  槽位),同一 delta 里的合法调用照常落地。此改动只针对崩溃安全,与「合法缺失 index 如何
+  分配槽位」的语义正交。新增「修复前必失败」回归(手写含标准 JSON `1e999` index 的
+  tool_calls delta,断言流干净完成且仅保留合法调用)。
+
+### 测试（x64dbg RPC 客户端派发与 trace 校验）
+
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
   `wait_for_state`、`close` 与重连,但二十多个细请求包装器、`trace.*` 生命周期与
   `_validate_trace_result` 守卫、`request` 的能力/关闭/退出门以及若干辅助函数仍未覆盖。
