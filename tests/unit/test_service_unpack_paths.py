@@ -13,7 +13,7 @@ import os
 import struct
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -255,6 +255,66 @@ def test_iat_validate_rejects_a_missing_dump_path(tmp_path: Path) -> None:
     assert not result.ok and result.error is not None
     assert result.error.code == "invalid_params"
     assert "does not exist" in result.error.message
+
+
+# ---------------------------------------------------------------------------
+# dump_path type guards across every unpack surface that resolves one
+# ---------------------------------------------------------------------------
+
+# dump_path is schema-typed as a string, but the agent transport binds handler
+# kwargs from model output with no coercion. Path(dump_path) raises a raw TypeError
+# on any of these; the wrapping except BaseException filed that as an internal_error
+# incident (and unpack_iat_validate has no handler, so it escaped the method). A bad
+# dump_path must read as the invalid_params an out-of-root path already earns.
+_NON_STRING_DUMP_PATHS = [123, ["/x"], {"d": "/x"}, 1.5, b"/x", True]
+
+
+@pytest.mark.parametrize("dump_path", _NON_STRING_DUMP_PATHS)
+def test_stub_coupling_refuses_a_non_string_dump_path(tmp_path: Path, dump_path: object) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    result = service.unpack_stub_coupling(session_id, cast(Any, dump_path))
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
+
+
+@pytest.mark.parametrize("dump_path", _NON_STRING_DUMP_PATHS)
+def test_iat_rebuild_refuses_a_non_string_dump_path(tmp_path: Path, dump_path: object) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    result = service.unpack_iat_rebuild(
+        session_id, cast(Any, dump_path), iat_va=0x140002000, size=0x40
+    )
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
+
+
+@pytest.mark.parametrize("dump_path", _NON_STRING_DUMP_PATHS)
+def test_pe_rebuild_refuses_a_non_string_dump_path(tmp_path: Path, dump_path: object) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    result = service.unpack_pe_rebuild(session_id, cast(Any, dump_path))
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
+
+
+@pytest.mark.parametrize("dump_path", _NON_STRING_DUMP_PATHS)
+def test_iat_validate_refuses_a_non_string_dump_path(tmp_path: Path, dump_path: object) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    result = service.unpack_iat_validate(
+        session_id, iat_va=0x140002000, size=0x40, dump_path=cast(Any, dump_path)
+    )
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
 
 
 # ---------------------------------------------------------------------------

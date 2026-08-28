@@ -92,6 +92,28 @@ JsonObject = dict[str, Any]
 _OEP_REGION_SNAPSHOT_LIMIT = 512
 
 
+def _reject_non_string_dump_path(dump_path: object) -> Result[JsonObject] | None:
+    """Return an invalid_params result for a non-string dump_path, else None.
+
+    dump_path is schema-typed as a string, but the agent and OpenAI-bridge
+    transports bind it from model output with no pydantic coercion. Path(dump_path)
+    raises a raw TypeError on a non-str value (int, list, dict, bytes, ...). The
+    unpack methods that wrap it in ``except BaseException`` file that as a logged
+    internal_error incident, and ``unpack_iat_validate`` has no handler at all so it
+    escapes the method. Turn it into the invalid_params the artifact-root check
+    already returns for a bad dump_path.
+    """
+    if isinstance(dump_path, str):
+        return None
+    return Result[JsonObject](
+        ok=False,
+        error=RpcError(
+            code="invalid_params",
+            message="dump_path must be a string",
+        ),
+    )
+
+
 def _refuse_rebuild_that_will_not_fit(
     path: Path, *, observed_size: int | None = None
 ) -> Result[JsonObject] | None:
@@ -353,6 +375,9 @@ class UnpackMixin:
             blocked = self._guard_unpack_active(session_id, stage="stub_coupling")
             if blocked is not None:
                 return blocked
+            invalid = _reject_non_string_dump_path(dump_path)
+            if invalid is not None:
+                return invalid
             path = Path(dump_path).expanduser().resolve(strict=True)
             artifact_root = self.settings.artifact_root.expanduser().resolve()
             if artifact_root not in path.parents and path.parent != artifact_root:
@@ -483,6 +508,10 @@ class UnpackMixin:
         blocked = self._guard_unpack_active(session_id, stage="iat_validate")
         if blocked is not None:
             return blocked
+        if dump_path is not None:
+            invalid = _reject_non_string_dump_path(dump_path)
+            if invalid is not None:
+                return invalid
         read = self.imports_read(session_id, iat_va, size, timeout=timeout)
         if not read.ok or read.data is None:
             return read
@@ -626,6 +655,9 @@ class UnpackMixin:
             blocked = self._guard_unpack_active(session_id, stage="iat_rebuild")
             if blocked is not None:
                 return blocked
+            invalid = _reject_non_string_dump_path(dump_path)
+            if invalid is not None:
+                return invalid
             path = Path(dump_path).expanduser().resolve(strict=True)
             artifact_root = self.settings.artifact_root.expanduser().resolve()
             if artifact_root not in path.parents and path.parent != artifact_root:
@@ -788,6 +820,9 @@ class UnpackMixin:
             blocked = self._guard_unpack_active(session_id, stage="pe_rebuild")
             if blocked is not None:
                 return blocked
+            invalid = _reject_non_string_dump_path(dump_path)
+            if invalid is not None:
+                return invalid
             path = Path(dump_path).expanduser().resolve(strict=True)
             artifact_root = self.settings.artifact_root.expanduser().resolve()
             if artifact_root not in path.parents and path.parent != artifact_root:
