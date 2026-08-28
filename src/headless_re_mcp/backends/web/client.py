@@ -43,6 +43,11 @@ _MAX_SCRIPTS = 2000
 _MAX_WEBSOCKETS = 256
 _MAX_WS_FRAMES = 500
 _MAX_WS_FRAME_BYTES = 4 * 1024
+# web.redirects: a redirect loop or a chatty bounce-tracker can chain many hops,
+# so the retained hops, the hops rendered per chain, and the page are bounded.
+_MAX_REDIRECTS = 2000
+_MAX_REDIRECT_HOPS = 50
+_MAX_REDIRECTS_PAGE = 1000
 _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
@@ -726,6 +731,117 @@ def _fold_dom_query(raw: object, selector: str) -> JsonObject:
     }
 
 
+def _header_location(headers: object) -> str | None:
+    """The Location header value from a CDP response headers map, bounded."""
+    if not isinstance(headers, dict):
+        return None
+    for key, value in headers.items():
+        if str(key).lower() == "location":
+            loc, _ = _bounded_metadata(value, _MAX_URL_BYTES)
+            return loc or None
+    return None
+
+
+def _url_scheme(url: object) -> str:
+    try:
+        return urlsplit(str(url or "")).scheme.lower()
+    except ValueError:
+        return ""
+
+
+def _url_host(url: object) -> str:
+    try:
+        return (urlsplit(str(url or "")).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _url_origin(url: object) -> str:
+    try:
+        parts = urlsplit(str(url or ""))
+    except ValueError:
+        return ""
+    if not parts.scheme or not parts.netloc:
+        return ""
+    return f"{parts.scheme.lower()}://{parts.netloc.lower()}"
+
+
+def fold_redirects(rows: list[JsonObject], *, limit: int = 100) -> JsonObject:
+    """Fold captured redirect hops into per-request redirect chains.
+
+    CDP reuses one requestId across a whole redirect chain, so the hops
+    (recorded in arrival order) group by requestId into an ordered chain from
+    the first URL to the final target. Each chain reports start_url, final_url,
+    length (hop count), the 3xx statuses, and three security flags: downgrade
+    (an https hop redirected to http), cross_host and cross_origin (the target
+    left the starting host/origin). Ranked longest-chain first.
+    """
+    chains_by_id: OrderedDict[str, list[JsonObject]] = OrderedDict()
+    for hop in rows:
+        rid = str(hop.get("requestId") or "")
+        chains_by_id.setdefault(rid, []).append(hop)
+
+    chains: list[JsonObject] = []
+    for rid, hops in chains_by_id.items():
+        rendered = [
+            {
+                "from_url": hop.get("from_url"),
+                "status": hop.get("status"),
+                "to_url": hop.get("to_url"),
+                "location": hop.get("location"),
+                "resource_type": hop.get("resource_type"),
+            }
+            for hop in hops[:_MAX_REDIRECT_HOPS]
+        ]
+        start_url = hops[0].get("from_url")
+        final_url = hops[-1].get("to_url")
+        downgrade = any(
+            _url_scheme(hop.get("from_url")) == "https"
+            and _url_scheme(hop.get("to_url")) == "http"
+            for hop in hops
+        )
+        start_host = _url_host(start_url)
+        final_host = _url_host(final_url)
+        start_origin = _url_origin(start_url)
+        final_origin = _url_origin(final_url)
+        chains.append(
+            {
+                "requestId": rid,
+                "start_url": start_url,
+                "final_url": final_url,
+                "length": len(hops),
+                "statuses": [hop.get("status") for hop in hops],
+                "downgrade": downgrade,
+                "cross_host": bool(
+                    start_host and final_host and start_host != final_host
+                ),
+                "cross_origin": bool(
+                    start_origin and final_origin and start_origin != final_origin
+                ),
+                "hops": rendered,
+                "hops_truncated": len(hops) > _MAX_REDIRECT_HOPS,
+            }
+        )
+
+    chains.sort(key=lambda c: (-int(c["length"]), str(c["requestId"])))
+    cap = max(1, min(int(limit), _MAX_REDIRECTS_PAGE))
+    window = chains[:cap]
+    aggregate = {
+        "total_chains": len(chains),
+        "total_hops": len(rows),
+        "downgrades": sum(1 for c in chains if c["downgrade"]),
+        "cross_origin": sum(1 for c in chains if c["cross_origin"]),
+        "max_length": max((int(c["length"]) for c in chains), default=0),
+    }
+    return {
+        "chains": window,
+        "count": len(window),
+        "total": len(chains),
+        "truncated": len(window) < len(chains),
+        "aggregate": aggregate,
+    }
+
+
 def summarize_requests(
     items: list[JsonObject], *, dropped: int = 0, top: int = 10
 ) -> JsonObject:
@@ -1014,6 +1130,12 @@ class _WebSession:
         # the connection map and every frame ring are capped.
         self.websockets: OrderedDict[str, JsonObject] = OrderedDict()
         self.websockets_dropped = 0
+        # Redirect hops for web.redirects. CDP reuses one requestId across a
+        # whole redirect chain and overwrites the `requests` row on each hop, so
+        # the 3xx hops are lost from network.list; captured here in order they
+        # arrive, bounded, so the chain can be reconstructed.
+        self.redirects: deque[JsonObject] = deque(maxlen=_MAX_REDIRECTS)
+        self.redirects_dropped = 0
         self.lock = threading.RLock()
         # Set right after construction: the runner is what built these objects,
         # and it is the only thread allowed to touch them again.
@@ -1173,6 +1295,10 @@ class WebBackend:
             handle.websockets = OrderedDict()
         if not hasattr(handle, "websockets_dropped"):
             handle.websockets_dropped = 0
+        if not hasattr(handle, "redirects"):
+            handle.redirects = deque(maxlen=_MAX_REDIRECTS)
+        if not hasattr(handle, "redirects_dropped"):
+            handle.redirects_dropped = 0
         cdp.send("Network.enable")
         cdp.send("Runtime.enable")
         cdp.send("Debugger.enable")
@@ -1187,6 +1313,25 @@ class WebBackend:
             resource_type, type_truncated = _bounded_metadata(
                 params.get("type"), _MAX_METADATA_BYTES
             )
+            # A redirect arrives as a fresh requestWillBeSent for the SAME
+            # requestId carrying redirectResponse (the 3xx that just fired). The
+            # `requests` row is about to be overwritten with this next hop, so
+            # capture the hop first or the chain is lost.
+            redirect_prev = params.get("redirectResponse")
+            redirect_hop: JsonObject | None = None
+            if isinstance(redirect_prev, dict):
+                from_url, _ = _bounded_metadata(
+                    redirect_prev.get("url"), _MAX_URL_BYTES
+                )
+                prev_status = redirect_prev.get("status")
+                redirect_hop = {
+                    "requestId": params.get("requestId"),
+                    "from_url": from_url,
+                    "status": prev_status if isinstance(prev_status, int) else None,
+                    "to_url": url,
+                    "location": _header_location(redirect_prev.get("headers")),
+                    "resource_type": resource_type,
+                }
             entry: JsonObject = {
                 "requestId": params.get("requestId"),
                 "url": url,
@@ -1213,6 +1358,12 @@ class WebBackend:
                     break
             rid = str(params.get("requestId"))
             with handle.lock:
+                if redirect_hop is not None:
+                    redirects = handle.redirects
+                    maxlen = getattr(redirects, "maxlen", None)
+                    if maxlen is not None and len(redirects) >= maxlen:
+                        handle.redirects_dropped += 1
+                    redirects.append(redirect_hop)
                 handle.requests[rid] = entry
                 while len(handle.requests) > _MAX_REQUESTS:
                     handle.requests.popitem(last=False)
@@ -1497,6 +1648,15 @@ class WebBackend:
             "has_more": start + len(window) < len(failed),
             "dropped": dropped,
         }
+
+    def redirects(self, session_id: str, *, limit: int = 100) -> JsonObject:
+        handle = self._get(session_id)
+        with handle.lock:
+            rows = list(getattr(handle, "redirects", []))
+            dropped = getattr(handle, "redirects_dropped", 0)
+        result = fold_redirects(rows, limit=limit)
+        result["dropped"] = dropped
+        return result
 
     def network_headers(self, session_id: str, request_id: str) -> JsonObject:
         handle = self._get(session_id)

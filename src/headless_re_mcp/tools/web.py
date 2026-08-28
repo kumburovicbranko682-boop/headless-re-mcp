@@ -130,6 +130,34 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_network_failed(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="web.redirects")
+    def web_redirects(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Reconstruct the redirect chains the page's requests went through.
+
+        A redirect is invisible in web.network.list: CDP reuses one requestId
+        across the whole chain and overwrites the row on each hop, so only the
+        final landing survives there and every 3xx in between is lost. This
+        captures those hops (from the redirectResponse CDP attaches to each new
+        hop) and folds them back into ordered chains -- which is what you need to
+        follow an OAuth dance, unmask a tracker's bounce chain, or catch a login
+        flow that drops from https back to http mid-redirect.
+
+        Answers with chains (ranked longest first), count, total, truncated,
+        dropped (hops the capture ring evicted) and an aggregate (total_chains,
+        total_hops, downgrades, cross_origin, max_length). Each chain carries
+        requestId, start_url, final_url, length (hop count), statuses (the 3xx
+        codes in order), three security flags -- downgrade (an https hop went to
+        http), cross_host and cross_origin (the target left the starting
+        host/origin) -- and hops, each with from_url, status, to_url, location
+        (the Location header) and resource_type, with hops_truncated when a chain
+        exceeded the per-chain hop cap. A request that was never redirected does
+        not appear here; use web.network.list for the full request set.
+        """
+        return _dump(analysis.web_redirects(session_id, limit=limit))
+
     @tools.tool(name="web.network.headers")
     def web_network_headers(session_id: str, request_id: str) -> dict[str, Any]:
         """Read one request's captured request and response headers.

@@ -148,6 +148,9 @@ class WebAnalysisMixin:
             session_id, "network_headers", session_id, request_id
         )
 
+    def web_redirects(self, session_id: str, limit: int = 100) -> Result[JsonObject]:
+        return self._web_wrap(session_id, "redirects", session_id, limit=limit)
+
     def web_network_post_data(
         self, session_id: str, request_id: str
     ) -> Result[JsonObject]:

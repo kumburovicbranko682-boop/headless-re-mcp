@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **338（220 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **339（221 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -368,6 +368,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
   `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
   `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
+
+### 新增（Web 动态：重定向链还原）
+
+- 新增 `web.redirects`:把浏览器请求走过的重定向链还原出来。重定向在 `web.network.list` 里是看不见的
+  ——CDP 在整条链上复用同一个 requestId,每跳都用新目标覆盖那一行,于是只有最终落地页留下,中间每个 3xx
+  都丢了。这个改从 CDP 每跳附带的 redirectResponse 里把跳转(前一跳的 url/status 与 Location 头、这一跳的
+  目标)抓下来,按到达顺序旁置到有界缓冲,再按 requestId 折回成有序的链——正好用来跟 OAuth 往返、扒开
+  跟踪器的 bounce 链,或抓一条登录流程在重定向中途从 https 掉回 http。回 chains(按链长排序,长者在前)、
+  count、total、truncated、dropped(被环淘汰的跳)与 aggregate(total_chains/total_hops/downgrades/
+  cross_origin/max_length)。每条链带 requestId、start_url、final_url、length(跳数)、statuses(按序的 3xx
+  码)、三个安全标志——downgrade(有一跳 https 掉到 http)、cross_host 与 cross_origin(目标离开了起始
+  host/源)——以及 hops(每跳含 from_url、status、to_url、location、resource_type),链超过每链跳数上限时带
+  hops_truncated。未发生重定向的请求不出现在这里;完整请求集看 `web.network.list`。只读,只在 `pe`/`android`
+  方向随 `web.*` 隐藏。
 
 ### 新增（抓包：上游 TLS 握手）
 
