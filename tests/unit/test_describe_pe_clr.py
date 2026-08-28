@@ -31,6 +31,7 @@ from headless_re_mcp.core.session import (
     _pe_hardening_facts,
     _pe_high_entropy_sections,
     _pe_load_config_facts,
+    _pe_manifest_facts,
     _pe_overlay,
     _pe_resource_payloads,
     _pe_rich_header,
@@ -1725,6 +1726,91 @@ class TestPeVersionInfo:
         assert info["strings"]["CompanyName"] == "Contoso Ltd"
 
 
+def _uac_manifest(level: str | None, ui_access: str | None = None) -> bytes:
+    """A UTF-8 side-by-side manifest, optionally carrying a trustInfo claim."""
+    trust = ""
+    if level is not None:
+        ui = f' uiAccess="{ui_access}"' if ui_access is not None else ""
+        trust = (
+            "<trustInfo><security><requestedPrivileges>"
+            f'<requestedExecutionLevel level="{level}"{ui}/>'
+            "</requestedPrivileges></security></trustInfo>"
+        )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">{trust}'
+        "</assembly>"
+    ).encode()
+
+
+class TestPeManifestFacts:
+    """_pe_manifest_facts reads the manifest's UAC claim off RT_MANIFEST.
+
+    The loader-enforced elevation ask -- the PE pair to Android's
+    uses-permission list: requestedExecutionLevel (requireAdministrator /
+    highestAvailable are the triage signal) and uiAccess. Presence alone is
+    an answer: with no manifest the loader falls back to UAC virtualization.
+    """
+
+    def test_an_admin_ask_reads_level_and_uiaccess(self, tmp_path: Path) -> None:
+        path = tmp_path / "elevated.exe"
+        path.write_bytes(
+            _pe_with_resources([(24, 1, _uac_manifest("requireAdministrator", "true"))])
+        )
+        assert _pe_manifest_facts(path) == {
+            "manifest": {
+                "present": True,
+                "requested_execution_level": "requireAdministrator",
+                "ui_access": True,
+            }
+        }
+
+    def test_an_as_invoker_manifest_reads_the_level(self, tmp_path: Path) -> None:
+        path = tmp_path / "plain.exe"
+        path.write_bytes(_pe_with_resources([(24, 1, _uac_manifest("asInvoker", "false"))]))
+        facts = _pe_manifest_facts(path)["manifest"]
+        assert facts["requested_execution_level"] == "asInvoker"
+        assert facts["ui_access"] is False
+
+    def test_a_manifest_without_trustinfo_reads_presence_only(self, tmp_path: Path) -> None:
+        path = tmp_path / "quiet.exe"
+        path.write_bytes(_pe_with_resources([(24, 1, _uac_manifest(None))]))
+        assert _pe_manifest_facts(path) == {"manifest": {"present": True}}
+
+    def test_a_stray_level_attribute_elsewhere_is_not_the_claim(self, tmp_path: Path) -> None:
+        # level= appears on other manifest elements (e.g. a custom one); only
+        # the requestedExecutionLevel element's own attributes count.
+        xml = (
+            b'<assembly><custom level="requireAdministrator"/>'
+            b"<trustInfo><security><requestedPrivileges>"
+            b'<requestedExecutionLevel level="asInvoker"/>'
+            b"</requestedPrivileges></security></trustInfo></assembly>"
+        )
+        path = tmp_path / "stray.exe"
+        path.write_bytes(_pe_with_resources([(24, 1, xml)]))
+        assert _pe_manifest_facts(path)["manifest"]["requested_execution_level"] == "asInvoker"
+
+    def test_a_pe_without_a_manifest_reads_absent(self, tmp_path: Path) -> None:
+        path = tmp_path / "bare.exe"
+        path.write_bytes(_native_pe())
+        assert _pe_manifest_facts(path) == {"manifest": {"present": False}}
+
+    def test_a_non_pe_reads_no_facts(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _pe_manifest_facts(path) == {}
+
+    def test_session_over_a_pe_carries_the_uac_claim(self, tmp_path: Path) -> None:
+        path = tmp_path / "app.exe"
+        path.write_bytes(
+            _pe_with_resources([(24, 1, _uac_manifest("highestAvailable", "false"))])
+        )
+        session = SessionRegistry().create(str(path))
+        manifest = session.metadata["pe"]["manifest"]
+        assert manifest["requested_execution_level"] == "highestAvailable"
+        assert manifest["ui_access"] is False
+
+
 def _pe_with_rich(
     entries: list[tuple[int, int, int]],
     *,
@@ -2330,6 +2416,7 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
             "tls": {"present": False, "callbacks": 0},
             "link_time": 0,
             "reproducible": False,
+            "manifest": {"present": False},
             "wx_sections": [],
             "high_entropy_sections": [],
             "urls": [],

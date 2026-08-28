@@ -1,4 +1,4 @@
-"""Cross-validate the PE self-declared identity (VS_VERSIONINFO) against pefile.
+"""Cross-validate the PE resource claims (VS_VERSIONINFO, manifest UAC) against pefile.
 
 A session over a PE now reports its version resource tool-free -- the identity
 Explorer's Details pane shows and malware routinely fakes: the numeric
@@ -12,6 +12,14 @@ whose linker builds the version resource from assembly attributes -- a producer
 neither builder controls; the other plants a hand-built resource tree so the
 decode is also gated on a shape no compiler smoothed over.
 
+The same session also reports the RT_MANIFEST UAC claim (loader-enforced,
+unlike the version strings): requestedExecutionLevel and uiAccess out of the
+trustInfo block. The reader scrapes the XML with element-anchored byte
+regexes, so the gate referees it with a genuinely different stack: pefile
+walks the resource tree to the raw manifest bytes and ElementTree parses the
+XML for the attributes. The mcs-built PE doubles as the negative: Mono's
+linker emits no RT_MANIFEST, and both sides must agree it is absent.
+
 pefile ships in the project's ``pe`` extra; mcs comes from mono-mcs in CI. skip
 != pass: each test skips only when its own referee is unavailable.
 """
@@ -21,6 +29,7 @@ from __future__ import annotations
 import shutil
 import struct
 import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -71,18 +80,19 @@ def _version_blob(strings: dict[str, str]) -> bytes:
     return _vs_node("VS_VERSION_INFO", fixed, len(fixed), [info])
 
 
-def _pe_with_version_resource(blob: bytes) -> bytes:
-    """A minimal PE whose resource tree holds ``blob`` as RT_VERSION/1/0x409.
+def _pe_with_version_resource(blob: bytes, type_id: int = 16) -> bytes:
+    """A minimal PE whose resource tree holds ``blob`` as ``type_id``/1/0x409.
 
-    The three-level tree (type 16 -> name 1 -> language 0x409 -> data entry) is
+    The three-level tree (type -> name 1 -> language 0x409 -> data entry) is
     laid out by hand, independently of the reader's own test builder, so the
     walk is gated on a resource directory neither implementation generated.
+    Type 16 is RT_VERSION; type 24 is RT_MANIFEST.
     """
     sect_rva = 0x1000
     sec = bytearray(0x60)
-    # Root directory: one ID entry, type 16 -> subdirectory at +0x18.
+    # Root directory: one ID entry, the type -> subdirectory at +0x18.
     struct.pack_into("<HH", sec, 12, 0, 1)
-    struct.pack_into("<II", sec, 16, 16, 0x8000_0018)
+    struct.pack_into("<II", sec, 16, type_id, 0x8000_0018)
     # Name directory: one ID entry, name 1 -> subdirectory at +0x30.
     struct.pack_into("<HH", sec, 0x18 + 12, 0, 1)
     struct.pack_into("<II", sec, 0x18 + 16, 1, 0x8000_0030)
@@ -192,6 +202,111 @@ def test_a_planted_version_resource_agrees_with_pefile(tmp_path: Path) -> None:
     assert info["file_version"] == file_version
     assert info["product_version"] == product_version
     assert info["strings"] == pefile_strings
+
+
+def _pefile_manifest(pefile_mod: Any, binary: Path) -> tuple[str | None, bool | None] | None:
+    """The referee's UAC view: pefile finds the raw RT_MANIFEST bytes, then a
+    real XML parse (ElementTree, namespace-blind on the tag) reads the
+    requestedExecutionLevel element's level and uiAccess attributes. None
+    means no manifest resource at all -- absence must agree too.
+    """
+    pe = pefile_mod.PE(str(binary))
+    root = getattr(pe, "DIRECTORY_ENTRY_RESOURCE", None)
+    if root is None:
+        return None
+    for entry in root.entries:
+        if entry.id != 24:  # RT_MANIFEST
+            continue
+        name_dir = entry.directory.entries[0]
+        lang_dir = name_dir.directory.entries[0]
+        data = lang_dir.data.struct
+        raw = pe.get_memory_mapped_image()[data.OffsetToData : data.OffsetToData + data.Size]
+        level: str | None = None
+        ui_access: bool | None = None
+        for element in ET.fromstring(raw.decode("utf-8")).iter():
+            if element.tag.rsplit("}", 1)[-1] != "requestedExecutionLevel":
+                continue
+            level = element.attrib.get("level")
+            declared = element.attrib.get("uiAccess")
+            if declared is not None:
+                ui_access = declared.lower() == "true"
+            break
+        return level, ui_access
+    return None
+
+
+def _session_manifest(binary: Path) -> dict[str, Any]:
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok, created.error
+        manifest = created.data["session"]["metadata"]["pe"]["manifest"]
+        assert isinstance(manifest, dict)
+        return manifest
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("level", "ui_access"),
+    [
+        ("requireAdministrator", "true"),
+        ("highestAvailable", "false"),
+        ("asInvoker", None),
+    ],
+)
+def test_a_planted_uac_manifest_agrees_with_pefile_and_elementtree(
+    tmp_path: Path, level: str, ui_access: str | None
+) -> None:
+    pefile_mod = _pefile()
+    if pefile_mod is None:
+        pytest.skip("pefile not installed — PE manifest gate not run (skip != pass)")
+
+    ui = f' uiAccess="{ui_access}"' if ui_access is not None else ""
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">'
+        '<trustInfo xmlns="urn:schemas-microsoft-com:asm.v3"><security>'
+        f'<requestedPrivileges><requestedExecutionLevel level="{level}"{ui}/>'
+        "</requestedPrivileges></security></trustInfo></assembly>"
+    ).encode()
+    binary = tmp_path / "claimed.exe"
+    binary.write_bytes(_pe_with_version_resource(xml, type_id=24))
+
+    # Independent ground truth: pefile's resource walk plus a real XML parse.
+    # It must see the planted claim, so it is a genuine second opinion.
+    referee = _pefile_manifest(pefile_mod, binary)
+    assert referee is not None
+    referee_level, referee_ui = referee
+    assert referee_level == level
+
+    manifest = _session_manifest(binary)
+    assert manifest["present"] is True
+    assert manifest["requested_execution_level"] == referee_level
+    assert manifest.get("ui_access") == referee_ui
+
+
+@pytest.mark.integration
+def test_an_mcs_built_pe_has_no_manifest_on_both_sides(tmp_path: Path) -> None:
+    pefile_mod = _pefile()
+    if pefile_mod is None:
+        pytest.skip("pefile not installed — PE manifest gate not run (skip != pass)")
+    mcs = shutil.which("mcs")
+    if mcs is None:
+        pytest.skip("mcs (mono-mcs) not installed — compiler-PE gate not run (skip != pass)")
+
+    # Mono's linker emits no RT_MANIFEST resource, so a real compiler output
+    # is the negative: the referee and the reader must both call it absent.
+    source = tmp_path / "hello.cs"
+    source.write_text('class P { static void Main() { System.Console.WriteLine("hi"); } }\n')
+    binary = tmp_path / "hello.exe"
+    subprocess.run(
+        [mcs, f"-out:{binary}", str(source)], check=True, capture_output=True, timeout=120
+    )
+
+    assert _pefile_manifest(pefile_mod, binary) is None
+    assert _session_manifest(binary) == {"present": False}
 
 
 @pytest.mark.integration

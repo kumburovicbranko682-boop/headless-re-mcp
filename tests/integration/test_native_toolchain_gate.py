@@ -2,6 +2,11 @@
 
 Two triage themes the other native gates cannot cover from system binaries:
 
+- Text relocations (ELF DT_TEXTREL/DF_TEXTREL) -- the dynamic W^X violation:
+  the loader remaps code writable to relocate it. Stock -fPIC output never
+  carries the marker, so the positive case builds a real non-PIC shared
+  object (-fno-pic -mcmodel=large -Wl,-z,notext) whose dynamic table readelf
+  -d must also call TEXTREL, with a plain PIC link as the negative.
 - Search paths (ELF DT_RPATH/DT_RUNPATH, Mach-O LC_RPATH) -- a first-order
   hijack/supply-chain fact, since a writable or relative entry lets an attacker
   plant a library the loader picks up. System binaries almost never carry one,
@@ -484,6 +489,78 @@ def test_elf_search_paths_agree_with_readelf(tmp_path: Path) -> None:
             assert facts["linking"] == "dynamic"
             assert any(name.startswith("libc.so") for name in facts["needed"])
             assert facts["entry"] > 0
+    finally:
+        for session_id in sessions:
+            service.close_session(session_id)
+
+
+def _readelf_textrel(readelf: str, binary: Path) -> bool:
+    """readelf -d's verdict: a (TEXTREL) tag row or TEXTREL in the (FLAGS) row."""
+    result = subprocess.run(
+        [readelf, "-d", str(binary)], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    for line in result.stdout.splitlines():
+        if "(TEXTREL)" in line:
+            return True
+        if "(FLAGS)" in line and "TEXTREL" in line.split(")", 1)[1]:
+            return True
+    return False
+
+
+@pytest.mark.integration
+def test_elf_textrel_agrees_with_readelf(tmp_path: Path) -> None:
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    if gcc is None:
+        pytest.skip("no C compiler installed — textrel gate not run (skip != pass)")
+    readelf = shutil.which("readelf")
+    if readelf is None:
+        pytest.skip("readelf (binutils) not installed — textrel gate not run (skip != pass)")
+
+    # The real producer of text relocations: a non-PIC shared object embeds
+    # absolute addresses in code the loader must patch in place, so the
+    # linker -- told to allow it with -z notext -- records DT_TEXTREL and the
+    # DF_TEXTREL flag. -mcmodel=large keeps gcc from folding the address into
+    # a RIP-relative form the linker could resolve without a text reloc.
+    source = tmp_path / "textrel.c"
+    source.write_text("int shared_value = 7;\nlong grab(void) { return (long)&shared_value; }\n")
+    dirty = tmp_path / "textrel.so"
+    compile_result = subprocess.run(
+        [
+            gcc,
+            "-fno-pic",
+            "-mcmodel=large",
+            "-shared",
+            "-Wl,-z,notext",
+            str(source),
+            "-o",
+            str(dirty),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if compile_result.returncode != 0:
+        pytest.skip(
+            "toolchain refuses a non-PIC shared object — textrel gate not run (skip != pass)"
+        )
+    # A stock PIC link is the negative: no loader-visible write into text.
+    clean = _compile_probe(gcc, tmp_path, "probe_textrel_clean")
+
+    # readelf decodes the same dynamic table independently, and the positive
+    # must be real on its side before the reader's verdict counts.
+    assert _readelf_textrel(readelf, dirty) is True
+    assert _readelf_textrel(readelf, clean) is False
+
+    service = AnalysisService()
+    sessions: list[str] = []
+    try:
+        session_id, dirty_facts = _session_native(service, dirty)
+        sessions.append(session_id)
+        session_id, clean_facts = _session_native(service, clean)
+        sessions.append(session_id)
+        assert dirty_facts["textrel"] is True
+        assert clean_facts["textrel"] is False
     finally:
         for session_id in sessions:
             service.close_session(session_id)

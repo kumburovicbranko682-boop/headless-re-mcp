@@ -581,17 +581,22 @@ def _elf64_with_gnu_stack(*, executable: bool) -> bytes:
     return ehdr + program
 
 
-def _elf64_relro(*, bind_now_tag: bool = False, flags: int = 0, flags_1: int = 0) -> bytes:
+def _elf64_relro(
+    *, bind_now_tag: bool = False, flags: int = 0, flags_1: int = 0, textrel_tag: bool = False
+) -> bytes:
     """A dynamic ELF carrying PT_GNU_RELRO plus a controllable dynamic section.
 
     RELRO is partial with only the segment present; it upgrades to full when the
     dynamic section forces eager binding -- via a DT_BIND_NOW tag, DF_BIND_NOW in
     DT_FLAGS, or DF_1_NOW in DT_FLAGS_1 -- so each of the three markers is
-    exercised through the same builder.
+    exercised through the same builder. The same dynamic array also carries the
+    text-relocation markers (a DT_TEXTREL tag, or DF_TEXTREL in DT_FLAGS).
     """
     entries: list[tuple[int, int]] = []
     if bind_now_tag:
         entries.append((24, 0))  # DT_BIND_NOW
+    if textrel_tag:
+        entries.append((22, 0))  # DT_TEXTREL
     if flags:
         entries.append((30, flags))  # DT_FLAGS
     if flags_1:
@@ -1406,6 +1411,32 @@ def test_relro_is_full_when_binding_is_forced_eager(tmp_path: Path) -> None:
     ):
         facts = describe_native(_write(tmp_path, f"{name}.bin", _elf64_relro(**kwargs)))["native"]
         assert facts["relro"] == "full", name
+
+
+def test_elf_textrel_reads_both_markers_and_defaults_false(tmp_path: Path) -> None:
+    # Text relocations -- the dynamic W^X violation checksec's TEXTREL row
+    # flags -- are declared by either the legacy DT_TEXTREL tag or DF_TEXTREL
+    # in DT_FLAGS; a stock dynamic section carries neither and reads False.
+    for name, kwargs in (
+        ("textrel_tag", {"textrel_tag": True}),  # DT_TEXTREL
+        ("df_textrel", {"flags": 0x04}),  # DT_FLAGS & DF_TEXTREL
+    ):
+        facts = describe_native(_write(tmp_path, f"{name}.bin", _elf64_relro(**kwargs)))["native"]
+        assert facts["textrel"] is True, name
+    clean = describe_native(_write(tmp_path, "clean.bin", _elf64_relro()))["native"]
+    assert clean["textrel"] is False
+    # Eager binding (DF_BIND_NOW is bit 0x08) must not read as text
+    # relocations (bit 0x04) -- the flag bits are checked, not mere presence.
+    eager = describe_native(_write(tmp_path, "eager.bin", _elf64_relro(flags=0x08)))["native"]
+    assert eager["textrel"] is False
+
+
+def test_elf_without_a_dynamic_section_carries_no_textrel(tmp_path: Path) -> None:
+    # A static ELF has no dynamic section for the loader to consult, so the
+    # question does not arise and the key is absent rather than False.
+    ehdr = _ehdr64(2, phoff=64, phnum=1, shoff=0, shnum=0)  # ET_EXEC
+    facts = describe_native(_write(tmp_path, "static.bin", ehdr + _phdr64(1)))["native"]
+    assert "textrel" not in facts
 
 
 def test_elf_entry_point_reported_only_when_nonzero(tmp_path: Path) -> None:

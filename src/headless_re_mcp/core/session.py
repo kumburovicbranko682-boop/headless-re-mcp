@@ -187,6 +187,9 @@ class SessionRegistry:
                 # VS_VERSIONINFO -- the self-declared identity (versions,
                 # CompanyName/ProductName strings); a claim, not a verdict.
                 metadata["pe"].update(_pe_version_info(path))
+                # The manifest's UAC claim (requestedExecutionLevel/uiAccess)
+                # -- loader-enforced, the PE pair to Android's permissions.
+                metadata["pe"].update(_pe_manifest_facts(path))
                 # The Rich header -- MSVC's toolchain census, the PE pair to
                 # an ELF .comment and a Mach-O build-tool entry; only
                 # Microsoft linkers write it, so absence is a real answer.
@@ -688,6 +691,12 @@ _DT_PREINIT_ARRAYSZ = 33
 _ELF_MAX_INIT_FUNCS = 8192
 _DT_BIND_NOW = 24
 _DT_FLAGS = 30
+# Text relocations: the loader must write into mapped code to relocate it --
+# the dynamic W^X violation, what checksec's TEXTREL row flags. Either the
+# legacy DT_TEXTREL tag or DF_TEXTREL in DT_FLAGS declares it; readelf -d
+# prints both as TEXTREL. No stock -fPIC toolchain output carries one.
+_DT_TEXTREL = 22
+_DF_TEXTREL = 0x04
 _DT_FLAGS_1 = 0x6FFFFFFB
 _DF_1_PIE = 0x08000000
 # The exploit-mitigation ("checksec") facts. NX comes from PT_GNU_STACK's
@@ -3920,6 +3929,18 @@ _PE_RES_MAX_TREE = 32 * 1024 * 1024
 # routinely fakes. The pair to an APK's package identity, a .NET assembly
 # version and an ELF/Mach-O soname/install_name.
 _PE_RT_VERSION = 16
+# RT_MANIFEST (type 24) carries the side-by-side application manifest whose
+# trustInfo block is the UAC elevation claim -- requestedExecutionLevel
+# (asInvoker / highestAvailable / requireAdministrator) and uiAccess. The
+# loader enforces it, so unlike version-info strings it is not a free lie:
+# malware asking for admin must say so here. The PE pair to an Android
+# manifest's uses-permission list.
+_PE_RT_MANIFEST = 24
+_PE_MAX_MANIFEST = 64 * 1024
+_PE_MAX_UAC_LEVEL = 64
+_PE_UAC_ELEMENT_RE = re.compile(rb"<\s*(?:\w+:)?requestedExecutionLevel\b([^>]*)")
+_PE_UAC_LEVEL_RE = re.compile(rb"level\s*=\s*[\"']([^\"']*)[\"']")
+_PE_UAC_UIACCESS_RE = re.compile(rb"uiAccess\s*=\s*[\"']([^\"']*)[\"']")
 _VS_FIXED_SIG = 0xFEEF04BD
 _VS_FIXED_SIZE = 52
 _PE_MAX_VERSION_BLOB = 64 * 1024
@@ -5626,7 +5647,9 @@ def _pe_version_info(path: Path) -> dict[str, Any]:
     if view is None:
         return {}
     _magic, dir_count, dir_off, sections, _base = view
-    blob = _pe_version_blob(raw, dir_count, dir_off, sections)
+    blob = _pe_first_resource(
+        raw, dir_count, dir_off, sections, _PE_RT_VERSION, _PE_MAX_VERSION_BLOB
+    )
     if blob is None:
         return {}
     parsed = _vs_versioninfo(blob)
@@ -5635,13 +5658,21 @@ def _pe_version_info(path: Path) -> dict[str, Any]:
     return {"version_info": parsed}
 
 
-def _pe_version_blob(
+def _pe_first_resource(
     raw: bytes,
     dir_count: int,
     dir_off: int,
     sections: list[tuple[int, int, int, int]],
+    type_id: int,
+    cap: int,
 ) -> bytes | None:
-    """The first RT_VERSION leaf's bytes out of the resource tree, or None."""
+    """The first ``type_id`` leaf's bytes out of the resource tree, or None.
+
+    The shared walk under the version-info and manifest reads: down from the
+    type level through name and language to the first
+    IMAGE_RESOURCE_DATA_ENTRY whose bytes live inside the tree, capped at
+    ``cap``. Depth- and entry-bounded; anything malformed reads as absent.
+    """
     entry = dir_off + _PE_RESOURCE_DIR * 8
     if dir_count <= _PE_RESOURCE_DIR or entry + 8 > len(raw):
         return None
@@ -5655,7 +5686,7 @@ def _pe_version_blob(
     tree = raw[res_base : res_base + min(res_size, _PE_RES_MAX_TREE)]
 
     def first_leaf(node_off: int, depth: int) -> bytes | None:
-        # Under the RT_VERSION type node: name then language levels, ending in
+        # Under the matched type node: name then language levels, ending in
         # an IMAGE_RESOURCE_DATA_ENTRY whose bytes live inside the tree.
         if depth > _PE_RES_MAX_DEPTH or node_off + 16 > len(tree):
             return None
@@ -5678,7 +5709,7 @@ def _pe_version_blob(
             size = int.from_bytes(tree[offset_field + 4 : offset_field + 8], "little")
             if res_rva <= data_rva and data_rva - res_rva + size <= len(tree):
                 start = data_rva - res_rva
-                return tree[start : start + min(size, _PE_MAX_VERSION_BLOB)]
+                return tree[start : start + min(size, cap)]
         return None
 
     if len(tree) < 16:
@@ -5692,9 +5723,54 @@ def _pe_version_blob(
         name_field = int.from_bytes(tree[cursor : cursor + 4], "little")
         offset_field = int.from_bytes(tree[cursor + 4 : cursor + 8], "little")
         cursor += 8
-        if name_field == _PE_RT_VERSION and offset_field & 0x80000000:
+        if name_field == type_id and offset_field & 0x80000000:
             return first_leaf(offset_field & 0x7FFFFFFF, 1)
     return None
+
+
+def _pe_manifest_facts(path: Path) -> dict[str, Any]:
+    """The side-by-side manifest's UAC claim, as ``{"manifest": ...}``.
+
+    The loader-enforced answer to "does this program ask for elevation" --
+    the PE pair to Android's uses-permission list: RT_MANIFEST (type 24)
+    carries the application manifest whose trustInfo names the
+    requestedExecutionLevel (asInvoker / highestAvailable /
+    requireAdministrator -- the last two are the triage signal) and uiAccess
+    (a UIPI bypass only signed, Program Files-installed code may claim).
+    ``present`` alone is already an answer: no manifest means the loader
+    falls back to UAC virtualization heuristics.
+
+    The attribute scrape is byte-regex over the (UTF-8) XML, element-anchored
+    so a stray ``level=`` elsewhere cannot masquerade as the claim; a
+    manifest without a trustInfo block reports presence and no level. Fail-
+    closed: only a non-PE yields ``{}``.
+    """
+    try:
+        if path.stat().st_size > _PE_MAX_IMPORT_FILE:
+            return {}
+        with path.open("rb") as stream:
+            raw = stream.read(_PE_MAX_IMPORT_FILE)
+    except OSError:
+        return {}
+    view = _pe_header_view(raw)
+    if view is None:
+        return {}
+    _magic, dir_count, dir_off, sections, _base = view
+    blob = _pe_first_resource(raw, dir_count, dir_off, sections, _PE_RT_MANIFEST, _PE_MAX_MANIFEST)
+    facts: dict[str, Any] = {"present": blob is not None}
+    if blob:
+        element = _PE_UAC_ELEMENT_RE.search(blob)
+        if element is not None:
+            attrs = element.group(1)
+            level = _PE_UAC_LEVEL_RE.search(attrs)
+            if level is not None:
+                facts["requested_execution_level"] = level.group(1).decode(
+                    "utf-8", errors="replace"
+                )[:_PE_MAX_UAC_LEVEL]
+            ui_access = _PE_UAC_UIACCESS_RE.search(attrs)
+            if ui_access is not None:
+                facts["ui_access"] = ui_access.group(1).lower() == b"true"
+    return {"manifest": facts}
 
 
 def _vs_block(blob: bytes, pos: int) -> tuple[int, int, str, int] | None:
@@ -6078,6 +6154,14 @@ def _elf_layout_facts(
             facts["relro"] = "full" if bind_now else "partial"
         else:
             facts["relro"] = "none"
+        # Text relocations -- the dynamic W^X violation: the loader remaps
+        # code writable to relocate it, defeating the nx answer above. The
+        # checksec TEXTREL row; reported whenever there is a dynamic section,
+        # and False is the real stock-toolchain answer.
+        if program["has_dynamic"]:
+            facts["textrel"] = _elf_dynamic_textrel(
+                stream, order, bits, program["dyn_off"], program["dyn_sz"]
+            )
         if program["interp"] is not None:
             facts["interpreter"] = program["interp"]
         build_id = _elf_build_id(stream, order, program["notes"])
@@ -6296,6 +6380,42 @@ def _elf_dynamic_bind_now(
         if tag == _DT_FLAGS and val & _DF_BIND_NOW:
             return True
         if tag == _DT_FLAGS_1 and val & _DF_1_NOW:
+            return True
+    return False
+
+
+def _elf_dynamic_textrel(
+    stream: BinaryIO, order: str, bits: int, dyn_off: int, dyn_sz: int
+) -> bool:
+    """True when the dynamic section declares text relocations.
+
+    The dynamic W^X violation: DT_TEXTREL (legacy) or DF_TEXTREL in DT_FLAGS
+    tells the loader it must write into mapped code to relocate it, remapping
+    text writable and defeating the nx story -- the checksec TEXTREL row. No
+    stock -fPIC output carries either marker; prelinked-era hacks and non-PIC
+    shared objects (-Wl,-z,notext) do. Bounded like the bind-now reader; an
+    unreadable section falls closed to False.
+    """
+    if dyn_off <= 0 or dyn_sz <= 0:
+        return False
+    entsize = 16 if bits == 64 else 8
+    vsize = entsize // 2
+    count = min(dyn_sz // entsize, _ELF_MAX_DYN)
+    if count <= 0:
+        return False
+    stream.seek(dyn_off)
+    table = stream.read(entsize * count)
+    for i in range(count):
+        entry = table[i * entsize : (i + 1) * entsize]
+        if len(entry) < entsize:
+            break
+        tag = int.from_bytes(entry[0:vsize], order)  # type: ignore[arg-type]
+        val = int.from_bytes(entry[vsize:entsize], order)  # type: ignore[arg-type]
+        if tag == _DT_NULL:
+            break
+        if tag == _DT_TEXTREL:
+            return True
+        if tag == _DT_FLAGS and val & _DF_TEXTREL:
             return True
     return False
 
