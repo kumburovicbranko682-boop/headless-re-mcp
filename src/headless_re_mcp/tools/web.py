@@ -345,6 +345,58 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_script_source(session_id, script_id))
 
+    @tools.tool(name="web.secrets")
+    def web_secrets(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        name_filter: str = "",
+        include_generic: bool = False,
+        url_filter: str = "",
+        dynamic_only: bool = False,
+    ) -> dict[str, Any]:
+        """Scan the live page's JavaScript for embedded credentials (keys/tokens).
+
+        The dynamic-page counterpart to js.secrets: that scans a file at rest,
+        this fetches the source of every script the running page parsed -- crucially
+        including the runtime eval/new-Function/document.write scripts a packer
+        unpacks in memory and never writes to disk -- and runs the same detector
+        table (AWS/Google/GitHub/Slack/Stripe keys, JWTs, PEM private-key headers,
+        basic-auth urls, ...) over each via the shared JS lexer, so \\x/\\u-escaped
+        keys are decoded and quotes inside comments/regex are not mistaken for
+        strings. Deduplicated across scripts by (detector, value). Answers with
+        secrets, count, total (distinct findings after name_filter), offset,
+        has_more, detectors (the distinct detector names present), scanned_scripts
+        (how many script sources were fetched and scanned), scripts_dropped (ring
+        eviction of the parsed-script list) and scan_capped (the script-count,
+        per-source-byte, total-scan-byte or distinct-finding ceiling was hit). Each
+        secrets row is {detector, value (the matched credential, clipped with
+        value_truncated when long), count (occurrences across the page),
+        first_script ({script_id, url}, the script to hand web.script.source)}.
+        url_filter and dynamic_only pre-narrow which scripts are scanned
+        (dynamic_only isolates the eval/packer payloads that carry no url); WASM
+        scripts are skipped (use wasm.secrets on a module pulled with web.wasm.get).
+        name_filter then keeps only findings whose detector or value contains that
+        substring (case-insensitive), applied before paging so total is the match
+        count. include_generic adds a high-entropy base64/hex catch-all for a
+        literal no specific detector claimed (off by default; it trades recall for
+        precision). Rows are ordered by detector, then occurrence count
+        (descending), then value. The list field is secrets; to read a matched
+        script in full use web.script.source with a finding's first_script.script_id.
+        Read-only.
+        """
+        return _dump(
+            analysis.web_secrets(
+                session_id,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_generic=include_generic,
+                url_filter=url_filter,
+                dynamic_only=dynamic_only,
+            )
+        )
+
     @tools.tool(name="web.wasm.list")
     def web_wasm_list(
         session_id: str,

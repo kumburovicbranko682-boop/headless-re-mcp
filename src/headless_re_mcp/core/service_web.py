@@ -238,6 +238,28 @@ class WebAnalysisMixin:
             key_filter=key_filter,
         )
 
+    def web_secrets(
+        self,
+        session_id: str,
+        offset: int = 0,
+        limit: int = 100,
+        name_filter: str = "",
+        include_generic: bool = False,
+        url_filter: str = "",
+        dynamic_only: bool = False,
+    ) -> Result[JsonObject]:
+        return self._web_wrap(
+            session_id,
+            "secrets",
+            session_id,
+            offset=offset,
+            limit=limit,
+            name_filter=name_filter,
+            include_generic=include_generic,
+            url_filter=url_filter,
+            dynamic_only=dynamic_only,
+        )
+
     def web_frames(
         self,
         session_id: str,

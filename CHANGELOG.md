@@ -294,6 +294,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **`js.secrets` 扫的是磁盘上的文件，但一个跑起来的页面里最值钱的一问是「这页 JS 里到底写死了哪些凭据」——尤其是壳/加载器在内存里 eval 出来、从不落盘的那些脚本，
+  静态分析根本看不到**。新增只读工具 `web.secrets`：把 `js.secrets` 用的同一套检测（共享的 JS 词法器 + 共享 `secret_scan.py` 探测器，故 `\x`/`\u` 转义的 key
+  先解码、注释与正则里的引号不误判）跑在页面已解析的每个脚本源码上——包括 `dynamic=True` 的运行时脚本（eval / new Function / document.write 注入的壳载荷）。
+  按 `(detector, value)` 跨脚本去重，每行 `{detector, value（命中的凭据，过长置 value_truncated）, count（整页出现次数）, first_script（{script_id, url}，
+  可直接丢给 web.script.source 的那个脚本）}`，按 detector 再 count 再 value 排序。答复另带 `detectors`（命中的探测器种类集合）、`scanned_scripts`（实际抓取并
+  扫描的脚本数）、`scripts_dropped`（已解析脚本表的环形逐出）与 `scan_capped`（脚本数、单源字节、总扫描字节或去重命中数任一触及上限）。每层都设了界：最多抓 200 个
+  脚本、单源最多 4 MiB、总扫描 64 MiB，故再大的页面也不会撑爆本进程；整批在一次 runner 调用里跑，故给了比单次 CDP 读更宽的超时。`url_filter`/`dynamic_only`
+  先收窄扫哪些脚本（`dynamic_only` 专挑没有 url 的 eval/壳载荷）；WASM 脚本跳过（那是 `wasm.secrets` 的活，先用 web.wasm.get 拉出模块）。`name_filter` 再对 detector
+  或 value 做大小写不敏感子串匹配、分页前应用，故 `total` 是命中数。`include_generic` 对没被具体探测器认领的字面量补一个高熵兜底。列表字段是 `secrets`；要完整读某个命中
+  脚本用 `web.script.source` 加该行的 `first_script.script_id`。只读，工具总数 294→295（177 只读 / 118 写）。
 - **Web 动态分析原来只有 `web.cookies` 和 `web.storage`（local/session）两处取数，但现代 SPA 越来越多地把 auth token、缓存的 API 响应、用户数据放进
   IndexedDB——Set-Cookie 抓包、`document.cookie`、Web Storage 都够不到它**。新增只读工具 `web.indexed_db`：沿用 `web.storage` 的做法（页面内固定
   片段、不接受任意 JS），只针对顶层文档 origin 读 IndexedDB。返回两块：`databases` 是结构——每个库一行 `{name, version, stores（对象存储名）}`，某库被截断或打不开时带

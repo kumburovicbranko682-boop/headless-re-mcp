@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
+from headless_re_mcp.backends.jsre.js_strings import extract_secrets as extract_js_secrets
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
 
@@ -35,6 +36,17 @@ T = TypeVar("T")
 _MAX_REQUESTS = 3000
 _MAX_CONSOLE = 2000
 _MAX_SCRIPTS = 2000
+# web.secrets fetches and scans the source of the page's parsed scripts (the JS
+# js.secrets detectors, reused). A page can parse thousands of scripts and one
+# can be multi-megabyte, so the number fetched, each source read, and the total
+# scanned are bounded, and the distinct-finding set is capped -- scan_capped when
+# any ceiling is hit. The whole batch runs in one runner call, so it gets a
+# wider timeout than a single CDP read.
+_MAX_WEB_SECRET_SCRIPTS = 200
+_MAX_WEB_SECRET_SOURCE_BYTES = 4 * 1024 * 1024
+_MAX_WEB_SECRET_SCAN_BYTES = 64 * 1024 * 1024
+_MAX_WEB_SECRET_FINDINGS = 20000
+_WEB_SECRET_SCAN_TIMEOUT = 120.0
 # web.frames flattens Page.getFrameTree; a hostile page can insert or deeply
 # nest many iframes, so cap the tree walked (frames_truncated when hit) and page
 # the flattened list the same way the other web reads do.
@@ -1719,6 +1731,138 @@ class WebBackend:
         if spill is not None:
             result["source_path"] = str(spill)
         return result
+
+    def secrets(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        name_filter: str = "",
+        include_generic: bool = False,
+        url_filter: str = "",
+        dynamic_only: bool = False,
+    ) -> JsonObject:
+        """Scan the live page's parsed scripts for embedded credentials.
+
+        The dynamic-page counterpart to js.secrets: that scans a file at rest,
+        this fetches the source of the scripts the running page actually parsed --
+        including the runtime/eval/new-Function scripts (dynamic=True) a packer
+        unpacks in memory and never writes to disk, which no static pass sees --
+        and runs the same detector table over each (via the shared JS lexer, so
+        \\x/\\u-escaped keys are decoded and quotes in comments/regex are not
+        mistaken for strings). Findings are deduplicated across scripts by
+        (detector, value): each row is {detector, value (clipped, value_truncated
+        when long), count (occurrences across the page), first_script ({script_id,
+        url} -- the script to hand web.script.source)}. Answers also carry
+        detectors (the distinct set present), scanned_scripts (how many sources
+        were fetched and scanned), scripts_dropped (ring eviction of the parsed-
+        script list) and scan_capped (the script count, per-source byte, total
+        scan-byte or distinct-finding ceiling was hit). url_filter and dynamic_only
+        pre-narrow which scripts are scanned (dynamic_only isolates the eval/packer
+        payloads); WASM scripts are skipped (use wasm.secrets). name_filter then
+        keeps only findings whose detector or value contains that substring
+        (case-insensitive), applied before paging so total is the match count.
+        include_generic adds a high-entropy catch-all for a literal no specific
+        detector claimed.
+        """
+        handle = self._get(session_id)
+        with handle.lock:
+            script_list = list(handle.scripts.values())
+            dropped = handle.scripts_dropped
+        if dynamic_only:
+            script_list = [s for s in script_list if s.get("dynamic")]
+        url_needle = url_filter.strip().lower() if isinstance(url_filter, str) else ""
+        if url_needle:
+            script_list = [s for s in script_list if url_needle in str(s.get("url", "")).lower()]
+        # getScriptSource on a wasm script returns WAT, not JS; that is wasm.secrets'
+        # job, so only JavaScript sources are scanned here.
+        script_list = [
+            s for s in script_list if str(s.get("language", "")).lower() != "webassembly"
+        ]
+
+        def work() -> JsonObject:
+            aggregates: dict[tuple[str, str], JsonObject] = {}
+            scanned_bytes = 0
+            scanned_scripts = 0
+            scan_capped = False
+            stop = False
+            for script in script_list:
+                if scanned_scripts >= _MAX_WEB_SECRET_SCRIPTS:
+                    scan_capped = True
+                    break
+                script_id = str(script.get("scriptId"))
+                try:
+                    resp = handle.cdp.send(
+                        "Debugger.getScriptSource", {"scriptId": script_id}
+                    )
+                except Exception:  # noqa: BLE001
+                    # A script the engine already discarded (or otherwise refuses)
+                    # is skipped rather than failing the whole scan.
+                    continue
+                source = resp.get("scriptSource", "") if isinstance(resp, dict) else ""
+                if not isinstance(source, str):
+                    source = str(source)
+                source = source[:_MAX_WEB_SECRET_SOURCE_BYTES]
+                scanned_bytes += len(source)
+                scanned_scripts += 1
+                url = _bounded_metadata(script.get("url"), _MAX_URL_BYTES)[0]
+                per, _detectors, per_capped = extract_js_secrets(
+                    source, include_generic=include_generic
+                )
+                if per_capped:
+                    scan_capped = True
+                for finding in per:
+                    key = (str(finding["detector"]), str(finding["value"]))
+                    current = aggregates.get(key)
+                    if current is None:
+                        if len(aggregates) >= _MAX_WEB_SECRET_FINDINGS:
+                            scan_capped = True
+                            stop = True
+                            break
+                        row: JsonObject = {
+                            "detector": finding["detector"],
+                            "value": finding["value"],
+                            "count": int(finding["count"]),
+                            "first_script": {"script_id": script_id, "url": url},
+                        }
+                        if finding.get("value_truncated"):
+                            row["value_truncated"] = True
+                        aggregates[key] = row
+                    else:
+                        current["count"] = int(current["count"]) + int(finding["count"])
+                if stop:
+                    break
+                if scanned_bytes >= _MAX_WEB_SECRET_SCAN_BYTES:
+                    scan_capped = True
+                    break
+
+            needle = name_filter.strip().lower() if isinstance(name_filter, str) else ""
+            secrets = list(aggregates.values())
+            if needle:
+                secrets = [
+                    s
+                    for s in secrets
+                    if needle in str(s["detector"]).lower() or needle in str(s["value"]).lower()
+                ]
+            secrets.sort(key=lambda s: (str(s["detector"]), -int(s["count"]), str(s["value"])))
+            detectors = sorted({str(s["detector"]) for s in secrets})
+            start = max(0, int(offset))
+            cap = max(1, min(int(limit), 1000))
+            window = secrets[start : start + cap]
+            return {
+                "secrets": window,
+                "count": len(window),
+                "total": len(secrets),
+                "offset": start,
+                "has_more": start + len(window) < len(secrets),
+                "detectors": detectors,
+                "scanned_scripts": scanned_scripts,
+                "scripts_dropped": dropped,
+                "scan_capped": scan_capped,
+            }
+
+        return self._runner(handle).call(work, timeout=_WEB_SECRET_SCAN_TIMEOUT)
 
     def wasm_get(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
         """Write a live WebAssembly module's raw bytes to a .wasm artifact.
