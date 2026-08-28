@@ -98,8 +98,16 @@ def test_logcat_clamps_the_requested_line_count() -> None:
     assert dev.calls == [["logcat", "-d", "-t", "5000"]]
 
 
-def test_packages_reports_has_more_and_sorts_the_page() -> None:
-    """A list longer than the cap says has_more and comes back sorted."""
+def test_packages_reports_has_more_and_returns_the_alphabetical_prefix() -> None:
+    """A capped page is the alphabetically first names, not an arbitrary subset.
+
+    pm list packages emits in the package manager's own order, not sorted, so
+    capping first and sorting the survivors returned a sorted view of whichever
+    names pm happened to list early -- here [com.c, com.d, com.e] -- while
+    reading as "the sorted packages". Feeding the names reverse-sorted, a cap of
+    three must return the true prefix [com.a, com.b, com.c]; the sort-after-cap
+    bug returned the last three instead.
+    """
     listing = "\n".join(
         f"package:{name}" for name in ("com.e", "com.d", "com.c", "com.b", "com.a")
     )
@@ -108,8 +116,7 @@ def test_packages_reports_has_more_and_sorts_the_page() -> None:
     assert payload["count"] == 3
     assert payload["has_more"] is True
     assert payload["third_party_only"] is False
-    assert payload["packages"] == sorted(payload["packages"])
-    assert set(payload["packages"]) <= {"com.a", "com.b", "com.c", "com.d", "com.e"}
+    assert payload["packages"] == ["com.a", "com.b", "com.c"]
 
 
 def test_packages_complete_list_is_not_labelled_partial() -> None:

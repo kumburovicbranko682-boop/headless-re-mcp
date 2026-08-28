@@ -507,22 +507,25 @@ class AdbBackend:
         if _is_host_error_output(text):
             raise AdbError("backend_error", "pm list failed", output=text[:800])
         pkgs: list[str] = []
-        has_more = False
         for line in text.splitlines():
             if not line.startswith("package:"):
                 continue
             name = line.split(":", 1)[1].strip()
-            if not name:
-                continue
-            if len(pkgs) >= capped:
-                has_more = True
-                break
-            pkgs.append(name)
+            if name:
+                pkgs.append(name)
+        # Sort the whole list, then cap -- pm list packages emits in the package
+        # manager's own order, not alphabetically, so capping first and sorting
+        # the survivors returned a sorted view of an arbitrary subset (the first
+        # `capped` in pm's order) while reading as the alphabetical prefix. Sort
+        # first so a capped page is the alphabetically first `capped` names, an
+        # honest, deterministic prefix rather than whichever ones pm listed early.
         pkgs.sort()
+        total = len(pkgs)
+        page = pkgs[:capped]
         return {
-            "packages": pkgs,
-            "count": len(pkgs),
-            "has_more": has_more,
+            "packages": page,
+            "count": len(page),
+            "has_more": total > capped,
             "third_party_only": third_party_only,
         }
 

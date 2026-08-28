@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（`device.packages` 先截断后排序，返回的是任意子集的排序视图）
+
+- `adb/client.py::packages` 逐行解析 `pm list packages`，在收满 `capped` 条时就 `break`，
+  然后才对已截断的survivors调 `pkgs.sort()`。但 `pm list packages` 按包管理器自身顺序输出、
+  并非字母序，于是"排序结果"其实是 pm 早列出的那批（任意子集）的排序视图，却读起来像
+  "字母序前缀"。当 `has_more` 为真时，返回的既不是字母序最前的 N 个、也无法通过分页取到其余。
+- 改法：先收集全部包名、`sort()`，再按 `capped` 取前缀（`pkgs[:capped]`），`has_more` 由
+  `total > capped` 判定。`pm list packages` 输出本就整体读入内存，全量收集不引入新的内存风险；
+  现在一页封顶的结果是字母序最前的 `capped` 个，确定且诚实。
+- 强化 `tests/unit/test_adb_device_readouts.py`：原用例只断言"页内已排序且是子集"，逆序输入下
+  连 `[com.c, com.d, com.e]` 也能过；改为断言 cap=3 必须返回真正的前缀 `[com.a, com.b, com.c]`。
+  非空验证：临时退回先截断后排序，该用例返回后三个而报红。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
