@@ -230,10 +230,11 @@ def test_apk_manifest_names_manifest_xml_and_says_when_it_was_cut(
 ) -> None:
     """The catalog said AndroidManifest.xml and never named the payload.
 
-    Measured: truncated True, manifest_xml 200000 chars (the cap), no
-    manifest or xml field. Looking for those after a successful call reads
-    as a missing manifest, and a 200000-char string with no truncated flag
-    reads as the whole file.
+    Measured: truncated True, manifest_xml 200000 chars (the cap), bytes 220220
+    (the full manifest size), no manifest or xml field. Looking for those after
+    a successful call reads as a missing manifest, and a 200000-char string with
+    no truncated flag reads as the whole file, and a clipped manifest with no
+    bytes gives no scale for the security-relevant tail that was cut.
     """
     client = ApkClient()
     monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _FakeApk())
@@ -243,9 +244,36 @@ def test_apk_manifest_names_manifest_xml_and_says_when_it_was_cut(
     assert payload["truncated"] is True
     assert payload["package"] == "com.example.app"
     assert len(payload["manifest_xml"]) == _MAX_MANIFEST_CHARS
+    assert payload["bytes"] == len(b"<manifest/>" * ((_MAX_MANIFEST_CHARS // 10) + 20))
     doc = _tool_docstring("apk.manifest")
     assert "manifest_xml" in doc
     assert "truncated" in doc
+    assert "bytes" in doc
+
+
+class _SmallManifestBody:
+    def get_xml(self) -> bytes:
+        return b"<manifest package='com.x'/>"
+
+
+class _SmallManifestApk:
+    def get_android_manifest_axml(self) -> _SmallManifestBody:
+        return _SmallManifestBody()
+
+    def get_package(self) -> str:
+        return "com.x"
+
+
+def test_apk_manifest_reports_the_full_size_and_is_not_truncated_when_it_fits(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A manifest under the cap carries bytes equal to its size, not truncated."""
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _SmallManifestApk())
+    payload = client.manifest(tmp_path / "app.apk")
+    assert payload["truncated"] is False
+    assert payload["manifest_xml"] == "<manifest package='com.x'/>"
+    assert payload["bytes"] == len(b"<manifest package='com.x'/>")
 
 class _FakeClass:
     def __init__(self, name: str, *, external: bool = False) -> None:

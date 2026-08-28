@@ -235,6 +235,12 @@ class ApkClient:
         return {
             "package": apk.get_package(),
             "manifest_xml": xml[:_MAX_MANIFEST_CHARS],
+            # bytes is the full pre-clip UTF-8 size so truncated is actionable: a
+            # large app's manifest runs past the buffer and that overflow is the
+            # security-relevant tail (components, intent-filters), so a caller
+            # that sees it cut learns how much is missing -- the same size signal
+            # apk.decompile and web.* carry.
+            "bytes": len(xml.encode("utf-8", errors="replace")),
             "truncated": len(xml) > _MAX_MANIFEST_CHARS,
         }
 

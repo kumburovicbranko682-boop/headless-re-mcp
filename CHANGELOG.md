@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（apk.manifest 截断 XML 却不报完整大小,和同族大文本读取不一致)
+
+- `apk.manifest` 在 `_MAX_MANIFEST_CHARS`(200K 字符)处截断 `manifest_xml` 并置 `truncated`,却不回带完整大小——大型应用的
+  AndroidManifest 会超过这个上限,而被切掉的正是安全相关的尾部(组件、intent-filter),调用方看到被截断也无从判断缺了多少。
+  完整 XML 本就在内存里,现按 UTF-8 完整字节数作为 `bytes` 一并回带,和 `apk.decompile`/`web.script.source`/`web.dom.snapshot`/
+  `wasm.*` 已统一的"截断了就说清楚有多大"口径一致。工具文档同步写明 `bytes`。新增/扩展测试:被截断时 `bytes` 报完整大小
+  (220220)而 `manifest_xml` 仍为 200000 字符、装得下时 `bytes` 等于完整大小且不判截断、`apk.manifest` 文档点名 `bytes`。
+  纯附加字段,不改任何既有字段含义。至此 Android/Web 两条线上所有大文本读取(apk.decompile/apk.manifest/web.script.source/
+  web.dom.snapshot/wasm.wat/wasm.info/js.deobfuscate/js.beautify)截断时都统一回带完整大小信号。
+
 ### 修复（apk.decompile 截断 Java 源码却不报完整大小,和 web.script.source 不一致)
 
 - `apk.decompile`(jadx 反编译出的单个类 Java 源码)是 Android 线上与 `web.script.source` 对位的读取——都取"某一项可能很大的
