@@ -71,6 +71,23 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
+    @tools.tool(name="device.mounts")
+    def device_mounts(
+        serial: str, limit: Annotated[int, Field(ge=1, le=1000)] = 500
+    ) -> dict[str, Any]:
+        """List mounted filesystems (/proc/mounts).
+
+        The device's storage layout, so an RE session can see whether /system
+        is read-only, where external storage lives, and which mounts carry
+        noexec/nosuid. Answers with mounts (each carrying device, mountpoint,
+        fstype, the full options list, and a readonly flag), count, and
+        has_more. /proc/mounts is world-readable so no root is needed;
+        octal-escaped paths are decoded, a capped page says has_more instead of
+        posing as every mount, and a read yielding no mounts is an error rather
+        than an empty list.
+        """
+        return _dump(analysis.device_mounts(serial, limit=limit))
+
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,

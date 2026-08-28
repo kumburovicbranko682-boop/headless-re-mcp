@@ -40,6 +40,7 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_MOUNTS = 1000
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -174,6 +175,32 @@ def _device_shell(dev: Any, args: str | list[str], *, timeout: float = _ADB_SHEL
             raise AdbError("timeout", f"adb timed out after {timeout:g}s") from exc
         raise AdbError("backend_error", f"adb shell failed: {exc}") from exc
     return str(raw)
+
+
+def _unescape_mount(token: str) -> str:
+    """Undo /proc/mounts octal escaping (\\040 space, \\011 tab, etc.).
+
+    The kernel escapes space, tab, newline and backslash in device and
+    mountpoint fields as a backslash plus three octal digits. Leaving them raw
+    would misreport a path like ``/mnt/My Card`` as ``/mnt/My\\040Card``.
+    """
+    if "\\" not in token:
+        return token
+    result: list[str] = []
+    index = 0
+    length = len(token)
+    while index < length:
+        char = token[index]
+        if char == "\\" and index + 4 <= length and token[index + 1 : index + 4].isdigit():
+            try:
+                result.append(chr(int(token[index + 1 : index + 4], 8)))
+                index += 4
+                continue
+            except ValueError:
+                pass
+        result.append(char)
+        index += 1
+    return "".join(result)
 
 
 def _is_host_error_output(text: str) -> bool:
@@ -525,6 +552,60 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def mounts(self, serial: str, *, limit: int = 500) -> JsonObject:
+        """List mounted filesystems from /proc/mounts.
+
+        The device's storage layout: which filesystems are mounted where, of
+        what type, and with which options -- so an RE session can see whether
+        /system is read-only, where external storage lives, and which mounts
+        carry noexec/nosuid. /proc/mounts is world-readable, so this works
+        without root. Each entry carries device, mountpoint, fstype, the full
+        options list, and a readonly convenience flag; octal-escaped paths
+        (\\040 for a space) are decoded so a path is never misreported. The list
+        is capped with has_more so a bounded read is not mistaken for every
+        mount, and a read that yields no mounts -- which a live device never has
+        -- is an error rather than an empty list.
+        """
+        dev = self._device(serial)
+        capped = max(1, min(int(limit), _MAX_MOUNTS))
+        raw = _device_shell(dev, "cat /proc/mounts")
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError(
+                "backend_error", "reading /proc/mounts failed", output=text[:800]
+            )
+        mounts: list[JsonObject] = []
+        has_more = False
+        for line in text.splitlines():
+            fields = line.split()
+            if len(fields) < 4:
+                continue
+            options = [opt for opt in _unescape_mount(fields[3]).split(",") if opt]
+            # The kernel always writes the read-write flag first, so a leading
+            # rw/ro is what separates a real mount from error text or junk that
+            # happens to have four whitespace tokens.
+            if not options or options[0] not in ("rw", "ro"):
+                continue
+            if len(mounts) >= capped:
+                has_more = True
+                break
+            mounts.append(
+                {
+                    "device": _unescape_mount(fields[0]),
+                    "mountpoint": _unescape_mount(fields[1]),
+                    "fstype": _unescape_mount(fields[2]),
+                    "options": options,
+                    "readonly": options[0] == "ro",
+                }
+            )
+        if not mounts:
+            raise AdbError(
+                "backend_error",
+                "reading /proc/mounts returned no mounts",
+                output=text[:800],
+            )
+        return {"mounts": mounts, "count": len(mounts), "has_more": has_more}
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a
