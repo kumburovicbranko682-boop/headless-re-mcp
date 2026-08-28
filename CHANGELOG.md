@@ -134,6 +134,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   能力检查前即拒，与 jadx 一致）、巨大超时被封到各自上限；r2 一路在真 radare2 上对本地 ELF
   验过：正常分析照旧，非正/NaN 回 `invalid_params` 不再开进程，巨大值封到 120s。
 
+### 回归覆盖（radare2 6.x 用 `addr` 而非 `offset` 键地址）
+
+- **地址映射的单测全部只喂 `offset` 键的旧 radare2 形状，而在用的 radare2（6.2.0，已在
+  Linux 实机核对）对 `aflj`（函数）与 `pdj`（反汇编）改吐 `addr`、既无 `offset` 也无
+  `vaddr`**。生产代码的 `_item_va` 优先级元组本就含 `addr`，故运行时无 bug；但此前没有任何
+  测试走这条键路径——有人把元组「简化」回 `offset`/`vaddr` 时，现代 r2 上每个函数与指令的
+  地址会被静默清零，而整套单测照样全绿。新增 `tests/unit/test_r2_addr_key_mapping.py`：用真
+  radare2 6.2.0 的 ELF 输出裁剪成夹具（`addr` 在、`offset`/`vaddr` 不在，并保留 `minaddr`/
+  `maxaddr`/`fcn_addr`/`fcn_last` 这些**不得**被误当条目自身地址的邻近数值字段），钉住 `addr`
+  键的函数按 entry、指令按每条自身地址映射（第二条指令须落在 `addr` 而非贯穿每行的 `fcn_addr`），
+  同时保留旧 `offset` 形状仍可解析、无可识别地址键时宁缺勿错不编造地址。夹具与实机 r2 6.2.0 端到端
+  逐字段核对一致。
+
 ### 修复（`web.open` / `web.navigate` 不报 HTTP 状态，错误页与命中难分）
 
 - Playwright 的 `page.goto` 只在传输层失败（DNS、拒连、超时）时抛异常；一个 4xx/5xx 主文档会
