@@ -23,6 +23,14 @@ describe("MarkdownMessage", () => {
     expect(screen.getByRole("link", { name: "ok" })).toHaveAttribute("href", "https://example.com");
   });
 
+  it("numbers an ordered list from its written start, not always from 1", () => {
+    const continued = render(<MarkdownMessage text={"3. 第三步\n4. 第四步"} />);
+    expect(continued.container.querySelector("ol")).toHaveAttribute("start", "3");
+    // The common list that begins at 1 keeps the browser default.
+    const plain = render(<MarkdownMessage text={"1. 第一步\n2. 第二步"} />);
+    expect(plain.container.querySelector("ol")).not.toHaveAttribute("start");
+  });
+
   it("escapes raw HTML instead of executing it", () => {
     render(<MarkdownMessage text={"<script>alert(1)</script>"} />);
     expect(document.querySelector("script")).toBeNull();

@@ -1,7 +1,7 @@
 export type MarkdownBlock =
   | { type: "heading"; level: number; text: string }
   | { type: "paragraph"; text: string }
-  | { type: "list"; ordered: boolean; items: string[] }
+  | { type: "list"; ordered: boolean; items: string[]; start?: number }
   | { type: "code"; lang: string; text: string }
   | { type: "quote"; text: string }
   | { type: "hr" };
@@ -11,7 +11,7 @@ const HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
 const HR = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/;
 const QUOTE = /^>\s?(.*)$/;
 const UL = /^\s*[-*+]\s+(.+)$/;
-const OL = /^\s*\d+[.)]\s+(.+)$/;
+const OL = /^\s*(\d+)[.)]\s+(.+)$/;
 
 function isBlank(line: string): boolean {
   return /^\s*$/.test(line);
@@ -84,13 +84,23 @@ export function parseMarkdown(source: string): MarkdownBlock[] {
     const ordered = line.match(OL);
     if (ordered) {
       const items: string[] = [];
+      // The first marker's digits set where numbering begins: "3." means the
+      // list continues from 3 (a reply picking up earlier steps). The parser
+      // dropped them, so the renderer restarted every list at 1 and the
+      // visible numbers contradicted the ones the text referred to. As in
+      // CommonMark, only the first marker counts; followers may be anything.
+      const start = Number.parseInt(ordered[1], 10);
       while (index < lines.length) {
         const next = lines[index].match(OL);
         if (!next) break;
-        items.push(next[1]);
+        items.push(next[2]);
         index += 1;
       }
-      blocks.push({ type: "list", ordered: true, items });
+      blocks.push(
+        start === 1
+          ? { type: "list", ordered: true, items }
+          : { type: "list", ordered: true, items, start },
+      );
       continue;
     }
 

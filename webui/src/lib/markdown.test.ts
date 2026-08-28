@@ -39,6 +39,14 @@ describe("parseMarkdown", () => {
     ]);
   });
 
+  it("keeps the start number when an ordered list does not begin at 1", () => {
+    // "3." means the list continues from 3; dropping the digits made the
+    // renderer restart at 1, contradicting the numbers the text refers to.
+    expect(parseMarkdown("3. 第三步\n4. 第四步")).toEqual([
+      { type: "list", ordered: true, items: ["第三步", "第四步"], start: 3 },
+    ]);
+  });
+
   it("treats an unclosed fence as a code block so streaming stays readable", () => {
     expect(parseMarkdown("```js\nconst x = 1;")).toEqual([
       { type: "code", lang: "js", text: "const x = 1;" },

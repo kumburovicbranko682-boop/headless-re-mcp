@@ -61,7 +61,7 @@ function renderBlock(block: MarkdownBlock, index: number): ReactNode {
       return <p key={key}>{renderLines(block.text, key)}</p>;
     case "list": {
       const items = block.items.map((item, itemIndex) => <li key={`${key}-${itemIndex}`}>{renderInline(item, `${key}-${itemIndex}`)}</li>);
-      return block.ordered ? <ol key={key}>{items}</ol> : <ul key={key}>{items}</ul>;
+      return block.ordered ? <ol key={key} start={block.start}>{items}</ol> : <ul key={key}>{items}</ul>;
     }
     case "code":
       return <pre key={key}><code data-lang={block.lang || undefined}>{block.text}</code></pre>;
