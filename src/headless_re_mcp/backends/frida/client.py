@@ -303,6 +303,38 @@ rpc.exports = {
       });
     });
     return out;
+  },
+  statics: function (className, limit, filter, maxValue) {
+    var out = [];
+    Java.perform(function () {
+      var clazz = Java.use(className);
+      var Modifier = Java.use('java.lang.reflect.Modifier');
+      var declared = clazz.class.getDeclaredFields();
+      for (var i = 0; i < declared.length && out.length < limit; i++) {
+        var f = declared[i];
+        var mods = f.getModifiers();
+        if (!Modifier.isStatic(mods)) {
+          continue;
+        }
+        var fname = f.getName();
+        if (filter && fname.indexOf(filter) === -1) {
+          continue;
+        }
+        var ftype = '';
+        try { ftype = f.getType().getName(); } catch (e0) { ftype = ''; }
+        var fval;
+        try {
+          f.setAccessible(true);
+          var raw = f.get(null);
+          fval = (raw === null) ? 'null' : ('' + raw);
+        } catch (e1) { fval = '<unreadable>'; }
+        if (fval.length > maxValue) { fval = fval.substring(0, maxValue); }
+        var isFinal = false;
+        try { isFinal = Modifier.isFinal(mods); } catch (e2) {}
+        out.push({ name: fname, type: ftype, value: fval, is_final: isFinal });
+      }
+    });
+    return out;
   }
 };
 """
@@ -372,30 +404,39 @@ def _normalize_protection(protection: str) -> str:
 _MAX_JAVA_FIELD_VALUE = 512
 
 
-def _shape_java_instance(item: Any, max_fields: int) -> JsonObject:
-    """Normalise one Java.choose record into {fields, field_count, fields_truncated}.
+def _shape_java_field(entry: Any) -> JsonObject | None:
+    """Normalise one reflected field into {name, type, value[, is_final]}.
 
-    The agent script already caps field count and value length, but the transport
-    hands whatever the agent returned straight through, so re-bound it here: keep
-    only well-formed {name,type,value} rows, re-cut each value to the ceiling
-    (marking value_truncated), and never let a malformed record raise.
+    The agent already caps the value length, but the transport hands whatever it
+    returned straight through, so re-bound it here: drop a non-dict row, re-cut
+    the value to the ceiling (marking value_truncated), and carry is_final only
+    when the agent supplied it (statics do; instance fields do not).
     """
+    if not isinstance(entry, dict):
+        return None
+    value = str(entry.get("value", ""))
+    row: JsonObject = {
+        "name": str(entry.get("name", "")),
+        "type": str(entry.get("type", "")),
+        "value": value[:_MAX_JAVA_FIELD_VALUE],
+    }
+    if len(value) > _MAX_JAVA_FIELD_VALUE:
+        row["value_truncated"] = True
+    if "is_final" in entry:
+        row["is_final"] = bool(entry.get("is_final"))
+    return row
+
+
+def _shape_java_instance(item: Any, max_fields: int) -> JsonObject:
+    """Normalise one Java.choose record into {fields, field_count, fields_truncated}."""
     if not isinstance(item, dict):
         return {"fields": [], "field_count": 0, "fields_truncated": False}
     raw_fields = item.get("fields")
     fields: list[JsonObject] = []
     for entry in list(raw_fields or [])[: max(1, int(max_fields))]:
-        if not isinstance(entry, dict):
-            continue
-        value = str(entry.get("value", ""))
-        row: JsonObject = {
-            "name": str(entry.get("name", "")),
-            "type": str(entry.get("type", "")),
-            "value": value[:_MAX_JAVA_FIELD_VALUE],
-        }
-        if len(value) > _MAX_JAVA_FIELD_VALUE:
-            row["value_truncated"] = True
-        fields.append(row)
+        row = _shape_java_field(entry)
+        if row is not None:
+            fields.append(row)
     field_count = item.get("field_count")
     return {
         "fields": fields,
@@ -1266,7 +1307,28 @@ class FridaClient:
                         "count": len(values),
                         "has_more": has_more,
                     }
-                raise FridaError("invalid_params", "mode must be classes, methods or instances")
+                if mode == "statics":
+                    if not class_name:
+                        raise FridaError("invalid_params", "class_name is required")
+                    # Static fields need no live instance: reflect them off the
+                    # Class with f.get(null), the home of hardcoded keys / URLs a
+                    # utility class holds when nothing of it exists on the heap.
+                    raw = script.exports_sync.statics(
+                        class_name, capped + 1, name_filter or "", _MAX_JAVA_FIELD_VALUE
+                    )
+                    values, has_more = _page(raw, capped)
+                    fields = [
+                        row for row in (_shape_java_field(item) for item in values) if row
+                    ]
+                    return {
+                        "class_name": class_name,
+                        "fields": fields,
+                        "count": len(fields),
+                        "has_more": has_more,
+                    }
+                raise FridaError(
+                    "invalid_params", "mode must be classes, methods, instances or statics"
+                )
             finally:
                 with contextlib.suppress(Exception):
                     session.detach()

@@ -385,4 +385,47 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="frida.java.static_fields")
+    def frida_java_static_fields(
+        session_id: str,
+        class_name: str,
+        name_filter: str = "",
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        pid: int = 0,
+    ) -> dict[str, Any]:
+        """Read the static field values of a Java class on the authorized device pid (ART only).
+
+        The instance-free companion to frida.java.instances: that needs a live
+        object on the heap, this reflects the class's static fields off the Class
+        itself (f.get(null)), so a utility/config/crypto holder whose constants
+        never get instantiated -- exactly where an app parks a hardcoded API key,
+        a base URL, an encryption key or a feature flag as static final -- is
+        readable regardless. This is often the fastest hit for a hardcoded secret
+        the static apk line only sees obfuscated.
+
+        Answers with fields, each carrying name, type, value (the field's
+        toString, cut at 512 chars with value_truncated set when longer, or
+        '<unreadable>' when reflection was refused, 'null' for a null field) and
+        is_final (true for a constant); plus class_name, count and has_more so a
+        page that filled the limit is not read as every static field. Only fields
+        declared on the class itself are read, not inherited ones, and only static
+        ones (instance fields come from frida.java.instances). A byte[] or object
+        field shows its Java toString, not its contents. name_filter keeps only
+        fields whose name contains that substring (case-sensitive), applied before
+        the cap so a target constant (KEY, URL, TOKEN) is reached rather than
+        buried; there is no offset. class_name must be the exact loaded class; an
+        unknown class is a backend_error. The target is the connected device's
+        authorized pid when this session has one (frida.device.connect +
+        frida.spawn), else the local debuggee. Read-only.
+        """
+        return _dump(
+            analysis.frida_java_static_fields(
+                session_id,
+                class_name,
+                name_filter=name_filter,
+                limit=limit,
+                pid=pid,
+            )
+        )
+
     return tools.bindings

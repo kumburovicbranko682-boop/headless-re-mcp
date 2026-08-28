@@ -294,6 +294,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **Frida Java 线读不到无实例的静态常量**：`frida.java.instances` 需要堆上存在活实例才能反射字段，而应用常把硬编码
+  API key、base URL、加密密钥、功能开关放在从不实例化的工具/配置/加密类的 static final 字段里——这类类 instances
+  够不到。新增只读工具 `frida.java.static_fields`：直接在 Class 上反射静态字段（`f.get(null)`），无需实例。返回 fields
+  （每项 {name、type、value——字段 toString，超 512 字符截断并置 value_truncated；反射被拒为 '<unreadable>'、null
+  字段为 'null'、is_final 标记常量}）加 class_name、count、has_more。只读本类声明的静态字段、不含继承字段（实例字段
+  走 frida.java.instances）；byte[]/对象字段显示其 Java toString 而非内容；name_filter 在封顶前按字段名子串过滤
+  （KEY/URL/TOKEN 之类可直达）；无 offset；class_name 必须是精确已加载类名，未知类为 backend_error。目标为本会话已
+  授权设备 pid（frida.device.connect + frida.spawn），否则本地被调试进程；仅 ART。往往是静态 apk 线只能看到混淆值的
+  硬编码密钥最快的一击。只读，工具总数 315→316（196 只读 / 120 写）。
 - **Frida Java 线只能枚举类与方法，读不到运行时对象**：`frida.java.classes` / `frida.java.methods` 能告诉你某个类已
   加载、声明了哪些方法，却无法看到堆上此刻真实存在的实例及其字段值——而运行时的配置/会话/加密对象里正装着 base
   URL、bearer token、解密后的密钥、功能开关，是静态 apk 线够不到的答案。新增只读工具 `frida.java.instances`：用
