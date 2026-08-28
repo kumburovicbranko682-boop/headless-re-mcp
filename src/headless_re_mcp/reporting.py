@@ -62,6 +62,46 @@ def _summarize_value(value: object) -> str:
     return _cell(value)
 
 
+def _identity_value(value: object) -> str:
+    """Render one identity fact for a table cell.
+
+    A boolean like ``signed_v1`` reads as yes/no rather than ``True``; a list
+    like ``native_abis`` reads as its members joined, not its ``repr``.
+    """
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (list, tuple)):
+        return _cell(", ".join(str(item) for item in value)) if value else "—"
+    return _cell(value)
+
+
+def _render_identity(lines: list[str], metadata: object) -> None:
+    """Surface a session's identity facts (APK ABIs, dex count, signing, ...).
+
+    ``describe_apk`` extracts these cheap facts at session creation and the
+    session carries them, but a report that omits them cannot tell an APK from a
+    PE with a blank architecture -- and this document is what a reviewer keeps.
+    Each top-level entry is a category (e.g. ``apk``) mapping to plain facts;
+    render one small table per non-empty category. Scalar top-level flags such
+    as a restored-session marker are not identity and are deliberately skipped.
+    """
+    if not isinstance(metadata, dict):
+        return
+    for category in sorted(metadata):
+        facts = metadata[category]
+        if not isinstance(facts, dict) or not facts:
+            continue
+        lines.append(f"### {category} identity")
+        lines.append("")
+        lines.extend(
+            _table(
+                ["Property", "Value"],
+                [[key, _identity_value(facts[key])] for key in facts],
+            )
+        )
+        lines.append("")
+
+
 def _note_if_partial(
     lines: list[str], section: JsonObject | None, *, shown: int, noun: str
 ) -> None:
@@ -133,6 +173,8 @@ def render_markdown_report(
 
                 ["Binary", session.get("binary")],
 
+                ["Target", session.get("target")],
+
                 ["SHA-256", session.get("sha256")],
 
                 ["Architecture", session.get("architecture")],
@@ -148,6 +190,8 @@ def render_markdown_report(
     )
 
     lines.append("")
+
+    _render_identity(lines, session.get("metadata"))
 
     entries = list((knowledge or {}).get("entries") or [])
 

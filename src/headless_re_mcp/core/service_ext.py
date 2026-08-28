@@ -1024,6 +1024,7 @@ class ExtAnalysisMixin(UiDriveMixin):
                     ),
                     "state": session.state.value,
                     "backends": sorted(backend.value for backend in session.backends),
+                    "metadata": session.metadata,
                 },
                 knowledge=knowledge,
                 artifacts=artifacts,
