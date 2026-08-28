@@ -140,6 +140,11 @@ class SessionRegistry:
                 authenticode = _pe_authenticode(path)
                 if authenticode is not None:
                     metadata["pe"] = {"authenticode": authenticode}
+                # Appended data past the last section (dropper stash), split
+                # into the signature's share and the unexplained remainder.
+                overlay = _pe_overlay(path)
+                if overlay is not None:
+                    metadata.setdefault("pe", {})["overlay"] = overlay
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             elif kind is TargetKind.NATIVE:
@@ -3052,6 +3057,81 @@ def _pe_authenticode(path: Path) -> dict[str, Any] | None:
     if revision is not None:
         result["revision"] = f"{revision >> 8}.{revision & 0xFF}"
     return result
+
+
+def _pe_overlay(path: Path) -> dict[str, Any] | None:
+    """Appended data past the last PE section -- the classic dropper stash.
+
+    The PE analogue of the ELF/Mach-O/WASM overlay fact: a PE on disk ends at
+    the furthest raw section end, so bytes beyond that were glued on. One PE
+    twist the other formats lack: an Authenticode signature is *also* appended
+    (the WIN_CERTIFICATE the security directory points at), and that trailing
+    block is legitimate. So the overlay is split -- ``certificate_size`` is the
+    part accounted for by the signature, ``extra_size`` the genuinely
+    unexplained remainder that a self-extractor or a smuggled payload would
+    occupy. ``extra_size`` of 0 with a non-zero ``certificate_size`` is a
+    normally-signed image; ``extra_size`` above 0 is the triage signal.
+
+    Fail-closed: the image end is clamped to the file size (a lying section
+    size cannot invent an overlay) and None is returned when nothing trails the
+    last section.
+    """
+    try:
+        with path.open("rb") as stream:
+            dos = stream.read(0x40)
+            if len(dos) < 0x40 or dos[:2] != b"MZ":
+                return None
+            e_lfanew = int.from_bytes(dos[0x3C:0x40], "little")
+            stream.seek(e_lfanew)
+            coff = stream.read(24)
+            if len(coff) < 24 or coff[:4] != b"PE\x00\x00":
+                return None
+            num_sections = min(int.from_bytes(coff[6:8], "little"), _PE_MAX_SECTIONS)
+            opt_size = int.from_bytes(coff[20:22], "little")
+            optional = stream.read(opt_size)
+            magic = int.from_bytes(optional[0:2], "little") if len(optional) >= 2 else 0
+            if magic == 0x10B:
+                dir_count_off = 92
+            elif magic == 0x20B:
+                dir_count_off = 108
+            else:
+                return None
+            sections = _pe_sections(stream.read(num_sections * 40))
+            file_size = path.stat().st_size
+            # The headers themselves are a floor: a section-less PE still ends
+            # after its optional header and section table.
+            image_end = e_lfanew + 24 + opt_size + num_sections * 40
+            for _va, _span, raw_ptr, raw_size in sections:
+                if raw_size > 0:
+                    image_end = max(image_end, raw_ptr + raw_size)
+            image_end = min(image_end, file_size)
+            if image_end >= file_size:
+                return None
+            cert_offset = cert_size = 0
+            if dir_count_off + 4 <= len(optional):
+                dir_count = int.from_bytes(optional[dir_count_off : dir_count_off + 4], "little")
+                if dir_count > _PE_SECURITY_DIR:
+                    entry = dir_count_off + 4 + _PE_SECURITY_DIR * 8
+                    if entry + 8 <= len(optional):
+                        cert_offset = int.from_bytes(optional[entry : entry + 4], "little")
+                        cert_size = int.from_bytes(optional[entry + 4 : entry + 8], "little")
+    except OSError:
+        return None
+    total = file_size - image_end
+    # How much of the trailing block is the signature: its overlap with the
+    # region past the last section, clamped so a cert outside the file or ahead
+    # of the image end contributes nothing.
+    certificate_size = 0
+    if cert_offset and cert_size:
+        overlap_lo = max(cert_offset, image_end)
+        overlap_hi = min(cert_offset + cert_size, file_size)
+        certificate_size = max(0, overlap_hi - overlap_lo)
+    return {
+        "offset": image_end,
+        "size": total,
+        "certificate_size": certificate_size,
+        "extra_size": total - certificate_size,
+    }
 
 
 def _pe_sections(table: bytes) -> list[tuple[int, int, int, int]]:

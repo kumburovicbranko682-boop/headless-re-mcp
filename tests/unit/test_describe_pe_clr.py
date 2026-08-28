@@ -17,7 +17,12 @@ from pathlib import Path
 import pytest
 
 from headless_re_mcp.core.models import Architecture, TargetKind
-from headless_re_mcp.core.session import SessionRegistry, _pe_authenticode, describe_pe_clr
+from headless_re_mcp.core.session import (
+    SessionRegistry,
+    _pe_authenticode,
+    _pe_overlay,
+    describe_pe_clr,
+)
 
 _DOTNET_FIXTURE = (
     Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
@@ -190,6 +195,78 @@ def test_authenticode_is_none_for_a_non_pe(tmp_path: Path) -> None:
     path = tmp_path / "notpe.bin"
     path.write_bytes(b"not a PE")
     assert _pe_authenticode(path) is None
+
+
+class TestPeOverlay:
+    """_pe_overlay finds appended data and splits off the signature's share.
+
+    A PE ends at its furthest raw section end; bytes past that were glued on.
+    The Authenticode certificate is legitimately appended, so the overlay is
+    reported split: certificate_size is the signature's part, extra_size the
+    unexplained remainder a dropper would occupy. extra_size 0 (with a cert) is
+    a normal signed image; extra_size above 0 is the triage flag.
+    """
+
+    def test_a_bare_pe_has_no_overlay(self, tmp_path: Path) -> None:
+        path = tmp_path / "bare.exe"
+        path.write_bytes(_native_pe())
+        assert _pe_overlay(path) is None
+
+    def test_appended_junk_reads_as_unexplained_overlay(self, tmp_path: Path) -> None:
+        base = _native_pe()
+        path = tmp_path / "dropped.exe"
+        path.write_bytes(base + b"SELF-EXTRACT" * 4)
+        info = _pe_overlay(path)
+        assert info is not None
+        assert info["offset"] == len(base)
+        assert info["size"] == len("SELF-EXTRACT") * 4
+        assert info["certificate_size"] == 0
+        assert info["extra_size"] == info["size"]
+
+    def test_a_signed_pe_overlay_is_all_certificate(self, tmp_path: Path) -> None:
+        raw = _sign_native_pe(payload=b"PKCS7-BODY")
+        path = tmp_path / "signed.exe"
+        path.write_bytes(raw)
+        info = _pe_overlay(path)
+        assert info is not None
+        # Every trailing byte is the WIN_CERTIFICATE: nothing unexplained.
+        assert info["offset"] == len(_native_pe())
+        assert info["certificate_size"] == info["size"]
+        assert info["extra_size"] == 0
+
+    def test_a_signed_pe_with_a_stowaway_shows_the_extra_bytes(self, tmp_path: Path) -> None:
+        stowaway = b"HIDDEN-PAYLOAD" * 3
+        path = tmp_path / "signed-plus.exe"
+        path.write_bytes(_sign_native_pe(payload=b"PKCS7-BODY") + stowaway)
+        info = _pe_overlay(path)
+        assert info is not None
+        # The cert share is unchanged; the appended bytes surface as extra.
+        assert info["extra_size"] == len(stowaway)
+        assert info["certificate_size"] == info["size"] - len(stowaway)
+
+    def test_a_lying_section_size_cannot_invent_an_overlay(self, tmp_path: Path) -> None:
+        # Rewrite the (zero) section count is not possible here, so forge a
+        # single section whose raw size claims to run past EOF: the image end
+        # clamps to the file, so no phantom overlay appears.
+        base = bytearray(_native_pe())
+        # Turn it into a 1-section PE by bumping NumberOfSections and appending
+        # a section header claiming a huge raw size at a tail pointer.
+        e = struct.unpack_from("<I", base, 0x3C)[0]
+        struct.pack_into("<H", base, e + 4 + 2, 1)  # NumberOfSections = 1
+        section = bytearray(40)
+        struct.pack_into("<I", section, 16, 0xFFFF)  # SizeOfRawData: lies past EOF
+        struct.pack_into("<I", section, 20, len(base) + 40)  # PointerToRawData
+        forged = bytes(base) + bytes(section)
+        path = tmp_path / "liar.exe"
+        path.write_bytes(forged)
+        # image end clamps to the file size, so there is no trailing data to
+        # report even though the section claims thousands of bytes.
+        assert _pe_overlay(path) is None
+
+    def test_non_pe_has_no_overlay(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all, just bytes")
+        assert _pe_overlay(path) is None
 
 
 def test_native_pe_has_no_dotnet_block(tmp_path: Path) -> None:

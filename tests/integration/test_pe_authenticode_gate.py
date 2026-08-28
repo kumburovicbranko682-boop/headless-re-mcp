@@ -118,3 +118,72 @@ def test_signed_pe_range_agrees_with_pefile(tmp_path: Path) -> None:
     assert info["type"] == "pkcs_signed_data"
     assert info["authenticode"] is True
     assert info["revision"] == "2.0"
+
+
+def _session_pe_overlay(path: Path) -> dict | None:
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(path))
+        assert created.ok, created.error
+        return created.data["session"]["metadata"]["pe"].get("overlay")
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_pe_overlay_offset_agrees_with_pefile(tmp_path: Path) -> None:
+    """The reader's overlay start is pefile's overlay start, and its split is honest.
+
+    A PE ends at its furthest raw section end; pefile computes that same
+    boundary as get_overlay_data_start_offset. The reader reports appended data
+    past it, split into the Authenticode certificate's share and the
+    unexplained remainder. Three shapes, each refereed by pefile's independent
+    boundary: the clean fixture (no overlay, pefile agrees there is none), the
+    fixture with a payload glued on (overlay at pefile's boundary, all
+    unexplained), and a signed-plus-stowaway copy (the cert share equals the
+    security directory size, the remainder is exactly the stowaway).
+    """
+    if not _FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_FIXTURE}")
+    pefile_mod = _pefile()
+    if pefile_mod is None:
+        pytest.skip("pefile not installed — PE overlay gate not run (skip != pass)")
+
+    # Clean: both readers see no trailing data.
+    clean_pe = pefile_mod.PE(data=_FIXTURE.read_bytes())  # type: ignore[attr-defined]
+    assert clean_pe.get_overlay_data_start_offset() is None
+    assert _session_pe_overlay(_FIXTURE) is None
+
+    # A payload glued onto the unsigned fixture: pefile's overlay boundary is
+    # the reader's offset, and every trailing byte is unexplained.
+    payload = b"SELF-EXTRACTING-STUB" * 3
+    dropped_bytes = _FIXTURE.read_bytes() + payload
+    dropped = tmp_path / "dropped.exe"
+    dropped.write_bytes(dropped_bytes)
+    dropped_pe = pefile_mod.PE(data=dropped_bytes)  # type: ignore[attr-defined]
+    pefile_boundary = dropped_pe.get_overlay_data_start_offset()
+    assert pefile_boundary is not None
+    overlay = _session_pe_overlay(dropped)
+    assert overlay is not None
+    assert overlay["offset"] == pefile_boundary
+    assert overlay["size"] == len(payload)
+    assert overlay["certificate_size"] == 0
+    assert overlay["extra_size"] == len(payload)
+
+    # Signed, then a stowaway glued after the certificate: pefile still marks
+    # the overlay at the last section end, the reader attributes the cert's
+    # bytes to the signature (its size equals pefile's security directory) and
+    # leaves precisely the stowaway as extra.
+    stowaway = b"HIDDEN" * 5
+    signed_plus = _sign(_FIXTURE.read_bytes()) + stowaway
+    signed_path = tmp_path / "signed-plus.exe"
+    signed_path.write_bytes(signed_plus)
+    signed_pe = pefile_mod.PE(data=signed_plus)  # type: ignore[attr-defined]
+    _cert_off, cert_size = _security_directory(pefile_mod, signed_plus)
+    boundary = signed_pe.get_overlay_data_start_offset()
+    assert boundary is not None
+    overlay = _session_pe_overlay(signed_path)
+    assert overlay is not None
+    assert overlay["offset"] == boundary
+    assert overlay["certificate_size"] == cert_size
+    assert overlay["extra_size"] == len(stowaway)
