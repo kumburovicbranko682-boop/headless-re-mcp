@@ -76,11 +76,14 @@ def test_apk_xrefs_puts_the_list_in_callers_and_says_when_it_stopped(
     payload = client.xrefs(tmp_path / "app.apk", "decrypt", limit=10)
     assert "xrefs" not in payload
     assert payload["count"] == 10
+    assert payload["total"] == 25
+    assert payload["offset"] == 0
     assert len(payload["callers"]) == 10
     assert payload["has_more"] is True
     doc = _tool_docstring("apk.xrefs")
     assert "Answers with callers" in doc
     assert "has_more" in doc
+    assert "offset" in doc
 
 
 def test_apk_xrefs_names_method_name_on_the_payload(
@@ -102,7 +105,111 @@ def test_apk_xrefs_names_method_name_on_the_payload(
     assert payload["method_name"] == "decrypt"
     assert "method" not in payload
     doc = " ".join(_tool_docstring("apk.xrefs").split())
-    assert "callers (class and method), method_name" in doc
+    assert "callers (class and method, sorted), method_name" in doc
+
+
+class _ReverseXrefCall:
+    def __init__(self, index: int) -> None:
+        self.class_name = f"Lcom/example/Caller{index:02d};"
+        self.name = "invoke"
+
+
+class _ReverseXrefMethod:
+    def __init__(self, name: str, count: int) -> None:
+        self.name = name
+        self._count = count
+
+    def is_external(self) -> bool:
+        return False
+
+    def get_xref_from(self) -> list[tuple[object, _ReverseXrefCall, int]]:
+        # Emit in reverse (a stand-in for androguard's undefined iteration order)
+        # so a fix that sorts before windowing is visible: the walk-order prefix
+        # would be the high indices, the sorted head the low ones.
+        return [(None, _ReverseXrefCall(i), i) for i in range(self._count - 1, -1, -1)]
+
+
+class _ReverseXrefParsed:
+    def __init__(self, methods: list[_ReverseXrefMethod]) -> None:
+        self.analysis = self
+        self._methods = methods
+
+    def get_methods(self) -> list[_ReverseXrefMethod]:
+        return self._methods
+
+
+def test_apk_xrefs_returns_the_sorted_head_and_pages_by_offset(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """xrefs sorts callers and pages by offset, not a walk-order prefix.
+
+    The old xrefs stopped at the page size in androguard iteration order with no
+    offset: a method with more call sites than one page returned an arbitrary,
+    iteration-order subset (two analyses of the same APK could disagree on which
+    callers) and every caller past the first page was unreachable -- the same
+    broken contract apk.classes/methods/strings had before they gained offset.
+    With 25 callers emitted in reverse, offset 0 limit 10 must return the
+    alphabetical head Caller00..Caller09, and offset 20 limit 10 the final five
+    (offset 20, count 5, total 25, has_more False). A negative offset (the
+    agent/OpenAI transports bypass the schema's offset >= 0 bound) clamps to the
+    head.
+    """
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _ReverseXrefParsed([_ReverseXrefMethod("decrypt", 25)]),
+    )
+    client = ApkClient()
+
+    head = client.xrefs(tmp_path / "app.apk", "decrypt", offset=0, limit=10)
+    assert [caller["class"] for caller in head["callers"]] == [
+        f"Lcom/example/Caller{index:02d};" for index in range(10)
+    ]
+    assert head["total"] == 25
+    assert head["has_more"] is True
+    assert head["scan_capped"] is False
+
+    tail = client.xrefs(tmp_path / "app.apk", "decrypt", offset=20, limit=10)
+    assert tail["offset"] == 20
+    assert tail["count"] == 5
+    assert tail["total"] == 25
+    assert tail["has_more"] is False
+    assert [caller["class"] for caller in tail["callers"]] == [
+        f"Lcom/example/Caller{index:02d};" for index in range(20, 25)
+    ]
+
+    negative = client.xrefs(tmp_path / "app.apk", "decrypt", offset=-5, limit=10)
+    assert negative["offset"] == 0
+    assert [caller["class"] for caller in negative["callers"]] == [
+        f"Lcom/example/Caller{index:02d};" for index in range(10)
+    ]
+    assert negative["has_more"] is True
+
+
+def test_apk_xrefs_flags_scan_capped_at_the_collect_ceiling(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """scan_capped marks total as a floor when a method exceeds the caller ceiling.
+
+    xrefs collects callers up to _MAX_XREFS_COLLECT to bound memory; a hotter
+    method trips the ceiling, so total is a floor and callers past it were never
+    scanned -- has_more alone would understate the set, exactly the scan_capped
+    contract apk.classes/methods/strings keep. With the ceiling monkeypatched to
+    3 against 10 call sites, total is the floor 3 and scan_capped is true.
+    """
+    from headless_re_mcp.backends.apk import client as mod
+
+    monkeypatch.setattr(mod, "_MAX_XREFS_COLLECT", 3)
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _ReverseXrefParsed([_ReverseXrefMethod("decrypt", 10)]),
+    )
+    payload = ApkClient().xrefs(tmp_path / "app.apk", "decrypt", offset=0, limit=100)
+    assert payload["scan_capped"] is True
+    assert payload["total"] == 3
+    assert payload["count"] == 3
+    assert payload["has_more"] is False
 
 
 class _ManifestBody:

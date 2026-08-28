@@ -79,8 +79,10 @@ class _FakeApkClient:
         del path, offset, limit
         return {"strings": ["hello"], "total": 1}
 
-    def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> dict[str, Any]:
-        del path, limit
+    def xrefs(
+        self, path: Path, method_name: str, *, offset: int = 0, limit: int = 100
+    ) -> dict[str, Any]:
+        del path, offset, limit
         return {"method_name": method_name, "callers": [], "count": 0, "has_more": False}
 
 

@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（apk.xrefs 未排序、无 offset:调用点多的方法只能拿到一个不确定的子集,后面的都够不着）
+
+- `apk.xrefs`(列出某方法的所有调用者)是 apk 分析读取里唯一既不排序也不分页的:它按 androguard 的迭代顺序
+  取满一页(`_MAX_XREFS_PAGE=1000`)就停,既不排序也没有 offset。于是一个调用点超过一页的热点方法(比如
+  解密/日志工具函数)返回的是一个"迭代顺序任取"的子集——同一个 APK 分析两次都可能给出不同的调用者——而且第一页
+  之后的调用者根本够不着,正是 `apk.classes`/`methods`/`strings` 在拿到 offset 之前的同款坏契约,也是我之前修过的
+  frida classes / apk components / native_libs 那类"截断前不排序"的老毛病。现在把 `apk.xrefs` 对齐到姊妹读取的
+  形状:先收集(上限 `_MAX_XREFS_COLLECT=5000`)、按 `(class, method)` 排序、再按 offset 开窗,返回
+  `callers`(已排序)/`count`/`total`/`offset`/`has_more`/`scan_capped`。offset 贯穿 client→service→tool,工具文档
+  改写说明排序与分页、并点明 `scan_capped` 置真时 total 只是下界。offset 的 schema 下界(`ge=0`)也纳入既有的
+  `test_apk_offset_schema.py` 守卫。新增测试:25 个逆序发出的调用者验证"排序头 + offset 翻页 + 负 offset 归零",
+  以及把收集上限打成 3 验证 `scan_capped`/total 为下界;既有的 callers 字段/文档守卫同步更新(断言 total/offset)。
+  可观测的旧行为(count 封顶 1000、has_more 为真)仍由 `test_xrefs_limit_is_capped_at_the_schema_maximum` 保住。
+
 ### 文档 / 测试（js.unpack_bundle 的 listing_truncated 未在工具文档里说明,且计数上限那条路径没有测试）
 
 - `js.unpack_bundle` 的分页有两道闸:`_MAX_LISTED_FILES` 限单页大小(已有测试覆盖),而 `_MAX_COUNTED_FILES`
