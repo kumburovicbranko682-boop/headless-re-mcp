@@ -8,13 +8,19 @@ ghidra-wasm-plugin installed) at the same .wasm file.
 
 from __future__ import annotations
 
+import json
 import shutil
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.sourcemap import (
+    SourceMapParseError,
+    summarize_sourcemap,
+)
 from headless_re_mcp.backends.jsre import JsClient, JsReError, WasmClient
+from headless_re_mcp.backends.jsre.client import _require_existing_file
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.limits import (
@@ -89,6 +95,35 @@ class JsReAnalysisMixin:
                 Path(path), timeout=timeout
             )
             return _success(data, backend="webcrack")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def js_sourcemap(self, path: str) -> Result[JsonObject]:
+        """Summarise a JavaScript Source Map v3 with the stdlib -- no webcrack/Node.
+
+        A source map is the most valuable Web-RE artifact after the bundle: it
+        names the original file tree and often embeds the original source. It is
+        plain JSON, yet nothing here could open one. This enumerates the sources,
+        flags which embed their content and how long each is, and reports the
+        mapping shape (generated line and segment counts) for both flat and
+        index (sections) maps. It is a summary, not an extractor -- it never
+        returns source bodies or decodes the VLQ mappings. A file that is not
+        JSON or not a source map is invalid_params, one over 16 MiB too_large.
+        """
+        try:
+            resolved = _require_existing_file(Path(path), missing="source map not found")
+            try:
+                document = json.loads(resolved.read_text(encoding="utf-8", errors="replace"))
+            except (OSError, json.JSONDecodeError, UnicodeError) as exc:
+                return _failure(
+                    _as_rpc(JsReError("invalid_params", f"not a readable source map: {exc}"))
+                )
+            summary = summarize_sourcemap(document)
+            return _success(summary, backend="sourcemap")
+        except SourceMapParseError as exc:
+            return _failure(_as_rpc(JsReError("invalid_params", str(exc))))
         except JsReError as exc:
             return _failure(_as_rpc(exc))
         except BaseException as exc:

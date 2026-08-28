@@ -69,6 +69,25 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="js.sourcemap")
+    def js_sourcemap(path: str) -> dict[str, Any]:
+        """Summarise a JavaScript Source Map v3 with the stdlib (no webcrack/Node).
+
+        A source map names a bundle's original file tree and often embeds the
+        original source; it is plain JSON, but nothing else here reads one. Point
+        this at an .map file (or one saved from a sourceMappingURL).
+
+        Answers with version, file, source_root, is_index_map, section_count,
+        sources (bounded) with sources_total, sources_content_embedded and
+        sources_detail (each: source, has_content, content_length), names_total,
+        the mapping shape (mappings_size, generated_lines, segment_count) and
+        ignore_list (x_google_ignoreList). It is a summary, not an extractor: it
+        never returns source bodies or decodes the VLQ mappings. A file that is
+        not JSON or not a source map is invalid_params, one over 16 MiB
+        too_large.
+        """
+        return _dump(analysis.js_sourcemap(path))
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
