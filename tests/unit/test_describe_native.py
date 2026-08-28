@@ -1996,6 +1996,37 @@ def test_macho_only_imports_export_nothing(tmp_path: Path) -> None:
     assert facts["imported_symbols"] == ["_dyld_stub_binder", "_printf"]
 
 
+def test_macho_fortify_source_names_the_chk_wrappers(tmp_path: Path) -> None:
+    # A _FORTIFY_SOURCE build imports libSystem's fortified wrappers, each an
+    # undefined external named ___<func>_chk (the C __<func>_chk plus Mach-O's
+    # leading underscore). The same rule the ELF reader uses catches them.
+    data = _macho64_with_symbols(
+        [
+            ("___strcpy_chk", _N_UNDF | _N_EXT, 0),
+            ("___memcpy_chk", _N_UNDF | _N_EXT, 0),
+            ("_printf", _N_UNDF | _N_EXT, 0),
+        ]
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["fortify_source"] is True
+    assert facts["fortified_functions"] == ["___memcpy_chk", "___strcpy_chk"]
+
+
+def test_macho_canary_symbols_are_not_fortify_wrappers(tmp_path: Path) -> None:
+    # The stack-protector imports end in _fail/_guard, not _chk, so a canaried
+    # but unfortified image reads fortify_source False -- the two mitigations
+    # stay distinct exactly as on ELF.
+    data = _macho64_with_symbols(
+        [
+            ("___stack_chk_fail", _N_UNDF | _N_EXT, 0),
+            ("___stack_chk_guard", _N_UNDF | _N_EXT, 0),
+        ]
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["fortify_source"] is False
+    assert facts["fortified_functions"] == []
+
+
 def test_macho_nameless_export_is_skipped(tmp_path: Path) -> None:
     # A defined external whose n_strx is zero names nothing; the reader skips
     # it rather than reporting an empty symbol, while still reading its sibling.
@@ -2167,6 +2198,10 @@ def test_committed_macho_fixture_entry_matches_its_layout() -> None:
     # cross-checks both sets against llvm-nm.
     assert facts["exported_symbols"] == ["_main"]
     assert facts["imported_symbols"] == ["___stack_chk_fail", "___stack_chk_guard"]
+    # Canaried but not fortified: the stack_chk imports end in _fail/_guard,
+    # so the FORTIFY posture reads a definitive False on the real fixture.
+    assert facts["fortify_source"] is False
+    assert facts["fortified_functions"] == []
     # The committed fixture ships unsigned (the codesign gate signs a copy
     # with rcodesign and cross-checks the signature facts on that).
     assert facts["signed"] is False

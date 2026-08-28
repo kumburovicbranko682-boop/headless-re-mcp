@@ -7046,6 +7046,19 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
             facts["exported_symbols"] = exports
         if imports:
             facts["imported_symbols"] = imports
+            # FORTIFY_SOURCE posture -- the Mach-O pair to the ELF fortify
+            # fact. A _FORTIFY_SOURCE build routes bounded libc calls through
+            # fortified wrappers imported from libSystem, each named
+            # ``___<func>_chk`` (the C ``__<func>_chk`` plus Mach-O's leading
+            # underscore). The same rule the ELF reader uses catches them: a
+            # ``__``-prefixed, ``_chk``-suffixed name, which the canary's
+            # ``___stack_chk_fail``/``_guard`` symbols never satisfy. Present
+            # alongside imports; an empty list is a real "unfortified" answer.
+            fortified = [
+                name for name in imports if name.startswith("__") and name.endswith("_chk")
+            ]
+            facts["fortify_source"] = bool(fortified)
+            facts["fortified_functions"] = fortified
         # Whether the local symbols strip removes are gone -- the Mach-O pair
         # to the ELF stripped fact; omitted when there is no symbol table to
         # measure, present as True/False otherwise.
