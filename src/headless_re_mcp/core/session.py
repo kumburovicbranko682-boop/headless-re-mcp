@@ -4534,6 +4534,15 @@ _PE_DLLCHARACTERISTICS_OFF = 70
 # named the same way here. pefile reads the identical field, so the hardening
 # gate can cross-check it. Unlisted values render as machine_0x%04x: named
 # honestly, never guessed.
+# The COFF Characteristics bits worth a fact of their own. IMAGE_FILE_DLL is
+# the PE file-type split -- the pair to ELF's EXEC/DYN ``type`` and Mach-O's
+# execute/dylib. RELOCS_STRIPPED is the honesty check on ``aslr``: with the
+# .reloc data gone the loader cannot rebase, so DYNAMICBASE is a dead letter.
+# LARGE_ADDRESS_AWARE widens a 32-bit process past 2 GB. pefile exposes each
+# bit as a named flag, so the hardening gate can cross-check all three.
+_PE_FILE_RELOCS_STRIPPED = 0x0001
+_PE_FILE_LARGE_ADDRESS_AWARE = 0x0020
+_PE_FILE_DLL = 0x2000
 _PE_MACHINES = {
     0x014C: "x86",
     0x8664: "x86-64",
@@ -6510,7 +6519,12 @@ def _pe_hardening_facts(path: Path) -> dict[str, Any]:
     The native PE build posture -- the pair to the ELF nx/relro/canary/pie and
     Mach-O nx/pie facts. ``arch`` (the COFF Machine field) and ``bits`` (PE32
     vs PE32+) are the identity facts ELF and Mach-O sessions already report
-    under the same names; ``subsystem`` answers what kind of program this is
+    under the same names; ``type`` splits a DLL from an executable image off
+    the COFF Characteristics (the pair to ELF's EXEC/DYN and Mach-O's
+    execute/dylib), whose RELOCS_STRIPPED bit also reads as
+    ``relocs_stripped`` (rendering a DYNAMICBASE claim hollow) and whose
+    LARGE_ADDRESS_AWARE bit as ``large_address_aware``; ``subsystem`` answers
+    what kind of program this is
     (gui, console, a native driver, an EFI image); the DllCharacteristics bits
     are the loader mitigation contract (DYNAMICBASE -> ``aslr``, NX_COMPAT ->
     ``nx``, GUARD_CF -> ``cfg``, plus high-entropy 64-bit ASLR, forced
@@ -6561,9 +6575,13 @@ def _pe_hardening_facts(path: Path) -> dict[str, Any]:
         optional[_PE_DLLCHARACTERISTICS_OFF : _PE_DLLCHARACTERISTICS_OFF + 2], "little"
     )
     machine = int.from_bytes(coff[4:6], "little")
+    characteristics = int.from_bytes(coff[22:24], "little")
     facts: dict[str, Any] = {
         "arch": _PE_MACHINES.get(machine, f"machine_0x{machine:04x}"),
         "bits": 64 if magic == 0x20B else 32,
+        "type": "dll" if characteristics & _PE_FILE_DLL else "executable",
+        "relocs_stripped": bool(characteristics & _PE_FILE_RELOCS_STRIPPED),
+        "large_address_aware": bool(characteristics & _PE_FILE_LARGE_ADDRESS_AWARE),
         "subsystem": _PE_SUBSYSTEMS.get(subsystem, f"subsystem_{subsystem}"),
         "os_version": _pe_u16_pair(optional, _PE_OS_VERSION_OFF),
         "subsystem_version": _pe_u16_pair(optional, _PE_SUBSYS_VERSION_OFF),

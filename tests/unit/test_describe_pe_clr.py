@@ -1039,6 +1039,7 @@ def _pe_with_posture(
     image_base: int = 0x1_4000_0000,
     magic: int = 0x20B,
     machine: int | None = None,
+    characteristics: int = 0,
     os_version: tuple[int, int] = (0, 0),
     subsys_version: tuple[int, int] = (0, 0),
     sections: list[tuple[bytes, int, int]] | None = None,
@@ -1060,7 +1061,7 @@ def _pe_with_posture(
         machine = 0x8664 if magic == 0x20B else 0x14C
     opt_size = 0xF0 if magic == 0x20B else 0xE0
     coff = b"PE\x00\x00" + struct.pack(
-        "<HHIIIHH", machine, len(sections), 0, 0, 0, opt_size, 0
+        "<HHIIIHH", machine, len(sections), 0, 0, 0, opt_size, characteristics
     )
     opt = bytearray(opt_size)
     struct.pack_into("<H", opt, 0, magic)
@@ -1110,6 +1111,9 @@ class TestPeHardeningFacts:
         assert facts == {
             "arch": "x86-64",
             "bits": 64,
+            "type": "executable",
+            "relocs_stripped": False,
+            "large_address_aware": False,
             "subsystem": "gui",
             "os_version": "10.0",
             "subsystem_version": "6.2",
@@ -1208,6 +1212,36 @@ class TestPeHardeningFacts:
         narrow = tmp_path / "narrow.exe"
         narrow.write_bytes(_pe_with_posture(magic=0x10B, image_base=0x40_0000))
         assert _pe_hardening_facts(narrow)["bits"] == 32
+
+    def test_the_dll_bit_splits_the_file_type(self, tmp_path: Path) -> None:
+        # IMAGE_FILE_DLL is the PE pair to ELF's EXEC/DYN split: the same
+        # bytes load as a library or a program depending on this one bit.
+        library = tmp_path / "lib.dll"
+        library.write_bytes(_pe_with_posture(characteristics=0x2102))
+        assert _pe_hardening_facts(library)["type"] == "dll"
+        program = tmp_path / "prog.exe"
+        program.write_bytes(_pe_with_posture(characteristics=0x0102))
+        assert _pe_hardening_facts(program)["type"] == "executable"
+
+    def test_stripped_relocs_read_true_and_hollow_out_aslr(self, tmp_path: Path) -> None:
+        # RELOCS_STRIPPED plus DYNAMICBASE is the contradiction worth
+        # surfacing: the loader cannot rebase what has no relocations, so
+        # both facts must be visible side by side.
+        path = tmp_path / "norelocs.exe"
+        path.write_bytes(_pe_with_posture(characteristics=0x0001, dllchar=0x0040))
+        facts = _pe_hardening_facts(path)
+        assert facts["relocs_stripped"] is True
+        assert facts["aslr"] is True
+
+    def test_large_address_aware_reads_off_its_own_bit(self, tmp_path: Path) -> None:
+        path = tmp_path / "laa.exe"
+        path.write_bytes(
+            _pe_with_posture(magic=0x10B, image_base=0x40_0000, characteristics=0x0020)
+        )
+        facts = _pe_hardening_facts(path)
+        assert facts["large_address_aware"] is True
+        assert facts["relocs_stripped"] is False
+        assert facts["type"] == "executable"
 
     def test_a_pe32_entry_rebases_off_the_narrow_image_base(self, tmp_path: Path) -> None:
         # PE32 keeps a 32-bit ImageBase at offset 28 (after BaseOfData); a
@@ -3126,6 +3160,9 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
             "exports": [],
             "arch": "x86",
             "bits": 32,
+            "type": "executable",
+            "relocs_stripped": False,
+            "large_address_aware": False,
             "subsystem": "unknown",
             "os_version": "0.0",
             "subsystem_version": "0.0",

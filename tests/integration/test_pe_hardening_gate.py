@@ -85,6 +85,7 @@ def _pe_with_posture(
     entry_rva: int,
     image_base: int,
     machine: int | None = None,
+    characteristics: int = 0x0102,  # EXECUTABLE_IMAGE | 32BIT_MACHINE
     os_version: tuple[int, int] = (6, 0),
     subsys_version: tuple[int, int] = (6, 0),
 ) -> bytes:
@@ -100,7 +101,9 @@ def _pe_with_posture(
     if machine is None:
         machine = 0x8664 if magic == 0x20B else 0x14C
     opt_size = 0xF0 if magic == 0x20B else 0xE0
-    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", machine, 1, 0, 0, 0, opt_size, 0x0102)
+    coff = b"PE\x00\x00" + struct.pack(
+        "<HHIIIHH", machine, 1, 0, 0, 0, opt_size, characteristics
+    )
     opt = bytearray(opt_size)
     struct.pack_into("<H", opt, 0, magic)
     struct.pack_into("<I", opt, 16, entry_rva)
@@ -154,6 +157,11 @@ def _pefile_posture(pefile_mod: Any, path: Path) -> dict[str, Any]:
             machine_name, f"machine_0x{pe.FILE_HEADER.Machine:04x}"
         ),
         "bits": 64 if pe.PE_TYPE == pefile_mod.OPTIONAL_HEADER_MAGIC_PE_PLUS else 32,
+        # The COFF Characteristics facts: pefile classifies DLL vs image with
+        # its own is_dll(), and exposes each flag bit as a named attribute.
+        "type": "dll" if pe.is_dll() else "executable",
+        "relocs_stripped": bool(pe.FILE_HEADER.IMAGE_FILE_RELOCS_STRIPPED),
+        "large_address_aware": bool(pe.FILE_HEADER.IMAGE_FILE_LARGE_ADDRESS_AWARE),
     }
     for fact, flag in _MITIGATION_TO_PEFILE.items():
         posture[fact] = bool(
@@ -182,6 +190,9 @@ def _session_posture(path: Path) -> dict[str, Any]:
         keys = {
             "arch",
             "bits",
+            "type",
+            "relocs_stripped",
+            "large_address_aware",
             "subsystem",
             "os_version",
             "subsystem_version",
@@ -275,6 +286,32 @@ def test_an_arm64_machine_field_agrees_with_pefile(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_the_coff_characteristics_facts_agree_with_pefile(tmp_path: Path) -> None:
+    # A DLL with stripped relocations claiming DYNAMICBASE -- the classic
+    # hollow-ASLR contradiction -- plus the large-address bit: pefile reads
+    # all three through is_dll() and its named flag attributes.
+    pefile_mod = _pefile()
+    if pefile_mod is None:
+        pytest.skip("pefile not installed — PE hardening gate not run (skip != pass)")
+    binary = tmp_path / "norelocs.dll"
+    binary.write_bytes(
+        _pe_with_posture(
+            magic=0x20B,
+            subsystem=2,
+            dllchar=0x0040,  # DYNAMICBASE claimed...
+            entry_rva=0x1000,
+            image_base=0x1_8000_0000,
+            characteristics=0x2023,  # DLL | RELOCS_STRIPPED | LAA | EXECUTABLE
+        )
+    )
+    expected = _pefile_posture(pefile_mod, binary)
+    assert expected["type"] == "dll"  # the referee really classified a DLL
+    assert expected["relocs_stripped"] is True  # ...that cannot actually move
+    assert expected["large_address_aware"] is True
+    assert _session_posture(binary) == expected
+
+
+@pytest.mark.integration
 def test_arch_and_bits_of_the_committed_fixtures_agree_with_pefile() -> None:
     # Real linker output on both sides of the width split: the MinGW-built
     # UPX pair (x86 and x64, packed and unpacked) plus the managed fixture.
@@ -293,8 +330,8 @@ def test_arch_and_bits_of_the_committed_fixtures_agree_with_pefile() -> None:
     for binary in binaries:
         expected = _pefile_posture(pefile_mod, binary)
         session = _session_posture(binary)
-        assert session["arch"] == expected["arch"], binary.name
-        assert session["bits"] == expected["bits"], binary.name
+        for fact in ("arch", "bits", "type", "relocs_stripped", "large_address_aware"):
+            assert session[fact] == expected[fact], f"{fact} on {binary.name}"
 
 
 @pytest.mark.integration
@@ -327,7 +364,23 @@ def test_posture_of_an_mcs_compiled_pe_agrees_with_pefile(tmp_path: Path) -> Non
     assert "entry" in expected
     assert expected["subsystem_version"] != "0.0"
 
+    assert expected["type"] == "executable"  # -out:hello.exe really is a program
     assert _session_posture(binary) == expected
+
+    # The same compiler asked for a library: the one-bit file-type split on
+    # output neither builder wrote.
+    lib_source = tmp_path / "lib.cs"
+    lib_source.write_text("public class L { }\n")
+    library = tmp_path / "lib.dll"
+    subprocess.run(
+        [mcs, "-target:library", f"-out:{library}", str(lib_source)],
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )
+    lib_expected = _pefile_posture(pefile_mod, library)
+    assert lib_expected["type"] == "dll"  # the referee really saw a DLL
+    assert _session_posture(library) == lib_expected
 
     # The same compiler PE through the load-config gate: whatever Mono's
     # linker did or did not emit, the reader and pefile must agree on it.
