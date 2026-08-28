@@ -152,6 +152,29 @@ def test_check_available_detects_the_installed_driver() -> None:
     assert backend._available is True
 
 
+def test_check_available_degrades_when_playwright_cannot_be_imported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The import probe itself failing (not a pre-set flag) must be caught and
+    # cached as unavailable, so a broken install degrades to a clean
+    # capability_unavailable rather than surfacing a raw ImportError.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_playwright(name: str, *args: object, **kwargs: object) -> Any:
+        if name == "playwright.sync_api" or name.startswith("playwright"):
+            raise ImportError("playwright is not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_playwright)
+    backend = WebBackend()
+    with pytest.raises(WebError) as caught:
+        backend._check_available()
+    assert caught.value.code == "capability_unavailable"
+    assert backend._available is False
+
+
 def test_status_reports_opening_for_a_reserved_slot() -> None:
     backend = WebBackend()
     backend._sessions["s"] = object()  # the bare open() reservation token
