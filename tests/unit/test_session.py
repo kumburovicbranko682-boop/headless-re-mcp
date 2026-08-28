@@ -55,12 +55,14 @@ def test_registry_state_machine(tmp_path: Path) -> None:
         registry.get(session.id)
 
 
-def test_create_rejects_a_missing_target_with_a_value_error(tmp_path: Path) -> None:
-    # A missing file target must surface as the structured ValueError, not leak
-    # the raw FileNotFoundError from resolve(strict=True).
+def test_create_rejects_a_non_regular_file_target(tmp_path: Path) -> None:
+    # An existing path that is not a regular file (a directory) must surface as
+    # the structured ValueError; a genuinely missing path is a separate case
+    # that resolve(strict=True) reports as FileNotFoundError so the service can
+    # map it to file_not_found rather than invalid_request.
     registry = SessionRegistry()
     with pytest.raises(ValueError, match="not a regular file"):
-        registry.create(tmp_path / "missing.exe", target=TargetKind.PE)
+        registry.create(tmp_path, target=TargetKind.PE)
 
 
 def test_closed_sessions_are_retained_but_bounded(tmp_path: Path) -> None:

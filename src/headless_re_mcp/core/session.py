@@ -113,9 +113,11 @@ class SessionRegistry:
             else:
                 session = Session(target=kind, locator=text)
         else:
-            # resolve() without strict=True so a missing target reaches the
-            # ValueError below instead of leaking a raw FileNotFoundError.
-            path = Path(text).expanduser().resolve()
+            # resolve(strict=True) intentionally raises FileNotFoundError for a
+            # missing target; the service layer maps that to a structured
+            # file_not_found error, distinct from the invalid_request that a
+            # non-regular file (e.g. a directory) produces via the check below.
+            path = Path(text).expanduser().resolve(strict=True)
             if not path.is_file():
                 raise ValueError(f"session target is not a regular file: {path}")
             architecture: Architecture | None = None
