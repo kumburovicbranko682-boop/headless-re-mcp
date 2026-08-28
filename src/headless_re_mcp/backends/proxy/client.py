@@ -420,6 +420,24 @@ class _FlowRecorder:
         with self._lock:
             return list(self.flows)
 
+    def snapshot_with_dropped(self) -> tuple[list[JsonObject], int]:
+        """The retained flows and the eviction count as one atomic read.
+
+        export_har needs the rows it writes and the "how many were dropped
+        before the export" figure to describe the same instant: between them it
+        runs serialize_har (a JSON encode of up to the capture cap) and a disk
+        write, both slow, while this recorder keeps taking writes from
+        mitmproxy's event-loop thread. Reading snapshot() then dropped() as two
+        separate locked calls lets evictions land in that window and inflate
+        dropped past what the returned rows reflect, so the export would
+        overstate the loss. web.har.export already reads its ring and its
+        dropped counter under one lock for exactly this reason; this gives the
+        proxy path the same one-instant guarantee.
+        """
+        with self._lock:
+            flows = list(self.flows)
+            return flows, max(0, self._seq - len(flows))
+
     def raw(self, flow_id: str) -> Any | None:
         with self._lock:
             return self._raw.get(flow_id)
@@ -749,6 +767,13 @@ class ProxyBackend:
 
     def export_har(self, session_id: str, out_path: Path) -> JsonObject:
         inst = self._get(session_id)
+        # Read the rows and the eviction count in one lock hold, before the slow
+        # serialize + write below, like web.har.export. The recorder keeps
+        # taking flows from mitmproxy's event-loop thread throughout, so reading
+        # dropped() separately *after* serializing would count evictions that
+        # happened during the encode and overstate "how much is missing"
+        # relative to the rows actually written.
+        flows, dropped = inst.recorder.snapshot_with_dropped()
         entries = [
             har_entry(
                 method=f.get("method"),
@@ -757,7 +782,7 @@ class ProxyBackend:
                 mime_type=f.get("content_type") or "",
                 response_body_size=f.get("response_size"),
             )
-            for f in inst.recorder.snapshot()
+            for f in flows
         ]
         # Bounded like web.har.export: the flow ring holds up to 2000 rows whose
         # URLs alone can be 16 KiB each, so an unbounded write would drop a
@@ -781,8 +806,9 @@ class ProxyBackend:
             # was cut to the byte cap during serialization, while dropped is how
             # many flows the capture ring evicted before the export ran and so
             # are absent from these entries. A nonzero dropped is the signal that
-            # this HAR is not the whole session's traffic.
-            "dropped": inst.recorder.dropped(),
+            # this HAR is not the whole session's traffic. Read atomically with
+            # the rows above so the pair describes one instant.
+            "dropped": dropped,
         }
 
     def ca_cert_path(self) -> Path | None:

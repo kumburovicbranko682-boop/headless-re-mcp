@@ -20,7 +20,10 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from headless_re_mcp.backends.proxy import ProxyError
 from headless_re_mcp.config import Settings
@@ -112,6 +115,78 @@ def test_proxy_export_har_registers_the_artifact_and_marks_the_timeline(
         assert len(exports) == 1
     finally:
         service.close_all()
+
+
+def test_export_har_reads_rows_and_dropped_from_one_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exported rows and the reported ``dropped`` must describe one instant.
+
+    export_har serializes (a JSON encode up to the capture cap) and writes to
+    disk between reading its rows and its eviction count; meanwhile mitmproxy's
+    event-loop thread keeps recording flows into the same ring. Reading
+    ``dropped()`` only after that slow window -- as the code used to -- counts
+    evictions that landed during the encode, so the "how much is missing" figure
+    overstates the loss relative to the rows in the file. This drives that
+    window: serialize_har is patched to record another flow (forcing another
+    eviction) mid-encode, and the reported ``dropped`` must still be the
+    snapshot-time value that matches the exported rows, not the inflated one.
+    web.har.export reads both under one lock for the same reason.
+    """
+    from headless_re_mcp.backends.proxy import client as proxy_client
+
+    recorder = proxy_client._FlowRecorder(capacity=3)
+    # Simulate five flows recorded into a ring of three: two evicted before the
+    # export, so the snapshot-time dropped is 2 and three rows remain.
+    for seq in range(1, 6):
+        recorder._seq = seq
+        recorder.flows.append(
+            {
+                "seq": seq,
+                "method": "GET",
+                "url": f"http://h/{seq}",
+                "status": 200,
+                "content_type": "text/html",
+                "response_size": 10,
+            }
+        )
+    assert recorder.dropped() == 2
+
+    inst = SimpleNamespace(recorder=recorder)
+    backend = proxy_client.ProxyBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: inst)
+
+    real_serialize = proxy_client.serialize_har
+
+    def racing_serialize(entries: Any, *, max_bytes: int) -> Any:
+        # A sixth flow arrives during the (slow) encode: seq advances and the
+        # ring evicts another oldest row, so recorder.dropped() now reads 3.
+        recorder._seq += 1
+        recorder.flows.append(
+            {
+                "seq": recorder._seq,
+                "method": "GET",
+                "url": "http://h/late",
+                "status": 200,
+                "content_type": "text/html",
+                "response_size": 10,
+            }
+        )
+        return real_serialize(entries, max_bytes=max_bytes)
+
+    monkeypatch.setattr(proxy_client, "serialize_har", racing_serialize)
+
+    out = tmp_path / "capture.har"
+    payload = backend.export_har("s", out)
+
+    # The encode saw three rows; the late flow pushed the recorder's own dropped
+    # to 3, but the export reports the snapshot-time pair that matches the file:
+    # three rows exported, two dropped.
+    assert payload["entry_count"] == 3
+    assert payload["dropped"] == 2
+    # The recorder really did advance during the encode -- proving the window is
+    # real and that export_har did not simply re-read a stale counter.
+    assert recorder.dropped() == 3
 
 
 def test_a_failed_proxy_export_har_leaves_no_timeline_entry(tmp_path: Path) -> None:
