@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（apksigner 超时路径不泄露 keystore 密码——补上唯一未被守住的密钥安全分支）
+
+- 背景：`apktool` 客户端的密钥密码安全有三处已测——密码经 `env:` 而非 argv 传入、签名失败时
+  stderr 被擦除、验签失败时同样擦除。但**超时**这一条没测：`sign()` 把密码放进子进程 `env`，
+  而超时会经 `TimedOut -> ApktoolError("timeout")` 映射在到达 stderr 擦除分支**之前**就抛出
+  （擦除只在正常非零返回时跑）。当前该错误只带 `timeout` 与 `killed_pids`、不含 env 或 argv，
+  是安全的——但没有任何测试守住它，一次往超时错误 details 里加 `env=env` 或 `cmd` 的重构就会把
+  keystore 密码悄悄泄进擦除测试所保护的同一批通道（磁盘 incident 日志、500 响应体、CLI stderr）。
+- 新增 `test_sign_timeout_does_not_carry_the_password`：让 `sign()` 超时，断言抛出的
+  `ApktoolError` 的 message 与全部 details（`repr` 与 `str` 两种呈现）都不含密码。经变异验证——
+  往超时错误注入 `leaked_env=env` 会让该用例失败，还原后通过，证明它确实有牙。纯加测试、不改源码，
+  `ruff` / `mypy --strict` 干净，apktool 相关 4 个测试文件 51 项通过。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

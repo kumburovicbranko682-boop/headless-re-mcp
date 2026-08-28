@@ -355,6 +355,43 @@ def test_sign_failure_scrubs_the_password_from_stderr(
     assert "***" in str(caught.value.details["stderr"])
 
 
+def test_sign_timeout_does_not_carry_the_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timed-out sign raises before the stderr scrubber, so pin its own safety.
+
+    The password lives in the child ``env`` sign() builds, and a timeout raises
+    through the TimedOut -> ApktoolError("timeout") mapping *before* the
+    stderr-scrubbing branch (which only runs on a normal non-zero return) is
+    ever reached. Today that error carries only the timeout and killed pids --
+    not the env or the argv -- but nothing guarded it, so a refactor that added
+    ``env=env`` or ``cmd`` to the timeout error's details would silently leak
+    the keystore password into the same channels the scrub test protects.
+    """
+    keystore = _executable(tmp_path / "custom.keystore")
+    secret = "timeout-secret-pw"
+
+    def timing_out(cmd: list[str], **kwargs: Any) -> Completed:
+        raise TimedOut(timeout=300.0, killed=[42])
+
+    monkeypatch.setattr(apktool_mod, "run_bounded", timing_out)
+    client = _client(tmp_path)
+    with pytest.raises(ApktoolError) as caught:
+        client.sign(
+            _zip(tmp_path / "app.apk"),
+            tmp_path / "signed.apk",
+            keystore=keystore,
+            keystore_password=secret,
+            key_alias="mykey",
+        )
+
+    assert caught.value.code == "timeout"
+    # The whole error surface -- message and every detail value -- must be clean.
+    assert secret not in caught.value.message
+    assert secret not in repr(caught.value.details)
+    assert secret not in str(caught.value.details)
+
+
 def test_sign_verify_failure_scrubs_the_password_from_stderr(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
