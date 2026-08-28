@@ -883,6 +883,69 @@ def _body_text(part: Any) -> str:
     return _har_body(part).decode("utf-8", errors="replace")
 
 
+def _served_body(part: Any, *, raw: bool) -> tuple[bytes, bool, str]:
+    """A flow part's body bytes, stripped of its content-encoding by default.
+
+    mitmproxy's ``.content`` removes the HTTP content-encoding (gzip, br,
+    deflate, zstd), so it is the readable text of a JSON/HTML response and the
+    real file bytes of an image or ``.wasm`` to feed the static tools;
+    ``.raw_content`` keeps the on-wire compression, which is almost never what a
+    reader wants. So flow.get decodes by default and ``raw=True`` asks for the
+    exact on-wire bytes instead. Returns (bytes, decoded, content_encoding),
+    where decoded is False when the on-wire bytes were served -- raw was asked,
+    or a malformed encoding ``.content`` could not decompress -- so a still
+    compressed body is never misread as plaintext. Accessing ``.content`` decodes
+    and can raise, so it is guarded.
+    """
+    if part is None:
+        return b"", False, ""
+    enc = _header_value(part, "content-encoding").strip()
+    if raw:
+        try:
+            return (getattr(part, "raw_content", None) or b""), False, enc
+        except Exception:  # noqa: BLE001 - mitmproxy attribute access can raise
+            return b"", False, enc
+    try:
+        content = getattr(part, "content", None)
+    except Exception:  # noqa: BLE001 - .content decodes and may raise
+        content = None
+    if isinstance(content, (bytes, bytearray)):
+        return bytes(content), True, enc
+    # ``.content`` is unavailable or raised: fall back to the on-wire bytes.
+    # They are the decoded body only when there was no content-encoding to strip.
+    try:
+        raw_bytes = getattr(part, "raw_content", None) or b""
+    except Exception:  # noqa: BLE001 - mitmproxy attribute access can raise
+        raw_bytes = b""
+    return bytes(raw_bytes), enc == "", enc
+
+
+def _emit_body(
+    target: JsonObject, body: bytes, decoded: bool, enc: str, artifact_dir: Path
+) -> None:
+    """Attach a body to a request/response dict: inline text, or spill the bytes.
+
+    A text body at most the inline cap rides inline as ``body``; a larger body,
+    or a binary one (a NUL or non-UTF-8 byte -- a captured image, font or
+    ``.wasm``), spills to a ``.bin`` artifact named by ``body_path`` so the exact
+    bytes reach the static tools instead of being mangled into replacement text.
+    ``size`` is the served byte count. ``content_encoding`` and ``decoded`` are
+    disclosed only when the part carried a content-encoding, so a compressed body
+    a caller could not decompress (decoded False) is never read as plaintext.
+    """
+    target["size"] = len(body)
+    if enc:
+        target["content_encoding"] = enc
+        target["decoded"] = decoded
+    if body and (len(body) > _MAX_INLINE_BODY or not _looks_textual(body)):
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        out = artifact_dir / f"flow-{uuid4().hex}.bin"
+        out.write_bytes(body)
+        target["body_path"] = str(out)
+    else:
+        target["body"] = body.decode("utf-8", errors="replace")
+
+
 def _search_snippet(text: str, index: int, needle_len: int) -> str:
     """A one-line context window around a hit, with ellipses when clipped."""
     start = max(0, index - _SEARCH_SNIPPET_CONTEXT)
@@ -1253,7 +1316,9 @@ class ProxyBackend:
             result["filter"] = active
         return result
 
-    def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
+    def flow_get(
+        self, session_id: str, flow_id: str, artifact_dir: Path, *, raw: bool = False
+    ) -> JsonObject:
         inst = self._get(session_id)
         flow = inst.recorder.raw(flow_id)
         if flow is None:
@@ -1270,37 +1335,26 @@ class ProxyBackend:
             )
         req = flow.request
         resp = flow.response
-        body = b""
-        try:
-            body = resp.raw_content or b"" if resp else b""
-        except Exception:  # noqa: BLE001
-            body = b""
-        result: JsonObject = {
-            "id": flow_id,
-            "request": {
-                "method": req.method,
-                "url": req.pretty_url,
-                "headers": dict(req.headers),
-            },
-            "response": {
-                "status": getattr(resp, "status_code", None),
-                "headers": dict(resp.headers) if resp else {},
-                "size": len(body),
-            },
+        # Both bodies are served decoded of their content-encoding (raw=True asks
+        # for the exact on-wire bytes). The request body is returned too: a POST's
+        # form/JSON/upload payload is what a caller most needs to see, and until
+        # now flow.get dropped it. Each part inlines small text and spills binary
+        # or oversized bytes to a body_path, so a captured image/.wasm still
+        # reaches the static tools rather than being mangled into inline text.
+        request: JsonObject = {
+            "method": getattr(req, "method", None),
+            "url": getattr(req, "pretty_url", None),
+            "headers": dict(req.headers) if req else {},
         }
-        # Spill when the body is too big to inline OR when it is binary: a
-        # utf-8-with-replacement decode of binary bytes is lossy and irreversible,
-        # so a captured .wasm/image/font would come back as mojibake with no path
-        # to the real bytes. Writing the exact bytes to a file keeps the proxy
-        # capture feedable to the static tools (wasm.*, ghidra, ...), matching the
-        # web line's binary-body contract. An empty body still inlines as "".
-        if body and (len(body) > _MAX_INLINE_BODY or not _looks_textual(body)):
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-            out = artifact_dir / f"flow-{uuid4().hex}.bin"
-            out.write_bytes(body)
-            result["response"]["body_path"] = str(out)
-        else:
-            result["response"]["body"] = body.decode("utf-8", errors="replace")
+        req_body, req_decoded, req_enc = _served_body(req, raw=raw)
+        _emit_body(request, req_body, req_decoded, req_enc, artifact_dir)
+        response: JsonObject = {
+            "status": getattr(resp, "status_code", None),
+            "headers": dict(resp.headers) if resp else {},
+        }
+        resp_body, resp_decoded, resp_enc = _served_body(resp, raw=raw)
+        _emit_body(response, resp_body, resp_decoded, resp_enc, artifact_dir)
+        result: JsonObject = {"id": flow_id, "request": request, "response": response}
         websocket = _ws_messages_view(flow)
         if websocket is not None:
             websocket["dropped"] = inst.recorder.ws_dropped(flow_id)

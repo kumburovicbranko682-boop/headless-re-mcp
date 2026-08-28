@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import gzip
 import hashlib
 import json
 import os
@@ -57,6 +58,18 @@ class _OriginHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        # A /gzip path serves a gzip-encoded body so the decode path of
+        # proxy.flow.get can be proven end to end against a real capture.
+        if self.path.startswith("/gzip"):
+            plain = f"{_ORIGIN_MARKER}:{self.path}".encode()
+            body = gzip.compress(plain)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         body = f"{_ORIGIN_MARKER}:{self.path}".encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
@@ -194,6 +207,62 @@ def test_proxy_records_traffic_forwarded_through_it(tmp_path: Path) -> None:
             har = backend.export_har("capture", har_path)
             assert har["entry_count"] >= 1, har
             assert har_path.is_file()
+    finally:
+        backend.close_all()
+
+
+@pytest.mark.integration
+def test_proxy_flow_get_decodes_a_gzip_response(tmp_path: Path) -> None:
+    """flow.get must return a gzip response as its decompressed text, not the blob.
+
+    The unit tests pin the decode over a hand-built flow; this proves it holds
+    over a body mitmproxy actually captured. Route a GET to a gzip-encoded origin
+    response through the running proxy and assert flow.get inlines the readable
+    text (the origin marker), discloses content_encoding gzip and decoded True,
+    and does not spill it as a binary blob. skip != pass without mitmproxy.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy decode Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    backend.start("gzip", host="127.0.0.1", port=proxy_port)
+    try:
+        with _origin_site() as origin:
+            handler = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
+            opener = urllib.request.build_opener(handler)
+            # urllib does not send Accept-Encoding: gzip by default, so ask for it
+            # explicitly to make the origin serve the gzip-encoded branch.
+            req = urllib.request.Request(
+                f"{origin}/gzip", headers={"Accept-Encoding": "gzip"}
+            )
+            with opener.open(req, timeout=15.0) as response:
+                raw = response.read()
+            # The client saw the compressed bytes on the wire (proof it was gzip).
+            assert gzip.decompress(raw).decode("utf-8").startswith(_ORIGIN_MARKER)
+
+            listing = _poll(
+                lambda: backend.flows("gzip", limit=100),
+                lambda r: any(str(f.get("url", "")).endswith("/gzip") for f in r["flows"]),
+            )
+            hits = [f for f in listing["flows"] if str(f.get("url", "")).endswith("/gzip")]
+            assert hits, listing["flows"]
+            flow = hits[0]
+
+            detail = backend.flow_get("gzip", str(flow["id"]), tmp_path)
+            resp = detail["response"]
+            assert _ORIGIN_MARKER in resp.get("body", ""), detail
+            assert "body_path" not in resp, detail
+            assert str(resp.get("content_encoding", "")).lower() == "gzip", detail
+            assert resp.get("decoded") is True, detail
+
+            # raw=True must instead hand back the exact compressed on-wire bytes.
+            raw_detail = backend.flow_get("gzip", str(flow["id"]), tmp_path, raw=True)
+            raw_resp = raw_detail["response"]
+            assert raw_resp.get("decoded") is False, raw_detail
+            body_path = raw_resp.get("body_path")
+            assert isinstance(body_path, str) and body_path, raw_detail
+            recovered = gzip.decompress(Path(body_path).read_bytes()).decode("utf-8")
+            assert recovered.startswith(_ORIGIN_MARKER), recovered
     finally:
         backend.close_all()
 

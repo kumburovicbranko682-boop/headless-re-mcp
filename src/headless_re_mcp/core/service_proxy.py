@@ -169,20 +169,33 @@ class ProxyAnalysisMixin:
             limit=limit,
         )
 
-    def proxy_flow_get(self, session_id: str, flow_id: str) -> Result[JsonObject]:
+    def proxy_flow_get(
+        self, session_id: str, flow_id: str, raw: bool = False
+    ) -> Result[JsonObject]:
         try:
-            data = self._proxy.flow_get(session_id, flow_id, self._proxy_artifact_dir(session_id))
-            spilled = data.get("response", {})
-            body_path = spilled.get("body_path") if isinstance(spilled, dict) else None
-            if isinstance(body_path, str) and body_path:
-                data = _register_capture(
-                    self,
-                    session_id,
-                    Path(body_path),
-                    kind="proxy_flow_body",
-                    source="proxy.flow.get",
-                    payload=data,
-                )
+            data = self._proxy.flow_get(
+                session_id, flow_id, self._proxy_artifact_dir(session_id), raw=raw
+            )
+            # A binary/oversized body of either part spills to a body_path; register
+            # each so it is reclaimable by retention and openable via its id (a bare
+            # path is a dead end). The two land under distinct id fields so the
+            # response id is never clobbered by the request's.
+            for part_name, id_key in (
+                ("response", "artifact_id"),
+                ("request", "request_artifact_id"),
+            ):
+                part = data.get(part_name)
+                body_path = part.get("body_path") if isinstance(part, dict) else None
+                if isinstance(body_path, str) and body_path:
+                    data = _register_capture(
+                        self,
+                        session_id,
+                        Path(body_path),
+                        kind="proxy_flow_body",
+                        source="proxy.flow.get",
+                        payload=data,
+                        id_key=id_key,
+                    )
             return _success(data, session_id=session_id, backend="proxy")
         except ProxyError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)

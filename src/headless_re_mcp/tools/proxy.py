@@ -188,25 +188,40 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         )
 
     @tools.tool(name="proxy.flow.get")
-    def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
-        """Fetch one flow's headers and body (large bodies spill to an artifact).
+    def proxy_flow_get(
+        session_id: str, flow_id: str, raw: bool = False
+    ) -> dict[str, Any]:
+        """Fetch one flow's headers and bodies (large bodies spill to an artifact).
 
-        Answers with id, request (method, url, headers) and response (status,
-        headers, size). A text body at most 200000 bytes is response.body; a
-        larger body -- or a binary body of any size (one holding a NUL byte or
-        non-UTF-8 bytes, such as a captured .wasm, image or font) -- is
-        response.body_path and there is no body key, so the exact bytes survive
-        for the static tools rather than being mangled into inline text. There
-        are no top-level headers or body fields. A WebSocket flow also carries
-        websocket with the captured messages (direction sent or received, type
-        text or binary, payload, payload_len, ts), count, total, offset,
-        has_more, dropped and closed; a binary message's payload is base64 and
-        an oversized one is cut and marked payload_truncated. dropped counts
-        frames the per-flow retention cap evicted (a long socket cannot grow
-        without bound). Only the first 500 retained messages ride along here --
-        page the whole retained conversation with proxy.ws.frames.
+        Answers with id, request (method, url, headers, size, body) and response
+        (status, headers, size, body). Both bodies are served decoded of their
+        HTTP content-encoding, so a gzip/br/deflate/zstd response comes back as
+        the readable text it decompresses to -- not the compressed blob the wire
+        carried, which is what proxy.search and the HAR export already read. The
+        request body is included too (a POST's form/JSON/upload payload), which
+        earlier flow fetches dropped. When a part was content-encoded the reply
+        adds content_encoding (the header value) and decoded (false only when a
+        malformed encoding could not be decompressed, so the bytes are still
+        compressed). Pass raw=true to serve the exact on-wire bytes of both parts
+        instead (decoded false), for inspecting the compression itself.
+
+        A text body at most 200000 bytes is that part's body; a larger body -- or
+        a binary body of any size (one holding a NUL byte or non-UTF-8 bytes, such
+        as a captured .wasm, image or font) -- is that part's body_path with no
+        body key, so the exact bytes survive for the static tools rather than
+        being mangled into inline text; a spilled body is registered (artifact_id
+        for the response, request_artifact_id for the request) so it is openable
+        and reclaimable. There are no top-level headers or body fields. A
+        WebSocket flow also carries websocket with the captured messages
+        (direction sent or received, type text or binary, payload, payload_len,
+        ts), count, total, offset, has_more, dropped and closed; a binary
+        message's payload is base64 and an oversized one is cut and marked
+        payload_truncated. dropped counts frames the per-flow retention cap
+        evicted (a long socket cannot grow without bound). Only the first 500
+        retained messages ride along here -- page the whole retained conversation
+        with proxy.ws.frames.
         """
-        return _dump(analysis.proxy_flow_get(session_id, flow_id))
+        return _dump(analysis.proxy_flow_get(session_id, flow_id, raw=raw))
 
     @tools.tool(name="proxy.ws.frames")
     def proxy_ws_frames(
