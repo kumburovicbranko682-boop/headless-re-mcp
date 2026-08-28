@@ -348,3 +348,41 @@ def test_a_granted_autonomy_survives_a_restart_through_the_config_file(
     # The explicit empty effects list persisted by the grant stays fail-closed
     # on reload, rather than being repopulated by the packed-analysis preset.
     assert reloaded.auto_approve_effects == frozenset()
+
+
+def test_an_out_of_range_numeric_field_is_a_client_error_not_an_incident(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """A JSON body of ``1e400`` decodes to float inf; int(inf) raises
+    OverflowError, which is neither the TypeError nor ValueError the two int()
+    coercions here already map to a 400. The raw content bypasses httpx's own
+    refusal to serialise a non-finite float, exactly as a hand-rolled client
+    would put ``1e400`` on the wire.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    app = create_app(AnalysisService(settings), token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret", "Content-Type": "application/json"}
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        mission = client.post(
+            "/api/agent/missions",
+            headers=headers,
+            content='{"objective": "recover the serial", "max_runs": 1e400}',
+        )
+        assert mission.status_code == 400, mission.text
+
+        client.put(
+            "/api/providers/default",
+            headers=headers,
+            content='{"base_url": "https://api.openai.com/v1", "model": "m"}',
+        )
+        provider = client.put(
+            "/api/providers/default",
+            headers=headers,
+            content=(
+                '{"base_url": "https://api.openai.com/v1", "model": "m", '
+                '"context_compression_threshold_percent": 1e400}'
+            ),
+        )
+        assert provider.status_code == 400, provider.text

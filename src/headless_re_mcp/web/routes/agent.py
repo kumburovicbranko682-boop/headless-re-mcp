@@ -434,7 +434,11 @@ def register_agent_routes(
                 model=model,
                 max_runs=int(body.get("max_runs", 8)),
             )
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
+            # OverflowError joins the two int() already raises for a bad type or
+            # an unparseable string: a JSON body of ``1e400`` decodes to float
+            # inf, and int(inf) raises OverflowError, which fell through to an
+            # internal_error 500 for what is just an out-of-range parameter.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if thread_id is None:
             thread_id = store.create_thread(title=text[:80]).id
@@ -580,7 +584,11 @@ def register_agent_routes(
                 context_compression_threshold_percent=int(body.get("context_compression_threshold_percent", 75)),
             )
             public = configs.save(profile, make_current=body.get("make_current", True) is not False)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
+            # int(context_compression_threshold_percent) raises OverflowError,
+            # not ValueError, when a JSON body sends ``1e400`` (which decodes to
+            # float inf); without it that bad number became an internal_error
+            # 500 instead of this 400.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return JSONResponse({"ok": True, "profile": public})
 
