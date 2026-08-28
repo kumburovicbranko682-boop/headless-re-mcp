@@ -98,4 +98,24 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 
+    @tools.tool(name="wasm.summary")
+    def wasm_summary(path: str) -> dict[str, Any]:
+        """Summarise a .wasm module's structure with the stdlib (no wabt needed).
+
+        The counterpart to wasm.info: it parses the WebAssembly binary format
+        directly, so it works on a host without wabt and returns machine-
+        readable JSON instead of objdump text.
+
+        Answers with version, size, sections (each: id, name, size, and
+        custom_name for custom sections), counts (types, imports, functions,
+        tables, memories, globals, exports, elements, data, custom), imports
+        (each: module, name, kind) with imports_total and imports_truncated,
+        exports (each: name, kind, index) with exports_total and
+        exports_truncated, custom_sections, has_names_section, and warnings for
+        any section body that would not decode. Long names and the import/export
+        lists are bounded. A file that is not a WebAssembly module is
+        invalid_params, and one over 16 MiB too_large.
+        """
+        return _dump(analysis.wasm_summary(path))
+
     return tools.bindings

@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.wasm_format import WasmParseError, summarize_wasm
 from headless_re_mcp.backends.jsre import JsClient, JsReError, WasmClient
+from headless_re_mcp.backends.jsre.client import _require_existing_file
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.limits import (
@@ -138,6 +140,26 @@ class JsReAnalysisMixin:
                 Path(path), timeout=timeout
             )
             return _success(data, backend="wabt")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def wasm_summary(self, path: str) -> Result[JsonObject]:
+        """Structural WASM summary with the stdlib -- no wabt, so always available.
+
+        The counterpart to wasm.info (wabt objdump text): it parses the module
+        format directly, so it works on a host without wabt and returns
+        machine-readable JSON (section layout, import/export tables, custom
+        section names) rather than text. A file that is not a WebAssembly module
+        is invalid_params, and one over the shared 16 MiB input cap too_large.
+        """
+        try:
+            resolved = _require_existing_file(Path(path), missing="wasm file not found")
+            summary = summarize_wasm(resolved.read_bytes())
+            return _success(summary, backend="wasm")
+        except WasmParseError as exc:
+            return _failure(_as_rpc(JsReError("invalid_params", str(exc))))
         except JsReError as exc:
             return _failure(_as_rpc(exc))
         except BaseException as exc:
