@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（Web 静态 JS 门：webcrack beautify + 恶意输入的错误契约 + 输入大小上界）
+
+`test_web_re_gate` 覆盖了 webcrack 的顺风路径（`js.deobfuscate` 解码隐藏串、`js.unpack_bundle` 拆 webpack
+bundle），但三件事从没经**真实 webcrack** 活体验证过，本门都补上，全程经产品面 `js.*` 服务：
+
+- **`js.beautify`** 此前零活体覆盖。它是 `deobfuscate` 的薄别名，但没有测试证明这条路径真的会反压缩：门喂一
+  行 minified 脚本，断言回来的是多行、带空格、语义不变的代码（`function f(x) {`/`return x + a;`/保留
+  `console.log(f(2));`）。
+- **恶意输入的错误契约**。`JsClient` 承诺：webcrack 非零退出且无输出时，回传结构化 `backend_error`（带
+  `exit_code`/`stderr`），绝不崩、也绝不落成 `internal_error`。此前这条分支只在**打桩**子进程上断言过；本门
+  用一个真正无法解析的文件把真实 webcrack 逼出真实非零退出，断言错误码与 `exit_code`/`stderr` 明细。
+- **输入大小上界**。`js.*` 对 >16 MiB 的输入在**启动 webcrack 之前**就以 `too_large` 拒绝（含
+  `size`/`max_file_size`），免得无人值守的一趟把整核占满整个 timeout。这条资源上界此前没有活体测试。
+
+新增 `tests/integration/test_web_jsre_gate.py`。已实测：webcrack 2.16.0（Node 22）下三条全过；同时顺带把
+`test_web_re_gate` 里既有的 `js.deobfuscate`/`js.unpack_bundle` 两条在真实 webcrack 上跑通（证明 unpack 的
+输出目录修复在当代 webcrack 上依然成立）。skip ≠ pass：webcrack（Node 22/24）未装时干净 skip。
+
 ### 测试（Web 动态导航门：HTTP 状态码回传的错误契约 + 跨文档导航 + console 类型 + DOM 正文）
 
 Web 动态这条线此前的活体门覆盖了抓包（`test_web_network_gate`）、生命周期/句柄泄漏
