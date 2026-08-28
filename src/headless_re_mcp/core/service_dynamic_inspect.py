@@ -905,10 +905,26 @@ class DynamicInspectMixin:
         *,
         timeout: float = 30.0,
     ) -> Result[JsonObject]:
-        if not isinstance(data, str) or not data:
+        if type(address) is not int or address < 0:
             return Result[JsonObject](
                 ok=False,
-                error=RpcError(code="invalid_params", message="data must be non-empty hex"),
+                error=RpcError(
+                    code="invalid_params",
+                    message="address must be a non-negative integer",
+                ),
+            )
+        # The patches.apply schema bounds data to 2..512 hex chars, but the agent
+        # transport hands the handler raw model arguments, so without this an
+        # oversized string would be forwarded whole to worker.request and copied
+        # into the debuggee. dynamic.memory.write caps its own data the same way;
+        # 512 chars is 256 patch bytes, and the worker rejects any non-hex body.
+        if not isinstance(data, str) or not 2 <= len(data) <= 512:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="data must be a hex string of 2 to 512 characters",
+                ),
             )
         return self._dynamic_request(
             session_id,

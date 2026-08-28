@@ -184,6 +184,26 @@ def test_patches_apply_rejects_empty_data(service: Any, session_id: str) -> None
     assert _code(service.patches_apply(session_id, 0x1000, "")) == "invalid_params"
 
 
+def test_patches_apply_rejects_a_single_hex_nibble(service: Any, session_id: str) -> None:
+    # The schema floors data at 2 chars (one whole byte); one nibble is not a
+    # byte, so it must be refused before the debugger request rather than
+    # forwarded as a half-written patch.
+    assert _code(service.patches_apply(session_id, 0x1000, "9")) == "invalid_params"
+
+
+def test_patches_apply_rejects_oversized_data(service: Any, session_id: str) -> None:
+    # The patches.apply schema caps data at 512 chars, but the agent transport
+    # skips that check; without the service-side bound a megabyte of hex would
+    # be forwarded whole to worker.request and copied into the debuggee.
+    oversized = "90" * 300
+    assert _code(service.patches_apply(session_id, 0x1000, oversized)) == "invalid_params"
+
+
+@pytest.mark.parametrize("address", [-1, None, True, 4096.0, "0x1000"])
+def test_patches_apply_rejects_a_bad_address(service: Any, session_id: str, address: Any) -> None:
+    assert _code(service.patches_apply(session_id, address, "90")) == "invalid_params"
+
+
 def test_symbols_list_rejects_a_non_positive_module_base(service: Any, session_id: str) -> None:
     assert _code(service.symbols_list(session_id, 0, limit=8)) == "invalid_params"
 
