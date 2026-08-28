@@ -68,7 +68,7 @@ def register_agent_routes(
     settings: Settings,
     catalog: CommandCatalog = COMMAND_CATALOG,
 ) -> None:
-    from fastapi import Header, HTTPException, Query
+    from fastapi import Header, HTTPException, Query, Request
     from fastapi.responses import JSONResponse, StreamingResponse
 
     # Bind handlers and schemas directly from protocol-independent tool domains.
@@ -364,6 +364,7 @@ def register_agent_routes(
 
     @app.get("/api/agent/runs/{run_id}/events")
     async def events(
+        request: Request,
         run_id: str,
         authorization: str | None = Header(default=None),
         after: int = Query(default=0, ge=0),
@@ -376,6 +377,15 @@ def register_agent_routes(
             cursor = after
             idle = 0
             while True:
+                # Stop the moment the client goes away. A live, event-less run
+                # never reaches a terminal status, so without this the loop
+                # polls the store every 0.25s for the life of the run after the
+                # browser tab closed or the connection dropped -- every
+                # abandoned reconnect then leaks a generator querying the DB
+                # forever. The sibling monitor-stream route already guards this
+                # way; the agent event stream did not.
+                if await request.is_disconnected():
+                    break
                 batch = await asyncio.to_thread(store.list_events, run_id, after=cursor)
                 for event in batch:
                     cursor = event.seq

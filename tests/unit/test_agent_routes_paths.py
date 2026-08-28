@@ -364,6 +364,42 @@ def test_event_stream_emits_a_heartbeat_while_idle(
     assert "event: heartbeat" in streamed.text
 
 
+def test_a_disconnected_event_stream_stops_before_polling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A closed tab must not keep the event loop polling the store.
+
+    A live, event-less run never terminates, so without a disconnect check the
+    generator polls list_events/get_run every 0.25s for the life of the run once
+    the client is gone -- every abandoned reconnect leaks one such loop. The
+    sibling monitor-stream route already guards this way; the agent event stream
+    now does too. With the client reported disconnected the loop breaks before
+    it streams the backlog, so even a terminal run holding one event yields
+    nothing.
+    """
+    from starlette.requests import Request
+
+    async def gone(self: Request) -> bool:
+        return True
+
+    app, client = _build(tmp_path, monkeypatch)
+    store = app.state.agent_store
+    thread_id = store.create_thread(title="disconnect").id
+    run = store.create_run(
+        thread_id, provider_profile="default", model="m", deadline_seconds=30
+    )
+    store.append_event(run.id, "llm.started", {"round": 1})
+    store.transition(run.id, RunStatus.FAILED, error="boom")
+
+    monkeypatch.setattr(Request, "is_disconnected", gone)
+    streamed = client.get(f"/api/agent/runs/{run.id}/events", headers=HEADERS)
+
+    assert streamed.status_code == 200
+    # Broke on disconnect before streaming the backlog: the buffered event is
+    # never sent even though the terminal run holds one.
+    assert "event: llm.started" not in streamed.text
+
+
 # ---------------------------------------------------------------------------
 # missions extra arms
 # ---------------------------------------------------------------------------
