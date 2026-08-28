@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from itertools import count
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +24,7 @@ from headless_re_mcp.core.runtime_state import (
     WorkflowStateOwner,
 )
 from headless_re_mcp.core.service import AnalysisService
+from headless_re_mcp.core.store import sqlite_store as sqlite_store_module
 
 
 def test_backend_runtime_owner_enforces_transitions_and_terminal_reopen() -> None:
@@ -188,13 +192,22 @@ def test_analysis_repository_contract(repository: AnalysisRepository, tmp_path: 
     assert repository.list_unclean_sessions() == ([], 0)
 
 
-def test_the_audit_log_is_trimmed_to_the_newest_entries(tmp_path: Path) -> None:
+def test_the_audit_log_is_trimmed_to_the_newest_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The audit table is the one store with no natural end.
 
     Sessions and artifacts are bounded by what the operator opens and by
     artifacts.gc, but a server that runs for months appends audit rows forever,
     and list_audit counts the whole table on every page.
     """
+    # A coarse Windows clock can stamp every row identically, and list_audit
+    # orders by ``at`` alone, which leaves ties in unspecified SQLite order;
+    # tick the clock explicitly so newest-first is well-defined.
+    ticks = count()
+    base = datetime(2024, 1, 1, tzinfo=UTC)
+    fake_clock = SimpleNamespace(now=lambda tz=UTC: base + timedelta(seconds=next(ticks)))
+    monkeypatch.setattr(sqlite_store_module, "datetime", fake_clock)
     repository = SqliteAnalysisRepository(tmp_path / "audit-quota")
     store = repository.store
     store.audit_retained_rows = 5

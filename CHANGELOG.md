@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（audit trim 测试假设时钟严格递增,Windows 粗时钟下排序不定）
+
+- `test_architecture_state_repository.py` 的
+  `test_the_audit_log_is_trimmed_to_the_newest_entries` 快速追加 12 行 audit 后断言
+  `actions[0] == "action-11"`,但 `list_audit` 仅按 `at` 排序、无第二关键字;
+  Windows 粗时钟可把多行盖上同一时间戳,SQLite 对平手的顺序未作规定。与维护者
+  对 `test_repository_inmemory_close_trim.py` 同名兄弟用例的修法一致:monkeypatch
+  `sqlite_store.datetime` 为显式递增的假时钟,使"最新"有良定义。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
