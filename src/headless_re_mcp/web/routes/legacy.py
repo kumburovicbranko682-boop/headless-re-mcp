@@ -21,6 +21,7 @@ from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.metrics_exposition import CONTENT_TYPE as EXPOSITION_CONTENT_TYPE
 from headless_re_mcp.metrics_exposition import render as render_exposition
 from headless_re_mcp.platform_support import is_windows_host
+from headless_re_mcp.web.auth import tokens_match
 from headless_re_mcp.web.commands import WebCommandAdapter
 from headless_re_mcp.web.deps import build_deps_snapshot
 from headless_re_mcp.web.monitor import build_monitor_snapshot
@@ -115,9 +116,7 @@ def register_legacy_routes(
             return False
         sessions: set[str] = app.state.bootstrap_sessions
         return any(
-            len(token_cookie) == len(session_token)
-            and secrets.compare_digest(token_cookie, session_token)
-            for session_token in tuple(sessions)
+            tokens_match(token_cookie, session_token) for session_token in tuple(sessions)
         )
 
     def _require_token(
@@ -132,7 +131,7 @@ def register_legacy_routes(
             provided = token_query.strip()
         elif _bootstrap_cookie_ok(token_cookie):
             return
-        if not provided or not secrets.compare_digest(provided, token):
+        if not tokens_match(provided, token):
             raise HTTPException(status_code=401, detail="unauthorized")
 
     @app.middleware("http")

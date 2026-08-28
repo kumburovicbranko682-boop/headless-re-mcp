@@ -36,6 +36,21 @@ def test_query_token_authorizes_the_spa_fallback() -> None:
     assert denied.status_code == 401
 
 
+def test_a_non_ascii_query_token_is_a_clean_401_not_a_500() -> None:
+    """A token with a non-ASCII byte must deny cleanly, not crash the route.
+
+    Starlette decodes the query as UTF-8, so ``?token=%C3%A9...`` reaches the
+    route as a non-ASCII str, and ``secrets.compare_digest`` raised ``TypeError``
+    on exactly that -- surfacing as a 500 (TestClient re-raises it) instead of
+    the 401 a bad credential means. The shared ``tokens_match`` compares UTF-8
+    bytes, so the same input is just an unauthorized miss.
+    """
+    client = _client()
+
+    denied = client.get("/", params={"token": "\u00e9" + _TOKEN[1:]})
+    assert denied.status_code == 401
+
+
 def test_missing_spa_build_returns_503(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client()
 

@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Web 控制台的非 ASCII token 触发 500 而非干净的 401）
+
+- Web 控制台四处 token 校验都直接对客户端提供的 `str` 调 `secrets.compare_digest`
+  （`routes/spa.py`、`routes/agent.py`、`routes/legacy.py` 的主校验与 bootstrap
+  cookie 校验）。`compare_digest` 对非 ASCII 的 `str` 会抛 `TypeError`；而 Starlette
+  以 latin-1 解码请求头与 cookie、以 UTF-8 解码查询串，因此任何带 0x7f 以上字节的凭据
+  （Authorization 头、`?token=`、bootstrap cookie）都会以非 ASCII str 抵达，把一个坏
+  凭据从应有的 401 变成路由边界报告的 500。bootstrap cookie 那处的 `len==len` 前置判断
+  也挡不住——字符长度相等的非 ASCII cookie 照样进 `compare_digest`。
+- 新增 `web/auth.py::tokens_match(provided, expected)`：比较两侧的 UTF-8 编码字节
+  （`compare_digest` 接受任意 bytes-like），既绕开"仅 ASCII"限制、又保持定长时间比较；
+  空/缺失 token 直接判为不匹配。四处调用点统一改用它，坏 token 稳定返回 401。
+- 新增 `tests/unit/test_web_auth_tokens_match.py` 直接钉住助手（正确 token 命中、错误
+  ASCII token 未命中、空/缺失未命中、多种 latin-1 形态的非 ASCII token 返回 False 而非抛错），
+  并在 `test_web_spa_fallback.py` 增加一条经 SPA 路由的端到端用例（`?token=` 带非 ASCII
+  字节须得干净 401）。非空验证：临时退回按 `str` 比较，这些非 ASCII 用例即以 `TypeError` 报红。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

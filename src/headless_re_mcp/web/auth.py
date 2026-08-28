@@ -15,6 +15,25 @@ from headless_re_mcp.config import Settings, default_config_path
 _MAX_TOKEN_FILE_BYTES = 16 * 1024
 
 
+def tokens_match(provided: str | None, expected: str) -> bool:
+    """Timing-safe token check that treats a malformed token as a plain miss.
+
+    ``secrets.compare_digest`` raises ``TypeError`` on a non-ASCII ``str``, and
+    Starlette decodes request headers and cookies as latin-1 -- so a credential
+    carrying any byte above 0x7f (an Authorization header, a ?token= query, a
+    bootstrap cookie) arrived as a non-ASCII str and the bare call raised,
+    turning a bad token into a 500 the route boundary reported as an internal
+    error rather than the 401 it means. Comparing the UTF-8 encodings sidesteps
+    the ASCII-only rule -- ``compare_digest`` accepts arbitrary bytes-like
+    objects -- while keeping the constant-time comparison: a token that cannot
+    match simply does not, which the callers already turn into 401 on False. An
+    empty or absent token is a miss without touching ``compare_digest``.
+    """
+    if not provided:
+        return False
+    return secrets.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+
 def web_token_path(settings: Settings | None = None) -> Path:
     """Token file lives next to the user config, never inside artifacts."""
     _ = settings
