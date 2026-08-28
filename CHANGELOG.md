@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（工作流引擎的刷新拒绝与重置跳过两处守卫）
+
+- `workflows/engine.py` 的两条纯逻辑分支在 executor 级测试里被绕过而从未执行：
+  `request_workflow_module_refresh` 对“刷新未跟踪模块键”的 `WorkflowInvariantError`
+  拒绝（executor 测试要么不传 keys=全部已跟踪，要么先调用再用 `replace(...)` 事后塞入
+  未知键，绕开了函数内的 raise），以及 `prepare_workflow_reset` 只对仍启用的断点意图执行
+  disable、对已禁用的意图直接跳过的那条循环分支（现有 reset 测试的意图要么全启用、要么
+  一个都没有）。这两处若回归——拒绝信息拼错、或对已禁用意图重复 disable——都不会被现有用例
+  发现。新增 `tests/unit/test_workflow_engine_refresh_reset_guards.py`：钉住未跟踪键按字典序
+  列出的拒绝、已跟踪键与不传键（选中全部）的放行，以及“一个启用+一个已禁用”状态下重置只翻
+  启用项、迭代跳过已禁用项。`workflows/engine.py` 行覆盖补齐至 100%，只加测试、不改源码。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
