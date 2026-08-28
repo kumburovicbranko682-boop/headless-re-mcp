@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（proxy 抓包 recorder 重复记录同一 flow.id 时摘要环与 raw 存储可能失去同步）
+
+- `_FlowRecorder` 用两个容器保存流量：摘要环 `flows`（`deque(maxlen)`）与整流对象 `_raw`（`OrderedDict`），
+  注释承诺二者按最旧优先同步淘汰，"永不会对哪些 flow 可取回产生分歧"。但 `_record` 对重复出现的
+  `flow_id` 处理不对称：`_raw` 会去重（先 `pop` 再重新插入到末尾），摘要环却直接 `append` 追加了第二条。
+  mitmproxy 在客户端于响应中途中断时会对同一个 flow 先后触发 `response` 与 `error`（同一 `flow.id`），于是
+  `_record` 对一个 flow 跑两次——列表里同一条 flow 出现两次，而且这次多余的 append 会把 deque 顶到上限、
+  淘汰掉另一条 raw 仍保留着的 flow，正好造成摘要环与 `_raw` 对"哪些 flow 存在"的分歧（`flow_get` 能取到列表
+  里已看不到的 flow）。字节记账本身无泄漏（重记时先减旧尺寸、再加新尺寸）。现在 `_record` 记录 `flow_id`
+  此前是否已在 `_raw` 中，若是（即重记）在 append 前先把摘要环里该 id 的旧摘要剔除，二者恢复一致；扫描只在
+  少见的重记路径发生，常规路径不受影响。重记会合并：客户端中途中断的 flow 保留上游已收到的状态码（200）
+  并叠加 error 标记，是"客户端中断响应"这一情形更有信息量的读出。新增回归测试：容量为 2 的 recorder 先记
+  两条不同 flow，再对第三条先 `response` 后 `error`，断言摘要环里该 id 只出现一次、两条不同 id 都在、且每条
+  被摘要的 id 都能在 raw 存储取回；旧实现即"被摘要两次"而失败。
+
 ### 修复（device.info 缺少 host-error 守卫，离线设备把 "error: device offline" 当成机型返回）
 
 - `properties`/`packages`/`logcat`/`_pm_path` 都用 `_is_host_error_output` 守卫：离线或未授权的设备会把 adb

@@ -373,7 +373,7 @@ class _FlowRecorder:
         with self._lock:
             self._seq += 1
             flow_id = str(getattr(flow, "id", None) or self._seq)
-            self._raw.pop(flow_id, None)
+            was_present = self._raw.pop(flow_id, None) is not None
             self._retained_bytes -= self._raw_sizes.pop(flow_id, 0)
             if not omitted:
                 for retained_id, retained in list(self._raw.items()):
@@ -414,6 +414,21 @@ class _FlowRecorder:
                 or error_truncated
             ):
                 entry["metadata_truncated"] = True
+            if was_present:
+                # mitmproxy fires response then error for the same flow.id when a
+                # client aborts mid-response, so _record runs twice for one flow.
+                # _raw replaced its entry in place above (pop + re-insert), but the
+                # summary ring is a deque that would instead keep both -- and the
+                # duplicate append can push the deque to evict a *different* flow
+                # whose raw is still retained, leaving the summary ring and _raw
+                # disagreeing about which flows exist, the one thing the lockstep
+                # eviction promises cannot happen. Drop the stale summary first;
+                # the scan runs only on the rare re-record, so the common path is
+                # untouched.
+                kept = [s for s in self.flows if s.get("id") != flow_id]
+                if len(kept) != len(self.flows):
+                    self.flows.clear()
+                    self.flows.extend(kept)
             self.flows.append(entry)
 
     def snapshot(self) -> list[JsonObject]:

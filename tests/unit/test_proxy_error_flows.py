@@ -122,6 +122,50 @@ def test_completed_response_path_carries_no_error_field() -> None:
     assert row["status"] == 200
 
 
+def _aborted_flow(flow_id: str) -> Any:
+    # A flow the client aborted mid-response: mitmproxy handed the response, then
+    # fired error on the *same* flow object (same id), so it carries both a
+    # response and an error. The recorder sees response(flow) then error(flow).
+    request = SimpleNamespace(method="GET", pretty_url=f"http://x/{flow_id}", host="x")
+    response = SimpleNamespace(status_code=200, headers={"content-type": "text/plain"})
+    error = SimpleNamespace(msg="net::ERR_ABORTED")
+    return SimpleNamespace(id=flow_id, request=request, response=response, error=error)
+
+
+def test_response_then_error_on_one_flow_does_not_double_or_desync() -> None:
+    """A re-recorded flow.id must replace its summary, not append a second one.
+
+    mitmproxy fires ``response`` then ``error`` for the same flow when a client
+    aborts mid-response, so ``_record`` runs twice for one flow.id. ``_raw``
+    already de-duplicates (pop + re-insert), but the summary ring is a deque that
+    appended a second row -- so the list showed the flow twice, and the duplicate
+    append could push the deque to evict a *different* flow whose raw was still
+    retained, the exact summary/raw disagreement the lockstep eviction promises
+    can't happen. Here two other flows fill a capacity-2 recorder to a single
+    slot each, then a third flow is recorded twice: the ring must still hold two
+    distinct ids with no duplicate, and every summarized id must be retrievable.
+    """
+    recorder = _FlowRecorder(capacity=2)
+    recorder.response(_ok_flow("a"))
+    aborted = _aborted_flow("b")
+    recorder.response(aborted)
+    recorder.error(aborted)
+
+    rows = recorder.snapshot()
+    ids = [row["id"] for row in rows]
+    assert ids.count("b") == 1, "the re-recorded flow was summarized twice"
+    assert set(ids) == {"a", "b"}, "a distinct flow was evicted by the duplicate"
+    # The second record won and merged: b keeps the upstream status it received
+    # (200) and gains the error mark for the aborted delivery -- the informative
+    # readout of a client-abort-mid-response. Both summarized ids still resolve in
+    # the raw store, so there is no row the list shows that flow_get would 404.
+    by_id = {row["id"]: row for row in rows}
+    assert by_id["b"]["error"] is True
+    assert by_id["b"]["status"] == 200
+    for flow_id in ids:
+        assert recorder.raw(flow_id) is not None
+
+
 def test_docstring_names_the_error_fields() -> None:
     doc = _tool_docstring("proxy.flows")
     assert "error" in doc
