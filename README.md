@@ -134,7 +134,7 @@ OpenAI 不允许函数名带点，导出会做安全名转换并附 `name_map` �
 - Android 静态：`apk.open/manifest/permissions/certificates/components/native_libs/classes/methods/strings/xrefs`（androguard 进程内）、`apk.decompile/export_sources`（jadx CLI）
 - Android 改包：`apk.decode/repack/sign`（apktool + apksigner；`apk.sign` 缺省用 Android debug keystore）
 - Android 设备：`device.list/connect/info/properties/packages/install/uninstall/launch/force_stop/current_activity/logcat/screenshot/pull/push/forward`
-- Android 动态：`frida.devices/device.connect/server.ensure/applications/spawn/java.classes/java.methods`；hook 复用 `frida.hook.template`（含 `android_ssl_unpin` / `android_crypto_monitor` / `android_root_bypass`）
+- Android 动态：`frida.devices/device.connect/server.ensure/applications/spawn`（设备与进程编排）、`frida.attach`（对当前会话 debuggee 做探针式附加，附完即脱）、`frida.java.classes/java.methods`（ART Java 层）、`frida.modules/exports/memory.read`（原生模块 / 导出表 / 内存读取，短探针，限 debuggee pid）；hook 复用 `frida.hook.template`（含 `android_ssl_unpin` / `android_crypto_monitor` / `android_root_bypass`）
 - Web 静态：`js.deobfuscate/beautify/unpack_bundle`（webcrack）、`wasm.info/wat`（wabt）；WASM 反编译复用 `ghidra.*` + ghidra-wasm-plugin
 - Web 动态：`web.open/navigate/close/network.list/network.get/console/scripts/script.source/wasm.list/dom.snapshot/screenshot/har.export`（Playwright 驱动 CDP）
 - 抓包（Web 与 Android 共用）：`proxy.start/stop/status/flows/flow.get/replay/export_har/ca.install_android`（mitmproxy 进程内）

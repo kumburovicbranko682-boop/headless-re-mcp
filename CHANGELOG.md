@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 文档（README 补齐漏掉的 Frida 原生工具，并加守护测试防再漂移）
+
+- README 能力总览手写枚举 Android/Web 工具面，缺乏机器校验，于是 `frida.attach`（探针式附加
+  会话 debuggee）与原生面 `frida.modules` / `frida.exports` / `frida.memory.read`（模块 / 导出表 /
+  内存读取，限 debuggee pid）虽已注册、进目录、有测试，却始终没写进「Android 动态」那行——读
+  README 想了解这条较新线能做什么的分析者，根本发现不了这些工具。现补全该行（设备编排 / 附加 /
+  ART Java 层 / 原生探针 分组标注）。并新增守护测试 `test_readme_documents_android_web_tools.py`：
+  枚举所有 `apk.` / `device.` / `frida.` / `web.` / `js.` / `wasm.` / `proxy.` 已绑定工具，要求每个都
+  在 README 出现（全名，或“同一行既有 `前缀.` 又有去掉首段的后缀”——避免 `attach` 误配
+  `dynamic.attach`、`modules` 误配 `modules.list`、`exports` 误配 `r2.exports`）。今后这几条线加工具却
+  漏写文档即失败。
+
 ### 修复（workspace.mode.set 的 profile 白名单在三处各写一遍、易漂移）
 
 - 与 frida.hook.template 同一类问题：合法 profile 名的真源是 `core/workspace.py` 的
