@@ -36,3 +36,22 @@ def test_ui_visible_alone_stays_not_sufficient() -> None:
     result = assess_pause_quality(ui_visible=True)
     assert "ui_visible_only_not_sufficient" in result["reasons"]
     assert "ui_visible_and_iat_gate_ok" not in result["reasons"]
+
+
+def test_low_resolved_ratio_blocks_readiness() -> None:
+    result = assess_pause_quality(resolved_ratio=0.1)
+    assert "resolved_ratio_low" in result["reasons"]
+    assert result["iat_ready"] is False
+    assert result["quality"] == "observe_only"
+
+
+def test_iat_gate_ok_without_ui_visible_adds_no_ui_note() -> None:
+    # Same gate as the UI-visible case, but no window is up: the combined note
+    # is only for the UI-visible path, so it must not appear here.
+    result = assess_pause_quality(
+        rebuild_allowed=True,
+        recoverability="iat_recoverable",
+    )
+    assert result["iat_ready"] is True
+    assert result["quality"] == "iat_ready"
+    assert "ui_visible_and_iat_gate_ok" not in result["reasons"]
