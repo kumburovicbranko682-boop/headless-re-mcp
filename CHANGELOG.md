@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **333（215 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **334（216 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -368,6 +368,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
   `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
   `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
+
+### 新增（Web 动态：WebSocket 抓取）
+
+- 新增 `web.websockets`:把 CDP 抓包补到 WebSocket 那一层——`web.network.list` 只到 HTTP 请求为止,现代应用
+  真正跑业务的实时通道(聊天、行情推送、走 WS 的 C2)在它之外;这个从页面侧(CDP `Network.webSocket*` 事件)
+  把每条 WebSocket 连接和它的帧抓下来,是 `proxy.flows` 在链路上看到的东西在浏览器内的对应物,不必在路径里
+  架代理就能读协议。连接以升级它的请求为键,带 url、closed、error(出错时)、frames_sent/received、
+  bytes_sent/received 与 frames。回 websockets、count、total、has_more 与 connections_dropped(连接环淘汰了最旧
+  的)。每条帧带 direction(sent/received)、opcode(1 文本、2 二进制、8 关闭、9 ping、10 pong)、data(载荷,超过每帧
+  上限时截断并标 truncated)与 size(原始载荷长度);二进制帧的 data 是 CDP 给的 base64,这里不解码。帧环按连接
+  各自有界(保留最新 frames_retained 条,丢弃计入 frames_dropped),读取默认给最新一段 tail(与 `web.console` 一致),
+  连接数与每连接帧数都有上限,长命 socket 不会撑爆内存。
 
 ### 新增（凭据扫描扩展到流量）
 

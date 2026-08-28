@@ -177,6 +177,17 @@ class WebAnalysisMixin:
     def web_console(self, session_id: str, limit: int = 200) -> Result[JsonObject]:
         return self._web_wrap(session_id, "console", session_id, limit=limit)
 
+    def web_websockets(
+        self, session_id: str, limit: int = 100, frames_limit: int = 50
+    ) -> Result[JsonObject]:
+        return self._web_wrap(
+            session_id,
+            "websockets",
+            session_id,
+            limit=limit,
+            frames_limit=frames_limit,
+        )
+
     def web_scripts(
         self,
         session_id: str,

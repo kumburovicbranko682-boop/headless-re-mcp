@@ -204,6 +204,38 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 
+    @tools.tool(name="web.websockets")
+    def web_websockets(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=256)] = 100,
+        frames_limit: Annotated[int, Field(ge=1, le=500)] = 50,
+    ) -> dict[str, Any]:
+        """List captured WebSocket connections and their frames.
+
+        Where web.network.list stops at the HTTP requests, this exposes the
+        WebSocket traffic a modern app rides -- the live channel a chat, a
+        trading feed, or a C2 uses -- captured over CDP from the page itself
+        (the in-browser counterpart to what proxy.flows sees on the wire). Each
+        connection is keyed by the request that upgraded it and carries its
+        frames, so you can read the protocol without a proxy in the path.
+
+        Answers with websockets, count, total, has_more and connections_dropped
+        (the connection ring evicted the oldest). Each connection carries
+        requestId, url, closed, error (when the socket errored), frames_sent,
+        frames_received, bytes_sent, bytes_received, and frames -- the newest
+        frames_returned of frames_retained kept (a busy socket's frame ring
+        drops the oldest, counted in frames_dropped). Each frame carries
+        direction (sent or received), opcode (1 text, 2 binary, 8 close, 9
+        ping, 10 pong), data (the payload, truncated with truncated=true past
+        the per-frame cap) and size (the original payload length). Binary frame
+        data arrives base64-encoded from CDP and is not decoded here.
+        """
+        return _dump(
+            analysis.web_websockets(
+                session_id, limit=limit, frames_limit=frames_limit
+            )
+        )
+
     @tools.tool(name="web.scripts")
     def web_scripts(
         session_id: str,
