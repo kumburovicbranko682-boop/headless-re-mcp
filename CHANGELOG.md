@@ -101,6 +101,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（IAT 扫描 mode 暴露为枚举，与原生/服务 allowlist 对齐）
+
+- `imports.scan` 与 `unpack.iat.scan` 的 `mode` 过去都标注为裸 `str = "all"`，schema 里
+  只是一个不带取值提示的字符串。可实际取值是封闭的四元组 `all`/`consecutive`/`sparse`/
+  `call_site`——原生 `ScanImports` 以 “mode must be consecutive|sparse|call_site|all” 回绝
+  其余值，服务层 `AnalysisService.imports_scan` 也会先行以 `invalid_params` 拒掉。于是
+  agent 只能猜（`imports.scan` 的 docstring 甚至已经列出这四种，schema 却不设约束），像
+  `linear`/`full` 这种自然猜测会通过 schema、跑到服务边界才失败。现把两个工具的 `mode`
+  收窄为共享的 `tools.limits.ImportScanMode`（`Literal`），schema 直接给出这四个取值的
+  枚举，`unpack.iat.scan` 的 docstring 也补齐这四种；默认仍是 `all`。新增回归测试断言两个
+  工具的枚举彼此一致、且与原生 `ScanImports` 的 allowlist 逐项相等，防止三处日后漂移。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

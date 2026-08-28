@@ -8,7 +8,11 @@ from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.detection.models import ScanMode
 from headless_re_mcp.tools.binding import BoundTool, ToolSetBuilder
-from headless_re_mcp.tools.limits import ExternalToolTimeout, RunControlTimeout
+from headless_re_mcp.tools.limits import (
+    ExternalToolTimeout,
+    ImportScanMode,
+    RunControlTimeout,
+)
 
 
 def _dump(result: Result[JsonObject]) -> dict[str, Any]:
@@ -334,10 +338,10 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         search_start: int | None = None,
         search_size: Annotated[int, Field(ge=1, le=16 * 1024 * 1024)] | None = None,
         max_candidates: Annotated[int, Field(ge=1, le=32)] = 8,
-        mode: str = "all",
+        mode: ImportScanMode = "all",
         timeout: RunControlTimeout = 60.0,
     ) -> dict[str, Any]:
-        """List IAT candidates; caller must confirm before rebuild.
+        """List IAT candidates (consecutive/sparse/call_site/all); confirm before rebuild.
 
         Answers with candidates, candidate_count, confirmed false, and
         claims_universal_unpack false. There is no items field.
