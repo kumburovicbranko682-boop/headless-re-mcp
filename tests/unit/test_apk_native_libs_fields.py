@@ -33,6 +33,43 @@ class _FakeApk:
         return [f"lib/arm64-v8a/l{index}.so" for index in range(300)] + ["classes.dex"]
 
 
+class _ReverseLibsApk:
+    """300 .so under arm64-v8a in reverse-sorted order, plus one x86 .so last.
+
+    Names are zero-padded so lexicographic order matches numeric order. The
+    reverse order puts the alphabetically-early libs past the 256 cap in
+    get_files() order, and the trailing x86 entry sits past the cap too -- so the
+    fixture exercises both the sort-before-cap fix and that abis is collected from
+    every entry, not just the returned page.
+    """
+
+    def get_files(self) -> list[str]:
+        libs = [f"lib/arm64-v8a/l{index:03d}.so" for index in range(299, -1, -1)]
+        return [*libs, "classes.dex", "lib/x86/late.so"]
+
+
+def test_apk_native_libs_returns_the_alphabetical_head_and_all_abis() -> None:
+    """A tree past the cap returns the alphabetically-first .so, not zip order.
+
+    get_files() yields zip-entry order. The old code capped to the first 256 in
+    that order and sorted only those, so a multi-ABI APK (>256 lib/ entries)
+    returned the zip-order-first 256 alphabetized -- silently dropping
+    alphabetically-early .so paths sitting past the cap. Here the entries arrive
+    reverse-sorted, so the 256-item page must start at l000.so (the true head),
+    not l044.so (the head of the reverse-order prefix alphabetized). abis must
+    still include x86 even though its only .so sits past the lib cap.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _ReverseLibsApk()  # type: ignore[method-assign]
+    payload = client.native_libs(Path("dummy.apk"))
+    assert payload["count"] == 256
+    assert payload["has_more"] is True
+    assert payload["native_libs"] == [
+        f"lib/arm64-v8a/l{index:03d}.so" for index in range(256)
+    ]
+    assert payload["abis"] == ["arm64-v8a", "x86"]
+
+
 def test_apk_native_libs_names_native_libs_not_libraries() -> None:
     """The catalog said libraries and ABIs; the parser has no such fields.
 

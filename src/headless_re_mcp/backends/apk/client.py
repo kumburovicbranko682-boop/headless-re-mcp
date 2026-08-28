@@ -311,7 +311,6 @@ class ApkClient:
         apk = self._apk(path)
         libs: list[str] = []
         abis: set[str] = set()
-        has_more = False
         for name in apk.get_files() or []:
             text = str(name)
             if not text.startswith("lib/"):
@@ -319,15 +318,23 @@ class ApkClient:
             parts = text.split("/")
             if len(parts) >= 3:
                 abis.add(parts[1])
-            if len(libs) >= _MAX_NATIVE_LIBS:
-                has_more = True
-                continue
             libs.append(text)
+        # Sort the full list before windowing, not the page after. get_files()
+        # yields zip-entry order, so capping first and sorting only those returned
+        # a zip-order-arbitrary subset alphabetized -- a page that looked like the
+        # alphabetical head but silently dropped alphabetically-early .so paths
+        # sitting past the cap (a multi-ABI game easily exceeds 256 lib/ entries:
+        # dozens of .so times arm64/armeabi/x86/x86_64). get_files() is already
+        # materialized by androguard, so collecting the whole lib/ subset costs
+        # nothing; abis stays complete because every lib/ entry is scanned. Same
+        # sort-before-window contract adb.packages and apk.classes keep.
         libs.sort()
+        has_more = len(libs) > _MAX_NATIVE_LIBS
+        page = libs[:_MAX_NATIVE_LIBS]
         return {
-            "native_libs": libs,
+            "native_libs": page,
             "abis": sorted(abis),
-            "count": len(libs),
+            "count": len(page),
             "has_more": has_more,
         }
 

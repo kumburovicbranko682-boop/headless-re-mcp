@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（apk.native_libs 先截断后排序，多 ABI 应用超过 256 个 .so 时不是真正的字母序头部）
+
+- 与刚修的 apk.components / jadx / device.packages 同一类缺陷：`native_libs` 按 `get_files()` 的 zip 条目
+  顺序收集前 `_MAX_NATIVE_LIBS=256` 个 `lib/` 路径再 `libs.sort()`，于是当 `.so` 超过 256（多 ABI 游戏
+  动辄几十个 .so × arm64/armeabi/x86/x86_64 轻松过 256）时，返回的 `native_libs` 看着是字母序的，实则是
+  "zip 顺序前 256 个再排序"——zip 条目顺序未定义，字母序靠前却排在 cap 之后的 .so 被悄悄丢掉。`get_files()`
+  本就被 androguard 一次性 materialize，先收集全部 `lib/` 再排序不花额外代价。现改为先收集全部、`sort()`、
+  再窗口化到 256，页即真正的字母序头部，`has_more = 总数 > 256`；`abis` 仍扫描所有条目保持完整（与 libs
+  的 cap 无关）。新增回归测试：条目倒序交回 300 个 arm64 .so 外加一个排在 cap 之后的 x86 .so，断言页从
+  l000.so 起（真头部）而非 l044.so（倒序前缀排序后的头），且 `abis` 含 x86（尽管其 .so 在 lib cap 之外）；
+  旧实现即失败。
+
 ### 测试（补齐 FridaClient 两条退化路径的覆盖：frida 缺失时的构造降级、modules 的旧脚本裸列表回退）
 
 - `FridaClient.__init__` 的 `import frida` 失败分支（缺 frida 时降级为 unavailable，而非让 ImportError 逸出
