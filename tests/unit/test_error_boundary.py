@@ -6,10 +6,16 @@ import threading
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 import headless_re_mcp.error_boundary as boundary
+
+# fastapi is the optional ``web`` extra; the module under test defers its own
+# fastapi import, but this test builds a real app to exercise the boundary, so
+# skip the module cleanly when the extra is absent (skip != pass).
+FastAPI = pytest.importorskip(
+    "fastapi", reason="fastapi (web extra) not installed (skip != pass)"
+).FastAPI
+TestClient = pytest.importorskip("fastapi.testclient").TestClient
 
 
 @pytest.fixture

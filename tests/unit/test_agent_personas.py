@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from headless_re_mcp.agent import personas as personas_module
 from headless_re_mcp.agent.personas import (
@@ -13,7 +12,14 @@ from headless_re_mcp.agent.personas import (
 )
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.web.app import create_app
+
+# fastapi and the web app it powers are the optional ``web`` extra. Skip this
+# module (rather than erroring out the whole tests/unit collection) when it is
+# absent, matching the skip-!=-pass contract the backend gates follow.
+TestClient = pytest.importorskip(
+    "fastapi.testclient", reason="fastapi (web extra) not installed (skip != pass)"
+).TestClient
+create_app = pytest.importorskip("headless_re_mcp.web.app").create_app
 
 
 def test_persona_store_seeds_default_and_optional_seagull(tmp_path: Path) -> None:

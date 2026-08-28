@@ -11,10 +11,17 @@ from __future__ import annotations
 import pathlib
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
-from headless_re_mcp.web.routes.spa import register_spa_fallback
+# fastapi (and the SPA route living in web.routes) is the optional ``web``
+# extra; skip this module cleanly when it is absent instead of erroring out
+# the whole tests/unit collection (skip != pass).
+FastAPI = pytest.importorskip(
+    "fastapi", reason="fastapi (web extra) not installed (skip != pass)"
+).FastAPI
+TestClient = pytest.importorskip("fastapi.testclient").TestClient
+register_spa_fallback = pytest.importorskip(
+    "headless_re_mcp.web.routes.spa"
+).register_spa_fallback
 
 _TOKEN = "spa-token-value-0123456789abcdef"
 

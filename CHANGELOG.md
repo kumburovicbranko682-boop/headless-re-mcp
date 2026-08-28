@@ -5,6 +5,28 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（tests/unit 裸机收集被 fastapi 直连测试炸穿：13 个模块 + 2 个用例改为 skip != pass）
+
+- 没装 `web` extra（只 `pip install -e ".[test,dev]"`）时，`pytest tests/unit` 在 collection
+  阶段被 13 个顶层 import fastapi / `web.app` / `web.routes.*` 的测试模块炸出
+  `Interrupted: N errors during collection`——**一个用例都不跑**，4200+ 与 web 无关的
+  非 PE 后端单测全部陪葬。这正是分支上 android/proxy 新单测已经在用
+  `pytest.importorskip` 守护 Python 模块型可选依赖的场景，web 层却从来没有跟上。改法分两层：
+  真正测 web server 的 13 个模块（`test_agent_web_api*`、`test_agent_personas`、
+  `test_agent_mission_failure_bounds`、`test_error_boundary`、`test_observability`、
+  `test_probe_models_error_body`、`test_web_console`、`test_web_single_instance`、
+  `test_legacy_routes_surface`、`test_web_app_launch_guards`、`test_web_app_run_paths`、
+  `test_web_spa_fallback` 及 `test_cli_command_dispatch`/`test_web_launch` 里三个在函数体内
+  拉 `web.app` 的用例）全部改走 `pytest.importorskip` 赋值式取符号（不留守护后的裸 import，
+  避开 E402），缺 fastapi 时**带原因**跳过本模块/本用例；而只用到 fastapi-free 工具子模块
+  （`web.deps/monitor/launch_util/commands/setup`）的 6 个模块经上一条的惰性 `__init__` 修复后
+  在裸机**直接可跑**（比 skip 更强）。注意"裸机"的正确口径：核心依赖 mcp SDK 会传递装上
+  starlette/uvicorn，web extra 独有的只是 fastapi——验证时错把 starlette/uvicorn 也卸了会
+  连 mcp 系单测一起炸，属自伤而非本仓 bug。已双向验证：裸机 `pytest tests/unit` 从
+  "Interrupted、0 跑" 变为 **4230 passed / 70 skipped / exit 0**；装齐 `.[test,dev,web]`
+  （CI 口径）时 **4470 passed / 54 skipped**，守护完全透明。repo 级 ruff check 与
+  mypy（223 文件）全绿。
+
 ### 修复（web 包 __init__ 顶层 eager 导入 web.app，害得纯工具子模块也硬依赖 fastapi——installer 配 IDA 在裸机崩）
 
 - `src/headless_re_mcp/web/__init__.py` 在包顶层 eager 执行

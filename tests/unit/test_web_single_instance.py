@@ -13,7 +13,14 @@ import os
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.web.app import _claim_artifact_root
+import pytest
+
+# ``_claim_artifact_root`` lives in web.app, which imports fastapi (the optional
+# ``web`` extra). Skip this module cleanly when the extra is absent instead of
+# erroring out the whole tests/unit collection (skip != pass).
+_claim_artifact_root = pytest.importorskip(
+    "headless_re_mcp.web.app", reason="fastapi (web extra) not installed (skip != pass)"
+)._claim_artifact_root
 
 
 def test_a_second_console_cannot_claim_a_root_that_is_in_use(tmp_path: Path) -> None:

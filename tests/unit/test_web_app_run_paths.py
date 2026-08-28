@@ -15,7 +15,13 @@ from pathlib import Path
 import pytest
 
 from headless_re_mcp.config import Settings
-from headless_re_mcp.web import app as web_app
+
+# web.app imports fastapi (the optional ``web`` extra); skip this module
+# cleanly when the extra is absent instead of erroring out the whole
+# tests/unit collection (skip != pass).
+web_app = pytest.importorskip(
+    "headless_re_mcp.web.app", reason="fastapi (web extra) not installed (skip != pass)"
+)
 
 
 def _settings(tmp_path: Path) -> Settings:

@@ -11,14 +11,21 @@ from threading import Barrier, Lock
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.web import auth as web_auth
-from headless_re_mcp.web.app import create_app
 from headless_re_mcp.web.auth import load_or_create_web_token
 from headless_re_mcp.web.body_limit import RequestBodyLimitMiddleware
+
+# fastapi and the web app it powers are the optional ``web`` extra (web.auth and
+# web.body_limit above are fastapi-free utilities). Skip this module (rather
+# than erroring out the whole tests/unit collection) when the extra is absent,
+# matching the skip-!=-pass contract the backend gates follow.
+TestClient = pytest.importorskip(
+    "fastapi.testclient", reason="fastapi (web extra) not installed (skip != pass)"
+).TestClient
+create_app = pytest.importorskip("headless_re_mcp.web.app").create_app
 
 
 def _settings(tmp_path: Path) -> Settings:

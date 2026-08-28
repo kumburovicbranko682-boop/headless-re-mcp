@@ -129,6 +129,11 @@ def test_serve_runs_stdio_with_the_service(
 
 
 def test_serve_web_forwards_host_and_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Patching the string target imports headless_re_mcp.web.app, which needs
+    # fastapi (the optional ``web`` extra) — exactly what serve-web itself
+    # needs. Skip just this test when the extra is absent (skip != pass); the
+    # rest of the CLI dispatch coverage runs fine on a bare install.
+    pytest.importorskip("fastapi", reason="fastapi (web extra) not installed (skip != pass)")
     captured: dict[str, Any] = {}
 
     def _run_web(settings: Any, *, host: Any, port: Any) -> int:

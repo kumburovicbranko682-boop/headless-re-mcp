@@ -8,15 +8,22 @@ from typing import Any
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 import headless_re_mcp.config_generate as config_generate
-import headless_re_mcp.web.routes.legacy as legacy
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.results import _success
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.web.app import create_app
 from headless_re_mcp.web.commands import WebCommandAdapter
+
+# fastapi and the web app it powers are the optional ``web`` extra
+# (web.commands above is a fastapi-free utility). Skip this module (rather
+# than erroring out the whole tests/unit collection) when the extra is absent,
+# matching the skip-!=-pass contract the backend gates follow.
+TestClient = pytest.importorskip(
+    "fastapi.testclient", reason="fastapi (web extra) not installed (skip != pass)"
+).TestClient
+legacy = pytest.importorskip("headless_re_mcp.web.routes.legacy")
+create_app = pytest.importorskip("headless_re_mcp.web.app").create_app
 
 TOKEN = "test-token-value-0123456789abcdef"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}

@@ -160,6 +160,10 @@ def test_probe_our_healthz_still_recognises_this_console() -> None:
 def test_run_web_chinese_refuse_non_loopback(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # run_web lives in web.app, which imports fastapi (the optional ``web``
+    # extra); skip just this test on a bare install (skip != pass).
+    pytest.importorskip("fastapi", reason="fastapi (web extra) not installed (skip != pass)")
+
     from headless_re_mcp.config import Settings
     from headless_re_mcp.web.app import run_web
 
@@ -187,6 +191,10 @@ def test_serve_web_releases_its_analysis_sessions_when_it_stops(tmp_path: Path) 
     on a schedule, whenever readiness fails. An IDA instance is measured in
     gigabytes, so a handful of restarts is a machine that needs rebooting.
     """
+    # The web console under test needs fastapi and uvicorn (the optional
+    # ``web`` extra); skip just this test on a bare install (skip != pass).
+    pytest.importorskip("fastapi", reason="fastapi (web extra) not installed (skip != pass)")
+
     from dataclasses import replace
     from unittest.mock import patch
 
