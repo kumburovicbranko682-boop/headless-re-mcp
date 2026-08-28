@@ -1143,6 +1143,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **`_register_capture` “注册不得拖累抓取”三条腿契约被钉死**：每个写文件的 web/proxy/apk 抓取
+  (截图、HAR、响应体、脚本源、flow 体)都把 payload 过一遍 `_register_capture`,让文件进入制品表——
+  否则工具面没有 id 可以打开它、而只收录仓库已知内容的 retention 会任其把制品根撑爆。要害规则写在
+  docstring 里:“注册不得让抓取失败——文件已经存在——所以失败随 payload 走,而非抛异常。”这给出三条腿,
+  而既有夹具只走其中最顺的那条(真实文件 + 健康仓库):抓取所指的文件**不在**时,原样返回 payload、既不
+  挂 `artifact_id` 也不挂 `artifact_error`、更不去为一个幽灵路径尝试注册;文件在且注册成功时挂上
+  `artifact_id`;文件在但注册抛异常时吞掉它、挂 `artifact_error`,让抓取结果照样落地。缺文件这条腿此前
+  无人驱动——真实文件恒在,`path.is_file()` 守卫全程失效,删掉它会把“抓取什么也没产出”变成“对一个不存在
+  的文件做哈希而报 `artifact_error`”。新增 4 个用例针对一个假 recorder 钉住三条腿,并核对调用方的 payload
+  dict 绝不被就地改写(调用方在错误路径上要原样返回同一个 payload,就地挂 `artifact_id` 会泄漏进从未注册
+  的结果)。两处变异(去掉缺文件守卫、成功路径改为就地改写 payload)分别被对应用例逮住,源文件
+  `core/service_ext.py` 未改。
 - **会话层对敌意与降级输入的 fail-closed 契约成套固定**（`core/session.py` 85%→99%）：
   崩溃残留的 SQLite 行——带路径分隔符的 id(遍历企图)、空 locator、未知 state 列、
   非法 architecture、天真/垃圾时间戳、`resolve()` 抛 OSError 的死挂载——一律安静跳过或
