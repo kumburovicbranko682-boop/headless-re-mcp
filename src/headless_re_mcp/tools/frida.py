@@ -338,4 +338,51 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="frida.java.instances")
+    def frida_java_instances(
+        session_id: str,
+        class_name: str,
+        name_filter: str = "",
+        limit: Annotated[int, Field(ge=1, le=500)] = 50,
+        max_fields: Annotated[int, Field(ge=1, le=256)] = 64,
+        pid: int = 0,
+    ) -> dict[str, Any]:
+        """Snapshot live heap instances of a Java class on the authorized device pid (ART only).
+
+        The third leg of the Java surface after frida.java.classes and
+        frida.java.methods: those tell you a class is loaded and what it declares,
+        this finds the objects that actually exist right now and reads their
+        state. A Java.choose walk of the heap returns each live instance with its
+        declared fields reflected into a snapshot -- so a config/session/crypto
+        object's runtime values (a base URL, a bearer token, a decrypted key, a
+        feature flag) are readable directly, the payoff the static apk line cannot
+        reach.
+
+        Answers with instances, each carrying fields (name, type, value -- the
+        field's toString, cut at 512 chars with value_truncated set when longer, or
+        '<unreadable>' when reflection was refused, 'null' for a null field),
+        field_count (declared fields that matched, before the per-instance cap) and
+        fields_truncated (more matched than max_fields); plus class_name, count and
+        has_more so a page that filled the limit is not read as every live instance.
+        Only fields declared on the class itself are read, not inherited ones (like
+        frida.java.methods). name_filter keeps only fields whose name contains that
+        substring (case-sensitive), applied before max_fields so a target field
+        (token, key, url) is reached rather than buried. max_fields bounds fields
+        per instance; limit bounds instances (there is no offset -- narrow with
+        name_filter). class_name must be the exact loaded class; an unknown class
+        is a backend_error. The target is the connected device's authorized pid
+        when this session has one (frida.device.connect + frida.spawn), else the
+        local debuggee. Read-only: it reads heap objects; it does not modify them.
+        """
+        return _dump(
+            analysis.frida_java_instances(
+                session_id,
+                class_name,
+                name_filter=name_filter,
+                limit=limit,
+                max_fields=max_fields,
+                pid=pid,
+            )
+        )
+
     return tools.bindings

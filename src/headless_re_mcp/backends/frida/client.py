@@ -260,6 +260,49 @@ rpc.exports = {
       }
     });
     return out;
+  },
+  instances: function (className, limit, maxFields, filter, maxValue) {
+    var out = [];
+    Java.perform(function () {
+      Java.choose(className, {
+        onMatch: function (instance) {
+          var rec = { fields: [], field_count: 0, fields_truncated: false };
+          try {
+            var declared = instance.getClass().getDeclaredFields();
+            var kept = 0;
+            for (var i = 0; i < declared.length; i++) {
+              var f = declared[i];
+              var fname = f.getName();
+              if (filter && fname.indexOf(filter) === -1) {
+                continue;
+              }
+              rec.field_count += 1;
+              if (kept >= maxFields) {
+                rec.fields_truncated = true;
+                continue;
+              }
+              var ftype = '';
+              try { ftype = f.getType().getName(); } catch (e0) { ftype = ''; }
+              var fval;
+              try {
+                f.setAccessible(true);
+                var raw = f.get(instance);
+                fval = (raw === null) ? 'null' : ('' + raw);
+              } catch (e1) { fval = '<unreadable>'; }
+              if (fval.length > maxValue) { fval = fval.substring(0, maxValue); }
+              rec.fields.push({ name: fname, type: ftype, value: fval });
+              kept += 1;
+            }
+          } catch (e2) {}
+          out.push(rec);
+          if (out.length >= limit) {
+            return 'stop';
+          }
+        },
+        onComplete: function () {}
+      });
+    });
+    return out;
   }
 };
 """
@@ -324,6 +367,41 @@ def _normalize_protection(protection: str) -> str:
             protection=protection,
         )
     return value
+
+
+_MAX_JAVA_FIELD_VALUE = 512
+
+
+def _shape_java_instance(item: Any, max_fields: int) -> JsonObject:
+    """Normalise one Java.choose record into {fields, field_count, fields_truncated}.
+
+    The agent script already caps field count and value length, but the transport
+    hands whatever the agent returned straight through, so re-bound it here: keep
+    only well-formed {name,type,value} rows, re-cut each value to the ceiling
+    (marking value_truncated), and never let a malformed record raise.
+    """
+    if not isinstance(item, dict):
+        return {"fields": [], "field_count": 0, "fields_truncated": False}
+    raw_fields = item.get("fields")
+    fields: list[JsonObject] = []
+    for entry in list(raw_fields or [])[: max(1, int(max_fields))]:
+        if not isinstance(entry, dict):
+            continue
+        value = str(entry.get("value", ""))
+        row: JsonObject = {
+            "name": str(entry.get("name", "")),
+            "type": str(entry.get("type", "")),
+            "value": value[:_MAX_JAVA_FIELD_VALUE],
+        }
+        if len(value) > _MAX_JAVA_FIELD_VALUE:
+            row["value_truncated"] = True
+        fields.append(row)
+    field_count = item.get("field_count")
+    return {
+        "fields": fields,
+        "field_count": int(field_count) if isinstance(field_count, int) else len(fields),
+        "fields_truncated": bool(item.get("fields_truncated")),
+    }
 
 
 def _shape_ranges(raw: Any, capped: int) -> JsonObject:
@@ -1129,6 +1207,7 @@ class FridaClient:
         class_name: str | None = None,
         name_filter: str | None = None,
         limit: int = 200,
+        max_fields: int = 64,
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
         self._authorize(pid, allowed_pids)
@@ -1170,7 +1249,24 @@ class FridaClient:
                         "count": len(values),
                         "has_more": has_more,
                     }
-                raise FridaError("invalid_params", "mode must be classes or methods")
+                if mode == "instances":
+                    if not class_name:
+                        raise FridaError("invalid_params", "class_name is required")
+                    # Java.choose walks the live heap; ask for one past the cap to
+                    # tell "that is every instance" from "that is the page you
+                    # asked for", and reflect declared fields into a snapshot.
+                    max_f = max(1, min(int(max_fields), 256))
+                    raw = script.exports_sync.instances(
+                        class_name, capped + 1, max_f, name_filter or "", _MAX_JAVA_FIELD_VALUE
+                    )
+                    values, has_more = _page(raw, capped)
+                    return {
+                        "class_name": class_name,
+                        "instances": [_shape_java_instance(item, max_f) for item in values],
+                        "count": len(values),
+                        "has_more": has_more,
+                    }
+                raise FridaError("invalid_params", "mode must be classes, methods or instances")
             finally:
                 with contextlib.suppress(Exception):
                     session.detach()

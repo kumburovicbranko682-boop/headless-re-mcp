@@ -207,6 +207,25 @@ class FridaDeviceMixin:
             pid=pid,
         )
 
+    def frida_java_instances(
+        self,
+        session_id: str,
+        class_name: str,
+        name_filter: str = "",
+        limit: int = 50,
+        max_fields: int = 64,
+        pid: int = 0,
+    ) -> Result[JsonObject]:
+        return self._java(
+            session_id,
+            "instances",
+            class_name=class_name,
+            name_filter=name_filter,
+            limit=limit,
+            max_fields=max_fields,
+            pid=pid,
+        )
+
     def _java(
         self,
         session_id: str,
@@ -215,6 +234,7 @@ class FridaDeviceMixin:
         class_name: str | None = None,
         name_filter: str | None = None,
         limit: int = 200,
+        max_fields: int = 64,
         pid: int = 0,
     ) -> Result[JsonObject]:
         try:
@@ -228,6 +248,7 @@ class FridaDeviceMixin:
                 class_name=class_name,
                 name_filter=name_filter,
                 limit=limit,
+                max_fields=max_fields,
             )
             return _success(data, session_id=session_id, backend="frida")
         except (FridaError, AdbError) as exc:

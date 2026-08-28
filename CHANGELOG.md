@@ -294,6 +294,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **Frida Java 线只能枚举类与方法，读不到运行时对象**：`frida.java.classes` / `frida.java.methods` 能告诉你某个类已
+  加载、声明了哪些方法，却无法看到堆上此刻真实存在的实例及其字段值——而运行时的配置/会话/加密对象里正装着 base
+  URL、bearer token、解密后的密钥、功能开关，是静态 apk 线够不到的答案。新增只读工具 `frida.java.instances`：用
+  `Java.choose` 遍历目标进程堆上某个类的存活实例，对每个实例反射 `getDeclaredFields` 快照字段。返回 instances（每项
+  {fields（每个 {name、type、value——字段 toString，超 512 字符截断并置 value_truncated；反射被拒时为 '<unreadable>'、
+  null 字段为 'null'}）、field_count（过滤后、逐实例封顶前的声明字段数）、fields_truncated}）加 class_name、count、
+  has_more。只读本类声明的字段、不含继承字段（与 frida.java.methods 一致）；name_filter 在 max_fields 封顶前按字段名
+  子串过滤（token/key/url 之类可直达而非被埋）；max_fields 界定每实例字段数、limit 界定实例数（无 offset，用 name_filter
+  收窄）；class_name 必须是精确的已加载类名，未知类为 backend_error。目标为本会话已授权的设备 pid（frida.device.connect
+  + frida.spawn），否则本地被调试进程；仅 ART。只读，工具总数 314→315（195 只读 / 120 写）。
 - **Ghidra 线补齐 strings→endpoints→secrets 三件套（与 r2/dotnet 对齐），并把原生线的聚合抽成共享层**：`ghidra.strings`
   之上新增两个只读工具，跑在 Ghidra 已定义的字符串数据上、复用共享的 `endpoint_scan.py` / `secret_scan.py`。`ghidra.endpoints`
   抽取 URL/host/请求路径，返回 endpoints（每项 {value、kind(url|path)、scheme、host、source（所在字符串）、address（Ghidra
