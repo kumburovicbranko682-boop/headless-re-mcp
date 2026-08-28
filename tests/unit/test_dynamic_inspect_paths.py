@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -103,9 +103,34 @@ def test_parameter_guards_reject_bad_arguments(tmp_path: Path) -> None:
         service.breakpoints_memory_set("s1", 0x1000, bp_type="bad"),
         service.breakpoints_condition_set("s1", 0x1000, ""),
         service.breakpoints_condition_set("s1", 0x1000, "a;b"),
+        service.breakpoints_condition_set("s1", -1, "rax==1"),
+        service.breakpoints_condition_get("s1", -1),
         service.patches_apply("s1", 0x1000, ""),
+        service.patches_restore("s1", -1),
     ]
     for result in cases:
+        assert result.ok is False and result.error is not None
+        assert result.error.code == "invalid_params"
+
+
+@pytest.mark.parametrize("bad_address", ["0x1000", 1.5, None, True])
+def test_condition_and_restore_reject_a_non_integer_address(
+    tmp_path: Path, bad_address: object
+) -> None:
+    """The address guard also rejects non-integers, not just negatives.
+
+    breakpoints.condition.set already screened its expression before the
+    round-trip but forwarded the address raw; condition.get and patches.restore
+    forwarded it with no guard at all. Each now rejects a non-integer address as
+    a structured invalid_params the way breakpoints.hardware.set does.
+    """
+    service = _bare(tmp_path)
+    calls = [
+        service.breakpoints_condition_set("s1", cast(int, bad_address), "rax==1"),
+        service.breakpoints_condition_get("s1", cast(int, bad_address)),
+        service.patches_restore("s1", cast(int, bad_address)),
+    ]
+    for result in calls:
         assert result.ok is False and result.error is not None
         assert result.error.code == "invalid_params"
 

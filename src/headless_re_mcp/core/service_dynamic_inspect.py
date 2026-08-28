@@ -860,6 +860,19 @@ class DynamicInspectMixin:
         *,
         timeout: float = 30.0,
     ) -> Result[JsonObject]:
+        # The expression below is already screened here, before the round-trip,
+        # but the address rode along unchecked -- the one param this method
+        # forwarded raw. breakpoints.hardware.set validates its address exactly
+        # this way, so screen it here too rather than leaving the worker to fail a
+        # string or negative address after a round-trip.
+        if type(address) is not int or address < 0:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="address must be a non-negative integer",
+                ),
+            )
         if not isinstance(expression, str) or not expression or len(expression) > 512:
             return Result[JsonObject](
                 ok=False,
@@ -889,6 +902,14 @@ class DynamicInspectMixin:
         *,
         timeout: float = 30.0,
     ) -> Result[JsonObject]:
+        if type(address) is not int or address < 0:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="address must be a non-negative integer",
+                ),
+            )
         return self._dynamic_request(
             session_id,
             "breakpoints.condition.get",
@@ -923,6 +944,14 @@ class DynamicInspectMixin:
         *,
         timeout: float = 30.0,
     ) -> Result[JsonObject]:
+        if type(address) is not int or address < 0:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="address must be a non-negative integer",
+                ),
+            )
         return self._dynamic_request(
             session_id,
             "patches.restore",
