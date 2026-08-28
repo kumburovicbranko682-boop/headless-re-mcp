@@ -980,11 +980,23 @@ class AdbBackend:
         visible = _frida_server_visible(dev)
         if visible:
             return {"running": True, "pushed": pushed, "port": port}
+        # visible is now False or None, and those are different facts. False means
+        # the ps probe ran and frida-server was absent; None means the probe itself
+        # could not run (both `ps -A` and `ps` raised), so we simply do not know.
+        # The note used to assert "not visible in ps" for both, reading as a
+        # definite negative even when nothing was observed -- the same absent-vs-
+        # unknown honesty gap the tri-state `running` exists to carry. Keep the
+        # note in step with it so a caller who surfaces the note is not told a
+        # confirmation we never made.
+        if visible is None:
+            note = "launch command returned; could not probe ps to confirm frida-server"
+        else:
+            note = "launch command returned; frida-server not visible in ps"
         return {
             "running": visible,
             "pushed": pushed,
             "port": port,
-            "note": "launch command returned; frida-server not visible in ps",
+            "note": note,
         }
 
     def forward(self, serial: str, local: str, remote: str) -> JsonObject:

@@ -3,14 +3,18 @@ degrade honestly rather than claim a root launch it cannot confirm.
 
 ``ensure_frida_server`` pushes a binary to the device and starts it under
 ``su`` -- a root operation whose success adb's own return does not prove. The
-already-running short-circuit and the "launched but not visible in ps" note are
-pinned elsewhere; what is covered here is the rest of the push-and-launch path,
-which only runs through the live adbutils backend:
+already-running short-circuit is pinned elsewhere; what is covered here is the
+rest of the push-and-launch path, which only runs through the live adbutils
+backend:
 
 * a confirmed launch reports ``running`` **and** whether the binary was pushed,
 * a push that fails is ``backend_error`` -- the launch is never attempted,
 * a launch call that faults (a blocking ``su`` prompt, a timeout) does not claim
-  ``running`` True; it returns the device's real ``ps`` verdict with a note.
+  ``running`` True; it returns the device's real ``ps`` verdict with a note,
+* when the launch returns but ps still does not show frida-server the note says
+  "not visible in ps" (a real negative), and when the ps probe itself cannot run
+  the note says "could not probe" (unknown) -- two different facts the tri-state
+  ``running`` carries and the note must not conflate.
 
 These are exercised with an injected fake device and a real temp binary -- no
 adbutils, no rooted emulator.
@@ -153,4 +157,55 @@ def test_a_launch_that_faults_does_not_claim_running_true() -> None:
     assert result["running"] is False
     assert result["pushed"] is False
     assert "verify manually" in str(result.get("note", ""))
+    assert dev.su_calls == 1
+
+
+def test_a_launch_ps_cannot_confirm_reports_running_false_as_not_visible() -> None:
+    """su returns cleanly but ps still does not show frida-server: running False.
+
+    The launch line came back without error, yet the post-launch ps probe ran and
+    frida-server was absent -- a real negative observation. running is False and
+    the note says so ("not visible in ps"), distinct from the su-fault path (which
+    says "verify manually") and from the probe-could-not-run path below.
+    """
+    dev = _FridaDev(sync=None, visible_after_launch=False, su_raises=False)
+    result = _backend_with(dev).ensure_frida_server("emulator-5554")
+    assert result["running"] is False
+    assert result["pushed"] is False
+    assert "not visible in ps" in result["note"]
+    assert "could not probe" not in result["note"]
+    assert dev.su_calls == 1
+
+
+def test_a_launch_whose_ps_probe_cannot_run_says_unknown_not_absent() -> None:
+    """When the post-launch ps probe itself fails, the note says unknown, not absent.
+
+    _frida_server_visible returns None when both ``ps -A`` and ``ps`` raise -- the
+    probe could not run, so nothing was observed. ensure_frida_server carries that
+    in running=None, but the note used to read "frida-server not visible in ps"
+    for both None and False, asserting a negative that was never seen. This pins
+    the None case saying the truth -- the probe could not run -- while the False
+    case above still reports the real "not visible" observation. running stays the
+    None tri-state either way, which is what an agent routes on.
+    """
+
+    class _PsUnavailableDev:
+        """su launches cleanly, but every ps probe (pre and post) cannot run."""
+
+        def __init__(self) -> None:
+            self.su_calls = 0
+
+        def shell(self, args: Any, timeout: float | None = None) -> str:
+            del timeout
+            if isinstance(args, str) and args.startswith("su"):
+                self.su_calls += 1
+                return ""
+            raise RuntimeError("ps unavailable")
+
+    dev = _PsUnavailableDev()
+    result = _backend_with(dev).ensure_frida_server("emulator-5554")  # type: ignore[arg-type]
+    assert result["running"] is None
+    assert result["pushed"] is False
+    assert "could not probe ps" in result["note"]
+    assert "not visible in ps" not in result["note"]
     assert dev.su_calls == 1
