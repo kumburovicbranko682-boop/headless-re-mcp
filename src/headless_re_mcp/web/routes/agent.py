@@ -325,7 +325,7 @@ def register_agent_routes(
             policy = orchestrator.autonomy.grant(
                 effects=tuple(item.value for item in spec.effects if item is not ToolEffect.READ_ONLY)
             )
-        else:
+        else:  # pragma: no cover - _decision validates remember before calling
             raise ValueError("remember must be 'tool' or 'effect'")
         orchestrator.autonomy = policy
         _persist_autonomy(policy)
