@@ -24,6 +24,17 @@ until 1.0 the tool surface may still change between minor versions.
 - 新增测试中 7 个在改动前失败；其余为对照，钉死"确实全零且落在 dump 内的节仍报 0.0 并仍然定罪"
   与"扫描字节预算仍会停止测量"。
 
+### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
+
+- main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
+  `_probe_run` 以 `creationflags=0` 调 `run_bounded`。但 `_probe_run` 用的
+  `_no_window_flags()` 在 Windows 上返回 `subprocess.CREATE_NO_WINDOW`（0x08000000 =
+  134217728，用来抑制探针子进程弹出的控制台窗口），只有 POSIX 才返回 0——产品行为正确，
+  是测试钉死了 POSIX 侧的值，于是在 Windows 3.12 上以
+  `assert seen == {... 'creationflags': 0}` 收到 134217728 而失败。改法：按平台用
+  `getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0` 独立派生期望值
+  （与 `_no_window_flags()` 同法），POSIX 行为不变，Windows 断言到正确的抑制窗口标志。
+
 ### 修复（NETReactorSlayer 输出别名测试的同款 Windows-only 路径炸裂）
 
 - 与 de4dot 同批落地的 `test_net_reactor_slayer_paths.py::test_output_equal_to_input_is_refused`
