@@ -330,6 +330,18 @@ class WasmClient:
 
         return list_wasm_imports(path, contains=contains)
 
+    def globals(self, path: Path) -> JsonObject:
+        """The module's defined globals with type, mutability and init value.
+
+        Needs no wabt tool: the global section is decoded directly, so the
+        module's mutable state and seed constants -- the shadow stack pointer,
+        the heap base, feature flags -- are readable even when wasm2wat/
+        wasm-objdump are absent.
+        """
+        from headless_re_mcp.backends.jsre.wasm_summary import list_wasm_globals
+
+        return list_wasm_globals(path)
+
     def info(
         self, path: Path, *, timeout: float = 120.0, spill_path: Path | None = None
     ) -> JsonObject:

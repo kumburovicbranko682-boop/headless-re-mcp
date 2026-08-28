@@ -795,6 +795,118 @@ def test_wasm_imports_reads_a_wat2wasm_built_module(tmp_path: Path) -> None:
         service.close_all()
 
 
+def _module_with_global_surface() -> bytes:
+    """A module with an imported global plus two defined globals (mut + const)."""
+    magic = b"\x00asm\x01\x00\x00\x00"
+    import_sec = _section(
+        2, _vec([_name("env") + _name("base") + b"\x03" + b"\x7f\x00"])  # immutable i32
+    )
+    # global 1: mutable i32 = i32.const 65536; global 2: const i32 = global.get 0
+    global_sec = _section(
+        6,
+        _vec(
+            [
+                b"\x7f\x01" + b"\x41" + _leb128(65536) + b"\x0b",
+                b"\x7f\x00" + b"\x23" + _leb128(0) + b"\x0b",
+            ]
+        ),
+    )
+    return magic + import_sec + global_sec
+
+
+@pytest.mark.integration
+def test_wasm_globals_drives_the_service_end_to_end(tmp_path: Path) -> None:
+    """wasm.globals must decode the global section through the real service.
+
+    The module imports one global and defines two (a mutable i32 seeded with a
+    constant, and a const i32 seeded from the imported global). Driving
+    AnalysisService.wasm_globals end to end must decode each global's value type,
+    mutability and initializer, and offset the defined globals' indices past the
+    imported one -- and a non-module must come back as an invalid_params
+    envelope, not an internal error.
+    """
+    module = tmp_path / "globals.wasm"
+    module.write_bytes(_module_with_global_surface())
+
+    service = AnalysisService()
+    try:
+        result = service.wasm_globals(str(module))
+        assert result.ok, result.error
+        data = result.data
+        assert data is not None
+        assert data["imported_count"] == 1
+        assert data["count"] == data["total"] == 2
+
+        mutable = data["globals"][0]
+        assert mutable["index"] == 1  # after the one imported global
+        assert mutable["valtype"] == "i32"
+        assert mutable["mutable"] is True
+        assert mutable["init"] == "i32.const 65536"
+        assert mutable["init_value"] == 65536
+
+        seeded = data["globals"][1]
+        assert seeded["index"] == 2
+        assert seeded["mutable"] is False
+        assert seeded["init"] == "global.get 0"
+        assert seeded["init_global"] == 0
+
+        bogus = tmp_path / "not.wasm"
+        bogus.write_bytes(b"GIF89a not wasm")
+        failed = service.wasm_globals(str(bogus))
+        assert failed.ok is False
+        assert failed.error is not None
+        assert failed.error.code == "invalid_params"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_globals_reads_a_wat2wasm_built_module(tmp_path: Path) -> None:
+    """Cross-check the global decoding against a toolchain-built module."""
+    wat2wasm = shutil.which("wat2wasm")
+    if wat2wasm is None:
+        pytest.skip("wat2wasm (wabt) not installed — toolchain gate not run (skip != pass)")
+    wat = tmp_path / "glob.wat"
+    wat.write_text(
+        "(module\n"
+        '  (global $sp (mut i32) (i32.const 1048576))\n'
+        '  (global $flag i32 (i32.const 1))\n'
+        '  (global $ratio f64 (f64.const 2.5)))\n',
+        encoding="utf-8",
+    )
+    module = tmp_path / "glob.wasm"
+    built = subprocess.run(  # noqa: S603 - fixed argv, tool discovered on PATH
+        [wat2wasm, str(wat), "-o", str(module)],
+        capture_output=True,
+        timeout=60,
+    )
+    if built.returncode != 0 or not module.is_file():
+        detail = built.stderr.decode("utf-8", "replace")[:200]
+        pytest.skip(f"wat2wasm could not build the fixture ({detail}) — skip != pass")
+
+    service = AnalysisService()
+    try:
+        result = service.wasm_globals(str(module))
+        assert result.ok, result.error
+        data = result.data
+        assert data is not None
+        assert data["imported_count"] == 0
+        assert data["count"] == data["total"] == 3
+
+        sp = data["globals"][0]
+        assert sp["valtype"] == "i32" and sp["mutable"] is True
+        assert sp["init_value"] == 1048576
+
+        flag = data["globals"][1]
+        assert flag["mutable"] is False and flag["init_value"] == 1
+
+        ratio = data["globals"][2]
+        assert ratio["valtype"] == "f64"
+        assert ratio["init_value"] == 2.5
+    finally:
+        service.close_all()
+
+
 @pytest.mark.integration
 def test_wasm_summary_reads_a_wat2wasm_built_module(tmp_path: Path) -> None:
     """Cross-check the parser against a module a real toolchain produced."""

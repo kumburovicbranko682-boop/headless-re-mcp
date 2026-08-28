@@ -276,4 +276,26 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_imports(path, contains=contains))
 
+    @tools.tool(name="wasm.globals")
+    def wasm_globals(path: str) -> dict[str, Any]:
+        """The module's defined globals -- its mutable state and seed constants.
+
+        wasm.imports decodes imported globals and wasm.exports only names
+        exported ones; neither lists the module's own globals (section 6) with
+        the init value they start at. Those globals are where a linker keeps the
+        shadow stack pointer, the heap base and feature flags, so the seed
+        constant is the datum you want. Parsed in pure Python, so it answers even
+        when wasm2wat/wasm-objdump are absent.
+
+        Answers with globals, each carrying index (the global index, imported
+        globals first), valtype (i32/i64/f32/f64/v128/funcref/externref), mutable
+        (a var vs a const global), and init (the initializer's one-line form,
+        e.g. "i32.const 1048576" or "global.get 0"); a numeric const also carries
+        init_value and a global.get carries init_global. Also count, total,
+        imported_count (imported globals, so the index space is clear) and
+        scan_capped (more than the 4096 listed). An input over 16 MiB is refused
+        as too_large and a non-module as invalid_params.
+        """
+        return _dump(analysis.wasm_globals(path))
+
     return tools.bindings

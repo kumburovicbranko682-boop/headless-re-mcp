@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **298（178 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **299（179 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -666,6 +666,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不移动函数索引空间，故转导出的导入在索引 0 仍解析为导入函数类型）、内部名挂接与非函数导出无签名字段，并另有 wat2wasm
   交叉校验（缺 wabt 时 skip≠pass）；单测另覆盖过滤、`signature_unknown`、空导出、4096 截断与非模块拒绝。该工具计入读效果，
   工具面因此 292→293。
+- **看得到模块导入/导出的全局，看不到它自己定义的全局**。`wasm.imports` 解导入的全局、`wasm.exports` 只报导出全局的名字，
+  可模块自有的全局（section 6）——链接器放影子栈指针、堆基址、功能旗标的地方——连同它们的初始值谁都不列。种子常量恰恰是
+  分析者最想要的那个数（栈指针的 `i32.const 0x100000`、旗标的 `i32.const 1`）。新增只读的 `wasm.globals`：直接解 global 段
+  （纯 Python，无需 wabt），逐个解出值类型、可变性与常量初始化式。回 `globals`，每条带 `index`（全局索引，导入的全局占低位，
+  故自有全局从 imported_count 起算）、`valtype`（i32/i64/f32/f64/v128/funcref/externref）、`mutable`（var 还是 const 全局）
+  与 `init`（初始化式的单行形式，如 `i32.const 1048576` 或 `global.get 0`）；数值常量另带 `init_value`，`global.get` 另带
+  `init_global`。外加 `count`、`total`、`imported_count`（导入全局数，交代索引空间）与 `scan_capped`（超 4096 未全列）。i32/
+  i64 按 SLEB 解、f32/f64 按原始 IEEE 字节解、`global.get N` 认成对导入全局的引用，其余表达式读到 end 标记后记作裸 op。只读
+  import 与 global 两段，其余按声明长度跳过。超 16 MiB 报 `too_large`、非模块报 `invalid_params`。活体门经真服务用手搓模块
+  （一个导入全局加两个自有全局：常量种的可变 i32 与 `global.get` 种的 const i32）断言类型/可变性/初始化式解析与索引在导入全局
+  之后偏移，并另有 wat2wasm 交叉校验（栈指针 mut i32、旗标 const i32、比率 f64；缺 wabt 时 skip≠pass）；单测另覆盖 f64 原始
+  字节解、空 global 段、4096 截断与非模块拒绝。该工具计入读效果，工具面因此 298→299。
 - **manifest 里的 `<meta-data>` 只能靠手 grep 解码后的 XML**。`apk.manifest` 只回生 XML、`apk.security` 只读固定的
   `<application>` 旗标，谁都不解 `<meta-data>` 那些 name/value 对——而 app 恰恰把第三方 SDK 配置塞在这里：Google Maps /
   AdMob / Firebase 的 app-id 与 API key、分析 SDK 的开关、随包发的功能旗标。内嵌 API key 本身就是一条发现，SDK id 又能指纹

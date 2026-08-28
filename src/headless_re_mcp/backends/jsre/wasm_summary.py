@@ -18,6 +18,7 @@ than crash, matching the other jsre adapters.
 from __future__ import annotations
 
 import contextlib
+import struct
 from pathlib import Path
 from typing import Any
 
@@ -1194,3 +1195,139 @@ def list_wasm_imports(path: Path, *, contains: str | None = None) -> JsonObject:
     except OSError as exc:
         raise JsReError("backend_error", f"wasm unreadable: {exc}", path=str(resolved)) from exc
     return list_wasm_imports_bytes(data, contains=contains)
+
+
+def _read_global_init(cursor: _Cursor) -> JsonObject:
+    """Decode a global's init constant-expression into a compact description.
+
+    A global's initializer is a constant expr terminated by ``end`` (0x0B): in
+    practice a single numeric const (i32/i64 as SLEB, f32/f64 as raw IEEE bytes)
+    or ``global.get N`` referencing an imported global (how a linker seeds a
+    heap-base from the host). The literal is lifted so a reader sees the actual
+    seed value -- a stack pointer's ``i32.const 0x100000`` or a feature flag's
+    ``i32.const 1``. Anything unexpected is read to the end marker so the cursor
+    stays aligned, and reported as the bare op. The body is sliced, so a
+    malformed expr raises invalid_params rather than reading past the section.
+    """
+    opcode = cursor.byte()
+    init: JsonObject
+    if opcode == 0x41:  # i32.const
+        init = {"op": "i32.const", "value": cursor.sleb()}
+    elif opcode == 0x42:  # i64.const
+        init = {"op": "i64.const", "value": cursor.sleb()}
+    elif opcode == 0x43:  # f32.const -- four raw little-endian bytes, not LEB
+        init = {"op": "f32.const", "value": struct.unpack("<f", cursor.take(4))[0]}
+    elif opcode == 0x44:  # f64.const -- eight raw little-endian bytes
+        init = {"op": "f64.const", "value": struct.unpack("<d", cursor.take(8))[0]}
+    elif opcode == 0x23:  # global.get
+        init = {"op": "global.get", "global": cursor.uleb()}
+    elif opcode == 0x0B:  # empty expr (defensive: invalid, but do not crash)
+        return {"op": "empty"}
+    else:
+        init = {"op": "expr"}
+    end = cursor.byte()
+    if end != 0x0B:
+        # A multi-instruction or unsupported expr: read to the end marker so the
+        # next global's type byte is where the cursor lands.
+        while cursor.byte() != 0x0B:
+            pass
+    return init
+
+
+def _init_str(init: JsonObject) -> str:
+    """A global init's one-line form: ``i32.const 1024`` / ``global.get 0`` / op."""
+    op = str(init["op"])
+    if "value" in init:
+        return f"{op} {init['value']}"
+    if "global" in init:
+        return f"{op} {init['global']}"
+    return op
+
+
+def _parse_global_section(body: _Cursor, imported_globals: int) -> tuple[list[JsonObject], int]:
+    """Global section (id 6): (collected defined globals, total defined).
+
+    Each entry is a globaltype (value type byte + mutability byte) followed by an
+    init const-expr. ``index`` is the global index in the whole global index
+    space -- imported globals occupy the low indices, so a defined global's index
+    is ``imported_globals + position``, matching how wasm.imports numbers them.
+    Collection is capped at ``_MAX_ITEMS`` but every entry is still consumed so a
+    lying count runs out of the bounded body and raises rather than truncating.
+    """
+    total = body.uleb()
+    out: list[JsonObject] = []
+    for position in range(total):
+        valtype = _valtype(body)
+        mutable = bool(body.byte() & 0x01)
+        init = _read_global_init(body)
+        if position < _MAX_ITEMS:
+            entry: JsonObject = {
+                "index": imported_globals + position,
+                "valtype": valtype,
+                "mutable": mutable,
+                "init": _init_str(init),
+            }
+            if "value" in init:
+                entry["init_value"] = init["value"]
+            if "global" in init:
+                entry["init_global"] = init["global"]
+            out.append(entry)
+    return out, total
+
+
+def list_wasm_globals_bytes(data: bytes) -> JsonObject:
+    """List a module's defined globals -- its mutable state and seed constants.
+
+    wasm.imports decodes imported globals and wasm.exports only names exported
+    ones; neither lists the module's own globals (section 6) with the init value
+    they start at. Those globals are where a linker keeps the shadow stack
+    pointer, the heap base and feature flags, so the seed constant is the datum
+    an analyst wants. This reads the global section directly (pure Python, no
+    wabt), decoding each global's value type, mutability and constant
+    initializer.
+
+    Each entry carries index (the global index, imported globals first), valtype
+    (i32/i64/f32/f64/v128/funcref/externref), mutable (a var vs a const global),
+    and init (the initializer's one-line form, e.g. "i32.const 1048576" or
+    "global.get 0"); a numeric const also carries init_value and a global.get
+    carries init_global. Also count, total, imported_count (imported globals,
+    for the index space) and scan_capped (more globals than the 4096 listed).
+    Only the import and global sections are read; every other section is skipped
+    by its declared length. Bad magic raises invalid_params.
+    """
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        raise JsReError("invalid_params", "not a WebAssembly module: bad magic")
+    cursor = _Cursor(data)
+    cursor.pos = 8
+
+    imported_globals = 0
+    globals_out: list[JsonObject] = []
+    globals_total = 0
+    while not cursor.eof:
+        section_id = cursor.byte()
+        section_len = cursor.uleb()
+        body = _Cursor(cursor.take(section_len))
+        if section_id == 2:  # import -- count imported globals for the index space
+            _, _, kind_totals = _parse_imports_described(body)
+            imported_globals = kind_totals["global"]
+        elif section_id == 6:  # global
+            globals_out, globals_total = _parse_global_section(body, imported_globals)
+        # Every other section is skipped by its declared length.
+
+    return {
+        "globals": globals_out,
+        "count": len(globals_out),
+        "total": globals_total,
+        "imported_count": imported_globals,
+        "scan_capped": globals_total > len(globals_out),
+    }
+
+
+def list_wasm_globals(path: Path) -> JsonObject:
+    """List the globals of the module at ``path`` (applies the shared 16 MiB cap)."""
+    resolved = _require_existing_file(path, missing="wasm file not found")
+    try:
+        data = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError("backend_error", f"wasm unreadable: {exc}", path=str(resolved)) from exc
+    return list_wasm_globals_bytes(data)
