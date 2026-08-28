@@ -13,8 +13,11 @@ purpose-built encoders:
   export rule;
 * ``classes.dex`` as a valid DEX carrying one class
   (``com.example.headless.Sample``) with one static method (``getSecret``) that
-  returns the string ``flag{headless-re}`` -- enough for androguard's full
-  ``AnalyzeAPK`` to enumerate the class, its method, and its strings.
+  returns the string ``flag{headless-re}``, plus the constructor javac always
+  emits (``<init>`` invoking ``java.lang.Object.<init>`` -- a real external
+  method reference for the external-API-surface fact) -- enough for
+  androguard's full ``AnalyzeAPK`` to enumerate the class, its methods, its
+  strings, and the external class it calls into.
 
 The APK is then v1 (JAR) signed with the JDK's ``keytool`` and ``jarsigner`` so
 certificate parsing is exercised too.
@@ -384,29 +387,34 @@ def build_dex() -> bytes:
 
     One class ``Lcom/example/headless/Sample;`` with a public static method
     ``getSecret()Ljava/lang/String;`` whose body is ``const-string v0,
-    "flag{headless-re}"`` / ``return-object v0``. The id tables observe DEX's
-    ordering rules (string_ids sorted by MUTF-8 bytes; type/method ids by their
+    "flag{headless-re}"`` / ``return-object v0``, and the constructor javac
+    always emits: ``<init>()V`` invoking ``Ljava/lang/Object;-><init>()V`` --
+    a genuine external method reference, so the DEX exercises the
+    external-API-surface fact. The id tables observe DEX's ordering rules
+    (string_ids sorted by MUTF-8 bytes; type/proto/method ids by their
     referenced indices) so androguard's AnalyzeAPK parses and analyses it.
     """
     # Strings, pre-sorted by MUTF-8 byte order as string_ids requires.
     strings = [
-        "L",  # 0: shorty for ()L...
-        "Lcom/example/headless/Sample;",  # 1
-        "Ljava/lang/Object;",  # 2
-        "Ljava/lang/String;",  # 3
-        "Sample.java",  # 4
-        "flag{headless-re}",  # 5
-        "getSecret",  # 6
+        "<init>",  # 0
+        "L",  # 1: shorty for ()L...
+        "Lcom/example/headless/Sample;",  # 2
+        "Ljava/lang/Object;",  # 3
+        "Ljava/lang/String;",  # 4
+        "Sample.java",  # 5
+        "V",  # 6: void type descriptor and shorty for ()V
+        "flag{headless-re}",  # 7
+        "getSecret",  # 8
     ]
-    type_string_idx = [1, 2, 3]  # Sample, Object, String
-    type_sample, type_object, type_string = 0, 1, 2
+    type_string_idx = [2, 3, 4, 6]  # Sample, Object, String, V
+    type_sample, type_object, type_string, type_void = 0, 1, 2, 3
 
     header_size = 0x70
     string_ids_off = header_size
     type_ids_off = string_ids_off + len(strings) * 4
     proto_ids_off = type_ids_off + len(type_string_idx) * 4
-    method_ids_off = proto_ids_off + 12  # one proto
-    class_defs_off = method_ids_off + 8  # one method
+    method_ids_off = proto_ids_off + 24  # two protos
+    class_defs_off = method_ids_off + 24  # three methods
     data_off = class_defs_off + 32  # one class def
 
     data = bytearray()
@@ -423,17 +431,27 @@ def build_dex() -> bytes:
         data += b"\x00"
 
     align(4)
+    code_init_off = data_off + len(data)
+    # invoke-direct {v0}, method@2 (Object.<init>); return-void
+    insns_init = struct.pack("<HHHH", 0x1070, 2, 0x0000, 0x000E)
+    data += struct.pack("<HHHHII", 1, 1, 1, 0, 0, len(insns_init) // 2)
+    data += insns_init
+
+    align(4)
     code_off = data_off + len(data)
-    insns = struct.pack("<HHH", 0x001A, 5, 0x0011)  # const-string v0, str@5; return-object v0
+    insns = struct.pack("<HHH", 0x001A, 7, 0x0011)  # const-string v0, str@7; return-object v0
     data += struct.pack("<HHHHII", 1, 0, 0, 0, 0, len(insns) // 2)
     data += insns
 
     class_data_off = data_off + len(data)
     data += _uleb128(0)  # static_fields_size
     data += _uleb128(0)  # instance_fields_size
-    data += _uleb128(1)  # direct_methods_size
+    data += _uleb128(2)  # direct_methods_size
     data += _uleb128(0)  # virtual_methods_size
-    data += _uleb128(0)  # method_idx_diff (first)
+    data += _uleb128(0)  # method_idx_diff (first): Sample.<init>
+    data += _uleb128(0x10001)  # ACC_PUBLIC | ACC_CONSTRUCTOR
+    data += _uleb128(code_init_off)
+    data += _uleb128(1)  # method_idx_diff: getSecret
     data += _uleb128(0x9)  # ACC_PUBLIC | ACC_STATIC
     data += _uleb128(code_off)
 
@@ -443,11 +461,11 @@ def build_dex() -> bytes:
         (0x0000, 1, 0),
         (0x0001, len(strings), string_ids_off),
         (0x0002, len(type_string_idx), type_ids_off),
-        (0x0003, 1, proto_ids_off),
-        (0x0005, 1, method_ids_off),
+        (0x0003, 2, proto_ids_off),
+        (0x0005, 3, method_ids_off),
         (0x0006, 1, class_defs_off),
         (0x2000, 1, class_data_off),
-        (0x2001, 1, code_off),
+        (0x2001, 2, code_init_off),
         (0x2002, len(strings), string_data_offs[0]),
         (0x1000, 1, map_off),
     ]
@@ -459,10 +477,17 @@ def build_dex() -> bytes:
 
     string_ids = b"".join(struct.pack("<I", off) for off in string_data_offs)
     type_ids = b"".join(struct.pack("<I", idx) for idx in type_string_idx)
-    proto_ids = struct.pack("<III", 0, type_string, 0)
-    method_ids = struct.pack("<HHI", type_sample, 0, 6)
+    # proto 0: ()Ljava/lang/String; (shorty "L"); proto 1: ()V (shorty "V").
+    proto_ids = struct.pack("<III", 1, type_string, 0) + struct.pack("<III", 6, type_void, 0)
+    # method_ids sorted by class, then name: Sample.<init>, Sample.getSecret,
+    # then Object.<init> -- the external reference every real class carries.
+    method_ids = (
+        struct.pack("<HHI", type_sample, 1, 0)
+        + struct.pack("<HHI", type_sample, 0, 8)
+        + struct.pack("<HHI", type_object, 1, 0)
+    )
     class_defs = struct.pack(
-        "<IIIIIIII", type_sample, 0x1, type_object, 0, 4, 0, class_data_off, 0
+        "<IIIIIIII", type_sample, 0x1, type_object, 0, 5, 0, class_data_off, 0
     )
 
     body = string_ids + type_ids + proto_ids + method_ids + class_defs + bytes(data)
@@ -478,11 +503,11 @@ def build_dex() -> bytes:
     struct.pack_into("<I", header, 60, string_ids_off)
     struct.pack_into("<I", header, 64, len(type_string_idx))
     struct.pack_into("<I", header, 68, type_ids_off)
-    struct.pack_into("<I", header, 72, 1)
+    struct.pack_into("<I", header, 72, 2)
     struct.pack_into("<I", header, 76, proto_ids_off)
     struct.pack_into("<I", header, 80, 0)  # field_ids_size
     struct.pack_into("<I", header, 84, 0)  # field_ids_off
-    struct.pack_into("<I", header, 88, 1)
+    struct.pack_into("<I", header, 88, 3)
     struct.pack_into("<I", header, 92, method_ids_off)
     struct.pack_into("<I", header, 96, 1)
     struct.pack_into("<I", header, 100, class_defs_off)

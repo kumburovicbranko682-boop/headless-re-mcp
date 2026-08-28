@@ -122,10 +122,11 @@ def test_android_apk_static_happy_path() -> None:
         assert set(meta["native_abis"]) == {"arm64-v8a", "x86_64"}
         assert meta["dex_count"] == 1
         assert meta["signed_v1"] is True
-        # Stdlib DEX header facts: the fixture's one-class, one-method DEX.
+        # Stdlib DEX header facts: the fixture's one class with three method
+        # ids (its <init> and getSecret, plus the referenced Object.<init>).
         assert meta["dex"]["versions"] == ["035"]
         assert meta["dex"]["class_count"] == 1
-        assert meta["dex"]["method_count"] == 1
+        assert meta["dex"]["method_count"] == 3
 
         opened = service.apk_open(session_id)
         assert opened.ok, opened.error
@@ -274,11 +275,59 @@ def test_android_apk_dex_analysis_happy_path() -> None:
         assert strings.ok, strings.error
         assert any("flag{headless-re}" in s for s in strings.data["strings"])
 
-        # getSecret has no callers in this one-method DEX: the enumeration must
-        # complete and say so, not error and not claim a phantom caller.
+        # getSecret has no callers in this DEX (the constructor only calls up
+        # to Object.<init>): the enumeration must complete and say so, not
+        # error and not claim a phantom caller.
         xrefs = service.apk_xrefs(session_id, "getSecret")
         assert xrefs.ok, xrefs.error
         assert xrefs.data["count"] == 0
         assert xrefs.data["has_more"] is False
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_dex_external_api_surface_agrees_with_androguard() -> None:
+    """The stdlib import-surface fact against androguard's cross-reference pass.
+
+    The session's ``external_classes`` / ``external_method_count`` come from a
+    raw walk of the DEX method_ids table -- rows whose class the DEX does not
+    define. androguard derives the same surface a completely different way: its
+    Analysis pass decodes every instruction and registers an external
+    ClassAnalysis/MethodAnalysis for each invoked method it cannot resolve
+    locally. On a dx-shaped DEX (every id row is referenced by code, which the
+    fixture mirrors) the two views must coincide class for class and method for
+    method -- the Android analogue of the ELF gate checking undefined dynamic
+    symbols against readelf.
+    """
+    if not _FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_FIXTURE}")
+    if not _androguard_available():
+        pytest.skip("androguard not installed — static gate not run (skip != pass)")
+
+    from androguard.misc import AnalyzeAPK
+
+    _apk, _dex, analysis = AnalyzeAPK(str(_FIXTURE))
+    # androguard names classes by descriptor (Ljava/lang/Object;); normalise to
+    # the reader's dotted form, keeping only real class types as the reader does.
+    ag_classes = {
+        cls.name[1:-1].replace("/", ".")
+        for cls in analysis.get_external_classes()
+        if cls.name.startswith("L") and cls.name.endswith(";")
+    }
+    ag_method_count = sum(1 for m in analysis.get_methods() if m.is_external())
+
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(_FIXTURE))
+        assert created.ok, created.error
+        dex_facts = created.data["session"]["metadata"]["apk"]["dex"]
+    finally:
+        service.close_all()
+
+    assert set(dex_facts["external_classes"]) == ag_classes
+    assert dex_facts["external_method_count"] == ag_method_count
+    # And both agree on the concrete surface the fixture bakes in: the one
+    # up-call every javac constructor makes.
+    assert dex_facts["external_classes"] == ["java.lang.Object"]
+    assert dex_facts["external_method_count"] == 1

@@ -1093,6 +1093,64 @@ def _dex_header(version: bytes, strings: int, methods: int, classes: int) -> byt
     return bytes(header)
 
 
+def _dex_with_tables(
+    strings: list[str],
+    type_string_idx: list[int],
+    method_rows: list[tuple[int, int, int]],
+    defined_type_idx: list[int],
+    *,
+    method_count: int | None = None,
+) -> bytes:
+    """A DEX carrying real id tables: strings, types, method_ids, class_defs.
+
+    Just enough for the table walkers -- no protos, code or map list. Each
+    method row is (class_idx, proto_idx, name_idx); each defined type index
+    becomes a class_def whose remaining fields are zero. ``method_count`` may
+    overstate the real row count to model a lying header.
+    """
+    header_size = 0x70
+    string_ids_off = header_size
+    type_ids_off = string_ids_off + len(strings) * 4
+    method_ids_off = type_ids_off + len(type_string_idx) * 4
+    class_defs_off = method_ids_off + len(method_rows) * 8
+    data_off = class_defs_off + len(defined_type_idx) * 32
+    blob = bytearray()
+    string_data_offs: list[int] = []
+    for text in strings:
+        string_data_offs.append(data_off + len(blob))
+        blob += bytes([len(text)]) + text.encode("utf-8") + b"\x00"
+    body = (
+        b"".join(struct.pack("<I", off) for off in string_data_offs)
+        + b"".join(struct.pack("<I", idx) for idx in type_string_idx)
+        + b"".join(struct.pack("<HHI", c, p, n) for c, p, n in method_rows)
+        + b"".join(struct.pack("<I", t) + bytes(28) for t in defined_type_idx)
+        + bytes(blob)
+    )
+    header = bytearray(header_size)
+    header[0:8] = b"dex\n035\x00"
+    struct.pack_into("<I", header, 40, 0x12345678)
+    struct.pack_into("<I", header, 56, len(strings))
+    struct.pack_into("<I", header, 60, string_ids_off)
+    struct.pack_into("<I", header, 64, len(type_string_idx))
+    struct.pack_into("<I", header, 68, type_ids_off)
+    struct.pack_into(
+        "<I", header, 88, len(method_rows) if method_count is None else method_count
+    )
+    struct.pack_into("<I", header, 92, method_ids_off)
+    struct.pack_into("<I", header, 96, len(defined_type_idx))
+    struct.pack_into("<I", header, 100, class_defs_off)
+    return bytes(header) + body
+
+
+def _apk_with_dex(tmp_path: Path, dex: bytes) -> dict:
+    """Wrap one DEX in a throwaway APK and return its dex facts."""
+    path = tmp_path / "synthetic.apk"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+        archive.writestr("classes.dex", dex)
+    return describe_apk(path)["apk"]["dex"]
+
+
 class TestDexFactsWithoutAndroguard:
     """describe_apk sums the DEX header counts stdlib-only.
 
@@ -1108,15 +1166,20 @@ class TestDexFactsWithoutAndroguard:
         dex = describe_apk(_APK_FIXTURE)["apk"]["dex"]
         assert dex["versions"] == ["035"]
         assert dex["class_count"] == 1
-        assert dex["method_count"] == 1
-        assert dex["string_count"] == 7
+        assert dex["method_count"] == 3
+        assert dex["string_count"] == 9
         # The defined class name is resolved from the id tables, not just counted.
         assert dex["classes"] == ["com.example.headless.Sample"]
+        # The import surface: the fixture's constructor invokes
+        # java.lang.Object.<init> -- one method_ids row on a class the DEX does
+        # not define, the Android analogue of an undefined dynamic symbol.
+        assert dex["external_classes"] == ["java.lang.Object"]
+        assert dex["external_method_count"] == 1
         # The DEX build fingerprint: the SHA-1 the builder stamps over the body,
         # per-member so a repackaged split is distinguishable. The fixture's dex
         # is byte-identical across rebuilds, so this value is stable.
         assert dex["signatures"] == [
-            {"dex": "classes.dex", "sha1": "08b2b62009d67cfd8301354fbc30bfe0c84d5b64"}
+            {"dex": "classes.dex", "sha1": "cbb95f554a0324c50aa49c33910b716b7fec5326"}
         ]
 
     def test_committed_dex_fingerprint_is_the_real_spec_hash(self) -> None:
@@ -1156,6 +1219,8 @@ class TestDexFactsWithoutAndroguard:
         dex = describe_apk(path)["apk"]["dex"]
         assert dex["class_count"] == 1
         assert dex["classes"] == []
+        assert dex["external_classes"] == []
+        assert dex["external_method_count"] == 0
 
     def test_descriptor_conversion_and_string_reading(self) -> None:
         from headless_re_mcp.core.session import _dex_descriptor_to_name, _dex_read_mutf8
@@ -1191,6 +1256,75 @@ class TestDexFactsWithoutAndroguard:
         assert sigs[0]["sha1"] == hashlib.sha1(b"035" + struct.pack("<III", 10, 20, 3)).hexdigest()
         assert sigs[1]["sha1"] == hashlib.sha1(b"038" + struct.pack("<III", 5, 7, 2)).hexdigest()
         assert sigs[0]["sha1"] != sigs[1]["sha1"]
+
+    def test_undefined_method_classes_are_the_import_surface(self, tmp_path: Path) -> None:
+        # Two method rows land on SmsManager (a class this DEX never defines)
+        # and one on the defined Main: the externals are the import surface,
+        # counted per row and named per class.
+        dex = _dex_with_tables(
+            strings=["<init>", "Landroid/telephony/SmsManager;", "Lcom/app/Main;", "send"],
+            type_string_idx=[1, 2],
+            method_rows=[(0, 0, 3), (0, 0, 0), (1, 0, 0)],
+            defined_type_idx=[1],
+        )
+        facts = _apk_with_dex(tmp_path, dex)
+        assert facts["external_classes"] == ["android.telephony.SmsManager"]
+        assert facts["external_method_count"] == 2
+        assert facts["classes"] == ["com.app.Main"]
+
+    def test_array_class_refs_are_not_api_classes(self, tmp_path: Path) -> None:
+        # [I.clone() puts an array type in method_ids; that names a built-in,
+        # not an API class, so it is neither listed nor counted.
+        dex = _dex_with_tables(
+            strings=["[I", "clone"],
+            type_string_idx=[0],
+            method_rows=[(0, 0, 1)],
+            defined_type_idx=[],
+        )
+        facts = _apk_with_dex(tmp_path, dex)
+        assert facts["external_classes"] == []
+        assert facts["external_method_count"] == 0
+
+    def test_an_out_of_range_class_idx_is_skipped(self, tmp_path: Path) -> None:
+        dex = _dex_with_tables(
+            strings=["Lcom/app/Main;"],
+            type_string_idx=[0],
+            method_rows=[(9, 0, 0)],
+            defined_type_idx=[],
+        )
+        facts = _apk_with_dex(tmp_path, dex)
+        assert facts["external_classes"] == []
+        assert facts["external_method_count"] == 0
+
+    def test_a_lying_method_count_stays_bounded(self, tmp_path: Path) -> None:
+        # The header claims 50k rows but the tables hold one; the walk stops at
+        # the data it has (rows past the real table read as garbage whose class
+        # indices are defined or out of range) rather than raising or inventing
+        # references.
+        dex = _dex_with_tables(
+            strings=["Lcom/app/Main;"],
+            type_string_idx=[0],
+            method_rows=[(0, 0, 0)],
+            defined_type_idx=[0],
+            method_count=50_000,
+        )
+        facts = _apk_with_dex(tmp_path, dex)
+        assert facts["external_classes"] == []
+        assert facts["external_method_count"] == 0
+
+    def test_the_external_class_sample_is_bounded(self, tmp_path: Path) -> None:
+        # 600 distinct external classes: every row is counted, but the named
+        # sample stops at the package-wide cap, same as the defined-class list.
+        strings = [f"Lx/C{i:04d};" for i in range(600)]
+        dex = _dex_with_tables(
+            strings=strings,
+            type_string_idx=list(range(600)),
+            method_rows=[(i, 0, 0) for i in range(600)],
+            defined_type_idx=[],
+        )
+        facts = _apk_with_dex(tmp_path, dex)
+        assert facts["external_method_count"] == 600
+        assert len(facts["external_classes"]) == 512
 
     def test_dex_facts_are_empty_when_no_header_is_readable(self, tmp_path: Path) -> None:
         # A member named .dex whose magic is wrong is skipped; with no readable

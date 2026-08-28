@@ -773,6 +773,9 @@ _DEX_MAX_COUNT = 64_000_000
 _DEX_MAX_BYTES = 32 * 1024 * 1024
 _DEX_MAX_NAMES = 8192
 _DEX_MAX_TOTAL_NAMES = 512
+# method_ids rows are indexed by 16-bit operands in Dalvik instructions, so a
+# single DEX holds at most 65536; a header claiming more is walked no further.
+_DEX_MAX_METHOD_IDS = 65_536
 
 # An .aab bundle, an .apks (bundletool) or an .xapk (APKPure) all carry the .apk
 # family suffixes classify_target routes to describe_apk, but none has a compiled
@@ -1037,6 +1040,8 @@ def _apk_dex_facts(path: Path) -> dict[str, Any]:
     versions: set[str] = set()
     class_count = method_count = string_count = 0
     class_names: set[str] = set()
+    external_classes: set[str] = set()
+    external_method_count = 0
     signatures: list[dict[str, str]] = []
     found = False
     try:
@@ -1063,11 +1068,18 @@ def _apk_dex_facts(path: Path) -> dict[str, Any]:
                 # Per-member so a repackaged split can be told apart; each dex
                 # carries its own fingerprint even when the counts are summed.
                 signatures.append({"dex": name, "sha1": facts["signature"]})
-                if len(data) > _DEX_HEADER_SIZE and len(class_names) < _DEX_MAX_TOTAL_NAMES:
-                    for cname in _dex_class_names(data, facts):
-                        class_names.add(cname)
-                        if len(class_names) >= _DEX_MAX_TOTAL_NAMES:
+                if len(data) > _DEX_HEADER_SIZE:
+                    if len(class_names) < _DEX_MAX_TOTAL_NAMES:
+                        for cname in _dex_class_names(data, facts):
+                            class_names.add(cname)
+                            if len(class_names) >= _DEX_MAX_TOTAL_NAMES:
+                                break
+                    ext_names, ext_count = _dex_external_method_refs(data, facts)
+                    external_method_count += ext_count
+                    for ename in ext_names:
+                        if len(external_classes) >= _DEX_MAX_TOTAL_NAMES:
                             break
+                        external_classes.add(ename)
     except (OSError, zipfile.BadZipFile):
         return {}
     if not found:
@@ -1078,6 +1090,8 @@ def _apk_dex_facts(path: Path) -> dict[str, Any]:
         "method_count": method_count,
         "string_count": string_count,
         "classes": sorted(class_names),
+        "external_classes": sorted(external_classes),
+        "external_method_count": external_method_count,
         "signatures": signatures,
     }
 
@@ -1103,6 +1117,7 @@ def _parse_dex_header(header: bytes) -> dict[str, Any] | None:
         "type_count": int.from_bytes(header[64:68], "little"),
         "type_ids_off": int.from_bytes(header[68:72], "little"),
         "method_count": method_count,
+        "method_ids_off": int.from_bytes(header[92:96], "little"),
         "class_count": class_count,
         "class_defs_off": int.from_bytes(header[100:104], "little"),
     }
@@ -1142,6 +1157,55 @@ def _dex_class_names(data: bytes, header: dict[str, Any]) -> list[str]:
         if descriptor:
             names.append(_dex_descriptor_to_name(descriptor))
     return names
+
+
+def _dex_external_method_refs(data: bytes, header: dict[str, Any]) -> tuple[set[str], int]:
+    """Classes this DEX calls into but does not define, and how many such refs.
+
+    The method_ids table names every method the bytecode can reference, and
+    class_defs names every class defined here; a row whose class is not defined
+    is the import surface -- which framework/API classes the code reaches for,
+    the Android analogue of an ELF undefined dynamic symbol or a .NET P/Invoke.
+    Only ``L`` class descriptors count: an array-typed row (``[I.clone()``) names
+    a built-in, not an API class. Every lookup is bounds-checked, so a corrupt
+    table yields fewer rows rather than raising.
+    """
+    string_ids_off = header["string_ids_off"]
+    string_ids_size = header["string_count"]
+    type_ids_off = header["type_ids_off"]
+    type_ids_size = header["type_count"]
+    defined: set[int] = set()
+    for i in range(min(header["class_count"], _DEX_MAX_NAMES)):
+        cd = header["class_defs_off"] + i * 32
+        if cd + 4 > len(data):
+            break
+        defined.add(int.from_bytes(data[cd : cd + 4], "little"))
+    names: set[str] = set()
+    count = 0
+    descriptors: dict[int, str | None] = {}
+    for i in range(min(header["method_count"], _DEX_MAX_METHOD_IDS)):
+        row = header["method_ids_off"] + i * 8
+        if row + 8 > len(data):
+            break
+        class_idx = int.from_bytes(data[row : row + 2], "little")
+        if class_idx in defined or class_idx >= type_ids_size:
+            continue
+        if class_idx not in descriptors:
+            descriptors[class_idx] = None
+            t = type_ids_off + class_idx * 4
+            if t + 4 <= len(data):
+                desc_idx = int.from_bytes(data[t : t + 4], "little")
+                if desc_idx < string_ids_size:
+                    s = string_ids_off + desc_idx * 4
+                    if s + 4 <= len(data):
+                        descriptors[class_idx] = _dex_read_mutf8(
+                            data, int.from_bytes(data[s : s + 4], "little")
+                        )
+        descriptor = descriptors[class_idx]
+        if descriptor and descriptor.startswith("L") and descriptor.endswith(";"):
+            count += 1
+            names.add(_dex_descriptor_to_name(descriptor))
+    return names, count
 
 
 def _dex_read_mutf8(data: bytes, offset: int) -> str | None:

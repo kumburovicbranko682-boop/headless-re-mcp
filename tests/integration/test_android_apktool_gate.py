@@ -4,7 +4,9 @@ apk_decode / apk_repack had only unit coverage (path safety, empty-rebuild
 rejection, closed-session guards) -- nothing ran apktool end to end, so a break
 in the decode/build adapters or in how the decoded tree is located and rebuilt
 would pass CI unseen. This gate decodes the committed APK, checks apktool's own
-baksmali really disassembled the fixture's class, then rebuilds a valid APK.
+baksmali really disassembled the fixture's class, re-derives the DEX import
+surface (external classes and method refs) from the smali tree to cross-check
+the tool-free method_ids reader, then rebuilds a valid APK.
 
 Decode runs with no_resources: the fixture carries a placeholder resources.arsc
 (a valid ARSC is a separate hand-built binary format, out of scope), and the
@@ -160,6 +162,35 @@ def _apktool_launcher_activity(manifest_xml: str) -> str | None:
                 return activity.get(name_attr)
     return None
 
+# An invoke target in baksmali output: "invoke-direct {v0},
+# Ljava/lang/Object;-><init>()V". The whole L...;->name(args)ret target is one
+# distinct method reference, mirroring one method_ids row.
+_SMALI_INVOKE_RE = re.compile(r"invoke-[a-z0-9/]+ \{[^}]*\}, (L[^;]+;)->(\S+)")
+_SMALI_CLASS_RE = re.compile(r"^\.class.* (L[^;]+;)\s*$", re.MULTILINE)
+
+
+def _smali_external_refs(decoded_dir: Path) -> tuple[set[str], int]:
+    """The (external classes, distinct external method refs) per baksmali.
+
+    Walk every .smali file apktool produced: the classes the tree defines come
+    from its ``.class`` directives, the methods it calls from its ``invoke-*``
+    lines. Whatever is invoked on a class the tree does not define is the
+    import surface, re-derived at instruction level from an independent
+    disassembler rather than from the method_ids table the reader walks.
+    """
+    defined: set[str] = set()
+    targets: set[tuple[str, str]] = set()
+    for smali_path in decoded_dir.rglob("*.smali"):
+        text = smali_path.read_text(encoding="utf-8", errors="replace")
+        for match in _SMALI_CLASS_RE.finditer(text):
+            defined.add(match.group(1))
+        for descriptor, method in _SMALI_INVOKE_RE.findall(text):
+            targets.add((descriptor, method))
+    external = {(d, m) for d, m in targets if d not in defined}
+    classes = {d[1:-1].replace("/", ".") for d, _ in external}
+    return classes, len(external)
+
+
 # The standard Android debug keystore: exact alias/password/DN that Android
 # tooling itself creates, so apk.sign's zero-config default is what gets
 # exercised. Path.home() is read the same way the apktool backend reads it.
@@ -223,6 +254,7 @@ def test_android_apktool_decode_and_repack(tmp_path: Path) -> None:
         # the ground truth comes from a separate --only-manifest decode that
         # renders it to text without touching the stub table.
         reader_flags = created.data["session"]["metadata"]["apk"]["manifest"]
+        reader_dex = created.data["session"]["metadata"]["apk"]["dex"]
         assert reader_flags["debuggable"] is True
         assert reader_flags["launcher_activity"] == "com.example.headless.MainActivity"
         manifest_xml = _apktool_manifest_text(settings.apktool, _FIXTURE, tmp_path)
@@ -298,12 +330,27 @@ def test_android_apktool_decode_and_repack(tmp_path: Path) -> None:
         assert reader_flags["application_name"] == "com.example.headless.HeadlessApp"
 
         # apktool's own baksmali must have disassembled the fixture's class: the
-        # method and the string it returns have to survive DEX -> smali.
+        # method and the string it returns have to survive DEX -> smali, as must
+        # the constructor's up-call into java.lang.Object.
         smali_files = list(decoded_dir.rglob("Sample.smali"))
         assert smali_files, "Sample.smali not found in the decoded tree"
         smali = smali_files[0].read_text(encoding="utf-8", errors="replace")
         assert "getSecret" in smali
         assert "flag{headless-re}" in smali
+        assert "Ljava/lang/Object;-><init>()V" in smali
+
+        # The DEX import surface, re-derived from baksmali's disassembly: the
+        # classes invoked across the smali tree minus the classes the tree
+        # defines. The tool-free reader gets the same answer from the raw
+        # method_ids table; on a dx-shaped DEX (every id row is referenced by
+        # code, as in the fixture) the instruction-level and table-level views
+        # must coincide -- the Android analogue of the ELF gate re-deriving
+        # undefined symbols from readelf.
+        smali_external, smali_ref_count = _smali_external_refs(decoded_dir)
+        assert set(reader_dex["external_classes"]) == smali_external
+        assert reader_dex["external_method_count"] == smali_ref_count
+        assert reader_dex["external_classes"] == ["java.lang.Object"]
+        assert reader_dex["external_method_count"] == 1
 
         repacked = service.apk_repack(session_id, timeout=180.0)
         assert repacked.ok, repacked.error
