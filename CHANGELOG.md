@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（重试 Provider 的零重试预算边界）
+
+- `agent/providers/retrying.py` 的 `stream_chat` 重试循环唯一未覆盖的分支是 `max_attempts=0`
+  时 `range(1, 1)` 为空、循环体一次不进就正常退出（第 68 行的 exit 分支）。此前用例只覆盖了
+  成功、重试后成功、达上限、不可重试、首 token 后不重试、退避封顶、取消不当作故障等路径。
+  在 `tests/unit/test_provider_retry.py` 新增一例：零重试预算下 `stream_chat` 产出空流、
+  从不调用 inner provider、`attempts_made` 停留在初始的 0。`retrying.py` 补齐至 100% 行/分支
+  覆盖，只加测试、不改源码。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

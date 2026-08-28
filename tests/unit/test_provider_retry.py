@@ -166,3 +166,21 @@ async def test_cancellation_is_not_treated_as_a_retryable_fault() -> None:
 async def test_list_models_passes_through() -> None:
     provider = RetryingProvider(ScriptedProvider([]), sleep=_no_sleep)
     assert await provider.list_models() == ["fake"]
+
+
+@pytest.mark.asyncio
+async def test_zero_attempt_budget_yields_nothing_and_never_calls_inner() -> None:
+    """A non-positive attempt budget makes stream_chat an empty stream.
+
+    ``range(1, max_attempts + 1)`` is empty when ``max_attempts`` is 0, so the
+    loop body never runs: no request is sent, the async generator completes
+    without yielding, and ``attempts_made`` is left at its initial 0.
+    """
+    inner = ScriptedProvider([])
+    provider = RetryingProvider(inner, max_attempts=0, sleep=_no_sleep)
+
+    events = await _drain(provider)
+
+    assert events == []
+    assert inner.calls == 0
+    assert provider.attempts_made == 0
