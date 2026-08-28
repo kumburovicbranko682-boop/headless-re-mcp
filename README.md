@@ -390,7 +390,11 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 80 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+  PE-only 工具目标门控经真实 MCP 端到端(跨主机确定性)：UPX/XVLKC/Scylla/de4dot/detect/auto 对
+  APK 与 web 会话一律先报 target_mismatch(无论 CLI 是否安装)——不再把「本机没装 CLI」当成对
+  非 PE 目标的回答;目标检查先于能力检查——即便把 UPX 指向真实可执行,APK 会话仍 target_mismatch
+  且根本不碰 CLI,而 PE 会话越过目标闸、其结果永不是 target_mismatch、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
   浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与

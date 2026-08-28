@@ -18,6 +18,8 @@ CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服�
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
+PE-only 工具目标门控新增经真实 MCP stdio 服务的端到端 Gate（`tests/integration/test_pe_tool_target_gating_gate.py`）。UPX、XVLKC、Scylla、VMPDump、de4dot 以及 detect/auto 脱壳路由都是 PE 工具。把其中之一对准一个 APK 或 web 会话,有两种说「不」的方式,只有一种有用:「这个后端没装」会叫一个没装 UPX 的操作者去装 UPX——而目标是个 UPX 永远碰不了的 APK 时,这是无用的建议;「这个工具不适用于这个目标」才是实话:去用 Android 工具。这些工具携带的修复是让目标检查先跑,于是非 PE 会话无论 CLI 是否安装都以 `target_mismatch` 被拒,调用方绝不会被打发去装一个本就帮不上忙的工具。这个次序就是全部契约,且与主机无关:非 PE 的回答不依赖盒子上有什么,故本 gate 可在裸机上跨真实 MCP stdio 传输钉住它:每个 PE-only 脱壳/去混淆/探测工具对 APK 会话与 web 会话都以 `target_mismatch` 拒绝;且目标检查先于能力检查——即便用 radare 式的 CLI 覆盖把 UPX 指向一个真实、可运行的可执行(后端因而确实可用),APK 会话仍是 `target_mismatch`、CLI 从未被调用,而 PE 会话越过目标闸、走到一个永不是 `target_mismatch` 的工具/分析结果。纯 stdlib 夹具、stdio 回环、无真后端、任意平台。
+
 CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去在 `with subprocess.Popen(...)` 里跑工具，其 `__exit__` 会在调用线程上关闭 stdout/stderr——当被启动进程派生的孙进程继承了这对管道并存活时，读取线程仍阻塞在 `read()` 上持有缓冲区锁，`close()` 便永久阻塞，有界超时变成永久挂起。现不再用上下文管理器：每个读取线程自持其流并在 `read()` 返回后关闭，主线程只回收进程、绝不碰管道。POSIX 下还让工具独立成会话，超时/取消时按进程组整体发信号（限组长，避免误杀服务自身的进程组），从而杀掉 ppid 遍历看不到、已被 init 收养的孙进程（如残留的 JVM/helper）。
 
 die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛：读取线程自持自闭管道、捕获线程只在读取线程已结束时才关句柄，POSIX 下工具独立成会话。de4dot（及复用它的 NETReactorSlayer）正常退出后遗留的 runner 子进程（JVM/dotnet，常被 init 收养）以前 ppid 遍历看不到而泄漏；新增 `collect_process_group` / `terminate_process_group` 按会话组枚举并逐个按各自 `pgrp` 击杀，避免组长 pid 复用误伤无关进程组。
