@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（artifacts.gc 的「越界路径绝不 unlink」保险栓——此前只测了 happy path）
+
+- 背景：`SessionStore.gc_artifacts` 的安全核心是 `_collectable_artifact_path`——artifact 根是
+  库文件的祖父目录,一条解析后不在根下的行(指向根外文件,或指向存库的 `meta/` 目录本身)必须
+  只删掉它那条不可信的元数据行、**绝不** unlink 磁盘上的文件。源码注释明确写着「决不能让 GC 变成
+  任意文件删除原语」,但整个测试面只断言过 `invalid_paths == []`(干净路径),这条保险栓本身没有
+  任何用例守护。`register_artifact` 会拒绝越界路径,所以这种行只可能来自损坏或被手改的库——GC 仍
+  必须对它安全。
+- 新增 `test_gc_never_unlinks_a_row_whose_path_escapes_the_artifact_root`:把库嵌一层,直接 sqlite
+  INSERT 两条恶意行(一条指向根外真实文件、一条指向 `meta/` 下的库文件自身),再加一条合法的最新
+  artifact 触发预算回收,断言两条恶意行进入 `invalid_paths` 且 DB 行被删、但**根外文件与库文件都
+  仍在**、合法 artifact 存活。经变异验证——让越界分支也去 `path.unlink()` 会让该用例失败,还原后
+  通过,证明它真的守住了这条边界。纯加测试、不改源码,`ruff` / `mypy --strict` 干净。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

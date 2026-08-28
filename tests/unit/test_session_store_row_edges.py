@@ -122,6 +122,65 @@ def test_gc_drops_the_row_of_an_artifact_already_gone_from_disk(tmp_path: Path) 
     assert [item["id"] for item in listing["artifacts"]] == [keep["id"]]
 
 
+def test_gc_never_unlinks_a_row_whose_path_escapes_the_artifact_root(tmp_path: Path) -> None:
+    """A corrupted artifact row must not turn GC into an arbitrary-file delete.
+
+    _collectable_artifact_path is the guard: the artifact root is the store db's
+    grandparent, and a row whose resolved path is not under it -- an outside
+    file, or the meta/ directory that holds the database itself -- must have only
+    its (untrusted) metadata row dropped, never the file on disk unlinked.
+    register_artifact would refuse such a path, so the row can only arrive via a
+    corrupted or hand-edited database; GC still has to be safe against it. Only
+    invalid_paths == [] (the clean case) was asserted anywhere, so this fail-safe
+    was unpinned.
+    """
+    # Nest the root one level down so "outside" files still live under tmp_path
+    # (auto-cleaned) yet resolve outside the artifact root.
+    root = tmp_path / "root"
+    store = SessionStore(root / "meta" / "analysis.db")
+    session_id = uuid.uuid4().hex
+
+    outside = tmp_path / "outside" / "secret.bin"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_bytes(b"\xde\xad" * 400)
+    # The db itself lives under meta/, the other explicitly non-collectable form.
+    db_file = store.db_path
+
+    def _inject(path: Path, created_at: str, size: int) -> str:
+        row_id = uuid.uuid4().hex
+        with sqlite3.connect(store.db_path) as conn:
+            conn.execute(
+                "INSERT INTO artifacts(id,session_id,kind,path,size,sha256,source,created_at)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                (row_id, session_id, "dump", str(path), size, "ab" * 32, "corrupt", created_at),
+            )
+            conn.commit()
+        return row_id
+
+    escaped_id = _inject(outside, "2026-01-01T00:00:00+00:00", 800)
+    meta_id = _inject(db_file, "2026-01-01T00:00:01+00:00", 800)
+    # A legitimate newest artifact keeps the never-collect-the-newest rule from
+    # protecting either malicious row, so both are actually reached by the loop.
+    keep_path = root / "dumps" / "keep.bin"
+    keep_path.parent.mkdir(parents=True, exist_ok=True)
+    keep_path.write_bytes(b"\0" * 500)
+    time.sleep(0.002)
+    keep = store.register_artifact(
+        session_id=session_id, kind="dump", path=keep_path, sha256="cd" * 32, source="test"
+    )
+
+    report = store.gc_artifacts(max_total_bytes=100)
+
+    assert set(report["invalid_paths"]) == {escaped_id, meta_id}
+    assert report["removed"] == []
+    # The whole point: neither the outside file nor the database was unlinked.
+    assert outside.is_file(), "GC must never unlink a path outside the artifact root"
+    assert db_file.is_file(), "GC must never unlink its own database under meta/"
+    # The untrusted rows are gone; the legitimate newest artifact survives.
+    listing = store.list_artifacts(session_id)
+    assert [item["id"] for item in listing["artifacts"]] == [keep["id"]]
+
+
 def test_list_audit_tolerates_a_row_with_non_string_summaries(tmp_path: Path) -> None:
     store = _store(tmp_path)
     with sqlite3.connect(store.db_path) as conn:
