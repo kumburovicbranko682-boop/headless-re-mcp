@@ -22,6 +22,13 @@ until 1.0 the tool surface may still change between minor versions.
   index.js/1.js/deobfuscated.js/bundle.json。新增回归单测
   `test_unpack_passes_force_so_an_existing_out_dir_does_not_abort` 钉死 argv 必含 `-f`；
   相邻 jsre 单测（用 `cmd.index("-o")+1` 定位目录，不断言完整 argv）不受影响。
+- 为何 bug 能存活到现在：唯一验 webcrack 的集成 gate（`test_web_re_gate.py`）只测了
+  `js.deobfuscate`（它不写 `-o` 目录，故一直能过），偏偏没测 `js.unpack_bundle`——坏掉的
+  正是后者。补一个 `test_js_unpack_bundle_when_webcrack_present` 进同一 gate：喂一段最小
+  webpack bundle、断言 unpack 成功且产出至少一个文件。实测该用例对 main 的旧客户端**失败**
+  （backend_error "output directory already exists"）、对修后客户端**通过**——正是"当初就能
+  抓到"的真工具覆盖，且防的是真 CLI 回归（fake 单测防不住契约漂移）。它按本仓库
+  "skip != pass" 惯例：webcrack 缺席时显式跳过并说明。
 
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 

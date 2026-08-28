@@ -84,6 +84,40 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
 
 
 @pytest.mark.integration
+def test_js_unpack_bundle_when_webcrack_present(tmp_path: Path) -> None:
+    """js.unpack_bundle must succeed against real webcrack, not just deobfuscate.
+
+    This is the path that broke on modern webcrack: the service hands the client
+    a freshly-mkdir'd output directory, and webcrack >= 2.x aborts with "output
+    directory already exists" unless -f is passed -- so every unpack failed with
+    a backend_error while js.deobfuscate (which writes no -o directory) kept
+    working. The one webcrack case this gate had exercised deobfuscate only, so
+    the break had no real-tool coverage; assert the unpack contract here so a
+    regression surfaces against the actual CLI rather than only against a fake.
+    """
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS unpack Gate not run (skip != pass)")
+    bundle = tmp_path / "bundle.js"
+    # A minimal webpack runtime with two modules; webcrack splits it, but even a
+    # non-bundle would emit index.js, so the assertion only needs a written file.
+    bundle.write_text(
+        "!function(e){var n={};function t(r){if(n[r])return n[r].exports;"
+        "var o=n[r]={i:r,l:!1,exports:{}};return e[r].call(o.exports,o,o.exports,t),"
+        "o.l=!0,o.exports}t.m=e;t(0)}([function(e,n,t){var r=t(1);"
+        "console.log(r.hello())},function(e,n){n.hello=function(){return\"hi\"}}]);",
+        encoding="utf-8",
+    )
+    service = AnalysisService()
+    try:
+        result = service.js_unpack_bundle(str(bundle))
+        assert result.ok, result.error
+        assert result.data["file_count"] >= 1
+        assert result.data["files"], "unpack produced no files"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")
