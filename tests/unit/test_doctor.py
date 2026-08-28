@@ -141,6 +141,37 @@ def test_wabt_objdump_probe_is_missing_when_only_wasm2wat_is_present(
     assert probe_wabt_tool("wabt_objdump", settings, "wasm-objdump").status == ProbeStatus.MISSING
 
 
+def test_node_runtime_is_probed_like_the_jvm_for_the_webcrack_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """doctor must report the Node runtime webcrack needs, not just the JVM.
+
+    webcrack's bin is a `#!/usr/bin/env node` script needing Node 22/24, but the
+    report probed java (for jadx/apktool/ghidra) and nothing for node, so a broken
+    js.deobfuscate setup gave no runtime hint. The node probe mirrors java: found
+    under either `node` or the Debian `nodejs`, it is DETECTED with the resolved
+    path; absent, it is MISSING. The name it was found under is visible so a host
+    with only `nodejs` (no `node` symlink a webcrack shebang needs) is diagnosable.
+    """
+    real_node = tmp_path / "node"
+    real_node.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_module.shutil,
+        "which",
+        lambda cmd: str(real_node) if cmd == "node" else None,
+    )
+    report = run_doctor(_settings(None, tmp_path / "artifacts"))
+    node = next(p for p in report.probes if p.name == "node")
+    assert node.status == ProbeStatus.DETECTED
+    assert node.details.get("node") == str(real_node)
+    assert "nodejs" not in node.details
+
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
+    missing = next(p for p in run_doctor(_settings(None, tmp_path / "artifacts")).probes
+                   if p.name == "node")
+    assert missing.status == ProbeStatus.MISSING
+
+
 def test_radare2_probe_falls_back_to_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

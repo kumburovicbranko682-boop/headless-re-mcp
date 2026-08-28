@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 诊断（doctor 补上 webcrack 的 Node 运行时探针）
+
+- doctor 过去报告 JVM 运行时（`java`，供 jadx/apktool/apksigner/ghidra）却完全不提 Node——
+  而 webcrack 的 bin 是 `#!/usr/bin/env node` 脚本、硬依赖 Node 22/24，`js.deobfuscate` 失败时
+  诊断面给不出任何运行时线索。新增 `node` 探针（按 `java` 的存在性风格，候选 `node` / Debian
+  的 `nodejs`）：命中即 DETECTED 并在 details 里给出命中的名字，便于识别“只有 `nodejs`、缺
+  webcrack shebang 需要的 `node`”这类主机；未命中则 MISSING。仅作诊断，不闸能力（webcrack
+  的 bin 存在几乎必然意味着 node 已装，只是版本可能漂移）。
+
 ### 修复（Android/Web 能力目录与探针把未就绪的工具报成 ready）
 
 - `capabilities.search` / `capabilities.describe` 按 `_CORE_CAPABILITIES` 的

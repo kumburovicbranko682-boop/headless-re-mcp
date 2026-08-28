@@ -207,6 +207,12 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         probe_python_module("playwright", "playwright"),
         probe_python_module("mitmproxy", "mitmproxy"),
         probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
+        # webcrack runs under Node 22/24 (its bin is a `#!/usr/bin/env node`
+        # script), yet doctor reported the JVM runtime for jadx/apktool/ghidra and
+        # nothing for node -- so a broken js.deobfuscate gave no runtime signal.
+        # Report node like java does; on Debian the runtime is `nodejs`, so the
+        # details show which name was found (a webcrack shebang needs `node`).
+        probe_command("node", ("node", "nodejs")),
         probe_wabt_tool("wabt", current, "wasm2wat"),
         probe_wabt_tool("wabt_objdump", current, "wasm-objdump"),
     ]

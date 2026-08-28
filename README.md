@@ -50,7 +50,7 @@ Linux 发布/分发使用标准 wheel 或 sdist；Windows MSI 保持不变。
 | 原生工具链 | VS 2022 Build Tools + CMake + Ninja | `native_toolchain` |
 | 可选 CLI | DIE `diec`（需 `--json`）、UPX、de4dot、NETReactorSlayer、Scylla、XVLKC、r2/rizin、Ghidra、frida、cdb/WinDbg | 各自独立探针，`missing` 不影响 `ready` |
 | Android（可选） | `pip install '.[android]'`（adbutils / androguard / frida）；jadx、apktool、apksigner 需自备 JRE | `androguard`/`adbutils`/`adb`/`jadx`/`apktool`/`apksigner` 各自探针 |
-| Web（可选） | `pip install '.[browser]'`（Playwright，另需 `playwright install chromium`）、`.[proxy]`（mitmproxy）；webcrack 需 Node 22/24，wabt 自备 | `playwright`/`mitmproxy`/`webcrack`/`wabt` 各自探针 |
+| Web（可选） | `pip install '.[browser]'`（Playwright，另需 `playwright install chromium`）、`.[proxy]`（mitmproxy）；webcrack 需 Node 22/24，wabt 自备 | `playwright`/`mitmproxy`/`webcrack`/`node`/`wabt`（`wabt_objdump` 单列）各自探针 |
 
 `python -m headless_re_mcp doctor` 按「当前平台必需 / 可选 / 本平台不支持」分组输出，并单独列出阻塞项与对应修复命令。Linux 必需项只有宿主平台与 Python；Windows 继续要求 IDA 与 x64dbg 双架构运行时。
 
