@@ -41,6 +41,7 @@ _MAX_META_VALUE_CHARS = 4096
 _ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
 _MAX_INTENT_COMPONENTS = 500
 _MAX_INTENT_ITEMS = 100
+_MAX_METHOD_OVERLOADS = 200
 
 
 class ApkError(RuntimeError):
@@ -624,6 +625,73 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    def method_info(
+        self, path: Path, class_name: str, method_name: str
+    ) -> JsonObject:
+        """Parse a method's proto (params, return) and decode its access flags.
+
+        methods lists a class's methods with raw descriptor and access strings;
+        this resolves one method (all overloads of a name) into typed parameters,
+        a return type and boolean flags (is_native, has_code, is_static...). Native
+        methods with no bytecode are the JNI bridge worth chasing next.
+        """
+        parsed = self._parsed(path)
+        klass_target = class_name.strip()
+        method_target = method_name.strip()
+        if not klass_target:
+            raise ApkError("invalid_params", "class_name is required")
+        if not method_target:
+            raise ApkError("invalid_params", "method_name is required")
+
+        smali = _dotted_to_smali(klass_target)
+        found = [
+            klass
+            for klass in parsed.analysis.get_classes()
+            if klass.name == klass_target or klass.name == smali
+        ]
+        if not found:
+            raise ApkError("not_found", "class not found", class_name=class_name)
+
+        overloads: list[JsonObject] = []
+        scan_more = False
+        for klass in found:
+            for method in klass.get_methods():
+                if str(method.name) != method_target:
+                    continue
+                if len(overloads) >= _MAX_METHOD_OVERLOADS:
+                    scan_more = True
+                    break
+                descriptor = str(getattr(method, "descriptor", ""))
+                access = str(getattr(method, "access", ""))
+                proto = _parse_dalvik_proto(descriptor)
+                entry: JsonObject = {
+                    "descriptor": descriptor,
+                    "params": proto["params"],
+                    "return_type": proto["return_type"],
+                    "signature_parsed": proto["parsed"],
+                    "access": access,
+                }
+                entry.update(_decode_method_access(access))
+                overloads.append(entry)
+            if scan_more:
+                break
+
+        if not overloads:
+            raise ApkError(
+                "not_found",
+                "method not found",
+                class_name=class_name,
+                method_name=method_name,
+            )
+
+        return {
+            "class_name": found[0].name,
+            "method_name": method_target,
+            "methods": overloads,
+            "count": len(overloads),
+            "scan_capped": scan_more,
+        }
+
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
         parsed = self._parsed(path)
         seen: set[str] = set()
@@ -714,3 +782,102 @@ def _dotted_to_smali(name: str) -> str:
     if name.startswith("L") and name.endswith(";"):
         return name
     return "L" + name.replace(".", "/") + ";"
+
+
+_DALVIK_PRIMS = {
+    "V": "void",
+    "Z": "boolean",
+    "B": "byte",
+    "S": "short",
+    "C": "char",
+    "I": "int",
+    "J": "long",
+    "F": "float",
+    "D": "double",
+}
+
+
+def _read_dalvik_type(text: str, pos: int) -> tuple[str | None, int]:
+    """Read one Dalvik type descriptor at ``pos``; return (human, next_pos)."""
+    arr = 0
+    while pos < len(text) and text[pos] == "[":
+        arr += 1
+        pos += 1
+    if pos >= len(text):
+        return None, pos
+    ch = text[pos]
+    if ch in _DALVIK_PRIMS:
+        base = _DALVIK_PRIMS[ch]
+        pos += 1
+    elif ch == "L":
+        end = text.find(";", pos)
+        if end == -1:
+            return None, len(text)
+        base = text[pos + 1 : end].replace("/", ".")
+        pos = end + 1
+    else:
+        # Unknown token: cannot know its length; stop to avoid desync.
+        return None, pos + 1
+    return base + "[]" * arr, pos
+
+
+def _parse_dalvik_proto(proto: str) -> JsonObject:
+    """Split a Dalvik method proto ``(params)ret`` into human-readable types.
+
+    androguard formats the proto with stray spaces (e.g. ``(Ljava/lang/String; I)V``)
+    so whitespace is stripped before scanning. ``parsed`` is false when the shape
+    is not a proto we can walk, leaving the raw descriptor as the source of truth.
+    """
+    result: JsonObject = {"params": [], "return_type": None, "parsed": False}
+    text = (proto or "").strip()
+    if not text.startswith("("):
+        return result
+    close = text.find(")")
+    if close == -1:
+        return result
+    param_str = text[1:close].replace(" ", "")
+    ret_str = text[close + 1 :].replace(" ", "")
+
+    params: list[str] = []
+    pos = 0
+    while pos < len(param_str):
+        human, nxt = _read_dalvik_type(param_str, pos)
+        if human is None or nxt <= pos:
+            return result
+        params.append(human)
+        pos = nxt
+
+    return_type: str | None = None
+    if ret_str:
+        return_type, _ = _read_dalvik_type(ret_str, 0)
+
+    result["params"] = params
+    result["return_type"] = return_type
+    result["parsed"] = True
+    return result
+
+
+def _decode_method_access(access: str) -> JsonObject:
+    """Decode an androguard access-flag string into booleans (order-free)."""
+    tokens = (access or "").split()
+    flags = set(tokens)
+
+    def has(token: str) -> bool:
+        return token in flags
+
+    return {
+        "flags": tokens,
+        "is_public": has("public"),
+        "is_private": has("private"),
+        "is_protected": has("protected"),
+        "is_static": has("static"),
+        "is_final": has("final"),
+        "is_synchronized": has("synchronized") or has("declared_synchronized"),
+        "is_native": has("native"),
+        "is_abstract": has("abstract"),
+        "is_synthetic": has("synthetic"),
+        "is_varargs": has("varargs"),
+        "is_constructor": has("constructor"),
+        # A method carries bytecode unless it is native or abstract.
+        "has_code": not (has("native") or has("abstract")),
+    }

@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **283（166 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **284（167 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -425,6 +425,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   属性缺省时为 null 走平台默认)、`actions`/`categories`、`data`(过滤字典列表)、`schemes`(去重的
   scheme)、`deep_link`(有 scheme 即 true)与 `has_more`(该组件 action/category 被截)。带自定义
   scheme 或 MAIN/LAUNCHER 的导出组件是首先要看的攻击面。
+- 新增 `apk.method_info`:把某个方法的原型和访问标志解开。`apk.methods` 只按名字/原型串/标志串列;
+  这里把一个方法(同名的全部重载)解析成带类型的参数与返回类型,并把标志串译成布尔:is_native、
+  has_code、is_static 等。native 且 has_code 为 false 的方法就是接下来该追进 `apk.native_libs` 的
+  JNI 桥。回 `class_name`、`method_name`、`methods`、`count`、`scan_capped`。每个 methods 行带
+  `descriptor`、`params`(人类可读类型,如 java.lang.String、byte[])、`return_type`、
+  `signature_parsed`(原型走不通时为 false,以 descriptor 为准)、`access`(原始标志串)、`flags`(其分词)
+  与布尔 is_public/is_private/is_protected/is_static/is_final/is_synchronized/is_native/is_abstract/
+  is_synthetic/is_varargs/is_constructor,外加 `has_code`(native 或 abstract 时为 false)。类或方法找
+  不到报 `not_found`;会话不是 APK 报 `target_mismatch`。
 
 ### 新增（Android 清单元数据）
 

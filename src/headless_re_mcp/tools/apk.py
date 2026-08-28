@@ -188,6 +188,35 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="apk.method_info")
+    def apk_method_info(
+        session_id: str,
+        class_name: str,
+        method_name: str,
+    ) -> dict[str, Any]:
+        """Resolve one method's signature and decode its access flags.
+
+        apk.methods lists a class's methods with raw descriptor and access
+        strings; this parses one method (class dotted or Lsmali/form) into
+        typed parameters and a return type, and decodes the flags into
+        booleans. All overloads of the name are returned. A native method
+        whose has_code is false is the JNI bridge worth chasing into
+        apk.native_libs.
+
+        Answers with class_name, method_name, methods, count and scan_capped.
+        Each methods row carries descriptor, params (human types, e.g.
+        java.lang.String, byte[]), return_type, signature_parsed (false when
+        the proto could not be walked, leaving descriptor authoritative),
+        access (the raw flag string), flags (its tokens) and booleans
+        is_public/is_private/is_protected/is_static/is_final/is_synchronized/
+        is_native/is_abstract/is_synthetic/is_varargs/is_constructor plus
+        has_code (false for native or abstract methods).
+
+        A missing class or method is reported not_found; a session that is not
+        an APK is refused target_mismatch.
+        """
+        return _dump(analysis.apk_method_info(session_id, class_name, method_name))
+
     @tools.tool(name="apk.strings")
     def apk_strings(
         session_id: str,
