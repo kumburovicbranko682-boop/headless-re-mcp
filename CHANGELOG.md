@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（SSE 事件流在终态标志与终态帧之间的空窗关闭，丢 run.completed/failed 帧）
+
+- 执行器收尾时先 `transition()` 把 run 置为终态、后 `append_event()` 写
+  run.completed/failed/cancelled/rejected 帧。`/api/agent/runs/{id}/events`
+  的生成器以"状态终态且本轮批量为空"为关闭条件，若恰好在两次 store 写入的
+  空窗里轮询，就带着未发送的终态帧直接关流：客户端永远收不到 run 结束事件，
+  把正常跑完的 run 当成断流处理（前端据此弹"事件推送断了"，失败 run 的
+  失败原因也随帧一起丢失）。改为终态下连续两轮空读才关闭——终态帧在状态翻转
+  后微秒级落库，一个 0.25s 的宽限轮询足以接住它再正常关流。新增回归测试用
+  monkeypatch 精确复刻"首次空读后帧才落库"的空窗时序：旧代码丢帧失败、新
+  代码收到 `event: run.failed` 通过。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

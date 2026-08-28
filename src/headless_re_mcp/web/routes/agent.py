@@ -375,6 +375,7 @@ def register_agent_routes(
         async def generate() -> AsyncIterator[bytes]:
             cursor = after
             idle = 0
+            terminal_and_drained = False
             while True:
                 batch = await asyncio.to_thread(store.list_events, run_id, after=cursor)
                 for event in batch:
@@ -385,7 +386,19 @@ def register_agent_routes(
                 if run is None:
                     break
                 if run.status in TERMINAL_RUN_STATUSES and not batch:
-                    break
+                    # The executor flips the status terminal one store write
+                    # *before* it appends the run.completed/failed/cancelled/
+                    # rejected frame, so a single empty read here can land in
+                    # that gap. Closing immediately drops the terminal frame:
+                    # the client never learns the run finished and reports a
+                    # completed run as a broken stream. Give the frame one
+                    # more poll cycle to land; break only after two empty
+                    # reads in a row while terminal.
+                    if terminal_and_drained:
+                        break
+                    terminal_and_drained = True
+                else:
+                    terminal_and_drained = False
                 if not batch:
                     idle += 1
                     if idle >= 10:

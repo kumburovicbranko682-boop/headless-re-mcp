@@ -255,6 +255,41 @@ def test_event_stream_drains_then_closes_on_a_terminal_run(app_client: Any) -> N
     assert "event: llm.started" in reply.text
 
 
+def test_event_stream_waits_for_a_terminal_frame_written_after_the_status_flips(
+    app_client: Any, monkeypatch: Any
+) -> None:
+    """The executor marks a run terminal one store write before it appends the
+    run.failed/completed frame. A stream that polls inside that gap must not
+    close on the first empty read, or the terminal frame is never delivered
+    and the client treats a finished run as a dropped connection."""
+    client, app = app_client
+    thread_id = _thread(client)
+    store = app.state.agent_store
+    run = store.create_run(thread_id, provider_profile="default", model="fake", deadline_seconds=30)
+    # Status already flipped, terminal frame not yet appended: the racy gap.
+    store.transition(run.id, RunStatus.FAILED, error="boom")
+
+    real_list_events = store.list_events
+    state = {"gap_seen": False, "appended": False}
+
+    def list_events_in_the_gap(run_id: str, after: int = 0) -> Any:
+        # The frame lands one poll *after* the stream first reads an empty
+        # batch on the terminal run -- the exact window the executor's
+        # transition-then-append ordering leaves open.
+        if state["gap_seen"] and not state["appended"]:
+            store.append_event(run.id, "run.failed", {"status": "failed", "error": "boom"})
+            state["appended"] = True
+        result = real_list_events(run_id, after=after)
+        if not result and not state["appended"]:
+            state["gap_seen"] = True
+        return result
+
+    monkeypatch.setattr(store, "list_events", list_events_in_the_gap)
+    reply = client.get(f"/api/agent/runs/{run.id}/events")
+    assert reply.status_code == 200
+    assert "event: run.failed" in reply.text
+
+
 # --- personas ---------------------------------------------------------------
 
 
