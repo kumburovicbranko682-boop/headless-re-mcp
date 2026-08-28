@@ -36,6 +36,16 @@ export function WebMonitor({ sessionId, locator, live, onSessionMissing, onSessi
   const openedRef = useRef(false);
   const frameUrlRef = useRef<string | null>(null);
   const capturingRef = useRef(false);
+  // The panel swaps sessionId without remounting, and both loops apply their
+  // results with an unconditional setState after an await. Two loads racing --
+  // a heavy web session (20 network rows, console, scripts, a screenshot) slow,
+  // a fresh one fast -- let the old session's late response land last and paint
+  // its requests, console and even its screenshot onto the session the user
+  // switched to. The 2s/4s polls heal it, but a reordered slow response holds
+  // the wrong session on screen until the next tick. Track the latest sessionId
+  // and drop any continuation whose captured id is no longer current.
+  const currentSession = useRef(sessionId);
+  currentSession.current = sessionId;
 
   useEffect(() => { setNav(locator ?? ""); }, [locator]);
 
@@ -45,6 +55,7 @@ export function WebMonitor({ sessionId, locator, live, onSessionMissing, onSessi
     }
     try {
       const result = await api<Envelope<WebStatus>>(`/api/sessions/${encodeURIComponent(sessionId)}/web/status`);
+      if (currentSession.current !== sessionId) return;
       if (result.ok === false) {
         const message = result.error?.message ?? "浏览器状态不可用";
         const gone = isSessionGone(result.error, message);
@@ -64,10 +75,12 @@ export function WebMonitor({ sessionId, locator, live, onSessionMissing, onSessi
         api<Envelope<{ console?: ConsoleRow[] }>>(`/api/sessions/${encodeURIComponent(sessionId)}/web/console?limit=20`),
         api<Envelope<{ scripts?: ScriptRow[] }>>(`/api/sessions/${encodeURIComponent(sessionId)}/web/scripts?limit=20`),
       ]);
+      if (currentSession.current !== sessionId) return;
       setRequests(network.data?.requests ?? []);
       setConsoleLines(logs.data?.console ?? []);
       setScripts(listed.data?.scripts ?? []);
     } catch (reason) {
+      if (currentSession.current !== sessionId) return;
       setError(String(reason));
     }
   }, [onSessionMissing, sessionId]);
@@ -77,6 +90,9 @@ export function WebMonitor({ sessionId, locator, live, onSessionMissing, onSessi
     capturingRef.current = true;
     try {
       const blob = await apiBlob(`/api/sessions/${encodeURIComponent(sessionId)}/web/preview`);
+      // Bail before creating the object URL so a stale frame is neither shown
+      // nor leaked: the reset effect already dropped this session's preview.
+      if (currentSession.current !== sessionId) return;
       const next = URL.createObjectURL(blob);
       if (frameUrlRef.current) URL.revokeObjectURL(frameUrlRef.current);
       frameUrlRef.current = next;
@@ -133,6 +149,7 @@ export function WebMonitor({ sessionId, locator, live, onSessionMissing, onSessi
         await load();
         await capture();
       } catch (reason) {
+        if (currentSession.current !== sessionId) return;
         setError(String(reason));
       }
     })();

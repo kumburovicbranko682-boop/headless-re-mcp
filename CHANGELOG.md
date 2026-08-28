@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（切换会话后，Web 监视面板可能停留在上一个会话的迟到数据/截图上）
+
+- `WebMonitor` 与检查器的五个面板同病：切换 `sessionId` 时不重挂载，只换 prop，而
+  `load` 的两个 `await`（`web/status` 后、`web/network|console|scripts` 的 `Promise.all`
+  后）和 `capture` 的 `apiBlob(web/preview)` 都在 await 之后无条件 `setState`。两次加载
+  竞速时——旧会话数据多（20 条网络行、控制台、脚本、一帧截图）响应慢、新会话响应快——
+  旧会话的迟到响应最后落地，把它的请求列表、控制台、脚本，甚至 `URL.createObjectURL`
+  出来的截图 blob 画到用户已经切过去的新会话上。2 秒/4 秒轮询能自愈，但一个乱序的慢响应
+  会把错误会话按在屏幕上直到下一拍。上一批修复覆盖了 `Inspector.tsx` 的五个面板与
+  `FindingsPanel`，`WebMonitor`（和 `ApkMonitor`）不在其列——这里补上 `WebMonitor`。
+  改法：用 `useRef` 跟踪最新 `sessionId`，`load` 在每个 `await` 之后、`capture` 在建
+  object URL 之前比对发起时捕获的会话与最新 prop，不一致即丢弃（`capture` 提前返回，
+  既不显示也不泄漏那一帧）；`load` 与自动打开效应的 catch 也同样守卫，挡住旧会话的过期
+  错误。`ApkMonitor` 只在用户点击时加载、无轮询，竞态窗口极小，未改。
+- 回归测试：新增 `WebMonitor.test.tsx`，让会话 a 的 `web/status` 悬置、切到会话 b 并
+  渲染其网络行，再放行 a 的迟到响应，断言面板仍显示 b 的请求而非 a 的。旧代码下如实失败
+  （面板出现 `https://a/req`）。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
