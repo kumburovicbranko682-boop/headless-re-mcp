@@ -430,6 +430,14 @@ class AdbBackend:
                     "timeout", f"adb timed out after {_ADB_PROBE_TIMEOUT_S:g}s"
                 ) from exc
             raise AdbError("backend_error", f"failed to list devices: {exc}") from exc
+        # Sort before the cap, not after: adb hands devices back in its own
+        # order, so a farm with more than _MAX_DEVICES attached would return an
+        # arbitrary slice -- which serials are visible, and which are stranded
+        # past the cap, would shift run to run. Sort by serial (the id every
+        # other device call keys on) so the page is a real alphabetical prefix,
+        # the same honesty packages and properties already hold: a serial that
+        # sorts within the page but is absent is genuinely not attached.
+        items.sort(key=lambda row: row["serial"])
         has_more = len(items) > _MAX_DEVICES
         page = items[:_MAX_DEVICES]
         return {"devices": page, "count": len(page), "has_more": has_more}

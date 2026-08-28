@@ -24,6 +24,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### device.list 补齐“先排序再切页”：设备列表在 _MAX_DEVICES(64) 处截断却不排序，超限时可见/被弃的 serial 随 adb 枚举序逐次漂移——改为按 serial 排序后再截，向 packages / properties 的诚实范式看齐
+
+- `AdbBackend.list_devices` 过去 `page = items[:_MAX_DEVICES]` 直接切 adb 交回的原始顺序,只置 `has_more`。同门的
+  `device.packages`(`names.sort()`)与 `device.properties`(`sorted(props.items())`)早已确立“先排序再切页”,唯独设备
+  列表漏了:一旦某设备农场 / CI 机架挂载超过 64 台(`_MAX_DEVICES=64`),返回的 64 台便是 adb 枚举序的任意一段——
+  哪些 serial 可见、哪些被弃在截断之外,会随枚举顺序逐次漂移,且 `has_more=True` 之外并无 offset 可达其余。这与
+  已修的 classes / strings / packages / applications 同属“截断但不排序 → 首页不诚实、超限不可达”的缺口。改为
+  `items.sort(key=lambda row: row["serial"])` 后再截:页面成为按 serial(每个其它设备调用都以之为键)的真字母序
+  前缀,一个落在页内字母区间却缺席的 serial 即“确未挂载”,而非“被任意切点甩到页外”。`device.list` docstring
+  同步补上与 packages / properties 一致的诚实措辞(devices 按 serial 排序、截断页为字母序最前、has_more 义)。
+- `test_adb_list_devices_shaping.py`:原两条“行整形”用例的 `devices` 断言顺序随之改为 serial 序(整形意图不变,
+  只是顺序如今由排序决定);新增 `test_the_capped_page_is_the_serial_sorted_prefix_not_a_raw_adb_slice`——以逆序
+  交回、超 `_MAX_DEVICES` 的 `d000..` 行,要求页面仍是字母序最前的 `_MAX_DEVICES` 个(头 `d000`、窗口严格升序、
+  尾 `d{cap-1}`、越过 cap 的高位 serial 缺席)。既有 cap 用例喂的是升序 `emulator-0..`,排不排序都过,只钉溢出旗标;
+  逆序用例才真正钉住排序。以“临时删掉 `items.sort`”验证非空过:三条依赖排序的用例(含两条整形)齐失败
+  (溢出用例首元素变成逆序头 `d073`),恢复后 144 条 adb/device 用例全绿。
+
 ### 测试（超大解压树 backstop 的三个调用点，apk.decompile 一直没被任何测试驱动——补钉该第三站，把守卫 docstring “去掉任一处都会静默回归” 的承诺真正落成强制）
 
 - `_refuse_oversized_tree` 是 `check_zip_expansion`（声明尺寸预检）之外的第二层防线:一个 central directory 诚实、

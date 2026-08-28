@@ -4,11 +4,16 @@
 releases expose ``client.list()`` returning objects with ``serial`` / ``state``,
 some return ``(serial, state)`` tuples, and older ones only offer
 ``device_list()`` of connected devices. ``_device_info_row`` is the shim that
-flattens all three to ``{"serial", "state"}``, and the result is capped at
-``_MAX_DEVICES`` with a ``has_more`` flag. A shim that quietly returns blank
-serials after an adbutils upgrade would make every device unaddressable while
-the call still looks like it succeeded, so the shapes are pinned here with a
-fake client -- no adbutils, no emulator.
+flattens all three to ``{"serial", "state"}``, and the result is sorted by
+serial and then capped at ``_MAX_DEVICES`` with a ``has_more`` flag. A shim that
+quietly returns blank serials after an adbutils upgrade would make every device
+unaddressable while the call still looks like it succeeded, so the shapes are
+pinned here with a fake client -- no adbutils, no emulator.
+
+The rows below are asserted in serial order because ``list_devices`` sorts
+before it caps: a farm with more than the cap attached must return a real
+alphabetical prefix, not an arbitrary adb-order slice whose visible serials
+shift run to run (see the sort-before-cap test at the end).
 """
 
 from __future__ import annotations
@@ -52,24 +57,24 @@ def _backend_with_client(client: Any) -> AdbBackend:
 
 
 def test_attribute_style_rows_are_shaped() -> None:
-    """Objects with serial/state flatten to those two fields."""
+    """Objects with serial/state flatten to those two fields (serial-sorted)."""
     client = _ListClient([_Info("emulator-5554", "device"), _Info("abc123", "unauthorized")])
     payload = _backend_with_client(client).list_devices()
     assert payload["devices"] == [
-        {"serial": "emulator-5554", "state": "device"},
         {"serial": "abc123", "state": "unauthorized"},
+        {"serial": "emulator-5554", "state": "device"},
     ]
     assert payload["count"] == 2
     assert payload["has_more"] is False
 
 
 def test_tuple_style_rows_are_shaped() -> None:
-    """(serial, state) tuples flatten the same way as objects."""
+    """(serial, state) tuples flatten the same way as objects (serial-sorted)."""
     client = _ListClient([("emulator-5554", "device"), ("192.168.0.2:5555", "offline")])
     payload = _backend_with_client(client).list_devices()
     assert payload["devices"] == [
-        {"serial": "emulator-5554", "state": "device"},
         {"serial": "192.168.0.2:5555", "state": "offline"},
+        {"serial": "emulator-5554", "state": "device"},
     ]
 
 
@@ -104,3 +109,35 @@ def test_exactly_the_cap_is_not_flagged_as_overflow() -> None:
     payload = _backend_with_client(_ListClient(rows)).list_devices()
     assert payload["count"] == _MAX_DEVICES
     assert payload["has_more"] is False
+
+
+def test_the_capped_page_is_the_serial_sorted_prefix_not_a_raw_adb_slice() -> None:
+    """Devices arrive reverse-ordered and overflow the cap: the page must be the
+    serial-sorted prefix, so which serials are visible does not depend on adb order.
+
+    The cap test above feeds ``emulator-0..emulator-N`` in ascending order, so it
+    passes whether or not ``list_devices`` sorts -- it pins the overflow flag, not
+    the ordering. Here adb hands the rows back in descending serial order and more
+    than ``_MAX_DEVICES`` are attached; the returned page must still be the
+    alphabetically first ``_MAX_DEVICES`` serials. A dropped ``items.sort`` would
+    return the descending adb-order slice (its first serial ``d{last}``), so the
+    ``d000`` head and the strictly-ascending window below would both fail. That
+    sorted prefix is the honesty ``packages`` and ``properties`` already hold: a
+    serial absent from within the page's alphabetical range is genuinely not
+    attached, not merely stranded past an arbitrary cut, and the visible set does
+    not shift run to run with adb's enumeration order.
+    """
+    # Zero-padded so string order is unambiguous, handed back in reverse.
+    rows = [
+        _Info(f"d{index:03d}", "device")
+        for index in reversed(range(_MAX_DEVICES + 10))
+    ]
+    payload = _backend_with_client(_ListClient(rows)).list_devices()
+    serials = [row["serial"] for row in payload["devices"]]
+    assert len(serials) == _MAX_DEVICES
+    assert payload["has_more"] is True
+    assert serials[0] == "d000"
+    assert serials == sorted(serials)
+    assert serials[-1] == f"d{_MAX_DEVICES - 1:03d}"
+    # The 10 highest serials sort past the cap and are absent from the page.
+    assert f"d{_MAX_DEVICES:03d}" not in serials
