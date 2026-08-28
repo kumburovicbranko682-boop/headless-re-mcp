@@ -52,6 +52,44 @@ _MAX_CLASS_FIELDS = 500
 _MAX_INTERFACES = 100
 _MAX_USES_FEATURES = 300
 _MAX_USES_LIBRARIES = 300
+# apk.declared_permissions: bound the app's own <permission> / <permission-tree>
+# / <permission-group> declarations. protectionLevel is a bitfield -- the low
+# nibble is the base and the high bits are flags -- so it is decoded here from
+# either the source-XML name form or the compiled AXML integer form.
+_MAX_DECLARED_PERMISSIONS = 500
+_PROTECTION_BASE = {
+    0: "normal",
+    1: "dangerous",
+    2: "signature",
+    3: "signatureOrSystem",
+}
+_PROTECTION_FLAGS = {
+    0x10: "privileged",
+    0x20: "development",
+    0x40: "appop",
+    0x80: "pre23",
+    0x100: "installer",
+    0x200: "verifier",
+    0x400: "preinstalled",
+    0x800: "setup",
+    0x1000: "instant",
+    0x2000: "runtime",
+    0x4000: "oem",
+    0x8000: "vendorPrivileged",
+    0x10000: "systemTextClassifier",
+    0x20000: "configurator",
+    0x40000: "incidentReportApprover",
+    0x80000: "appPredictor",
+    0x100000: "companion",
+    0x200000: "retailDemo",
+    0x400000: "recents",
+    0x800000: "role",
+    0x1000000: "knownSigner",
+}
+# A base any third-party app can hold: normal is auto-granted and dangerous is
+# grantable with user consent, so either one guarding an exported component is a
+# privilege-escalation door. signature and above are not.
+_WEAK_PROTECTION_BASES = frozenset({"normal", "dangerous"})
 # apk.providers caps: bound the provider list, each provider's authorities, and
 # its child <path-permission>/<grant-uri-permission> elements.
 _MAX_PROVIDERS = 500
@@ -242,6 +280,47 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
         items.append(str(item))
     items.sort()
     return items, has_more
+
+
+def _decode_protection_level(raw: str | None) -> tuple[str, list[str]]:
+    """Decode android:protectionLevel into its base level and flag names.
+
+    Two forms reach us: source manifests write names ("signature|privileged"),
+    while a compiled AndroidManifest.xml carries the integer bitfield androguard
+    surfaces ("0x12"). The low nibble is the base level; higher bits are flags.
+    When the attribute is absent the platform default is ``normal`` -- the loose
+    end this tool exists to catch -- so an absent level decodes to ``normal``.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return "normal", []
+    try:
+        value = int(text, 0)
+    except ValueError:
+        value = None
+    if value is not None:
+        base = _PROTECTION_BASE.get(value & 0xF, "unknown")
+        flags = [name for bit, name in _PROTECTION_FLAGS.items() if value & bit]
+        return base, flags
+    base = "normal"
+    base_set = False
+    flags = []
+    aliases = {
+        "normal": "normal",
+        "dangerous": "dangerous",
+        "signature": "signature",
+        "signatureorsystem": "signatureOrSystem",
+    }
+    for token in (part.strip() for part in text.split("|")):
+        if not token:
+            continue
+        canonical = aliases.get(token.lower())
+        if canonical is not None and not base_set:
+            base = canonical
+            base_set = True
+        else:
+            flags.append(token)
+    return base, flags
 
 
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
@@ -478,6 +557,92 @@ class ApkClient:
             "requested_permissions": requested,
             "count": len(declared),
             "has_more": declared_more or requested_more,
+        }
+
+    def declared_permissions(self, path: Path) -> JsonObject:
+        """List the app's own <permission> declarations and their protection.
+
+        permissions lists what the app *uses*; this lists what it *defines* --
+        the custom permissions that gate its own components. The decisive field
+        is protectionLevel: a permission left at the default, or set to normal or
+        dangerous, can be held by any third-party app, so if it guards an
+        exported activity/service/receiver/provider it is a privilege-escalation
+        door (permission squatting). signature and above are safe. Each entry is
+        reported with its decoded protection_level, any protection_flags, its
+        permission_group, and weak_protection (true when the base is normal or
+        dangerous). weak_count folds those up; permission_groups and
+        permission_trees list the app's <permission-group>/<permission-tree>
+        declarations. Only the app's declarations are returned -- for the
+        permissions it requests, use apk.permissions.
+        """
+        apk = self._apk(path)
+        root = apk.get_android_manifest_xml()
+        empty: JsonObject = {
+            "permissions": [],
+            "permission_groups": [],
+            "permission_trees": [],
+            "count": 0,
+            "total": 0,
+            "weak_count": 0,
+            "has_more": False,
+        }
+        if root is None:
+            return empty
+
+        def _attr(element: Any, name: str) -> str | None:
+            value = element.get(_ANDROID_NS + name)
+            if value is None or str(value) == "":
+                return None
+            return str(value)[:_MAX_META_VALUE_CHARS]
+
+        permissions: list[JsonObject] = []
+        total = 0
+        weak_count = 0
+        has_more = False
+        for element in root.iter("permission"):
+            total += 1
+            if len(permissions) >= _MAX_DECLARED_PERMISSIONS:
+                has_more = True
+                continue
+            raw_level = _attr(element, "protectionLevel")
+            base, flags = _decode_protection_level(raw_level)
+            weak = base in _WEAK_PROTECTION_BASES
+            if weak:
+                weak_count += 1
+            permissions.append(
+                {
+                    "name": _attr(element, "name"),
+                    "protection_level": base,
+                    "protection_flags": flags,
+                    "protection_level_raw": raw_level,
+                    "permission_group": _attr(element, "permissionGroup"),
+                    "label": _attr(element, "label"),
+                    "weak_protection": weak,
+                }
+            )
+
+        def _named(tag: str) -> tuple[list[JsonObject], bool]:
+            rows: list[JsonObject] = []
+            cut = False
+            for element in root.iter(tag):
+                if len(rows) >= _MAX_DECLARED_PERMISSIONS:
+                    cut = True
+                    break
+                rows.append(
+                    {"name": _attr(element, "name"), "label": _attr(element, "label")}
+                )
+            return rows, cut
+
+        groups, groups_more = _named("permission-group")
+        trees, trees_more = _named("permission-tree")
+        return {
+            "permissions": permissions,
+            "permission_groups": groups,
+            "permission_trees": trees,
+            "count": len(permissions),
+            "total": total,
+            "weak_count": weak_count,
+            "has_more": has_more or groups_more or trees_more,
         }
 
     def certificates(self, path: Path) -> JsonObject:

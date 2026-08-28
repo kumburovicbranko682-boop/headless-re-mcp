@@ -269,6 +269,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "apk.open",
         "apk.manifest",
         "apk.permissions",
+        "apk.declared_permissions",
         "apk.certificates",
         "apk.security",
         "apk.components",

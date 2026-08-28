@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **334（216 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **335（217 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -368,6 +368,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
   `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
   `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
+
+### 新增（Android 自定义权限声明）
+
+- 新增 `apk.declared_permissions`:把权限视图补上"应用自己定义的那一半"——`apk.permissions` 列的是应用
+  *请求*的权限,这个列的是应用*声明*的 `<permission>`,也就是给自家组件把门的自定义权限。要害字段是
+  protectionLevel:normal、dangerous 或干脆没写(平台默认 normal),任何第三方应用都能拿到,一旦这种权限守着
+  一个导出的 activity/service/receiver/provider,就是一道越权门(permission squatting);signature 及以上才安全。
+  protectionLevel 有两种形态都能解:源清单写名字(`signature|privileged`),编译后的 AXML 是 androguard 交出来的
+  整数位域(低半字节是基级、高位是标志,如 `0x12`),这里统一解成 protection_level(基级:normal/dangerous/
+  signature/signatureOrSystem/unknown,缺省按 normal)、protection_flags(privileged/development/appop…)与
+  protection_level_raw(原样字面,或 null)。每条权限还带 name、permission_group、label 与 weak_protection(基级为
+  normal 或 dangerous 时为真);weak_count 把弱保护的条数折起来。permission_groups/permission_trees 列出应用的
+  `<permission-group>`/`<permission-tree>` 声明。只回应用自己的声明——请求的权限用 `apk.permissions`。
+  `<uses-permission>` 是请求不是声明,不计入。列表有界(命中上限置 has_more);非 APK 会话回 target_mismatch。
 
 ### 新增（Web 动态：WebSocket 抓取）
 

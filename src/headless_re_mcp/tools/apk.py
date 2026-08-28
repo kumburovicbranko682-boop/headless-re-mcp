@@ -398,6 +398,32 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_uses_features(session_id))
 
+    @tools.tool(name="apk.declared_permissions")
+    def apk_declared_permissions(session_id: str) -> dict[str, Any]:
+        """List the custom <permission>s the app declares, with protection level.
+
+        apk.permissions lists what the app requests; this lists what it defines
+        -- the custom permissions gating its own components. The security signal
+        is protectionLevel: normal, dangerous, or left at the default can be held
+        by any third-party app, so such a permission guarding an exported
+        component is a privilege-escalation door (permission squatting).
+        signature and above are safe.
+
+        Answers with permissions, permission_groups, permission_trees, count,
+        total, weak_count (how many permissions have a weak base) and has_more
+        (a list hit its cap). Each permission carries name; protection_level (the
+        decoded base: normal, dangerous, signature, signatureOrSystem, or unknown
+        -- from the source name or the compiled AXML integer, defaulting to
+        normal when absent); protection_flags (privileged, development, appop,
+        ...); protection_level_raw (the literal, or null); permission_group;
+        label; and weak_protection (true when the base is normal or dangerous).
+        Each group/tree carries name and label. For requested permissions use
+        apk.permissions.
+
+        A session that is not an APK is refused target_mismatch.
+        """
+        return _dump(analysis.apk_declared_permissions(session_id))
+
     @tools.tool(name="apk.api_usage")
     def apk_api_usage(session_id: str) -> dict[str, Any]:
         """Scan the call graph for sensitive-API usage, grouped by threat category.

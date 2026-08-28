@@ -1,6 +1,6 @@
 # Headless RE-MCP
 
-Windows 与 Linux x86_64 上的无分析器窗口逆向 MCP（v0.2.1）。跨平台核心包含 MCP/Web 服务、会话管理、纯 Python 检测与 Android/Web/Ghidra/radare2 等可移植后端；授权 IDA `idalib` 可按宿主平台选配，Windows 另提供 x64dbg `headless.exe` 动态调试和 Win32 UI 能力。334 个受限语义工具供 Cursor 等 MCP 客户端调用；不开放任意调试器命令、不开放任意 JS 求值、不开放 `adb shell` 透传。
+Windows 与 Linux x86_64 上的无分析器窗口逆向 MCP（v0.2.1）。跨平台核心包含 MCP/Web 服务、会话管理、纯 Python 检测与 Android/Web/Ghidra/radare2 等可移植后端；授权 IDA `idalib` 可按宿主平台选配，Windows 另提供 x64dbg `headless.exe` 动态调试和 Win32 UI 能力。335 个受限语义工具供 Cursor 等 MCP 客户端调用；不开放任意调试器命令、不开放任意 JS 求值、不开放 `adb shell` 透传。
 
 变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -132,7 +132,7 @@ OpenAI 不允许函数名带点，导出会做安全名转换并附 `name_map` �
 - Workflow：`workflow.*`
 - 检测/脱壳（可选外部 CLI）：`detect.*`、`unpack.*`（非通杀承诺；`claims_universal_unpack=false`）
 - 目标 UI（有界）：Win32 交互与截图；UIA/OCR/SendInput 为实验路径，勿默认依赖
-- Android 静态：`apk.open/manifest/permissions/certificates/security/components/exported_components/intent_filters/meta_data/uses_features/native_libs/native_methods/api_usage/providers/dex_headers/files/classes/methods/method_info/class_info/strings/urls/secrets/xrefs`（androguard 进程内；`apk.secrets` 与 `js.secrets` 共用凭据表，扫 DEX 常量里的硬编码密钥）、`apk.decompile/export_sources`（jadx CLI）
+- Android 静态：`apk.open/manifest/permissions/declared_permissions/certificates/security/components/exported_components/intent_filters/meta_data/uses_features/native_libs/native_methods/api_usage/providers/dex_headers/files/classes/methods/method_info/class_info/strings/urls/secrets/xrefs`（androguard 进程内；`apk.declared_permissions` 解码自定义 `<permission>` 的 protectionLevel，弱保护即越权面；`apk.secrets` 与 `js.secrets` 共用凭据表，扫 DEX 常量里的硬编码密钥）、`apk.decompile/export_sources`（jadx CLI）
 - Android 改包：`apk.decode/repack/sign`（apktool + apksigner；`apk.sign` 缺省用 Android debug keystore）
 - Android 设备：`device.list/connect/info/properties/packages/install/uninstall/launch/force_stop/current_activity/logcat/screenshot/pull/push/forward`
 - Android 动态：`frida.devices/device.connect/server.ensure/applications/spawn/java.classes/java.methods`；hook 复用 `frida.hook.template`（含 `android_ssl_unpin` / `android_crypto_monitor` / `android_root_bypass`）
@@ -207,7 +207,7 @@ worker 进程真正死亡时只上报不自动重启：重启后的调试器不�
 
 `local_full_access: false` 会让所有会改变状态或写文件的工具返回 `write_disabled` 错误，
 只读查询不受影响。工具仍然可见——调用方拿到的是能理解的拒绝，而不是工具凭空消失。
-334 个工具的读写归类（216 只读 / 118 写）在 `tools/catalog.py` 里逐个显式声明，策略在调用时
+335 个工具的读写归类（217 只读 / 118 写）在 `tools/catalog.py` 里逐个显式声明，策略在调用时
 读取，改配置不必重启。工具面裁剪（`workspace_profile`）与读写策略是两条独立的边界：前者决定
 「看得见什么」，后者决定「能不能改」。
 
@@ -396,7 +396,7 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
   浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
   wabt（1）、以及 2 个有文档说明的故意跳过
-- 333 个工具（全部 334 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
+- 334 个工具（全部 335 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
   结构化错误信封，无一抛出；且这条性质由 `tests/unit/test_tool_fault_contract.py` 每次运行强制
   校验（断言恰好覆盖“绑定工具数 − 1”），不是一次性测量，也不会因新增工具漏测。
   敌意**环境**同样覆盖：产物库被删除、变成只读或被损坏时，工具照常返回信封（存储类故障有专门的
