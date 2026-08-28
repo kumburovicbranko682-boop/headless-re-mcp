@@ -285,6 +285,29 @@ def test_as_command_splits_defaults_like_an_operator_would() -> None:
     assert _as_command("echo ok", "pwsh -File revert.ps1") == ("echo", "ok")
 
 
+def test_as_command_rejects_an_unbalanced_quote_with_an_actionable_error() -> None:
+    # shlex raises a bare "No closing quotation" on an unbalanced quote. Left
+    # unwrapped it escapes Settings.load and crashes startup with no hint that
+    # the isolation command is at fault. It must not fall back to an empty
+    # command either: that would silently disable a configured isolation step.
+    with pytest.raises(ValueError, match="isolation command is not a valid command line"):
+        _as_command("pwsh -File 'C:/vm/revert.ps1", ())
+    # The file/default path is parsed the same way and must be just as clear.
+    with pytest.raises(ValueError, match="isolation command is not a valid command line"):
+        _as_command(None, 'pwsh -File "revert.ps1')
+
+
+def test_as_command_error_does_not_echo_the_malformed_value() -> None:
+    # The command can carry snapshot paths or credentials, so the refusal names
+    # the setting and the shlex reason but never the raw value.
+    secret = "pwsh -File 'C:/vm/secret-token-42/revert.ps1"
+    with pytest.raises(ValueError) as caught:
+        _as_command(secret, ())
+    message = str(caught.value)
+    assert "isolation command is not a valid command line" in message
+    assert "secret-token-42" not in message
+
+
 def test_numeric_settings_fall_back_instead_of_crashing_startup() -> None:
     assert _as_float("not-a-number", "also-bad", fallback=1.5) == 1.5
     assert _as_float(None, "2.5") == 2.5

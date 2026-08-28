@@ -576,12 +576,28 @@ def _as_command(raw: str | None, default: object) -> tuple[str, ...]:
     """
     from headless_re_mcp.core.isolation import _split_command
 
-    if raw is not None:
-        return _split_command(raw)
-    if isinstance(default, str):
-        return _split_command(default)
-    if isinstance(default, (list, tuple)):
-        return tuple(str(part) for part in default if str(part).strip())
+    source = raw if raw is not None else default
+    if isinstance(source, str):
+        try:
+            return _split_command(source)
+        except ValueError as exc:
+            # shlex raises "No closing quotation"/"No escaped character" on an
+            # unbalanced quote, and _split_command rejects an embedded NUL. This
+            # is the isolation command -- a required step whose failure stops
+            # processing -- so falling back to an empty (no-op) command would
+            # silently switch off the very isolation the operator configured,
+            # the cross-contamination outcome isolation exists to prevent.
+            # Refuse to start, but name the setting rather than surfacing a bare
+            # shlex message out of config loading. The malformed value itself is
+            # left out of the message: it can carry snapshot paths or
+            # credentials, and the shlex reason is enough to fix the quoting.
+            raise ValueError(
+                f"isolation command is not a valid command line ({exc}); set "
+                "HEADLESS_RE_ISOLATION_COMMAND / isolation_command to a "
+                "shell-quoted string or a JSON array of arguments"
+            ) from exc
+    if isinstance(source, (list, tuple)):
+        return tuple(str(part) for part in source if str(part).strip())
     return ()
 
 
