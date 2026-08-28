@@ -55,6 +55,23 @@ _MAX_HOST_METHODS = 16
 _MAX_HOST_CONTENT_TYPES = 32
 _MAX_HOST_STATUSES = 32
 _MAX_HOST_IPS = 32
+# proxy.search greps the retained flows' url/headers/bodies for a substring.
+# A query longer than this is not a grep, it is a payload; refused up front so
+# the matcher stays bounded.
+_MAX_SEARCH_QUERY = 1024
+# Context kept on each side of a hit in the returned snippet.
+_SEARCH_SNIPPET_CONTEXT = 64
+# Bytes of one decoded part (a body) turned into text and scanned. The response
+# decode is already bounded, but a request body is not, so bound both here.
+_MAX_SEARCH_PART_BYTES = 8 * 1024 * 1024
+# Header block turned into text per message; real header sets are small, a
+# hostile one is not.
+_MAX_HEADER_TEXT = 64 * 1024
+# Global budget on decoded bytes scanned in one search. The ring bounds the
+# *compressed* retained size, but a highly compressible capture can decode to
+# far more, so scanning stops here (scan_capped True) rather than spinning on a
+# decompression-heavy capture.
+_MAX_SEARCH_SCAN_BYTES = 256 * 1024 * 1024
 
 
 def _add_capped(target: set[str], value: str, cap: int, agg: dict[str, Any]) -> None:
@@ -317,6 +334,63 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _headers_text(part: Any) -> str:
+    """A message's headers as ``name: value`` lines, bounded, for searching.
+
+    Repeated names are preserved (``items(multi=True)`` when the version offers
+    it) so a Set-Cookie or a repeated header is searchable, and the blob is
+    capped so a hostile header set cannot make the search text unbounded.
+    """
+    headers = getattr(part, "headers", None)
+    if headers is None:
+        return ""
+    try:
+        try:
+            items = headers.items(multi=True)
+        except TypeError:
+            items = headers.items()
+        lines: list[str] = []
+        total = 0
+        for key, value in items:
+            line = f"{key}: {value}"
+            lines.append(line)
+            total += len(line) + 1
+            if total > _MAX_HEADER_TEXT:
+                break
+        return "\n".join(lines)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _bounded_search_text(data: bytes) -> tuple[str, int]:
+    """Decode a body prefix to text for searching; returns (text, bytes_used)."""
+    chunk = data[:_MAX_SEARCH_PART_BYTES]
+    return chunk.decode("utf-8", errors="replace"), len(chunk)
+
+
+def _match_in(where: str, text: str, query_lower: str) -> JsonObject | None:
+    """A hit for ``query_lower`` in ``text`` -- location, count, first snippet.
+
+    The search is case-insensitive (data strings and header values are prose;
+    the superset a lowered match yields is what an analyst wants when grepping
+    for a host or a token). The snippet is the first occurrence with a fixed
+    amount of surrounding context, ellipsis-marked when it was cut from a longer
+    body, so a hit in a megabyte response is legible without returning the body.
+    """
+    if not text:
+        return None
+    low = text.lower()
+    idx = low.find(query_lower)
+    if idx < 0:
+        return None
+    start = max(0, idx - _SEARCH_SNIPPET_CONTEXT)
+    end = min(len(text), idx + len(query_lower) + _SEARCH_SNIPPET_CONTEXT)
+    prefix = "\u2026" if start > 0 else ""
+    suffix = "\u2026" if end < len(text) else ""
+    snippet = prefix + text[start:end] + suffix
+    return {"where": where, "count": low.count(query_lower), "snippet": snippet}
 
 
 class _FlowRecorder:
@@ -814,6 +888,129 @@ class ProxyBackend:
             "has_more": start + len(window) < len(rows),
             "total_flows": len(items),
             "dropped": dropped,
+        }
+
+    def search(
+        self,
+        session_id: str,
+        *,
+        query: str,
+        offset: int = 0,
+        limit: int = 100,
+        url_filter: str = "",
+        content_type_filter: str = "",
+    ) -> JsonObject:
+        """Grep the retained capture -- url, headers and decoded bodies -- for a substring.
+
+        proxy.flows filters on the summary (url, content-type, failed); the one
+        question it cannot answer is "which flow *contains* this string" -- the
+        leaked token, the api key echoed in a response, the value a request
+        carried -- which otherwise means a flow.get per flow. This searches each
+        retained flow's url, request/response headers and decoded request/response
+        bodies for ``query`` and returns the flows that matched, each with the
+        locations it hit. Bodies are decoded (gzip/deflate/zstd) the same bounded
+        way flow.get decodes them, so a match in a compressed response is found.
+        """
+        if not isinstance(query, str) or not query.strip():
+            raise ProxyError("invalid_params", "query must be a non-empty string")
+        if len(query) > _MAX_SEARCH_QUERY:
+            raise ProxyError(
+                "invalid_params",
+                f"query exceeds the {_MAX_SEARCH_QUERY}-character limit",
+                length=len(query),
+            )
+        inst = self._get(session_id)
+        items = inst.recorder.snapshot()
+        # dropped reflects ring eviction across the whole capture, computed from
+        # the unfiltered snapshot before any filter narrows the view -- same as
+        # proxy.flows / proxy.hosts.
+        dropped = 0
+        if items:
+            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
+        # url/content_type pre-filters narrow *which* flows are searched (and
+        # bound the decode work), mirroring proxy.flows' filter semantics.
+        url_needle = url_filter.strip().lower() if isinstance(url_filter, str) else ""
+        if url_needle:
+            items = [i for i in items if url_needle in str(i.get("url", "")).lower()]
+        type_needle = (
+            content_type_filter.strip().lower() if isinstance(content_type_filter, str) else ""
+        )
+        if type_needle:
+            items = [
+                i for i in items if type_needle in str(i.get("content_type", "") or "").lower()
+            ]
+        query_lower = query.lower()
+        results: list[JsonObject] = []
+        scanned = 0
+        scan_capped = False
+        for item in items:
+            flow_id = str(item.get("id") or "")
+            url = str(item.get("url", "") or "")
+            matches: list[JsonObject] = []
+            url_match = _match_in("url", url, query_lower)
+            if url_match is not None:
+                matches.append(url_match)
+            raw = inst.recorder.raw(flow_id)
+            body_available = raw is not None and raw is not _OMITTED_BODY
+            if body_available:
+                req = getattr(raw, "request", None)
+                resp = getattr(raw, "response", None)
+                req_head = _match_in("request_headers", _headers_text(req), query_lower)
+                if req_head is not None:
+                    matches.append(req_head)
+                req_bytes, _ct = _request_body(req)
+                if req_bytes:
+                    text, used = _bounded_search_text(req_bytes)
+                    scanned += used
+                    body_match = _match_in("request_body", text, query_lower)
+                    if body_match is not None:
+                        matches.append(body_match)
+                resp_head = _match_in("response_headers", _headers_text(resp), query_lower)
+                if resp_head is not None:
+                    matches.append(resp_head)
+                if resp is not None:
+                    try:
+                        rc = resp.raw_content or b""
+                    except Exception:  # noqa: BLE001
+                        rc = b""
+                    if rc:
+                        body, _enc, _decoded, _trunc = _decode_body(resp, rc)
+                        text, used = _bounded_search_text(body)
+                        scanned += used
+                        body_match = _match_in("response_body", text, query_lower)
+                        if body_match is not None:
+                            matches.append(body_match)
+            if matches:
+                row: JsonObject = {
+                    "id": flow_id,
+                    "seq": item.get("seq"),
+                    "method": item.get("method"),
+                    "url": url,
+                    "host": item.get("host"),
+                    "status": item.get("status"),
+                    "matches": matches,
+                }
+                if not body_available:
+                    # url matched but the body was over the retain cap (or the
+                    # ring dropped it), so headers/bodies were not searched --
+                    # say so rather than let a url-only hit read as a full match.
+                    row["body_omitted"] = True
+                results.append(row)
+            if scanned >= _MAX_SEARCH_SCAN_BYTES:
+                scan_capped = True
+                break
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = results[start : start + cap]
+        return {
+            "query": query,
+            "flows": window,
+            "count": len(window),
+            "total": len(results),
+            "offset": start,
+            "has_more": start + len(window) < len(results),
+            "dropped": dropped,
+            "scan_capped": scan_capped,
         }
 
     @staticmethod

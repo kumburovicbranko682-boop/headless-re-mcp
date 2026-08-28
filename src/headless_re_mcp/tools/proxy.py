@@ -134,6 +134,55 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="proxy.search")
+    def proxy_search(
+        session_id: str,
+        query: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        url_filter: str = "",
+        content_type_filter: str = "",
+    ) -> dict[str, Any]:
+        """Grep the whole capture -- url, headers, decoded bodies -- for a string.
+
+        proxy.flows filters on the summary (url, content-type, failed); the one
+        thing it cannot answer is "which flow *contains* this value" -- the token
+        that leaked, the api key echoed back in a response, the id a request
+        carried in its body -- which otherwise means a proxy.flow.get per flow.
+        This searches each retained flow's url, request/response headers and
+        decoded request/response bodies for query and returns only the flows that
+        matched. Bodies are decoded (gzip/deflate/zstd) the same bounded way
+        proxy.flow.get decodes them, so a hit inside a compressed response is
+        found. Answers with query, flows, count, total (matching flows after the
+        pre-filters), offset, has_more, dropped (ring evictions, same as
+        proxy.flows) and scan_capped (true when the decoded-bytes budget was hit
+        and later flows went unsearched). Each flows row is {id, seq, method,
+        url, host, status, matches} plus body_omitted when the flow's body was
+        over the retain cap so only its url was searched. matches is a list of
+        {where, count, snippet}: where is one of url, request_headers,
+        request_body, response_headers, response_body; count is the occurrences
+        in that location; snippet is the first hit with surrounding context,
+        ellipsis-marked when clipped from a larger body. The match is
+        case-insensitive substring (find a host or token regardless of case).
+        url_filter and content_type_filter narrow which flows are searched
+        (case-insensitive substring, combined with AND), before the body scan, so
+        a targeted search on a busy capture stays cheap; total is then the count
+        of flows that both passed the filters and matched the query. The list
+        field is flows and the per-location field is matches; to read a matched
+        flow in full use proxy.flow.get with its id. A missing or empty query is
+        invalid_params, as is one over 1024 characters.
+        """
+        return _dump(
+            analysis.proxy_search(
+                session_id,
+                query,
+                offset=offset,
+                limit=limit,
+                url_filter=url_filter,
+                content_type_filter=content_type_filter,
+            )
+        )
+
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
         """Fetch one flow's headers and body (large bodies spill to an artifact).

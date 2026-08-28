@@ -392,6 +392,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   条请求，绝大多数是静态资源；分析者最常要的下一步是「只看 XHR/Fetch」以聚焦接口调用。行里本就有 `resourceType`，故给
   `web.network.list` 加上 `type_filter`：对 `resourceType` 做大小写不敏感的精确匹配（如 `XHR`/`Fetch`），与 `url_filter` 同处
   分页之前、两者需同时满足，于是能把 API 流量从资源噪声里单独拉出来，`total` 即过滤后的匹配数，`dropped` 仍为环形缓冲淘汰计数。
+- **`proxy.flows` 只按摘要（url、类型、失败）过滤，唯独答不出「哪条流*里*有这个字符串」——泄漏的 token、响应里回显的 api key、
+  请求体带的某个值——只能一条条 `proxy.flow.get` 翻**。新增只读工具 `proxy.search`：对环形缓冲里保留的每条流，grep 其 url、
+  请求/响应头、以及**解码后**的请求/响应体，返回命中的流。响应体按 `proxy.flow.get` 同样的有界方式解码（gzip/deflate/zstd），故压缩
+  响应里的命中也找得到。答复带 `query`、`flows`、`count`、`total`（过滤后命中的流数）、`offset`、`has_more`、`dropped`（环形淘汰数，与
+  `proxy.flows` 同源）、`scan_capped`（解码字节预算耗尽、后续流未搜时为真）。每行 `{id, seq, method, url, host, status, matches}`，
+  流体超保留上限只搜了 url 时另带 `body_omitted`。`matches` 是 `{where, count, snippet}` 列表：`where` 取 `url`/`request_headers`/
+  `request_body`/`response_headers`/`response_body`；`count` 是该处出现次数；`snippet` 是首个命中带上下文、从更大的体里裁出时用省略号标记。
+  匹配为大小写不敏感子串（不分大小写地找主机或 token）。`url_filter`/`content_type_filter` 在搜体之前先缩小搜哪些流（大小写不敏感
+  子串、AND 组合），故繁忙抓包上的定向搜索仍然便宜；`total` 是既过了过滤又命中查询的流数。列表字段是 `flows`、每处命中的字段是
+  `matches`；要看某条命中的流全文仍用 `proxy.flow.get` 配其 `id`。空 query 或超 1024 字符报 `invalid_params`。只读，工具总数
+  284→285（167 只读 / 118 写）。
 - **繁忙抓包里想知道「这个 App 到底连了哪些主机、各连了多少、有没有失败」，只能对着 `proxy.flows` 一页页翻**。`proxy.flows`
   是一行一个请求；判断哪个是 C2/CDN/遥测端点、哪个域名握手全失败，得把整份抓包读一遍。新增只读工具 `proxy.hosts`：把环形缓冲里
   保留的流按 `host` 汇总，一主机一行——`flows`（请求数）、`failed`（从未拿到响应的数）、`methods`（用过的方法，去重排序）、
