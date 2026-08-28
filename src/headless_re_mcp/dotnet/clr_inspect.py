@@ -364,44 +364,56 @@ def _parse_tables_and_names(
             end = len(strings)
         return strings[index:end].decode("utf-8", errors="replace")
 
-    module_name: str | None = None
-    assembly_name: str | None = None
     if not strings:
         return None, None, stats
-    for bit in range(64):
-        rows = row_counts.get(bit)
-        if not rows:
-            continue
-        if bit == 0x00:  # Module
-            name_idx, _ = read_string_index(tables, cursor + 2)
-            module_name = string_at(name_idx)
-            guid_index_size = 4 if (heap_sizes & 0x02) else 2
-            row_size = (
-                2
-                + string_index_size
-                + guid_index_size
-                + guid_index_size
-                + guid_index_size
-            )
-            cursor += row_size * rows
-            continue
-        if bit == 0x20:  # Assembly
-            blob_index_size = 4 if (heap_sizes & 0x04) else 2
-            name_at = cursor + 4 + 2 + 2 + 2 + 2 + 4 + blob_index_size
-            name_idx, _ = read_string_index(tables, name_at)
-            assembly_name = string_at(name_idx)
-            row_size = (
-                4
-                + 2
-                + 2
-                + 2
-                + 2
-                + 4
-                + blob_index_size
-                + string_index_size
-                + string_index_size
-            )
-            cursor += row_size * rows
-            continue
-        break
+
+    # Locate each table by its true on-disk start. The previous walk only knew
+    # the Module and Assembly row shapes and broke on the first other table, but
+    # every real assembly has TypeRef/TypeDef right after Module (0x00) -- so the
+    # walk never reached Assembly (0x20) and assembly_name came back None for
+    # essentially every input. Reuse metadata_enum's authoritative per-table
+    # sizing (via _table_start) instead of keeping a second, partial copy of it
+    # here. metadata_enum imports this module, so the import is deferred to break
+    # the cycle; it is already loaded by the time inspection runs.
+    from headless_re_mcp.dotnet.metadata_enum import _MetaCtx, _table_start
+
+    guid_index_size = 4 if (heap_sizes & 0x02) else 2
+    blob_index_size = 4 if (heap_sizes & 0x04) else 2
+    ctx = _MetaCtx(
+        path=Path("."),
+        pe_data=b"",
+        layout=None,
+        meta=meta,
+        stream_map=stream_map,
+        tables=tables,
+        strings=strings,
+        heap_sizes=heap_sizes,
+        string_index_size=string_index_size,
+        blob_index_size=blob_index_size,
+        guid_index_size=guid_index_size,
+        row_counts=row_counts,
+        table_data_offset=cursor,
+    )
+
+    def string_column(table: int, field_offset: int) -> str | None:
+        if not row_counts.get(table):
+            return None
+        try:
+            at = _table_start(ctx, table) + field_offset
+        except DotnetInspectError:
+            # A table between the start and `table` is not modelled by the
+            # enumerator's sizing (e.g. a Portable-PDB or reserved table). Give up
+            # on this one lookup rather than propagate, so a name resolved earlier
+            # (and the row-count stats) still survive.
+            return None
+        if at + string_index_size > len(tables):
+            return None
+        index, _ = read_string_index(tables, at)
+        return string_at(index)
+
+    # Module (II.22.30): Generation(2) then the Name string index.
+    module_name = string_column(0x00, 2)
+    # Assembly (II.22.2): HashAlgId(4) + Major/Minor/Build/Rev(2 each) + Flags(4)
+    # + PublicKey(blob) precede the Name string index.
+    assembly_name = string_column(0x20, 4 + 2 + 2 + 2 + 2 + 4 + blob_index_size)
     return module_name, assembly_name, stats

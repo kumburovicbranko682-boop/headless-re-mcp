@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（`_parse_tables_and_names` 读不到 `assembly_name`,几乎所有程序集都返回 null）
+
+- `_parse_tables_and_names`（`dotnet/clr_inspect.py`）从 `#~` 表流里取 Module(0x00) 与
+  Assembly(0x20) 名。旧代码只认得 Module 与 Assembly 两张表的行形状,walk 到第一张其它表
+  就 `break`——而每个真实程序集在 Module 之后紧跟 TypeRef/TypeDef,于是永远走不到
+  Assembly,`assembly_name` 对几乎所有输入都返回 `null`(Module 名仍能读到,因为它排在最前)。
+  改为按各表真实行宽跳转到 Assembly 表:复用 `metadata_enum` 权威的按表行宽定位
+  (`_table_start`,经函数内延迟 import 规避 `metadata_enum` 反向 import 本模块的环),而不是
+  再抄一份易错的部分列宽逻辑;遇到 sizing 未建模的 Portable-PDB/保留表则就地收尾,保住已读到
+  的 Module 名与行计数统计。新增 `test_clr_assembly_name_walk.py`:手搓 `#~`+`#Strings`,钉住
+  名字会越过中间表被读到、纯 Module 元数据不虚构 assembly 名、多行中间表也能正确跳过。
+
 ### 修复（`_table_row_size` 五处元数据表列宽按 ECMA-335 II.22 取错列类型）
 
 - `_table_row_size`（`dotnet/metadata_enum.py`,为 `_table_start` 累加各表行宽以定位待
