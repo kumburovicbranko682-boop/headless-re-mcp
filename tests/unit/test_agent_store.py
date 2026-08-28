@@ -158,6 +158,15 @@ def test_tool_call_identity_is_run_scoped_and_arguments_are_redacted(tmp_path: P
     )
 
 
+# Building a >500-message thread means >500 add_message calls, and each one is
+# its own WAL transaction that opens, commits (fsync) and closes a connection.
+# On a loaded Windows CI runner -- where antivirus scans the db/-wal/-shm files
+# on every open -- that serial fsync loop crept just past the 120s per-test
+# --timeout and reddened the whole unit-test step. The window contract needs the
+# thread to exceed the 500 cap, so the count is not padding and cannot shrink;
+# give these two setup-heavy tests a generous ceiling that still trips on a
+# genuine hang. Local runs finish in well under a second.
+@pytest.mark.timeout(300)
 def test_the_message_window_keeps_the_recent_end_of_a_long_thread(tmp_path: Path) -> None:
     """A capped history has to be the latest messages, not the earliest.
 
@@ -179,6 +188,7 @@ def test_the_message_window_keeps_the_recent_end_of_a_long_thread(tmp_path: Path
     assert [m.content for m in window] == [f"message {i}" for i in range(121, 621)]
 
 
+@pytest.mark.timeout(300)  # 700 serial WAL commits: see the note above.
 def test_a_message_written_now_is_visible_on_an_already_long_thread(tmp_path: Path) -> None:
     """The scheduler reads back the marker its own run just wrote.
 
