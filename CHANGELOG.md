@@ -24,6 +24,48 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（x64dbg RPC 客户端派发与 trace 校验）
+
+- `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
+  `wait_for_state`、`close` 与重连,但二十多个细请求包装器、`trace.*` 生命周期与
+  `_validate_trace_result` 守卫、`request` 的能力/关闭/退出门以及若干辅助函数仍未覆盖。
+  新增 `tests/unit/test_xdbg_client_dispatch.py`,只测各平台都为纯 Python 的部分,不碰
+  Win32 传输:每个包装器(threads/stack/disassembly/symbols/breakpoints/patches/
+  pe.headers/imports 等)的参数整形与方法名(含 `output_path`/`rights`/`limit`/
+  `size` 等可选项在给与不给两种情形)、`trace_start` 的边界校验与派发、`trace_stop`/
+  `trace_status` 在未初始化时跳过校验、`trace_cancel` 委派 `trace_stop`、
+  `_validate_trace_result` 的布尔录制态/路径匹配(含内嵌 null 字节的非法路径)/边界
+  不符/计数器归零与非法值各分支、`request` 门(已关闭报 `session_closed`、进程已退报
+  `worker_exited`、无能力方法先于传输报 `capability_unavailable`、`rpc.` 前缀绕过能力
+  门)、`_note_debuggee_pid` 只接受正数 pid(int/数字串/0/非数字/缺字段)、
+  `seed_headless_event_settings` 写一次且幂等、`XdbgRpcError.from_payload` 非字典分支,
+  以及 `pid`/`exit_code`/`capabilities`/`metadata`(防御性拷贝)属性。行覆盖 42% → 62%
+  (余量为 Windows 专有的命名管道传输、`__init__` 真实拉起与桌面/收尾路径)。
+
+### 测试（共享受管子进程 mixin 的跨平台合同）
+
+- `backends/common/subprocess_rpc.py` 的既有 terminate 测试只验证 Win32 后代枚举、在
+  Linux 上 skip，导致 mixin 的启动 kwargs、`pid` / `analyzer_windows` 属性与 `_lock`
+  接缝在 Linux CI 上从未被执行。新增 `tests/unit/test_subprocess_rpc_mixin.py` 固定各
+  平台都成立的部分:`no_window_popen_kwargs()` 的返回形态(Linux 上 `creationflags==0`、
+  `startupinfo is None`;Windows 上抑制控制台窗口且 `wShowWindow==0`)、`pid` 属性、
+  `analyzer_windows` 排序并累积目击集(窗口关闭后仍留在累积集里)、`terminate_process`
+  在有无 `_lock` 两种情形下都真实回收进程且释放锁。Linux 行覆盖 44% → 89%(仅余
+  Windows 专有的 `STARTUPINFO` 分支,由形态测试在 Windows job 覆盖)。
+
+### 测试（IDA worker RPC 客户端合同测试）
+
+- `IdaWorkerClient` 的传输层此前只有窗口历史上限一项合同有测试（行覆盖 32%）。新增
+  `tests/unit/test_ida_worker_client_rpc.py`：通过 `PYTHONPATH` 遮蔽真实
+  `backends.ida.worker` 模块、以脚本化假 worker 子进程走完整协议，不需要 idalib、
+  Windows 与 Linux 均可运行。覆盖 ready/fatal 握手（含 capabilities 非列表、data 非
+  对象、启动前崩溃携带 stderr 诊断）、请求按 id 关联与错误载荷映射、超时/未读消息
+  溢出后 worker 被强制退休（不复用卡死进程）、close 的三种收尾（应答后不退出则杀树、
+  worker 已死静默收尾、不应答则上抛超时且二次 close 幂等）、分析器窗口在启动与请求
+  两个时点的拒答及重复目击不膨胀历史，另有 `next_receive_deadline` /
+  `startup_receive_remaining` / `IdaWorkerError.from_payload` 纯函数合同。该模块行
+  覆盖 32% → 98%。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
@@ -48,6 +90,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
+
+### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
+
+- `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
+  作为输出路径，指望它触发 `run_scylla` 的“output_path must differ from input_path”守卫。
+  但该断言依赖 POSIX 特有行为：`Path.exists()` 不会穿过不存在的中间目录 `nope` 去解析 `..`，
+  于是路径读作“尚不存在”，执行落到 differ 守卫。Windows 则把 `..` 按词法折叠回已存在的
+  `input.exe`，`exists()` 为真，先触发更早的“output_path must not already exist”守卫，测试遂在
+  Windows 3.11/3.12 失败。产品代码本身无恙——两条守卫拒绝的是同一危险（输出别名到输入），
+  且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
+  拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
 
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
