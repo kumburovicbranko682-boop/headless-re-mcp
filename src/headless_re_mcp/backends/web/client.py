@@ -73,7 +73,11 @@ def _bound_nav_timeout(timeout: float) -> float:
     queued, so a stray timeout can never wedge a live browser.
     """
     value = float(timeout)
-    if value <= 0:
+    # NaN fails every comparison, so `value <= 0` alone lets it through, and a
+    # NaN deadline reaches Future.result the same way a non-positive one does --
+    # returning at once and wedging a healthy session until web.close. Reject it
+    # too, as clamp_cli_timeout does; +inf stays valid and is capped below.
+    if value != value or value <= 0:
         raise WebError("invalid_params", "timeout must be positive")
     return min(value, _MAX_NAV_TIMEOUT_S)
 
