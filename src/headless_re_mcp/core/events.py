@@ -233,8 +233,22 @@ def _parse_event_data(kind: str, data: JsonObject) -> JsonObject:
                 )
         elif key in text_fields:
             maximum_bytes = 1023 if key == "path" else 511
-            if not isinstance(value, str) or len(value.encode("utf-8")) > maximum_bytes:
+            if not isinstance(value, str):
                 raise DebugEventProtocolError(f"debug event data {key} is invalid")
+            # NTFS names are arbitrary UTF-16, so an image or module name can
+            # carry an unpaired surrogate, and the plugin's JSON writer passes
+            # it through as a \ud800 escape that json.loads accepts. A strict
+            # encode made this validator the crash: a raw UnicodeEncodeError
+            # instead of a designed refusal -- and refusing would be no better,
+            # because the drain cursor can never advance past a rejected batch,
+            # so one hostile module name would end event replay for the rest of
+            # the session. Same replace policy as the transport's byte decode:
+            # lossy but alive. The repair also keeps the durable log's SQLite
+            # text bind, which raises on a surrogate, out of reach.
+            encoded = value.encode("utf-8", "replace")
+            if len(encoded) > maximum_bytes:
+                raise DebugEventProtocolError(f"debug event data {key} is invalid")
+            value = encoded.decode("utf-8")
         elif key in boolean_fields:
             if type(value) is not bool:
                 raise DebugEventProtocolError(f"debug event data {key} must be a boolean")
