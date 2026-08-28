@@ -1000,20 +1000,26 @@ def _pe_with_posture(
     magic: int = 0x20B,
     os_version: tuple[int, int] = (0, 0),
     subsys_version: tuple[int, int] = (0, 0),
+    sections: list[tuple[bytes, int, int]] | None = None,
 ) -> bytes:
     """A minimal PE whose optional header carries the given posture fields.
 
     Subsystem and DllCharacteristics sit at offsets 68/70 for both PE32 and
     PE32+ (the OS and subsystem version pairs at 40/48 likewise); only
     ImageBase moves (32-bit at 28 vs 64-bit at 24), which is what the entry-VA
-    rebase must key off.
+    rebase must key off. ``sections`` rows are ``(name, virtual_addr,
+    virtual_size)`` -- headers only, no raw data, which is all the
+    entry-owner lookup reads.
     """
+    sections = sections or []
     dos = bytearray(0x40)
     dos[0:2] = b"MZ"
     struct.pack_into("<I", dos, 0x3C, 0x40)
     machine = 0x8664 if magic == 0x20B else 0x14C
     opt_size = 0xF0 if magic == 0x20B else 0xE0
-    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", machine, 0, 0, 0, 0, opt_size, 0)
+    coff = b"PE\x00\x00" + struct.pack(
+        "<HHIIIHH", machine, len(sections), 0, 0, 0, opt_size, 0
+    )
     opt = bytearray(opt_size)
     struct.pack_into("<H", opt, 0, magic)
     struct.pack_into("<I", opt, 16, entry_rva)
@@ -1026,7 +1032,13 @@ def _pe_with_posture(
     struct.pack_into("<H", opt, 68, subsystem)
     struct.pack_into("<H", opt, 70, dllchar)
     struct.pack_into("<I", opt, 108 if magic == 0x20B else 92, 16)  # NumberOfRvaAndSizes
-    return bytes(dos) + coff + bytes(opt)
+    table = bytearray()
+    for name, virtual_addr, virtual_size in sections:
+        row = bytearray(40)
+        row[0:8] = name.ljust(8, b"\x00")
+        struct.pack_into("<II", row, 8, virtual_size, virtual_addr)
+        table += row
+    return bytes(dos) + coff + bytes(opt) + bytes(table)
 
 
 class TestPeHardeningFacts:
@@ -1057,6 +1069,7 @@ class TestPeHardeningFacts:
             "subsystem": "gui",
             "os_version": "10.0",
             "subsystem_version": "6.2",
+            "entry_section": None,
             "high_entropy_va": True,
             "aslr": True,
             "force_integrity": True,
@@ -1135,7 +1148,56 @@ class TestPeHardeningFacts:
         # reporting the bare image base would invent an address.
         path = tmp_path / "noentry.dll"
         path.write_bytes(_pe_with_posture(entry_rva=0))
-        assert "entry" not in _pe_hardening_facts(path)
+        facts = _pe_hardening_facts(path)
+        assert "entry" not in facts
+        assert "entry_section" not in facts
+
+    def test_an_entry_inside_text_names_text(self, tmp_path: Path) -> None:
+        path = tmp_path / "plain.exe"
+        path.write_bytes(
+            _pe_with_posture(
+                entry_rva=0x1080,
+                sections=[(b".text", 0x1000, 0x200), (b".data", 0x2000, 0x100)],
+            )
+        )
+        assert _pe_hardening_facts(path)["entry_section"] == ".text"
+
+    def test_an_entry_inside_a_packer_stub_names_its_section(self, tmp_path: Path) -> None:
+        # The classic anomaly: the entry lands in the packer's own section,
+        # not the compiler's .text -- the one-glance UPX tell.
+        path = tmp_path / "packed.exe"
+        path.write_bytes(
+            _pe_with_posture(
+                entry_rva=0x5000,
+                sections=[(b".text", 0x1000, 0x200), (b"UPX1", 0x5000, 0x800)],
+            )
+        )
+        assert _pe_hardening_facts(path)["entry_section"] == "UPX1"
+
+    def test_an_entry_no_section_claims_reads_none(self, tmp_path: Path) -> None:
+        # An entry below the first section's RVA points into the headers --
+        # nothing a linker emits; None is the loud, honest answer.
+        path = tmp_path / "headers.exe"
+        path.write_bytes(
+            _pe_with_posture(entry_rva=0x40, sections=[(b".text", 0x1000, 0x200)])
+        )
+        facts = _pe_hardening_facts(path)
+        assert "entry" in facts
+        assert facts["entry_section"] is None
+
+    def test_the_upx_fixtures_split_on_the_entry_owner(self) -> None:
+        # The same program, before and after upx: the entry owner flips from
+        # the compiler's .text to the packer stub's UPX1 -- on both bitnesses.
+        root = Path(__file__).resolve().parents[2] / "fixtures" / "upx"
+        pairs = [
+            (root / f"console_fixture-{arch}.pre-upx.exe", root / f"console_fixture-{arch}.upx.exe")
+            for arch in ("x64", "x86")
+        ]
+        if not all(pre.is_file() and packed.is_file() for pre, packed in pairs):
+            pytest.skip(f"upx fixtures missing under {root}")
+        for pre, packed in pairs:
+            assert _pe_hardening_facts(pre)["entry_section"] == ".text"
+            assert _pe_hardening_facts(packed)["entry_section"] == "UPX1"
 
     def test_a_non_pe_reads_no_facts(self, tmp_path: Path) -> None:
         path = tmp_path / "nope.bin"

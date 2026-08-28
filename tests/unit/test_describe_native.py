@@ -3387,3 +3387,142 @@ class TestGoBuildInfo:
         assert native["format"] == "elf"
         assert native["go"]["version"] == "go1.22.2"
         assert native["go"]["main_module"] == "example.com/tool"
+
+
+def _elf64_with_entry_owner(entry: int, sections: list[tuple[str, int, int, int]]) -> bytes:
+    """A 64-bit LE ELF with ``e_entry`` set and an addressed section table.
+
+    Each section is ``(name, sh_addr, sh_size, sh_flags)`` -- SHT_PROGBITS
+    with no file payload, since the entry-owner lookup reads only each
+    section's address span and ALLOC flag, plus the name via .shstrtab.
+    """
+    shstr = bytearray(b"\x00")
+    name_off: dict[str, int] = {}
+    for name, _addr, _size, _flags in sections:
+        name_off[name] = len(shstr)
+        shstr += name.encode() + b"\x00"
+    shstrtab_name = len(shstr)
+    shstr += b".shstrtab\x00"
+    shstr_off = 64
+    sh_off = shstr_off + len(shstr)
+    shdrs = bytearray(_shdr64_full(0))  # index 0: SHT_NULL
+    for name, addr, size, flags in sections:
+        shdr = bytearray(_shdr64_full(1, sh_size=size))
+        shdr[0:4] = name_off[name].to_bytes(4, "little")
+        shdr[8:16] = flags.to_bytes(8, "little")  # sh_flags
+        shdr[16:24] = addr.to_bytes(8, "little")  # sh_addr
+        shdrs += shdr
+    shstr_shdr = bytearray(_shdr64_full(3, sh_offset=shstr_off, sh_size=len(shstr)))
+    shstr_shdr[0:4] = shstrtab_name.to_bytes(4, "little")
+    shdrs += shstr_shdr
+    ehdr = bytearray(
+        _ehdr64(2, phoff=0, phnum=0, shoff=sh_off, shnum=len(sections) + 2, entry=entry)
+    )
+    ehdr[62:64] = (len(sections) + 1).to_bytes(2, "little")  # e_shstrndx
+    return bytes(ehdr) + bytes(shstr) + bytes(shdrs)
+
+
+def _lc_segment64_with_named_sections(
+    vmaddr: int, fileoff: int, filesize: int, sections: list[tuple[str, int, int]]
+) -> bytes:
+    """An LC_SEGMENT_64 whose trailing section_64 rows carry (name, offset, size)."""
+    nsects = len(sections)
+    cmd = bytearray(72 + 80 * nsects)
+    cmd[0:4] = (0x19).to_bytes(4, "little")  # LC_SEGMENT_64
+    cmd[4:8] = len(cmd).to_bytes(4, "little")
+    cmd[8:24] = b"__TEXT".ljust(16, b"\x00")
+    cmd[24:32] = vmaddr.to_bytes(8, "little")
+    cmd[32:40] = (0x1000).to_bytes(8, "little")  # vmsize
+    cmd[40:48] = fileoff.to_bytes(8, "little")
+    cmd[48:56] = filesize.to_bytes(8, "little")
+    cmd[64:68] = nsects.to_bytes(4, "little")
+    for i, (name, offset, size) in enumerate(sections):
+        at = 72 + 80 * i
+        cmd[at : at + 16] = name.encode().ljust(16, b"\x00")
+        cmd[at + 16 : at + 32] = b"__TEXT".ljust(16, b"\x00")
+        cmd[at + 40 : at + 48] = size.to_bytes(8, "little")
+        cmd[at + 48 : at + 52] = offset.to_bytes(4, "little")
+    return bytes(cmd)
+
+
+class TestEntrySection:
+    """describe_native names the section that owns the entry point.
+
+    The first executed byte's home: ".text"/"__text" is the boring answer a
+    linker emits, a packer stub's own section (UPX1) the classic anomaly, and
+    None -- no section table, or no allocated section claiming the address --
+    is itself a triage fact. Reported only next to an entry, for ELF (e_entry
+    against sh_addr spans of ALLOC sections) and Mach-O (LC_MAIN's entryoff
+    against section file spans).
+    """
+
+    def test_an_elf_entry_inside_text_names_text(self, tmp_path: Path) -> None:
+        data = _elf64_with_entry_owner(
+            0x401080,
+            [(".rodata", 0x400000, 0x100, 0x2), (".text", 0x401000, 0x200, 0x6)],
+        )
+        facts = describe_native(_write(tmp_path, "plain.elf", data))["native"]
+        assert facts["entry"] == 0x401080
+        assert facts["entry_section"] == ".text"
+
+    def test_a_non_alloc_section_cannot_claim_the_entry(self, tmp_path: Path) -> None:
+        # Same address span, but the section is not mapped (no SHF_ALLOC):
+        # what covers the entry on disk does not cover it in memory.
+        data = _elf64_with_entry_owner(0x401080, [(".debug_fake", 0x401000, 0x200, 0x0)])
+        facts = describe_native(_write(tmp_path, "unmapped.elf", data))["native"]
+        assert facts["entry_section"] is None
+
+    def test_an_entry_outside_every_section_reads_none(self, tmp_path: Path) -> None:
+        data = _elf64_with_entry_owner(0x999000, [(".text", 0x401000, 0x200, 0x6)])
+        facts = describe_native(_write(tmp_path, "dangling.elf", data))["native"]
+        assert facts["entry_section"] is None
+
+    def test_an_elf_without_a_section_table_reads_none(self, tmp_path: Path) -> None:
+        # sstrip'd or packed ELFs drop the section table entirely; the entry
+        # still exists but no section can claim it -- None, honestly.
+        data = _ehdr64(2, phoff=0, phnum=0, shoff=0, shnum=0, entry=0x1000)
+        facts = describe_native(_write(tmp_path, "bare.elf", data))["native"]
+        assert facts["entry"] == 0x1000
+        assert facts["entry_section"] is None
+
+    def test_an_elf_without_an_entry_carries_no_owner_fact(self, tmp_path: Path) -> None:
+        data = _elf64_with_entry_owner(0, [(".text", 0x401000, 0x200, 0x6)])
+        facts = describe_native(_write(tmp_path, "solib.elf", data))["native"]
+        assert "entry" not in facts
+        assert "entry_section" not in facts
+
+    def test_a_macho_entry_inside_text_names_text(self, tmp_path: Path) -> None:
+        seg = _lc_segment64_with_named_sections(
+            0x100000000, 0, 0x1000, [("__stubs", 0xE00, 0x100), ("__text", 0xF00, 0x100)]
+        )
+        cmds = seg + _lc_main(0xF80)
+        data = _macho64_full(2, 0, cmds, ncmds=2)
+        facts = describe_native(_write(tmp_path, "plain.macho", data))["native"]
+        assert facts["entry"] == 0x100000F80
+        assert facts["entry_section"] == "__text"
+
+    def test_a_macho_entry_between_sections_reads_none(self, tmp_path: Path) -> None:
+        # The segment covers the offset but no section does: the gap between
+        # mapped sections is exactly where a shim stub would hide.
+        seg = _lc_segment64_with_named_sections(0x100000000, 0, 0x1000, [("__text", 0xF00, 0x100)])
+        cmds = seg + _lc_main(0x800)
+        data = _macho64_full(2, 0, cmds, ncmds=2)
+        facts = describe_native(_write(tmp_path, "gap.macho", data))["native"]
+        assert facts["entry"] == 0x100000800
+        assert facts["entry_section"] is None
+
+    def test_a_zerofill_section_cannot_claim_the_entry(self, tmp_path: Path) -> None:
+        # A zerofill section records offset 0 and owns no file bytes; its
+        # size span must not swallow a small entryoff.
+        seg = _lc_segment64_with_named_sections(0x100000000, 0, 0x1000, [("__bss", 0, 0x10000)])
+        cmds = seg + _lc_main(0x800)
+        data = _macho64_full(2, 0, cmds, ncmds=2)
+        facts = describe_native(_write(tmp_path, "bss.macho", data))["native"]
+        assert facts["entry_section"] is None
+
+    def test_the_committed_macho_fixture_enters_via_text(self) -> None:
+        fixture = Path(__file__).resolve().parents[2] / "fixtures" / "native" / "minimal.macho"
+        if not fixture.is_file():
+            pytest.skip(f"fixture missing: {fixture}")
+        facts = describe_native(fixture)["native"]
+        assert facts["entry_section"] == "__text"

@@ -549,6 +549,7 @@ _PT_NOTE = 4
 _SHT_SYMTAB = 2
 _SHT_DYNSYM = 11
 _SHT_NOBITS = 8  # occupies no file bytes (.bss): its size must not extend the image
+_SHF_ALLOC = 0x2  # the section occupies memory at run time -- what "mapped" means
 # The exported dynamic symbols -- the names a shared object (or executable)
 # offers other images, read straight off the .dynsym section and its linked
 # .dynstr. This is the native export surface: the pair to DT_NEEDED (imports),
@@ -6029,6 +6030,10 @@ def _pe_hardening_facts(path: Path) -> dict[str, Any]:
     is AddressOfEntryPoint rebased to the preferred image base -- the address
     an analyst lands on first, mirroring the ELF/Mach-O ``entry`` facts --
     and is omitted when the header declares none (a resource-only DLL).
+    ``entry_section`` names the section whose virtual span covers the entry
+    (reported alongside ``entry``): ``.text`` is the boring answer, a packer
+    stub's own section (``UPX1``) is the classic anomaly, and None -- entry
+    inside the headers or in no section at all -- is itself a red flag.
 
     Fail-closed: a non-PE or an optional header too short to carry the fields
     yields ``{}`` rather than guessed values.
@@ -6043,6 +6048,10 @@ def _pe_hardening_facts(path: Path) -> dict[str, Any]:
             if len(coff) < 24 or coff[:4] != b"PE\x00\x00":
                 return {}
             optional = stream.read(int.from_bytes(coff[20:22], "little"))
+            # The section table follows the optional header directly; the
+            # stream sits right on it. Only the entry-owner lookup needs it.
+            num_sections = min(int.from_bytes(coff[6:8], "little"), _PE_MAX_SECTIONS)
+            section_table = stream.read(num_sections * 40)
     except OSError:
         return {}
     magic = int.from_bytes(optional[0:2], "little") if len(optional) >= 2 else 0
@@ -6071,7 +6080,26 @@ def _pe_hardening_facts(path: Path) -> dict[str, Any]:
     if entry_rva:
         image_base = int.from_bytes(optional[base_off : base_off + base_len], "little")
         facts["entry"] = image_base + entry_rva
+        facts["entry_section"] = _pe_section_name_at(section_table, entry_rva)
     return facts
+
+
+def _pe_section_name_at(table: bytes, rva: int) -> str | None:
+    """The name of the section whose virtual span covers ``rva``, or None.
+
+    The span is max(VirtualSize, SizeOfRawData) -- the same rule the RVA
+    mapper uses -- so a section padded on disk still claims its whole image
+    range. None means the RVA lives in no section: inside the headers or
+    dangling, either way nothing a linker emits for a normal entry point.
+    """
+    for i in range(len(table) // 40):
+        row = table[i * 40 : i * 40 + 40]
+        virtual_size = int.from_bytes(row[8:12], "little")
+        virtual_addr = int.from_bytes(row[12:16], "little")
+        raw_size = int.from_bytes(row[16:20], "little")
+        if virtual_addr <= rva < virtual_addr + max(virtual_size, raw_size):
+            return row[0:8].split(b"\0", 1)[0].decode("latin-1", errors="replace")
+    return None
 
 
 def _pe_u16_pair(optional: bytes, offset: int) -> str:
@@ -7116,6 +7144,14 @@ def _elf_layout_facts(
                 if stype not in (_SHT_NULL, _SHT_NOBITS)
             ],
         )
+    # The section whose address span covers the entry point -- ".text" is the
+    # boring answer, a packer stub's own section the classic anomaly, and None
+    # (no section table at all, or an entry no allocated section claims --
+    # both packer habits) is itself a triage fact. Only next to an entry.
+    if "entry" in facts:
+        facts["entry_section"] = _elf_entry_section(
+            stream, order, bits, facts["entry"], shoff, shentsize, shnum, shstrndx
+        )
 
 
 def _elf_program_headers(
@@ -7815,6 +7851,53 @@ def _native_sniff_kind(head: bytes) -> str | None:
     return None
 
 
+def _elf_entry_section(
+    stream: BinaryIO,
+    order: str,
+    bits: int,
+    entry: int,
+    shoff: int,
+    shentsize: int,
+    shnum: int,
+    shstrndx: int,
+) -> str | None:
+    """The allocated section whose address span covers ``entry``, or None.
+
+    The owner of the first executed byte, the same lookup readelf users do by
+    eye against the section table: the first SHF_ALLOC section with
+    ``sh_addr <= entry < sh_addr + sh_size``. None -- no section table, or no
+    allocated section claiming the address -- is a real answer, and a loud
+    one: linkers put entry points in mapped sections, packers often do not.
+    """
+    if shoff <= 0 or shnum <= 0 or shnum > _ELF_MAX_SHNUM:
+        return None
+    want = 64 if bits == 64 else 40
+    entsize = max(shentsize, want)
+    try:
+        stream.seek(shoff)
+        table = stream.read(entsize * shnum)
+    except OSError:
+        return None
+    for i in range(shnum):
+        row = table[i * entsize : i * entsize + want]
+        if len(row) < want:
+            break
+        if bits == 64:
+            flags = int.from_bytes(row[8:16], order)  # type: ignore[arg-type]
+            addr = int.from_bytes(row[16:24], order)  # type: ignore[arg-type]
+            size = int.from_bytes(row[32:40], order)  # type: ignore[arg-type]
+        else:
+            flags = int.from_bytes(row[8:12], order)  # type: ignore[arg-type]
+            addr = int.from_bytes(row[12:16], order)  # type: ignore[arg-type]
+            size = int.from_bytes(row[20:24], order)  # type: ignore[arg-type]
+        if not flags & _SHF_ALLOC:
+            continue
+        if addr <= entry < addr + size:
+            named = _elf_named_sections(stream, order, bits, shoff, shentsize, shnum, shstrndx)
+            return named[i][0] if i < len(named) else f"section_{i}"
+    return None
+
+
 def _elf_named_sections(
     stream: BinaryIO,
     order: str,
@@ -8413,6 +8496,20 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         entry = _macho_entry(lc["entryoff"], lc["segments"])
         if entry is not None:
             facts["entry"] = entry
+            # The section whose file span covers LC_MAIN's entryoff -- the
+            # owner of the first executed byte, "__text" the boring answer, a
+            # packer stub's own section the anomaly, None (no section claims
+            # it) itself a triage fact. entryoff and each section's offset
+            # are both file offsets, so the lookup is direct; zero-offset
+            # (zerofill) sections own no file bytes and cannot claim it.
+            facts["entry_section"] = next(
+                (
+                    name
+                    for name, off, size in lc["sections"]
+                    if off > 0 and size > 0 and off <= lc["entryoff"] < off + size
+                ),
+                None,
+            )
         # FairPlay: an LC_ENCRYPTION_INFO with cryptid != 0 means the code is
         # ciphertext on disk; no command at all means not encrypted. When the
         # command exists, the full range is the triage map: which file bytes

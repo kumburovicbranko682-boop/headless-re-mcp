@@ -241,12 +241,14 @@ jobs:
         # monodis (an independent ECMA-335 parser the metadata gate cross-checks
         # the pure-Python reader against) and pedump (which decodes the CLI
         # header, so the corflags gate cross-checks il_only/32-bit/strong-name).
-        # llvm supplies llvm-objdump, llvm-nm and llvm-objcopy, the independent
-        # (and strict) Mach-O decoders the toolchain gate cross-checks the
-        # LC_RPATH, LC_BUILD_VERSION and exported-symbol facts against, and that
-        # the section-payload gate uses to plant and dump Mach-O sections (GNU
-        # binutils cannot read Mach-O at all). The ELF arm of that gate uses
-        # binutils objcopy/readelf and file (libmagic), both on the runner.
+        # llvm supplies llvm-objdump, llvm-nm, llvm-objcopy and llvm-readobj,
+        # the independent (and strict) Mach-O decoders the toolchain gate
+        # cross-checks the LC_RPATH, LC_BUILD_VERSION and exported-symbol facts
+        # against, that the section-payload gate uses to plant and dump Mach-O
+        # sections (GNU binutils cannot read Mach-O at all), and that the
+        # entry-owner gate recomputes the LC_MAIN section from. The ELF arm of
+        # those gates uses binutils objcopy/readelf and file (libmagic), both
+        # on the runner.
         # mono-mcs supplies mcs, whose compiled output gives the PE hardening
         # gate one real-producer binary (subsystem/DllCharacteristics/entry
         # written by Mono's linker, not by either test builder). osslsigncode
