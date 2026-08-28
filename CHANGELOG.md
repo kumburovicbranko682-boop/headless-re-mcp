@@ -5,6 +5,27 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（r2/jadx/apktool/apksigner/ghidra 的不可用拒绝信息点名真正的堵点）
+
+- 把 webcrack 那条"unset 与打错字要能区分"的修法推广到其余非 PE CLI 后端。此前
+  `HEADLESS_RE_R2` 打错字与 radare2 压根没装共用同一句 `"radare2/rizin is not installed"`——
+  把配置错误伪装成安装缺失,操作者被支去包管理器而真正要改的是设置;jadx/apktool/apksigner
+  同样是一句裸的 "not configured" 盖住两种状态。现在"配置了但不是文件"独立成臂:仍是
+  `capability_unavailable`(降级契约不变),但消息说清是配置路径不是文件、详情带上该路径。
+  apktool 客户端顺带把三处重复的门收敛成 `_require_apktool` / `_require_apksigner` 两个
+  返回 `Path` 的 helper(mypy 窄化仍成立)。
+- ghidra 更严重:`available` 为 False 有四种互不相干的原因——没设 home、home 下没有
+  analyzeHeadless、PATH 上没有 java、PyGhidra-only 安装缺 pyghidra 模块——而拒绝信息一律是
+  "Ghidra analyzeHeadless is not configured",对后两种是**指错方向**(操作者被支去改
+  `HEADLESS_RE_GHIDRA_HOME`,实际缺的是 JDK 或 pip 包)。新增 `_require_analyze` helper 按
+  doctor `probe_ghidra` 已经区分的同四种状态给出对应消息(home 缺失指向环境变量、launcher
+  缺失带 home 详情、java 缺失点名 JDK、pyghidra 缺失点名模块);守门条件与 `available` 严格
+  等价(先查 analyze 再按 home 选消息),测试里"强设属性"的构造不受影响。
+- 各客户端新增/强化单测:jadx 失效配置详情带路径;apktool 与 apksigner 各一条失效配置用例;
+  r2 既有失效配置用例强化为断言 `executable` 详情且消息不再称 "not installed";ghidra 四种
+  堵点各一条消息断言(pyghidra 例 monkeypatch `find_spec` 保持密闭)。mutation 验证(jadx 收回
+  单臂门、ghidra 收回笼统消息,5 例全红)。ruff+mypy 通过,全量单测 6646 passed / 55 skipped。
+
 ### 修复（webcrack 配置路径失效时降级为 capability_unavailable，而非 spawn 期 backend_error）
 
 - 上一条审计顺带暴露的分类不一致:`JsClient.available` 只查 `is not None` 不查 `is_file`,于是
