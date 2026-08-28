@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（`device.force_stop` 的 ps -A 回退把同前缀兄弟包误当幸存进程）
+
+- `adb/client.py::_pids_for_package` 在设备没有 `pidof` 时回退到解析 `ps -A`，但用
+  `if package not in line` 做裸子串匹配：`com.example.app` 会命中 `com.example.app2`、
+  `com.example.apple` 乃至 `another.com.example.app` 等任何把该包名当子串的行。于是
+  `force_stop` 在真正停掉目标包后，读到仍在运行的兄弟包进程，把本已停止的包报成
+  `stopped: false` 且 `remaining_pids` 含无关 pid，误导 agent 的停止判定。
+- 改法：改为精确匹配 NAME 列（`ps -A` 把应用进程命名为 `package`，声明的私有进程为
+  `package:private`），即 `name == package or name.startswith(package + ":")`；截断场景
+  两种写法本就都无法匹配全名，故无回归，只是不再纳入兄弟包。PID 仍从前三列取首个数字。
+- 新增 `tests/unit/test_adb_client_paths.py::test_pids_for_package_ps_fallback_matches_the_name_column_not_a_substring`：
+  一张含目标包、其私有进程 `:worker` 以及三个同前缀/含子串兄弟包的 `ps -A` 表，断言只返回
+  `[1000, 1001]`。非空验证：临时退回子串匹配，该用例会多收 1002/1003/1004 三个兄弟 pid 而报红。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

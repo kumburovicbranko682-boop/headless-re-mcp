@@ -324,9 +324,20 @@ def _pids_for_package(dev: Any, package: str) -> list[int] | None:
             return None
         pids: list[int] = []
         for line in str(ps).splitlines():
-            if package not in line:
+            fields = line.split()
+            if len(fields) < 2:
                 continue
-            for token in line.split()[:3]:
+            # Match the process NAME column exactly, not the package as a bare
+            # substring anywhere in the row. ps -A names an app's processes
+            # `package` (or `package:private` for a declared private process),
+            # so a substring test also matched a sibling -- `com.example.app`
+            # caught `com.example.app2` and `com.example.apple` -- and, after a
+            # force-stop of the real package, read that still-running sibling as
+            # a survivor and reported the stopped package as not stopped.
+            name = fields[-1]
+            if name != package and not name.startswith(package + ":"):
+                continue
+            for token in fields[:3]:
                 if token.isdigit():
                     pids.append(int(token))
                     break

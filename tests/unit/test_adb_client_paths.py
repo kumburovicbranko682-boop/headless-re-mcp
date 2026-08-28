@@ -289,6 +289,31 @@ def test_pids_for_package_is_none_for_unparseable_nonempty_output() -> None:
     assert _pids_for_package(dev, "com.example.app") is None
 
 
+def test_pids_for_package_ps_fallback_matches_the_name_column_not_a_substring() -> None:
+    """The ps -A fallback must not treat a sibling package as a survivor.
+
+    The name column is matched exactly, so a force-stop of ``com.example.app``
+    ignores ``com.example.app2`` and ``com.example.apple`` (a bare substring
+    test caught both and read them as the stopped package still running) while
+    still counting the app's own private process ``com.example.app:worker``.
+    """
+    ps_table = "\n".join(
+        [
+            "USER   PID  PPID NAME",
+            "u0_a10 1000 1    com.example.app",
+            "u0_a11 1001 1    com.example.app:worker",
+            "u0_a12 1002 1    com.example.app2",
+            "u0_a13 1003 1    com.example.apple",
+            "u0_a14 1004 1    another.com.example.app",
+        ]
+    )
+    dev = _PidsDev({"pidof": "pidof: not found", "ps": ps_table})
+
+    pids = _pids_for_package(dev, "com.example.app")
+
+    assert pids == [1000, 1001]
+
+
 # --------------------------------------------------------------------------- #
 # _client / _device construction arms (fake adbutils module)
 # --------------------------------------------------------------------------- #
