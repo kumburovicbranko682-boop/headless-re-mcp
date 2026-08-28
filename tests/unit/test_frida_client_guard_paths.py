@@ -344,6 +344,44 @@ def test_memory_read_returns_hex_encoded_bytes() -> None:
     assert payload["data"] == "deadbeef"
 
 
+def test_memory_read_rejects_a_negative_address() -> None:
+    # address is caller-supplied and reaches ptr(address) in the target, so a
+    # bad value is invalid_params here, the way disasm already validates it.
+    client = _local_client(_LocalFrida(session=_Session(api=_Api())))
+
+    with pytest.raises(FridaError) as caught:
+        client.memory_read(1, -1, 4, allowed_pid=1)
+
+    assert caught.value.code == "invalid_params"
+
+
+def test_memory_read_maps_an_unreadable_address_to_backend_error() -> None:
+    # A read of unmapped memory raises frida's own error; it must surface as
+    # backend_error, not escape raw to become an internal_error incident.
+    def _read(address: int, size: int) -> list[int]:
+        raise RuntimeError(f"access violation reading 0x{address:x}")
+
+    client = _local_client(_LocalFrida(session=_Session(api=_Api(read=_read))))
+
+    with pytest.raises(FridaError) as caught:
+        client.memory_read(1, 0x1000, 4, allowed_pid=1)
+
+    assert caught.value.code == "backend_error"
+    assert caught.value.details.get("address") == 0x1000
+
+
+def test_memory_read_maps_a_timeout_flavored_read_to_timeout() -> None:
+    def _read(address: int, size: int) -> list[int]:
+        raise _FakeTimeout("read timed out")
+
+    client = _local_client(_LocalFrida(session=_Session(api=_Api(read=_read))))
+
+    with pytest.raises(FridaError) as caught:
+        client.memory_read(1, 0x1000, 4, allowed_pid=1)
+
+    assert caught.value.code == "timeout"
+
+
 def test_require_refuses_a_pid_outside_the_session() -> None:
     client = _local_client(object())
 

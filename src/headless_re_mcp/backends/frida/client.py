@@ -408,6 +408,12 @@ class FridaClient:
         self, pid: int, address: int, size: int, *, allowed_pid: int
     ) -> JsonObject:
         self._require(pid, allowed_pid)
+        # Validate the address the way disasm (windbg/x64dbg) already does: it is
+        # caller-supplied and reaches ptr(address) in the target, so a bad type
+        # or a negative value must be a structured invalid_params here, not a
+        # runtime error the reader raises later.
+        if type(address) is not int or address < 0:
+            raise FridaError("invalid_params", "address must be a non-negative integer")
         if type(size) is not int or not 1 <= size <= 256 * 1024:
             raise FridaError("invalid_params", "size must be 1..262144")
         session = self._attach_local(pid)
@@ -415,15 +421,34 @@ class FridaClient:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             data = bytes(script.exports_sync.read(int(address), int(size)))
-            return {
-                "address": address,
-                "size": size,
-                "encoding": "hex",
-                "data": data.hex(),
-            }
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # A read of unmapped or guarded memory is the target refusing, not a
+            # server fault: frida raises its own RPC/JS error from readByteArray.
+            # Left raw, it reached the service envelope as internal_error with a
+            # logged incident, so routine address probing minted incidents for a
+            # backend condition. Map it to backend_error like the device-aware
+            # ops and _attach_local already do, keeping a timeout-flavored
+            # failure as timeout.
+            if _is_timeout(exc):
+                raise _timeout_error(_PROBE_TIMEOUT_S) from exc
+            raise FridaError(
+                "backend_error",
+                f"memory read failed: {exc}",
+                pid=pid,
+                address=address,
+                size=size,
+            ) from exc
         finally:
             with contextlib.suppress(Exception):
                 session.detach()
+        return {
+            "address": address,
+            "size": size,
+            "encoding": "hex",
+            "data": data.hex(),
+        }
 
     def hook_template(self, pid: int, template: str, *, allowed_pid: int,
                       timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:
