@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（`_dir_size` 目录洪泛下走遍整棵树，缺独立的遍历上限）
+
+- `core/limits.py` 的 `_dir_size` 用 `_DIR_SIZE_FILE_CAP` 限量，但 `rglob("*")` 也会吐出目录，
+  而只有文件才计入该计数——所以一棵几乎（或完全）由空目录构成的子树永远触不到文件上限，
+  会把整棵树走完。`prune_capped_dir` 正是要给这种形状便宜地封顶，而未注册的 jsre 解包树来自
+  不可信输入，恶意 bundle 可解包出正是这种形状，令逐子目录的测量退化为无界遍历。这与
+  `core/retention.py::measure_usage` 之前修的目录洪泛同类。
+- 改法：新增独立的 `_DIR_SIZE_SCAN_CAP`（设在文件上限之上，正常树仍能把允许计入的每个文件走完），
+  用 `scanned` 计入**每一个**被检视的条目（文件与目录皆算），据此封顶遍历；文件计数仍只数文件，
+  保持"结构不吃测量预算、超出即为下界"的既有契约不变。rglob 惰性求值，`break` 会真正停止下潜。
+- 新增 `tests/unit/test_core_limits_eviction.py::test_dir_size_bounds_the_walk_by_entries_scanned_not_files_found`：
+  把一个文件埋在十层目录之下，rglob 先吐每个祖先目录再吐文件，扫描上限设为三时遍历停在目录之间、
+  从不累计该文件（返回 0）；旧的仅数文件的实现会走完整条链返回 10。非空验证：临时退回旧循环该用例即红。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
