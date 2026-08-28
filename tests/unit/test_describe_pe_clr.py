@@ -25,6 +25,7 @@ from headless_re_mcp.core.session import (
     SessionRegistry,
     _dotnet_assembly_identity,
     _dotnet_assembly_refs,
+    _dotnet_debuggable,
     _dotnet_high_entropy_resources,
     _dotnet_module_initializer,
     _dotnet_pinvokes,
@@ -2931,6 +2932,84 @@ class TestDotnetTargetFramework:
         if not _DOTNET_FIXTURE.is_file():
             pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
         session = SessionRegistry().create(str(_DOTNET_FIXTURE))
+        assert session.metadata["dotnet"]["target_framework"] == ".NETFramework,Version=v4.8"
+
+
+def _dotnet_with_debuggable(tracking: bool, opt_disabled: bool) -> bytes:
+    """The fixture builder's assembly with a (bool, bool) DebuggableAttribute."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_dotnet_builder", _DOTNET_BUILDER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.build(debuggable=(tracking, opt_disabled))  # type: ignore[no-any-return]
+
+
+class TestDotnetDebuggable:
+    """_dotnet_debuggable reads the managed build-posture stamp.
+
+    Release-vs-debug is the first question a managed triage asks after
+    identity: DisableOptimizations in DebuggingModes means the JIT runs the
+    IL as written. The committed fixture carries no attribute (the honest
+    old-release answer is None); the builder's variant plants the 1.x
+    (bool, bool) .ctor shape; the monodis gate covers the modern
+    (DebuggingModes) int32 shape off a real mcs -debug+ build.
+    """
+
+    def test_the_committed_fixture_carries_no_attribute(self) -> None:
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        assert _dotnet_debuggable(_DOTNET_FIXTURE) is None
+
+    def test_the_bool_bool_ctor_folds_like_the_runtime(self, tmp_path: Path) -> None:
+        # (isJITTrackingEnabled, isJITOptimizerDisabled) fold to Default and
+        # DisableOptimizations -- each combination flips only its own bit.
+        for tracking, opt_disabled, modes in (
+            (True, True, 0x101),
+            (True, False, 0x001),
+            (False, True, 0x100),
+            (False, False, 0x000),
+        ):
+            path = tmp_path / f"dbg_{tracking}_{opt_disabled}.exe"
+            path.write_bytes(_dotnet_with_debuggable(tracking, opt_disabled))
+            assert _dotnet_debuggable(path) == {
+                "modes": modes,
+                "jit_tracking": tracking,
+                "edit_and_continue": False,
+                "jit_optimizer_disabled": opt_disabled,
+            }
+
+    def test_a_renamed_attribute_type_is_not_matched(self, tmp_path: Path) -> None:
+        # The walk must match by name, not by the row position the builder
+        # happens to use: one byte off in #Strings and the fact is gone.
+        raw = _dotnet_with_debuggable(True, True)
+        assert raw.count(b"DebuggableAttribute\x00") == 1
+        path = tmp_path / "renamed.exe"
+        path.write_bytes(raw.replace(b"DebuggableAttribute\x00", b"DebuggableAttribuXe\x00"))
+        assert _dotnet_debuggable(path) is None
+
+    def test_a_native_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "native.exe"
+        path.write_bytes(_native_pe())
+        assert _dotnet_debuggable(path) is None
+
+    def test_a_non_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _dotnet_debuggable(path) is None
+
+    def test_session_carries_the_verdict_both_ways(self, tmp_path: Path) -> None:
+        # The committed fixture reads None; the debug variant reads its modes
+        # -- and the target framework survives the shared-walker refactor.
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        session = SessionRegistry().create(str(_DOTNET_FIXTURE))
+        assert session.metadata["dotnet"]["debuggable"] is None
+        path = tmp_path / "debug_build.exe"
+        path.write_bytes(_dotnet_with_debuggable(True, True))
+        session = SessionRegistry().create(str(path))
+        assert session.metadata["dotnet"]["debuggable"]["jit_optimizer_disabled"] is True
         assert session.metadata["dotnet"]["target_framework"] == ".NETFramework,Version=v4.8"
 
 

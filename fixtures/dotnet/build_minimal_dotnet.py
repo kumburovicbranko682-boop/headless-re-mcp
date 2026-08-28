@@ -99,6 +99,12 @@ ASSEMBLY_REF_VERSION = (4, 0, 0, 0)
 TARGET_FRAMEWORK = ".NETFramework,Version=v4.8"
 TFA_TYPE_NAME = "TargetFrameworkAttribute"
 TFA_NAMESPACE = "System.Runtime.Versioning"
+# The DebuggableAttribute a test variant can opt into (the committed fixture
+# carries none): the .ctor(bool, bool) shape -- isJITTrackingEnabled,
+# isJITOptimizerDisabled -- that 1.x-era compilers emitted and modern readers
+# must still decode alongside the (DebuggingModes) int32 form csc uses today.
+DEBUGGABLE_TYPE_NAME = "DebuggableAttribute"
+DEBUGGABLE_NAMESPACE = "System.Diagnostics"
 # The strong-name identity: the Assembly row's PublicKey blob. This is the
 # 16-byte "ECMA" standard public key every framework assembly (mscorlib,
 # System, ...) is signed with; its public-key token -- the low 8 bytes of the
@@ -141,7 +147,10 @@ def _pad4(b: bytes) -> bytes:
     return b + b"\x00" * ((-len(b)) % 4)
 
 
-def build(resources: list[tuple[str, bytes]] | None = None) -> bytes:
+def build(
+    resources: list[tuple[str, bytes]] | None = None,
+    debuggable: tuple[bool, bool] | None = None,
+) -> bytes:
     """Return the bytes of the minimal .NET assembly.
 
     ``resources`` is the list of embedded ManifestResources as (name, bytes);
@@ -149,6 +158,11 @@ def build(resources: list[tuple[str, bytes]] | None = None) -> bytes:
     carries. Each entry becomes a table row with a null Implementation and a
     length-prefixed blob in the Resources directory, 8-aligned the way the CLR
     lays them out.
+
+    ``debuggable`` -- (isJITTrackingEnabled, isJITOptimizerDisabled) -- adds
+    an assembly-level DebuggableAttribute through its .ctor(bool, bool)
+    overload: one more TypeRef, MemberRef and CustomAttribute row. The default
+    None emits none of them, so the committed fixture's bytes are unchanged.
     """
     if resources is None:
         resources = [(RESOURCE_NAME, RESOURCE_CONTENT)]
@@ -177,6 +191,8 @@ def build(resources: list[tuple[str, bytes]] | None = None) -> bytes:
     i_asm_ref = add_string(ASSEMBLY_REF_NAME)
     i_tfa = add_string(TFA_TYPE_NAME)
     i_tfa_ns = add_string(TFA_NAMESPACE)
+    i_dbg = add_string(DEBUGGABLE_TYPE_NAME) if debuggable is not None else 0
+    i_dbg_ns = add_string(DEBUGGABLE_NAMESPACE) if debuggable is not None else 0
     i_ctor = add_string(".ctor")
     i_cctor = add_string(".cctor")
     i_console = add_string(CONSOLE_TYPE_NAME)
@@ -208,6 +224,15 @@ def build(resources: list[tuple[str, bytes]] | None = None) -> bytes:
     b_ca_value = add_blob(bytes([0x01, 0x00, len(tfa_utf8)]) + tfa_utf8 + b"\x00\x00")
     # The Assembly row's strong-name public key.
     b_pubkey = add_blob(PUBLIC_KEY)
+    b_dbg_ctor_sig = b_dbg_value = 0
+    if debuggable is not None:
+        # .ctor(bool, bool): HASTHIS, 2 params, ret void, both BOOLEAN --
+        # and the value blob: prolog, the two fixed args, zero named args.
+        b_dbg_ctor_sig = add_blob(bytes([0x20, 0x02, 0x01, 0x02, 0x02]))
+        tracking, opt_disabled = debuggable
+        b_dbg_value = add_blob(
+            bytes([0x01, 0x00, int(tracking), int(opt_disabled), 0x00, 0x00])
+        )
     blob_heap = _pad4(bytes(blob))
 
     # ---- method bodies (tiny format: (code_size << 2) | 0x02) ----
@@ -285,6 +310,10 @@ def build(resources: list[tuple[str, bytes]] | None = None) -> bytes:
     if not resources:
         valid &= ~(1 << 0x28)
         del row_counts[0x28]
+    if debuggable is not None:
+        row_counts[0x01] = 3  # + the DebuggableAttribute TypeRef
+        row_counts[0x0A] = 3  # + its .ctor MemberRef
+        row_counts[0x0C] = 2  # + the attribute row on the assembly
 
     tables = bytearray()
     tables += _u32(0)  # Reserved
@@ -303,6 +332,8 @@ def build(resources: list[tuple[str, bytes]] | None = None) -> bytes:
     # (ResolutionScope tag 2, row 1), the way every runtime-library type is.
     tables += _u16((1 << 2) | 2) + _u16(i_tfa) + _u16(i_tfa_ns)
     tables += _u16((1 << 2) | 2) + _u16(i_console) + _u16(i_console_ns)
+    if debuggable is not None:  # TypeRef row 3: System.Diagnostics.DebuggableAttribute
+        tables += _u16((1 << 2) | 2) + _u16(i_dbg) + _u16(i_dbg_ns)
     # TypeDef x2: Flags Name Namespace Extends FieldList MethodList. <Module>
     # (row 1) owns MethodDef row 1 (its .cctor); Sample's methods start at 2.
     tables += _u32(0) + _u16(i_type_module) + _u16(i_ns) + _u16(0) + _u16(1) + _u16(1)
@@ -324,11 +355,15 @@ def build(resources: list[tuple[str, bytes]] | None = None) -> bytes:
     # above (MemberRefParent tag 1, row 1).
     tables += _u16((2 << 3) | 1) + _u16(i_memberref) + _u16(b_void_sig)
     tables += _u16((1 << 3) | 1) + _u16(i_ctor) + _u16(b_ctor_sig)
+    if debuggable is not None:  # MemberRef row 3: DebuggableAttribute::.ctor(bool, bool)
+        tables += _u16((3 << 3) | 1) + _u16(i_ctor) + _u16(b_dbg_ctor_sig)
     # CustomAttribute: Parent Type Value -- the TargetFramework stamp on the
     # manifest assembly: Parent is Assembly row 1 (HasCustomAttribute tag 14),
     # Type the .ctor MemberRef row 2 (CustomAttributeType tag 3), Value the
     # serialized framework string in #Blob.
     tables += _u16((1 << 5) | 14) + _u16((2 << 3) | 3) + _u16(b_ca_value)
+    if debuggable is not None:  # the Debuggable stamp, same parent, .ctor row 3
+        tables += _u16((1 << 5) | 14) + _u16((3 << 3) | 3) + _u16(b_dbg_value)
     # ModuleRef: Name -- the unmanaged DLL a P/Invoke binds to.
     tables += _u16(i_mod_ref)
     # ImplMap: MappingFlags MemberForwarded ImportName ImportScope -- binds

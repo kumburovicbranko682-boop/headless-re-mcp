@@ -277,6 +277,11 @@ class SessionRegistry:
                     # minimum kernel and an APK min/target SDK. None means
                     # the attribute is absent (pre-4.0-era assemblies).
                     metadata["dotnet"]["target_framework"] = _dotnet_target_framework(path)
+                    # The managed build posture: DebuggableAttribute's
+                    # DebuggingModes -- DisableOptimizations set means a
+                    # debug build (the JIT runs the IL as written). None
+                    # means no attribute: the old-release honest answer.
+                    metadata["dotnet"]["debuggable"] = _dotnet_debuggable(path)
                     # The self-declared identity: assembly name and version,
                     # the strong-name public key token and the per-build
                     # MVID -- the managed pair to a PE VS_VERSIONINFO, an
@@ -4818,6 +4823,12 @@ _DOTNET_TYPE_PUBLIC = 0x1
 _DOTNET_MAX_PUBLIC_TYPES = 64
 _DOTNET_TFA_NAME = "TargetFrameworkAttribute"
 _DOTNET_TFA_NAMESPACE = "System.Runtime.Versioning"
+# DebuggableAttribute: the managed build-posture stamp. A debug build's
+# DebuggingModes carries DisableOptimizations (0x100); Default (0x1) is JIT
+# tracking and 0x4 EnableEditAndContinue. Old compilers used a (bool, bool)
+# .ctor the runtime folds into the same word.
+_DOTNET_DEBUGGABLE_NAME = "DebuggableAttribute"
+_DOTNET_DEBUGGABLE_NAMESPACE = "System.Diagnostics"
 # HasCustomAttribute coded index for the Assembly table (tag 14), row 1.
 _DOTNET_TFA_ASSEMBLY_PARENT = (1 << 5) | 14
 _DOTNET_MEMBER_REF_TYPEREF_TAG = 1
@@ -5393,14 +5404,56 @@ def _dotnet_target_framework(path: Path) -> str | None:
     family: the pair to a PE subsystem/os version, an ELF minimum kernel, a
     Mach-O LC_BUILD_VERSION minos and an APK min/target SDK, and finer than
     the metadata version (``v4.0.30319`` on Framework and Core alike).
+    """
+    value = _dotnet_assembly_attr_value(path, _DOTNET_TFA_NAME, _DOTNET_TFA_NAMESPACE)
+    if value is None:
+        return None
+    return _dotnet_custom_attr_string(value)
+
+
+def _dotnet_debuggable(path: Path) -> dict[str, Any] | None:
+    """The DebuggableAttribute's decoded claims, or ``None`` when absent.
+
+    The managed build-posture fact release-vs-debug triage starts from: a
+    debug build stamps DebuggingModes with DisableOptimizations (the JIT
+    runs the IL as written -- what makes an assembly pleasant to reverse),
+    while a release build stamps a slim mode word or, from older compilers,
+    nothing at all. Both .ctor shapes are decoded: the modern
+    ``(DebuggingModes)`` int32 and the 1.x ``(bool, bool)`` pair
+    (isJITTrackingEnabled, isJITOptimizerDisabled), which the runtime folds
+    into the same flags word (Default for tracking, DisableOptimizations for
+    the optimizer). ``modes`` is that word verbatim; the three booleans name
+    the bits triage asks about. None -- no attribute at all -- is the honest
+    old-release answer, distinct from a present-but-slim mode word.
+    """
+    value = _dotnet_assembly_attr_value(
+        path, _DOTNET_DEBUGGABLE_NAME, _DOTNET_DEBUGGABLE_NAMESPACE
+    )
+    if value is None or len(value) < 6 or value[:2] != b"\x01\x00":
+        return None
+    if len(value) >= 8:  # .ctor(DebuggingModes): one int32 fixed argument
+        modes = int.from_bytes(value[2:6], "little")
+    else:  # .ctor(bool, bool): the 1.x shape, folded the way the runtime does
+        modes = (0x1 if value[2] else 0) | (0x100 if value[3] else 0)
+    return {
+        "modes": modes,
+        "jit_tracking": bool(modes & 0x1),
+        "edit_and_continue": bool(modes & 0x4),
+        "jit_optimizer_disabled": bool(modes & 0x100),
+    }
+
+
+def _dotnet_assembly_attr_value(path: Path, attr_name: str, attr_namespace: str) -> bytes | None:
+    """The value blob of one assembly-level custom attribute, or ``None``.
 
     Resolved by the attribute chain ``monodis --customattr`` decodes: a
     TypeRef row naming the attribute, a MemberRef row for its ``.ctor``, and
-    the CustomAttribute row on the Assembly whose value blob's SerString is
-    the framework string. Those tables come up in bit order (0x01 < 0x0A <
-    0x0C), so one linear walk suffices. Bounded and fail-closed: capped file,
-    clamped row counts, capped scans, and any structural surprise -- or an
-    assembly old enough to predate the attribute -- yields ``None``.
+    the CustomAttribute row on the Assembly whose value blob this returns
+    raw (each caller knows its own serialization). Those tables come up in
+    bit order (0x01 < 0x0A < 0x0C), so one linear walk suffices. Bounded and
+    fail-closed: capped file, clamped row counts, capped scans, and any
+    structural surprise -- or an assembly that never carried the attribute
+    -- yields ``None``.
     """
     from headless_re_mcp.dotnet.tables import (
         CUSTOM_ATTRIBUTE_TYPE_TABLES,
@@ -5491,8 +5544,8 @@ def _dotnet_target_framework(path: Path) -> str | None:
             return None
         return blob_heap[start : start + length]
 
-    tfa_typerefs: set[int] = set()
-    tfa_ctors: set[int] = set()
+    attr_typerefs: set[int] = set()
+    attr_ctors: set[int] = set()
     table_offset = cursor
     for bit in sorted(row_counts):
         row_size = table_row_size(
@@ -5511,11 +5564,11 @@ def _dotnet_target_framework(path: Path) -> str | None:
                 ns_at = at + string_index_size
                 ns_index = int.from_bytes(tables[ns_at : ns_at + string_index_size], "little")
                 if (
-                    string_at(name_index) == _DOTNET_TFA_NAME
-                    and string_at(ns_index) == _DOTNET_TFA_NAMESPACE
+                    string_at(name_index) == attr_name
+                    and string_at(ns_index) == attr_namespace
                 ):
-                    tfa_typerefs.add(i + 1)
-        elif bit == _DOTNET_MEMBER_REF and tfa_typerefs:
+                    attr_typerefs.add(i + 1)
+        elif bit == _DOTNET_MEMBER_REF and attr_typerefs:
             # Row: Class(coded MemberRefParent), Name(#Strings), Signature(#Blob).
             parent_size = coded_index_size(row_counts, MEMBER_REF_PARENT_TABLES, 3)
             for i in range(min(row_counts[bit], _DOTNET_MAX_TFA_SCAN)):
@@ -5525,14 +5578,14 @@ def _dotnet_target_framework(path: Path) -> str | None:
                 parent = int.from_bytes(tables[at : at + parent_size], "little")
                 if parent & 0x7 != _DOTNET_MEMBER_REF_TYPEREF_TAG:
                     continue
-                if (parent >> 3) not in tfa_typerefs:
+                if (parent >> 3) not in attr_typerefs:
                     continue
                 name_at = at + parent_size
                 name_index = int.from_bytes(tables[name_at : name_at + string_index_size], "little")
                 if string_at(name_index) == ".ctor":
-                    tfa_ctors.add(i + 1)
+                    attr_ctors.add(i + 1)
         elif bit == _DOTNET_CUSTOM_ATTRIBUTE:
-            if not tfa_ctors:
+            if not attr_ctors:
                 return None
             # Row: Parent(coded HasCustomAttribute), Type(coded
             # CustomAttributeType), Value(#Blob).
@@ -5549,7 +5602,7 @@ def _dotnet_target_framework(path: Path) -> str | None:
                 ctor = int.from_bytes(tables[type_at : type_at + type_size], "little")
                 if ctor & 0x7 != _DOTNET_CUSTOM_ATTR_MEMBERREF_TAG:
                     continue
-                if (ctor >> 3) not in tfa_ctors:
+                if (ctor >> 3) not in attr_ctors:
                     continue
                 value_at = type_at + type_size
                 blob_index = int.from_bytes(
@@ -5557,9 +5610,7 @@ def _dotnet_target_framework(path: Path) -> str | None:
                 )
                 value = blob_at(blob_index)
                 if value is not None:
-                    framework = _dotnet_custom_attr_string(value)
-                    if framework:
-                        return framework
+                    return value
             return None
         table_offset += row_size * row_counts[bit]
     return None

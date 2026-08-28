@@ -805,3 +805,103 @@ def test_session_public_types_agree_with_monodis(tmp_path: Path) -> None:
         assert facts["public_type_count"] == 1
     finally:
         service.close_all()
+
+
+# monodis --customattr's decode of a DebuggableAttribute row: the modern
+# (DebuggingModes) shape prints its int32 as "[258]", the 1.x (bool, bool)
+# shape as "[true, false]" -- one lazy group captures either payload.
+_DEBUGGABLE_CA_RE = re.compile(
+    r"System\.Diagnostics\.DebuggableAttribute::'\.ctor'\([^)]*\)\s+\[([^\]]+)\]"
+)
+
+
+def _session_debuggable(tmp_path: Path, binary: Path) -> dict[str, object] | None:
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok, created.error
+        facts = created.data["session"]["metadata"]["dotnet"]["debuggable"]
+        return facts  # type: ignore[no-any-return]
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_session_debuggable_agrees_with_monodis(tmp_path: Path) -> None:
+    """The managed build-posture stamp against Mono's CustomAttribute decode.
+
+    ``debuggable`` is now a tool-free session fact: DebuggableAttribute's
+    DebuggingModes word, the release-vs-debug tell (DisableOptimizations set
+    means the JIT runs the IL as written). Three legs, all refereed by
+    monodis's own attribute decode. A real ``mcs -debug+`` build must carry
+    the modern (DebuggingModes) int32 the referee prints, mode word for mode
+    word, with the optimizer-disabled bit set (a debug build that didn't
+    disable optimizations would pass vacuously). The same source at
+    ``-debug-`` must carry nothing on both sides: None is the honest release
+    answer, not a default. And the fixture builder's (bool, bool) variant --
+    the 1.x .ctor shape no modern compiler emits -- must decode to the same
+    booleans monodis prints, proving the runtime's folding rule rather than
+    an int32-only happy path. skip != pass when either tool is missing.
+    """
+    if shutil.which("monodis") is None:
+        pytest.skip("monodis (mono-utils) not installed — .NET cross-check not run (skip != pass)")
+    mcs = shutil.which("mcs")
+    if mcs is None:
+        pytest.skip("mcs (mono-mcs) not installed — compiler legs not run (skip != pass)")
+
+    source = tmp_path / "hello.cs"
+    source.write_text('class P { static void Main() { System.Console.WriteLine("hi"); } }\n')
+    debug_build = tmp_path / "hello_debug.exe"
+    release_build = tmp_path / "hello_release.exe"
+    subprocess.run(
+        [mcs, "-debug+", f"-out:{debug_build}", str(source)],
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )
+    subprocess.run(
+        [mcs, "-debug-", f"-out:{release_build}", str(source)],
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )
+
+    # Leg 1: the debug build. Referee first -- whatever mode word Mono
+    # decodes off the assembly is the expected answer, and it must be a
+    # genuine debug stamp or the comparison proves nothing.
+    printed = _DEBUGGABLE_CA_RE.search(_monodis_file(debug_build, "--customattr"))
+    assert printed, "mcs -debug+ stamps DebuggableAttribute"
+    referee_modes = int(printed.group(1))
+    assert referee_modes & 0x100, "a debug build disables JIT optimizations"
+    debuggable = _session_debuggable(tmp_path, debug_build)
+    assert debuggable is not None
+    assert debuggable["modes"] == referee_modes
+    assert debuggable["jit_optimizer_disabled"] is True
+
+    # Leg 2: the release build. The referee sees no attribute; the session
+    # must answer None rather than inventing a zero-mode claim.
+    assert _DEBUGGABLE_CA_RE.search(_monodis_file(release_build, "--customattr")) is None
+    assert _session_debuggable(tmp_path, release_build) is None
+
+    # Leg 3: the 1.x (bool, bool) shape out of the fixture builder. Mono
+    # prints the two booleans it decoded; the session must fold them the way
+    # the runtime does -- tracking to Default, the optimizer flag to
+    # DisableOptimizations -- and nothing else.
+    import importlib.util
+
+    builder = _FIXTURE.parent / "build_minimal_dotnet.py"
+    spec = importlib.util.spec_from_file_location("_dotnet_builder", builder)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    legacy = tmp_path / "legacy_debuggable.exe"
+    legacy.write_bytes(module.build(debuggable=(True, False)))
+    printed = _DEBUGGABLE_CA_RE.search(_monodis_file(legacy, "--customattr"))
+    assert printed, "monodis decodes the (bool, bool) .ctor variant"
+    assert printed.group(1) == "true, false"
+    assert _session_debuggable(tmp_path, legacy) == {
+        "modes": 0x001,
+        "jit_tracking": True,
+        "edit_and_continue": False,
+        "jit_optimizer_disabled": False,
+    }
