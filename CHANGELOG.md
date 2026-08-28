@@ -95,6 +95,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `startup_receive_remaining` / `IdaWorkerError.from_payload` 纯函数合同。该模块行
   覆盖 32% → 98%。
 
+### 测试（doctor 可选外部 CLI 探针）
+
+- `doctor.py` 里 de4dot、NETReactorSlayer、XVLKC、VMP dumper、Scylla 五个可选 CLI 探针
+  此前完全没有测试(x64dbg/IDA/upx 探针已有覆盖)。新增
+  `tests/unit/test_doctor_optional_tool_probes.py`,参数化验证它们统一的三态诚实契约:
+  未配置报 MISSING 且给出配置指引、配置了但文件缺失或底层 CLI 探针失败报 BLOCKED、只有
+  底层探针确认可运行才 READY(探针在源模块里以接缝形式打桩);并补上 `probe_upx` 里
+  `test_doctor` 未覆盖的两条分支(配置路径不存在、探针抛 OSError)。`doctor.py` 行覆盖
+  63% → 78%(余量为 IDA/x64dbg/native 工具链/ghidra 等平台相关探针)。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
@@ -139,7 +149,37 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `AttributeError`——被测代码从未跑到。产品代码本身无恙（Windows 走
   `GlobalMemoryStatusEx`，POSIX 分支也捕获 `AttributeError`），纯属测试脚手架在
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
-  创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
+    创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
+
+### 测试（地址同步层补齐失败关闭分支）
+
+- `core/addressing.py` 把 x64dbg 的模块快照和磁盘上的 PE 头翻译成静态/运行时地址映射，
+  三处输入都受攻击者影响（模块列表走 RPC、selector 来自模型、PE 字节来自被调试进程映射
+  的任意文件）。既有测试覆盖了主路径与常见拒绝，新增
+  `tests/unit/test_addressing_hostile_input.py` 钉住其余失败关闭分支：模块结果不是对象 /
+  没有 modules 数组 / 条目既无名也无路径一律 `module_list_invalid`；selector 命中某模块后
+  附带的 path/name 约束不符报 `module_identity_mismatch`（两处不符都如实回报）、命不中报
+  `module_not_found`、`\??\` 设备前缀被规整后仍可匹配；`ModuleAddressSpace` 的 RVA 越界报
+  `address_out_of_range`、负地址在做任何运算前即 `invalid_address`；运行时元数据架构非字符串
+  或不受支持报 `runtime_metadata_invalid`、同一会话路径命中多个模块报 `module_ambiguous`；
+  运行时模块无路径 / 指向目录报 `module_file_unavailable`、`\??\` 前缀路径能被解析读出；
+  非 PE / 截断的 COFF 头 / 截断的可选头 / 可选头 magic 不符 / 镜像基址为 0 分别报
+  `module_file_invalid`；并补 `RuntimeModuleCatalog` 与 `RebasedModuleMapping` 的 `to_dict`
+  序列化。模块覆盖率 88% → 99%。
+
+### 测试（cdb/WinDbg 客户端补齐输入守卫与错误映射）
+
+- `backends/windbg/client.py` 把模型给的地址、长度和 PID 直接交给 cdb 执行；命令白名单和
+  截断标注已有测试，但拒绝分支、错误映射与 cdb 发现的跨平台分支此前未覆盖（80%）。新增
+  `tests/unit/test_windbg_input_guards.py`（stub 掉 `run_bounded`，跨平台可跑）钉住：
+  `disasm`/`live_disasm` 的长度必须是 1..256 的整数、整数地址不得为负、字符串地址不得含
+  `; | &` 分隔符，合法整数地址被渲染成十六进制并折进白名单的 `u <addr> L<n>` 形式、合法
+  符号地址原样透传；PID 非正数在任何启动前即被拒、attach 到非会话调试目标报
+  `permission_denied` 且都不触发启动；活体探针无法启动 / 非零退出且无输出报 `backend_error`、
+  非零退出但仍有输出则如实返回；缺 dump 文件报 `not_found`、内核 dump 需显式放行、无 cdb
+  报 `capability_unavailable`；dump 与活体探针超时都把被杀的 pid 随 `timeout` 回报（避免
+  调试器悬在活体目标上）。cdb 发现覆盖环境变量优先、`which` 的非 Store 路径、Windows Kits
+  glob 布局、以及跳过不可启动的命中与全无安装时返回 None。模块覆盖率 80% → 99%。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
@@ -1132,6 +1172,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **会话层对敌意与降级输入的 fail-closed 契约成套固定**（`core/session.py` 85%→99%）：
+  崩溃残留的 SQLite 行——带路径分隔符的 id(遍历企图)、空 locator、未知 state 列、
+  非法 architecture、天真/垃圾时间戳、`resolve()` 抛 OSError 的死挂载——一律安静跳过或
+  归一化恢复而不是让 hydration 崩掉;store 源本身抛异常或返回非 Mapping 行时启动照常。
+  注册表护栏直测:同态迁移是无副作用的 no-op(不更新 `updated_at`)、CLOSING/CLOSED
+  会话拒绝挂 backend、`remove_closed` 拒删活会话、重启后 adopt 进来的 closed 行可被
+  正常退休。目标分类直面伪造文件:PK 魔数但 zip 损坏回落 PE、无扩展名时按 wasm/带
+  manifest 的 zip 魔数识别、`.apk` 非 zip 或缺 `AndroidManifest.xml` 报结构化 ValueError、
+  伪造 MZ/PE 头与不支持的 machine 各自 fail-closed;本地 `.js` 资产建会话时哈希入册,
+  远程 URL 不碰磁盘。
+- **外部工具发现与校验的护栏成套固定**（`config.py` 82%→100%）：idalib/x64dbg 的发现逻辑
+  决定服务器会加载并执行哪个外部二进制,现在在临时目录里把宿主平台钉住后跨平台直测:
+  Windows 注册表指向的 IDA 目录若缺 idalib 运行时(GUI-only 安装)不会被交给加载器、
+  注册文件损坏安静回落文件系统扫描、Program Files 双根去重、POSIX 家目录扫描跳过
+  消失的根;`validate_ida_home` 四种结构化裁决(空路径/非目录/缺 idalib/可用)各自直测,
+  缺件裁决必须说出期望的文件名。x64dbg headless 只认 x86/x64 且大小写空白宽容;
+  已有 config.json 读不动时 `update_config_values` 报错并保证不覆写原文件。
+  `_as_int`/`_as_float` 对垃圾值回退而非炸掉启动,负值一律钳到 0;`_as_command`
+  的 env 覆盖默认、字符串默认按操作员写法切 argv、数组默认丢弃空片段。
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
   `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
   分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。
