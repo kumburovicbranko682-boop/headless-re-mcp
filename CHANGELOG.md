@@ -90,6 +90,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `pythonpath = ["."]`(pytest 内建,按 rootdir 解析),两种拼法自此等价;
   实测裸 `pytest` 从仓库根与任意 cwd 均可完整收集 5845 项、零错误。
 
+- 同一坑的另一半:22 个测试模块(直接或经 `web.app` 传递)导入 fastapi,
+  而 `test` extra 不含 web 依赖——`pip install -e .[test] && pytest` 在
+  收集期即死 22 个文件。其余 extras(pe/android/proxy/native)对套件确属
+  可选(缺席只会跳过,且 `test` extra 本就带着 TestClient 用的 httpx2),
+  唯 web 是事实必需:令 `test` extra 声明 `headless-re-mcp[web]`。实测
+  纯 `[test]` 环境完整收集 5978 项零错误、随机序全量 5924 过 / 54 跳过,
+  与 CI 显式装 web 的行为合流。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、

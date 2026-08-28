@@ -44,6 +44,11 @@ test = [
   "pytest-cov>=6.0",
   "pytest-timeout>=2.4.0",
   "httpx2>=2.12",
+  # 22 unit-test modules import fastapi (directly or via web.app); without
+  # the web extra a bare `pip install -e .[test] && pytest` dies in
+  # collection. Every other extra (pe, android, proxy, native) is genuinely
+  # optional to the suite -- web is not, so declare it.
+  "headless-re-mcp[web]",
 ]
 dev = [
   "headless-re-mcp[test]",
