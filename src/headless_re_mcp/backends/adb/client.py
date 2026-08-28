@@ -497,9 +497,10 @@ class AdbBackend:
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read device info: {exc}") from exc
 
-    def properties(self, serial: str, *, limit: int = 500) -> JsonObject:
+    def properties(self, serial: str, *, limit: int = 500, offset: int = 0) -> JsonObject:
         dev = self._device(serial)
         capped = max(1, min(int(limit), _MAX_PROPERTIES))
+        start = max(0, int(offset))
         raw = _device_shell(dev, "getprop")
         text = str(raw)
         if _is_host_error_output(text):
@@ -509,15 +510,22 @@ class AdbBackend:
             match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
             if match:
                 props[match.group(1)] = match.group(2)
-        # Cap the sorted-by-key prefix, matching packages: a capped map must be
-        # a deterministic alphabetical slice so a caller can tell "this key is
-        # absent within the page" from "this key may sit past the cap".
+        # Page the sorted-by-key map, matching packages: a paged map must be a
+        # deterministic alphabetical slice so a caller can tell "this key is
+        # absent within the page" from "this key may sit past the cap". getprop
+        # lists every property deterministically, so offset makes the tail past
+        # _MAX_PROPERTIES reachable -- without it a key sorting past the cap was
+        # only flagged by has_more, never resolvable to set/unset, so the
+        # absent-within-the-page reasoning held for the first page alone.
         items = sorted(props.items())
         total = len(items)
+        page = items[start : start + capped]
         return {
-            "properties": dict(items[:capped]),
-            "count": min(total, capped),
-            "has_more": total > capped,
+            "properties": dict(page),
+            "count": len(page),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(page) < total,
         }
 
     def packages(

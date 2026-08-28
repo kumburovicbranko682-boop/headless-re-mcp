@@ -56,7 +56,7 @@ class _FakeAdb(AdbBackend):
         self._guard("info")
         return {"serial": serial, "state": "device"}
 
-    def properties(self, serial: str, limit: int = 500) -> JsonObject:
+    def properties(self, serial: str, limit: int = 500, offset: int = 0) -> JsonObject:
         self._guard("properties")
         return {"properties": {}, "count": 0}
 

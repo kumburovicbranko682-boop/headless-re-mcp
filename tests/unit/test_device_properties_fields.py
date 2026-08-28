@@ -79,4 +79,40 @@ def test_a_capped_property_map_is_the_alphabetical_key_prefix() -> None:
     payload = backend.properties("emulator-5554", limit=3)
     assert payload["has_more"] is True
     assert payload["count"] == 3
+    assert payload["total"] == 5
+    assert payload["offset"] == 0
     assert list(payload["properties"]) == ["ro.k.a", "ro.k.b", "ro.k.c"]
+
+
+def test_offset_pages_the_property_tail_that_a_capped_first_page_hides() -> None:
+    """Same reachability contract as packages: getprop lists every property, so
+    a key sorting past the cap must be reachable by offset, not merely flagged
+    by has_more. Keys arrive reversed; the first page is the alphabetical head,
+    and offset reaches the tail so 'sorts within a reachable page and absent =>
+    unset' holds for the whole map, not just the head."""
+    backend = AdbBackend()
+    backend._available = True
+    backend._device = lambda serial: _ReverseKeyDev()  # type: ignore[method-assign]
+
+    head = backend.properties("emulator-5554", limit=2)
+    assert list(head["properties"]) == ["ro.k.a", "ro.k.b"]
+    assert head["offset"] == 0
+    assert head["total"] == 5
+    assert head["has_more"] is True
+
+    tail = backend.properties("emulator-5554", limit=2, offset=4)
+    assert list(tail["properties"]) == ["ro.k.e"]
+    assert tail["offset"] == 4
+    assert tail["count"] == 1
+    assert tail["has_more"] is False
+
+    # A negative offset floors to 0 rather than slicing from the sorted tail;
+    # a past-end offset yields an empty map, not an error.
+    floored = backend.properties("emulator-5554", limit=1, offset=-3)
+    assert list(floored["properties"]) == ["ro.k.a"]
+    assert floored["offset"] == 0
+    past_end = backend.properties("emulator-5554", offset=99)
+    assert past_end["properties"] == {}
+    assert past_end["count"] == 0
+    assert past_end["total"] == 5
+    assert past_end["has_more"] is False

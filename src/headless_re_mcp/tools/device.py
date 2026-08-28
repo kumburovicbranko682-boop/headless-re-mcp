@@ -64,19 +64,23 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.properties")
     def device_properties(
-        serial: str, limit: Annotated[int, Field(ge=1, le=2000)] = 500
+        serial: str,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 500,
+        offset: Annotated[int, Field(ge=0)] = 0,
     ) -> dict[str, Any]:
         """Return getprop key/value pairs for a device.
 
-        Answers with properties (the name-to-value map), count, and has_more
-        so a page that filled the cap is not read as every property. There
-        is no props or items field. A capped page is the alphabetically first
-        keys, so a key that sorts within the page but is absent is genuinely
-        unset; has_more true means more keys sort after the last one returned.
-        An adb error line (a dead or offline device) is a failure, not an
-        empty property set.
+        Answers with properties (the name-to-value map), count, total, offset
+        and has_more so a page that filled the cap is not read as every
+        property. There is no props or items field. A page is an alphabetical
+        slice of the keys starting at offset, so a key that sorts within the
+        page but is absent is genuinely unset; has_more true means more keys
+        sort after the last one returned. Page with offset to reach keys past
+        the cap rather than assuming the first page is the whole set. An adb
+        error line (a dead or offline device) is a failure, not an empty
+        property set.
         """
-        return _dump(analysis.device_properties(serial, limit=limit))
+        return _dump(analysis.device_properties(serial, limit=limit, offset=offset))
 
     @tools.tool(name="device.packages")
     def device_packages(

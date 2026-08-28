@@ -59,6 +59,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   即“无事可查”地失败。以把 `service_ext` 某处退回重包裹形态验证非空:守卫精确报出 `('service_ext','FridaError',517)`,
   还原后转绿——这条守卫本可在上一轮就自动逮住那个 `service_ext` 缺口。
 
+### `device.properties` 现在支持 `offset` 分页，让排在 cap 之后的 getprop 键可达（与 `device.packages` 同一缺口：此前只回“按键字母序前缀 + has_more”，属性数超过 2000 时尾部键无法翻到，其注释自称“matching packages”却缺了这一半）
+
+- `device.properties` 把 `getprop` 输出按键排序、按 `limit`(上限 2000)切、报 `has_more`,其注释明写“matching packages:一个封顶的
+  map 必须是确定的字母序切片,好让调用方分辨‘这个键在页内缺失’与‘这个键可能排在 cap 之后’”。但它和上一条修的 `device.packages`
+  一样**没有 offset**:`getprop` 每次完整、确定地列出全部属性,排在第 2000 个键之后的一旦被 cap 截掉就翻不到——只由 `has_more`
+  标出“还有”,永远无法落定为 set/unset。于是那句“页内缺失即未设”只对**首页**成立,注释里“可能排在 cap 之后”那一态始终悬空。
+- 新增 caller `offset`(与 `device.packages` 完全同款):排序后切 `items[offset:offset+capped]`,回包补 `total`/`offset`,`has_more`
+  改为 `offset + len(page) < total`。schema `offset: Field(ge=0)`(过 `test_non_pe_pagination_schema_bounds` 的 schema/文档双守卫——
+  docstring 现点名 `total`/`offset`/`has_more`),后端 `max(0, int(offset))` 兜底(过 `test_non_pe_backend_clamp_guard`)。翻到键应在的页
+  即可判其 set/unset,注释那句诚实性推断对整张属性表成立而非仅首页。至此两个基于 `getprop`/`pm list` 全量确定性输出的 adb 读取器
+  都补齐了 offset,与 `apk.classes`/`apk.strings` 对齐;live 运行时枚举(frida.modules/exports 等)因跨调用列表会变仍按无 offset 处理。
+- 单测钉住:逆序键下首页取字母序头 `ro.k.a/b`、`offset=4` 翻到尾 `ro.k.e` 且 `has_more` 归假;负 `offset` 归零、越界 `offset` 得空
+  map 而非报错。既有“host error 行不是空属性集”“capped 页是字母序前缀”等断言不受影响(offset 默认 0)。
+
 ### `device.packages` 现在支持 `offset` 分页，让排在 cap 之后的包名可达（此前只回“字母序前缀 + has_more”，装机数超过 2000 时尾部包名无法翻到，读取器 docstring 自己主张的“页内缺失即未安装”推断对尾部并不成立）
 
 - `device.packages` 排序后按 `limit`(上限 2000)切页,回包带 `count`/`has_more`/`third_party_only`,并声明:packages 是字母序前缀,
