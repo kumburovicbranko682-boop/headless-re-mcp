@@ -72,6 +72,12 @@ def test_r2_xrefs_puts_the_request_va_in_address_va_not_address(
     assert "from_address" in described
     assert "address_va" in described
     assert "no integer address" in described.replace("\n", " ")
+    # Same address name-collision as r2.disasm: the input is an integer, but
+    # items carry an address (va/rva/module) object. The doc must name the
+    # integer source (offset from r2.functions) so an agent does not feed the
+    # object back into an int param.
+    assert "offset" in described
+    assert "r2.functions" in described
 
 
 def test_r2_address_schemas_match_the_client_non_negative_check() -> None:

@@ -71,3 +71,9 @@ def test_r2_disasm_puts_the_request_va_in_address_va_not_address(
     assert "Answers with items" in described
     assert "address_va" in described
     assert "no integer address" in described.replace("\n", " ")
+    # The input address is an integer, but r2.functions/items carry a field
+    # also named address that is a (va/rva/module) object -- the wrong thing to
+    # pass back. The doc must name the integer source (offset from r2.functions)
+    # so the collision does not send an object into an int param.
+    assert "offset" in described
+    assert "r2.functions" in described

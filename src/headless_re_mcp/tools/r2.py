@@ -115,9 +115,12 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Disassemble count instructions at address, as radare2 decodes them.
 
-        Answers with items holding those instructions, plus address
-        (va/rva/module), address_va (the integer that was asked) and count.
-        There is no integer address field.
+        address is an integer virtual address: pass a function's offset from
+        r2.functions (an int) or the va inside any item's address object, not
+        the address (va/rva/module) object those tools return -- that object is
+        not accepted here. Answers with items holding those instructions, plus
+        address (va/rva/module), address_va (the integer that was asked) and
+        count. There is no integer address field.
         """
         return _dump(analysis.r2_disasm(session_id, address, count=count, timeout=timeout))
 
@@ -129,8 +132,12 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """References to address (its callers), as radare2 resolved them.
 
-        Address-scoped: answers with the cross-references that target this
-        address, not the whole-program ref list. items each carry from, type
+        address is an integer virtual address: pass a function's offset from
+        r2.functions (an int) or an item's address.va, not the address
+        (va/rva/module) object those tools return -- that object is not
+        accepted here. Address-scoped: answers with the cross-references that
+        target this address, not the whole-program ref list. items each carry
+        from, type
         and from_address (the referencing site), plus address (va/rva/module)
         and address_va (the integer that was asked); an address nothing
         references answers items [] with count 0, not an error. The outgoing
