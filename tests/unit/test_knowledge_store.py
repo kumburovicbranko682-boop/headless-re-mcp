@@ -92,6 +92,32 @@ def test_knowledge_filters_by_kind_and_session(repository: Any) -> None:
     assert only_api["entries"][0]["value"] == {"module": "kernel32"}
 
 
+def test_knowledge_blank_kind_filter_means_every_kind_in_both_stores(
+    repository: Any,
+) -> None:
+    """A blank kind filter must behave identically in both repositories.
+
+    SQLite filters kind with ``if kind:`` while the in-memory port used ``kind is
+    None`` -- so an empty-string kind, which the schema permits and the direct
+    transports can pass, diverged: SQLite treated "" as "no filter" (every kind)
+    while the in-memory port filtered for a literal empty kind and returned
+    nothing, since a knowledge kind is always a non-empty label. The InMemory
+    repository promises "the same observable contract as SQLite" (and a sibling
+    test already fixes a SQLite-vs-memory disagreement), so a blank kind must
+    mean every kind, exactly like None.
+    """
+    repository.record_knowledge(session_id="s1", kind="function", key="a", value={})
+    repository.record_knowledge(session_id="s1", kind="api", key="b", value={})
+
+    every = repository.list_knowledge("s1")["total"]
+    blank = repository.list_knowledge("s1", kind="")["total"]
+    scoped = repository.list_knowledge("s1", kind="api")["total"]
+
+    assert every == 2
+    assert blank == every, "a blank kind must match None (every kind), not filter to nothing"
+    assert scoped == 1, "a real kind still filters to that kind"
+
+
 def test_knowledge_paginates(repository: Any) -> None:
     for index in range(5):
         repository.record_knowledge(

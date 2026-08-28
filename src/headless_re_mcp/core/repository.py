@@ -760,7 +760,13 @@ class InMemoryAnalysisRepository:
         offset = max(0, int(offset))
         with self._lock:
             entries = [dict(item) for item in self._audit]
-        if session_id is not None:
+        # Truthiness, not ``is not None``, to match the SQLite store's ``if
+        # session_id:``. An empty string is not a real session id (they are uuid
+        # hex, and session-less rows carry None), so a blank filter means "no
+        # filter -- all rows" in both stores; filtering for ``session_id == ""``
+        # would return nothing here while SQLite returned everything, breaking
+        # the observable-contract parity this port promises.
+        if session_id:
             entries = [item for item in entries if item["session_id"] == session_id]
         entries.sort(key=lambda item: str(item["at"]), reverse=True)
         total = len(entries)
@@ -835,11 +841,16 @@ class InMemoryAnalysisRepository:
         limit = max(1, min(int(limit), 500))
         offset = max(0, int(offset))
         with self._lock:
+            # ``not kind`` (rather than ``kind is None``) to match the SQLite
+            # store's ``if kind:``: a knowledge kind is always a non-empty label,
+            # so a blank kind means "no kind filter -- every kind" in both stores.
+            # ``kind == ""`` would filter to the empty-kind set (nothing) here
+            # while SQLite returned every kind, breaking contract parity.
             entries = [
                 dict(item)
                 for item in self._knowledge.values()
                 if item["session_id"] == session_id
-                and (kind is None or item["kind"] == kind)
+                and (not kind or item["kind"] == kind)
             ]
         entries.sort(key=lambda item: (str(item["kind"]), str(item["key"])))
         total = len(entries)

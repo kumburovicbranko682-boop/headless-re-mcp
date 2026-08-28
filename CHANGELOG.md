@@ -24,6 +24,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（内存版仓库(`InMemoryAnalysisRepository`,自称“与 SQLite 同一可观测契约”的生产端口)在“空串过滤”上与 SQLite 分道:`list_audit`/`list_knowledge` 的过滤谓词两边不同——SQLite 用真值判断(`if session_id:` / `if kind:`),内存版用 `is None`。于是 `session_id=""`/`kind=""`(schema 允许、agent 与 OpenAI 直连可直接传)在两端结果相反:SQLite 视空串为“无过滤、全返回”,内存版按字面 `== ""` 过滤而返空——会话行的 id 恒为 uuid、无会话行为 None、知识 kind 恒为非空标签,故内存版那条永远返空,是“静默返空”的迷惑结果)
+
+- 内存版 `list_audit` 改 `if session_id:`、`list_knowledge` 改 `not kind or ...`,与 SQLite 真值语义对齐:空白过滤=无过滤(等同 None,全返回),真实 id/kind 仍精确过滤,空白与 None 两端一致。选向 SQLite 对齐因其为默认生产库,且“空串=全集”避免了内存版那条恒空的迷惑结果;既有 `test_a_finding_too_large...` 早已把 SQLite–内存分歧当 bug 修,此处同理。
+- 测试:`test_audit_secret_redaction.py`(双仓库参数化)新增“空白 session 过滤=全返回,与 None 一致、真实 id 仍过滤”;`test_knowledge_store.py`(`repository` 双库夹具)新增“空白 kind 过滤=每种 kind,与 None 一致、真实 kind 仍过滤”。带外验证:把两处内存改动回退 → 两条断言的内存/InMemory 变体如期失败(`0 == 2`)、SQLite 变体仍绿——精确点名分歧后端,证明有牙。
+
 ### 修复（`frida.modules` 是唯一“靠设备回传的 `total` 推 `has_more`”的枚举:兄弟 RPC(`exports`/`java.classes`/`java.methods`)都多取一条、从“页被填满”判断是否还有;而 `modules` 只向设备要 `capped` 条再用 `total > count`。随包脚本确实回 `{modules, total}`,故当前 `has_more` 诚实——但这条诚实性寄托在设备一定回 `total` 上。一旦该 payload 被规整成与 classes/exports 一致的“遵守上限的纯数组”,无 `total` 分支就会把 `total` 记成截断后的页长,`has_more` 在被截断的列表上悄悄恒为 `False`(“就这些了”)——一次典型的“载荷形状漂移致谎报”）
 
 - `modules` 改为像 `exports`/`java_enumerate` 一样向设备多取一条(`capped + 1`),`has_more` 除 `total > count` 外再加 `len(held) > count` 兜底:设备报 `total` 时用 `total` 判定,不报时凭“页被填满(多取到的那条)”判定。诚实性自此只依赖页形状,不再寄托于设备回传 `total`;`count`/裁剪仍为 `held[:capped]`,上限钳制 `min(limit,256)` 不变(过分页/超时/钳制守卫)。随包脚本无需改动(它本就按 limit 回传且附带 `total`,只是多回一条)。
