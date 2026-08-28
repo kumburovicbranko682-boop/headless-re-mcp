@@ -323,6 +323,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   加 `dropped()`(= `_seq - len(flows)`),`proxy.status` 一并返回 `dropped`,补齐健康快照,便于及时 export/fetch。
   (新增字段,向后兼容;docstring 同步说明。)
 
+### 测试（新增 drift guard：非 PE 工具的 timeout 参数一律在 schema 层上下界收敛）
+
+- 非 PE 的所有超时入参（web 五个驱动 `open` / `navigate` / `click` / `type` / `wait`、JS/WASM 的
+  `js.deobfuscate` / `beautify` / `unpack_bundle` 与 `wasm.wat` / `info`、APK 的 `decompile` / `decode` /
+  `repack` / `sign` / `export_sources`，共 15 个）都接受调用方传入的 `timeout`，各自声明 `Field(gt=0, le=...)`。\
+  超时是"一次调用能占住共享 worker 多久"的天花板：裸 `timeout: float`、负值或 `1e9` 就是拒绝服务向量——要么把\
+  worker 近乎永久钉住，要么被直接交给驱动、让一个卡死的调用绕过系统里其它所有界。此前 `port` / 分页有 schema\
+  漂移护栏，`timeout` 没有。
+- `tests/unit/test_non_pe_timeout_schema_bounds.py` 新增一例（port / 分页守卫的姊妹）:扫描 web/proxy/device/frida/
+  apk/js_wasm/workspace 全部工具,凡暴露 `timeout` 者必须是 number、有非负下界（`exclusiveMinimum>=0` 或
+  `minimum>0`）且声明有限的正 `maximum`;并断言已知超时工具确实被扫到（防止枚举失效导致空过）。新增工具若漏掉\
+  上界会在此失败。(纯测试新增,无行为变更。)
+
 ### 测试（新增 drift guard：非 PE 工具的 port 参数一律在 schema 层收敛为 1..65535）
 
 - `proxy.start` / `frida.server.ensure` / `device.connect` 三个非 PE 操作都接受调用方传入的 TCP 端口,各自在 schema
