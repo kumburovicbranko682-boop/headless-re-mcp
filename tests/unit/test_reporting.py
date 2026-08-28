@@ -132,6 +132,42 @@ def test_report_escapes_pipes_and_truncates_long_cells() -> None:
     assert len(row.replace("\\|", "").strip("| ").split(" | ")) == 3
 
 
+def test_report_neutralizes_line_breaks_so_a_value_cannot_split_the_table() -> None:
+    """A recorded value with a carriage return or Unicode line separator.
+
+    A Markdown table row is a single line, so any line break left inside a cell
+    ends the row early and every column after it -- and every following row --
+    misrenders. Only "\\n" used to be handled, so a CRLF string pulled from a
+    Windows target, or a value carrying U+2028 / U+0085, broke the whole table.
+    Every finding in the report shares that table, so one hostile value took the
+    rest of the findings down with it.
+    """
+    knowledge = {
+        "entries": [
+            {
+                "kind": "note",
+                "key": "crlf",
+                "value": "line1\r\nline2\u2028line3\x85line4\x0bline5",
+                "updated_at": "2026-08-11T00:00:00+00:00",
+            }
+        ]
+    }
+
+    markdown = render_markdown_report(
+        session=_SESSION,
+        knowledge=knowledge,
+        generated_at="t",
+    )
+
+    row = next(line for line in markdown.splitlines() if line.startswith("| crlf"))
+    # The value collapsed to one physical line, so it is still three columns.
+    assert len(row.strip("| ").split(" | ")) == 3
+    # CRLF becomes two spaces (one per character); each other break becomes one.
+    assert "line1  line2 line3 line4 line5" in row
+    for breaker in ("\r", "\u2028", "\x85", "\x0b"):
+        assert breaker not in row
+
+
 def test_report_includes_audit_when_supplied() -> None:
 
     audit = {

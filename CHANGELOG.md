@@ -127,6 +127,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（report.generate 单元格只中和了 `\n`，回车/Unicode 行分隔符会撑破表格）
+
+- `reporting._cell` 过去只把 `\n` 替成空格，`\r`、垂直制表/换页、以及 Unicode 行/段分隔符
+  （U+2028 / U+2029 / U+0085 NEL）原样留在单元格里。Markdown 表格一行就是一行，单元格内
+  只要还有一个换行符，这一行就在该处提前结束，之后的列乃至后续所有行全部错位。逆向对象
+  常是 Windows 二进制，抽出的字符串多带 CRLF；`knowledge.record` 也会把带控制字符的值原样
+  存下，随后 `report.generate` 把它们塞进同一张表——一个含 `\r` 的值就能把整份报告的其余
+  发现连带拖垮。现按 `str.splitlines()` 认定的全部行边界统一折叠成空格（CRLF 折成两个空格，
+  渲染时本就并成一个），单元格恒为单行，不再依赖具体渲染器如何处理这些字符。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

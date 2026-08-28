@@ -22,12 +22,23 @@ JsonObject = dict[str, Any]
 
 _MAX_CELL = 120
 
+# Every character str.splitlines() treats as a line boundary, mapped to a space.
+# Only "\n" was neutralised before, so a value carrying a carriage return or a
+# Unicode line / paragraph separator -- routine in strings pulled from Windows
+# binaries (CRLF) or recorded verbatim as knowledge -- kept a real line break
+# inside the cell. A Markdown table row is one line, so that break split the row
+# and corrupted the table from that cell onward. Collapsing to spaces here keeps
+# the cell single-line without depending on how a given renderer treats them.
+_LINE_BREAKS_TO_SPACE = str.maketrans(
+    dict.fromkeys("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029", " ")
+)
+
 
 def _cell(value: object) -> str:
 
     text = "" if value is None else str(value)
 
-    text = text.replace("|", "\\|").replace("\n", " ").strip()
+    text = text.replace("|", "\\|").translate(_LINE_BREAKS_TO_SPACE).strip()
 
     if len(text) > _MAX_CELL:
 
