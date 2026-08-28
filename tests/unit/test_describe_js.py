@@ -149,6 +149,134 @@ class TestJsUrlCensus:
         assert js["cleartext_url_count"] == 1
 
 
+class TestJsPayloadCensus:
+    """describe_js flags long encoded literals and names what they decode to.
+
+    The dropper shape the binary formats already report as embedded payloads:
+    a script carrying its next stage as one long base64 or hex string. The
+    census counts every 256+ character blob, decodes each blob's opening
+    characters and runs the shared overlay sniff over the bytes -- so "the
+    script carries a zip" and "the PE trails a zip" are the same fact.
+    """
+
+    def test_a_base64_zip_literal_is_named(self, tmp_path: Path) -> None:
+        stage = base64.b64encode(b"PK\x03\x04" + b"\x00" * 200).decode()
+        path = tmp_path / "dropper.js"
+        path.write_bytes(f'var s = "{stage}"; eval(atob(s));'.encode())
+        info = describe_js(path)["js"]
+        assert info["embedded_payloads"] == [
+            {"kind": "zip", "encoding": "base64", "chars": len(stage), "offset": 9}
+        ]
+        assert info["embedded_payload_count"] == 1
+        assert info["encoded_blob_count"] == 1
+
+    def test_a_hex_pe_literal_classifies_as_hex(self, tmp_path: Path) -> None:
+        # Hex is a subset of the base64 alphabet; a pure even-length hex run
+        # must decode as hex (yielding the MZ magic), not as base64 garbage.
+        stage = (b"MZ" + b"\x00" * 150).hex()
+        path = tmp_path / "shell.js"
+        path.write_bytes(f'var h = "{stage}";'.encode())
+        payloads = describe_js(path)["js"]["embedded_payloads"]
+        assert payloads == [
+            {"kind": "pe", "encoding": "hex", "chars": len(stage), "offset": 9}
+        ]
+
+    def test_a_blob_with_no_magic_counts_but_is_not_listed(self, tmp_path: Path) -> None:
+        # The encrypted-stage shape: a big literal that decodes to nothing
+        # recognizable. It joins the blob count -- that count next to an empty
+        # payload list is itself the signal -- but the list stays honest.
+        noise = base64.b64encode(b"\xf3\x9c" * 200).decode()
+        path = tmp_path / "enc.js"
+        path.write_bytes(f'var k = "{noise}";'.encode())
+        info = describe_js(path)["js"]
+        assert info["embedded_payloads"] == []
+        assert info["embedded_payload_count"] == 0
+        assert info["encoded_blob_count"] == 1
+
+    def test_short_literals_do_not_count(self, tmp_path: Path) -> None:
+        # 255 characters is below the blob threshold: ordinary string data,
+        # inline SVGs and small icons stay out of the census.
+        path = tmp_path / "small.js"
+        path.write_bytes(b'var icon = "' + b"A" * 255 + b'";')
+        info = describe_js(path)["js"]
+        assert info["encoded_blob_count"] == 0
+        assert info["embedded_payloads"] == []
+
+    def test_a_clean_script_reads_an_empty_census(self, tmp_path: Path) -> None:
+        path = tmp_path / "clean.js"
+        path.write_bytes(b"export const add = (a, b) => a + b;\n")
+        info = describe_js(path)["js"]
+        assert info["embedded_payloads"] == []
+        assert info["embedded_payload_count"] == 0
+        assert info["encoded_blob_count"] == 0
+
+    def test_the_payload_list_caps_but_the_count_stays_exact(self, tmp_path: Path) -> None:
+        stage = base64.b64encode(b"PK\x03\x04" + b"\x00" * 200).decode()
+        body = "".join(f'var s{i} = "{stage}";\n' for i in range(40))
+        path = tmp_path / "many.js"
+        path.write_bytes(body.encode())
+        info = describe_js(path)["js"]
+        assert info["embedded_payload_count"] == 32  # _JS_MAX_PAYLOADS
+        assert info["encoded_blob_count"] == 40
+
+    def test_session_over_a_dropper_carries_the_census(self, tmp_path: Path) -> None:
+        stage = base64.b64encode(b"\x7fELF" + b"\x00" * 200).decode()
+        path = tmp_path / "dropper.js"
+        path.write_bytes(f'const bin = "{stage}";'.encode())
+        session = SessionRegistry().create(str(path))
+        payloads = session.metadata["js"]["embedded_payloads"]
+        assert [p["kind"] for p in payloads] == ["elf"]
+
+
+class TestJsDynamicCodeMarkers:
+    """describe_js counts the string-to-code constructs obfuscation leans on.
+
+    A static, byte-level census -- the same honesty contract as the binary
+    facts: it counts what is literally in the bytes (an aliased eval escapes
+    it), and all-zero counts on a clean script are a real answer.
+    """
+
+    def test_each_marker_counts_its_own_hits(self, tmp_path: Path) -> None:
+        path = tmp_path / "obf.js"
+        path.write_bytes(
+            b'eval("x"); eval ("y");\n'
+            b'new Function("return 1")(); Function("return 2")();\n'
+            b"atob(p); unescape(q);\n"
+            b"String.fromCharCode(72, 105); document.write(m);\n"
+        )
+        markers = describe_js(path)["js"]["dynamic_code_markers"]
+        assert markers == {
+            "eval": 2,
+            "function_constructor": 2,
+            "atob": 1,
+            "unescape": 1,
+            "from_char_code": 1,
+            "document_write": 1,
+        }
+
+    def test_word_boundaries_keep_lookalikes_out(self, tmp_path: Path) -> None:
+        # evaluate(), myFunction() and datob() are ordinary identifiers; only
+        # the exact constructs count.
+        path = tmp_path / "plain.js"
+        path.write_bytes(b"evaluate(1); myFunction(2); datob(3); medieval(4);")
+        markers = describe_js(path)["js"]["dynamic_code_markers"]
+        assert all(count == 0 for count in markers.values()), markers
+
+    def test_a_clean_script_reads_all_zeros(self, tmp_path: Path) -> None:
+        path = tmp_path / "clean.js"
+        path.write_bytes(b"export const add = (a, b) => a + b;\n")
+        markers = describe_js(path)["js"]["dynamic_code_markers"]
+        assert set(markers) == {
+            "eval",
+            "function_constructor",
+            "atob",
+            "unescape",
+            "from_char_code",
+            "document_write",
+        }
+        assert all(count == 0 for count in markers.values())
+
+
 def _map_doc(**overrides: object) -> bytes:
     doc: dict[str, object] = {
         "version": 3,

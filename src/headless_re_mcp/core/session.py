@@ -3245,6 +3245,33 @@ _JS_MAX_BYTES = 16 * 1024 * 1024
 # the legacy ``//@ ``) for scripts and ``/*# ... */`` for blocks, so key off the
 # ``#``/``@`` and stop the value at the first whitespace (URLs carry none).
 _JS_SOURCEMAP_RE = re.compile(rb"[#@]\s*sourceMappingURL=(\S+)")
+# The dynamic-code markers obfuscated and dropper JS route through to turn
+# strings into code or bytes: eval and the Function constructor execute text,
+# atob/unescape/fromCharCode decode it, document.write injects it. Counted as
+# byte-level regex hits -- a static census, not semantic analysis (an aliased
+# eval escapes it, honestly). GNU grep -oE counts the same patterns, so the
+# web gate can cross-check hit for hit.
+_JS_MARKER_RES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
+    ("eval", re.compile(rb"\beval\s*\(")),
+    ("function_constructor", re.compile(rb"\b(?:new\s+)?Function\s*\(")),
+    ("atob", re.compile(rb"\batob\s*\(")),
+    ("unescape", re.compile(rb"\bunescape\s*\(")),
+    ("from_char_code", re.compile(rb"\bString\s*\.\s*fromCharCode\b")),
+    ("document_write", re.compile(rb"\bdocument\s*\.\s*write\s*\(")),
+)
+# The encoded-payload census: a dropper script carries its next stage as one
+# long base64 or hex literal, the JS spelling of the embedded payloads the
+# binary formats already flag. A run of 256+ base64-alphabet characters is a
+# blob worth counting (hex is a subset of that alphabet, so one scan finds
+# both and each blob classifies as exactly one encoding); the opening chars
+# decode to enough bytes for the shared overlay sniff to name what the blob
+# self-declares as. Blobs that decode to no magic still count -- next to a
+# high blob count that silence is the encrypted-stage signal.
+_JS_BLOB_RE = re.compile(rb"[A-Za-z0-9+/]{256,}={0,2}")
+_JS_HEX_CHARS = frozenset(b"0123456789abcdefABCDEF")
+_JS_MAX_BLOB_SCAN = 4096
+_JS_MAX_PAYLOADS = 32
+_JS_SNIFF_CHARS = 128  # decodes to 96 (base64) or 64 (hex) bytes -- both >= 0x40
 # An external map reference is short; cap it so a pathological line cannot make
 # the identity facts large, and never store an inline (data:) map's payload.
 _JS_SOURCEMAP_MAX = 2048
@@ -3325,8 +3352,66 @@ def describe_js(path: Path) -> dict[str, Any]:
             # formats already carry, sample bounded and count exact, with the
             # cleartext (http/ws/ftp) share broken out.
             **_file_url_facts(path),
+            # The dropper shape: what the script's long encoded literals
+            # decode into, plus how often it reaches for string-to-code.
+            **_js_payload_census(data),
+            "dynamic_code_markers": {
+                name: len(marker.findall(data)) for name, marker in _JS_MARKER_RES
+            },
             "truncated": truncated,
         }
+    }
+
+
+def _js_payload_census(data: bytes) -> dict[str, Any]:
+    """Long encoded literals and what their opening bytes self-declare as.
+
+    Every 256+ character run of base64-alphabet bytes is one blob; a blob of
+    pure even-length hex classifies as hex, anything else as base64. The
+    first _JS_SNIFF_CHARS characters decode (from the literal's start, so the
+    encoding phase is aligned) and the shared overlay sniff names the magic:
+    a zip, a PE, an ELF riding inside a script is the stage-two-dropper fact
+    the binary formats already report as embedded payloads. Only recognized
+    blobs join the list; ``encoded_blob_count`` counts them all, because many
+    large blobs with no magic -- the encrypted-stage shape -- is a signal on
+    its own. Bounded: the scan stops after _JS_MAX_BLOB_SCAN blobs and the
+    list caps at _JS_MAX_PAYLOADS entries.
+    """
+    payloads: list[dict[str, Any]] = []
+    blob_count = 0
+    for match in _JS_BLOB_RE.finditer(data):
+        blob_count += 1
+        if blob_count > _JS_MAX_BLOB_SCAN:
+            blob_count = _JS_MAX_BLOB_SCAN
+            break
+        if len(payloads) >= _JS_MAX_PAYLOADS:
+            continue
+        blob = match.group(0)
+        head = blob[:_JS_SNIFF_CHARS]
+        if len(blob) % 2 == 0 and all(byte in _JS_HEX_CHARS for byte in blob):
+            encoding = "hex"
+            decoded = bytes.fromhex(head.decode("ascii"))
+        else:
+            encoding = "base64"
+            try:
+                decoded = base64.b64decode(head[: len(head) - len(head) % 4])
+            except ValueError:
+                continue
+        kind = _overlay_kind(decoded)
+        if kind is None:
+            continue
+        payloads.append(
+            {
+                "kind": kind,
+                "encoding": encoding,
+                "chars": len(blob),
+                "offset": match.start(),
+            }
+        )
+    return {
+        "embedded_payloads": payloads,
+        "embedded_payload_count": len(payloads),
+        "encoded_blob_count": blob_count,
     }
 
 
