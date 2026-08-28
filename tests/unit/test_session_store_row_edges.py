@@ -16,6 +16,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 from headless_re_mcp.core.store.sqlite_store import SessionStore
 
@@ -149,6 +150,122 @@ def test_list_audit_tolerates_a_row_with_non_string_summaries(tmp_path: Path) ->
     # Non-string summaries are passed through untouched, not json-parsed.
     assert entry["params_summary"] == b"\x07"
     assert entry["result_summary"] == b"\x08"
+
+
+# Five ids whose descending sort is neither the insertion order nor its reverse.
+# A listing that lands them in _TIE_ID_DESC order can only have sorted by id; a
+# reader missing the id tie-breaker falls back to the scan/rowid order, which is
+# one of the other two. So asserting _TIE_ID_DESC deterministically separates the
+# fixed reader from the buggy one, regardless of which scan the planner picks.
+_TIE_INSERT_ORDER = ["c3", "a1", "e5", "b2", "d4"]
+_TIE_ID_DESC = ["e5", "d4", "c3", "b2", "a1"]
+_SAME_TS = "2026-01-01T00:00:00+00:00"
+
+
+def _paged_ids(page: Any, key: str, id_of: Any) -> list[str]:
+    """Walk a paginated reader two at a time and collect the ids it hands back."""
+    seen: list[str] = []
+    offset = 0
+    while True:
+        window = page(offset=offset, limit=2)
+        rows = window[key] if isinstance(window, dict) else window[0]
+        seen.extend(id_of(row) for row in rows)
+        if isinstance(window, dict):
+            if not window["has_more"]:
+                break
+        elif offset + len(rows) >= window[1]:
+            break
+        offset += 2
+    return seen
+
+
+def test_list_audit_breaks_timestamp_ties_by_id(tmp_path: Path) -> None:
+    """Rows sharing an `at` must page in a deterministic id-ordered total.
+
+    append_audit's trim deletes by (at DESC, id DESC) and its comment claims a
+    caller reads the same order -- but list_audit ordered by `at` alone, so among
+    rows minted in the same microsecond (an easy tie under an ISO clock) the scan
+    order decided the result. That order can differ between the OFFSET queries of
+    adjacent pages, duplicating a row onto one page and skipping it from the next,
+    and it disagreed with what the trim kept. Ordering by (at DESC, id DESC) makes
+    the read a stable total and finally matches the trim.
+    """
+    store = _store(tmp_path)
+    with sqlite3.connect(store.db_path) as conn:
+        for audit_id in _TIE_INSERT_ORDER:
+            conn.execute(
+                "INSERT INTO audit(id,session_id,at,action,params_summary,ok,result_summary)"
+                " VALUES(?,?,?,?,?,1,?)",
+                (audit_id, None, _SAME_TS, "act", "{}", "{}"),
+            )
+
+    listing = store.list_audit()
+    assert [entry["id"] for entry in listing["entries"]] == _TIE_ID_DESC
+
+    # And paging never duplicates or drops a tied row: the concatenated windows
+    # reproduce the same total, in the same order.
+    paged = _paged_ids(store.list_audit, "entries", lambda row: row["id"])
+    assert paged == _TIE_ID_DESC
+
+
+def test_list_artifacts_breaks_created_at_ties_by_id(tmp_path: Path) -> None:
+    """Artifacts registered in one microsecond must page in an id-ordered total.
+
+    Without the id tie-breaker the scan order among equal created_at rows leaks
+    into the page window, so an artifact is duplicated onto one page and skipped
+    from the next as the OFFSET advances.
+    """
+    store = _store(tmp_path)
+    session_id = uuid.uuid4().hex
+    with sqlite3.connect(store.db_path) as conn:
+        for artifact_id in _TIE_INSERT_ORDER:
+            conn.execute(
+                "INSERT INTO artifacts(id,session_id,kind,path,size,sha256,source,created_at)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    artifact_id,
+                    session_id,
+                    "dump",
+                    f"/tmp/{artifact_id}.bin",
+                    0,
+                    "ab" * 32,
+                    "t",
+                    _SAME_TS,
+                ),
+            )
+
+    listing = store.list_artifacts(session_id)
+    assert [item["id"] for item in listing["artifacts"]] == _TIE_ID_DESC
+
+    paged = _paged_ids(
+        lambda **kw: store.list_artifacts(session_id, **kw), "artifacts", lambda row: row["id"]
+    )
+    assert paged == _TIE_ID_DESC
+
+
+def test_list_unclean_sessions_breaks_updated_at_ties_by_id(tmp_path: Path) -> None:
+    """Unclean sessions sharing an updated_at must page in an id-ordered total.
+
+    This reader is what a caller reaches for right after a crash, when many
+    sessions can carry the same last-touched instant, so a scan-order-dependent
+    page that skips or repeats a session is exactly the wrong time for it.
+    """
+    store = _store(tmp_path)
+    with sqlite3.connect(store.db_path) as conn:
+        for session_id in _TIE_INSERT_ORDER:
+            conn.execute(
+                "INSERT INTO sessions"
+                "(id,binary,sha256,architecture,state,created_at,updated_at,closed_cleanly)"
+                " VALUES(?,?,?,?,?,?,?,0)",
+                (session_id, "C:/app.exe", "ab" * 32, "x64", "ready", _SAME_TS, _SAME_TS),
+            )
+
+    rows, total = store.list_unclean_sessions()
+    assert total == len(_TIE_ID_DESC)
+    assert [row["id"] for row in rows] == _TIE_ID_DESC
+
+    paged = _paged_ids(store.list_unclean_sessions, "", lambda row: row["id"])
+    assert paged == _TIE_ID_DESC
 
 
 def test_list_knowledge_tolerates_a_row_with_a_non_string_value(tmp_path: Path) -> None:

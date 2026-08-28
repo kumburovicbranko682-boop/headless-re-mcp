@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（会话存储分页在时间戳相同的行上不稳定 / 与 trim 顺序不一致）
+
+- `core/store/sqlite_store.py` 的三个面向调用方的分页读取器只按非唯一的时间戳列排序、
+  没有唯一次级键：`list_audit`（`ORDER BY at DESC`）、`list_artifacts`
+  （`ORDER BY created_at DESC`）与 `list_unclean_sessions`（`ORDER BY updated_at DESC`）。
+  当多行共享同一时间戳（同一微秒内写入，或时钟粒度较粗）时，SQLite 对并列行的返回顺序
+  未定义，且相邻页各自独立执行的 `OFFSET` 查询之间可能不一致——同一行会在一页里重复、
+  又在下一页里被跳过。审计表更糟：`append_audit` 的 trim 明确按 `ORDER BY at DESC, id DESC`
+  删除，注释还声称“调用方按同样顺序读取”，但 `list_audit` 只按 `at` 读，并列时二者并不
+  一致，注释是假的。
+- 三个读取器改为在时间戳后追加唯一主键 `id DESC`（与 trim/删除查询已有的次级键一致），
+  把顺序固定为确定的全序：主排序仍是时间戳（新在前），`id DESC` 只用来打破并列。这既
+  稳定了分页，也让审计 trim 保留的正是调用方能翻到的行。
+- 新增 `tests/unit/test_session_store_row_edges.py` 三个回归用例：直接插入共享同一时间戳、
+  且 id 降序既不同于插入顺序也不同于其逆序的行，断言列表与逐页拼接都落在 `id DESC` 全序
+  上。去掉修复后三个用例都会失败（返回扫描/插入顺序），因此非空。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
