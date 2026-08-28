@@ -84,6 +84,33 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
 
 
 @pytest.mark.integration
+def test_js_unpack_bundle_when_webcrack_present(tmp_path: Path) -> None:
+    """The service pre-creates its unpack dir, and webcrack refuses one without
+    --force. Only a real webcrack call exercises that contract: the unit tests
+    fake it. This is the path that shipped broken (every unpack raised).
+    """
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS unpack Gate not run (skip != pass)")
+    bundle = tmp_path / "bundle.js"
+    # A minimal webpack-style bundle: an entry module that requires a second.
+    bundle.write_text(
+        "(function(m){var c={};function r(i){if(c[i])return c[i].exports;"
+        "var e=c[i]={exports:{}};m[i](e,e.exports,r);return e.exports}return r(0)})"
+        "([function(module,exports,require){var u=require(1);u.greet('hi')},"
+        "function(module,exports){exports.greet=function(n){return 'hi '+n}}])\n",
+        encoding="utf-8",
+    )
+    service = AnalysisService()
+    try:
+        result = service.js_unpack_bundle(str(bundle))
+        assert result.ok, result.error
+        assert result.data["file_count"] > 0, "webcrack produced no files (–force regression?)"
+        assert result.data.get("tool_failed") is None, result.data
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")

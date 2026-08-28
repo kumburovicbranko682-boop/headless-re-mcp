@@ -200,8 +200,14 @@ class JsClient:
     ) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # webcrack refuses a pre-existing -o directory ("output directory already
+        # exists", exit 1, nothing written) unless --force is passed. We create
+        # out_dir ourselves (above) so retention owns a stable path, which means
+        # every unpack hit that guard and failed. -f tells webcrack to write into
+        # the directory we prepared; re-unpacking an already-populated dir
+        # overwrites, which is the sane result for a repeated call.
         stdout, stderr, code = _run(
-            [str(self.executable), str(resolved), "-o", str(out_dir)],
+            [str(self.executable), str(resolved), "-o", str(out_dir), "-f"],
             timeout=timeout,
             maximum=_MAX_UNPACK_TIMEOUT_S,
         )

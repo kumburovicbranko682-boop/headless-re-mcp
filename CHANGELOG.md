@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（js.unpack_bundle 对 webcrack 2.x 完全失效：预建输出目录被 webcrack 拒绝）
+
+- `js.unpack_bundle` 先 `out_dir.mkdir(parents=True, exist_ok=True)`（retention 需要一个
+  自己拥有的稳定路径），再跑 `webcrack <file> -o <out_dir>`——但 webcrack 2.x（后端在
+  Node 22/24 上锁定的版本线）对**已存在**的 `-o` 目录（哪怕是空目录）会直接拒绝：
+  打印 `output directory already exists`、退出码 1、不写任何文件。于是每次 unpack 都命中
+  `code != 0 and not files`、抛 `backend_error: webcrack unpack failed`——这个 MCP 工具在
+  当前 webcrack 上是 100% 坏的。用真实 webcrack 2.16.0 端到端复现确认。改法：给 unpack
+  命令加 `-f`（`--force`，webcrack 从 2.x 起即有），让它写入我们预建的目录；重复 unpack
+  一个已填充目录时覆盖，正是重复调用应有的语义。`deobfuscate` 路径不受影响（它走 stdout、
+  无 `-o`）。此前没被发现，是因为集成 gate `test_web_re_gate.py` 只跑 `js_deobfuscate`、
+  从不跑 `unpack_bundle`，而单测 fake 了 `_run`、不建模 webcrack 的"已存在即拒绝"契约。
+  修复附带：新增 `test_web_re_gate.py::test_js_unpack_bundle_when_webcrack_present`（真机
+  gate，缺 webcrack 则 skip；已验证去掉 `-f` 即以真实错误挂掉），以及
+  `tests/unit/test_jsre_unpack_force_output_dir.py`（2 例 hermetic，一例钉死带 `-f` 成功、
+  一例剥掉 `-f` 复现新鲜 unpack 的空目录拒绝→backend_error，证明该 flag 是承重的）。
+  全量单测 5073 通过。
+
 ### 修复（audit trim 测试假设时钟每次调用严格递增）
 
 - main 新落的 `test_repository_inmemory_close_trim.py::test_audit_log_trims_to_the_newest_rows`
