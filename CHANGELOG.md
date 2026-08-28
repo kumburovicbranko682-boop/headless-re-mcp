@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（OpenAI 兼容 provider：非流式快照工具调用因缺 index 被合并）
+
+- `agent/providers/openai_compatible.py` 的 `_ingest_tool_calls` 对缺失的 `index` 一律默认 0。
+  流式 delta 每个 tool_call 都带 index，没问题；但当 provider 忽略 `stream`、一次性返回整条
+  `message.tool_calls`（快照，无 index）时，多个调用全部落到 index 0，被拼成一个乱码调用——
+  id、name、arguments 依次串接（两段 `{}` 与 `{"x":1}` 拼成非法 JSON `{}{"x":1}`），于是 agent
+  只发出一个错乱的调用而非两个。改为：缺 index 时回退到该调用在本批中的位置(position)，让快照
+  调用彼此区分；单个调用仍落在 0，与流式默认一致。
+- 只改这一处默认值，其余上限/缓冲/去重逻辑不变。`tests/unit/test_openai_provider_parsing.py`
+  新增：`_ingest_tool_calls` 喂两个无 index 的快照调用得到 frags[0]/frags[1] 两个独立槽位；
+  端到端经 `stream_chat` 收到含两个无 index 调用的 message，`completed` 事件带两个各自 id/参数
+  的调用（session.get 与 apk.open，后者参数 {"x":1}）。既有
+  `test_ingest_defaults_a_missing_index_to_zero`（单调用落 0）仍过。非空性已核验：还原源码后两个
+  新用例失败——端到端那条正是因两段参数串接成非法 JSON 报 "invalid tool arguments at index 0"。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

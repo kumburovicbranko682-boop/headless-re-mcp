@@ -225,6 +225,27 @@ def test_ingest_defaults_a_missing_index_to_zero() -> None:
     assert frags[0]["name"] == "n"
 
 
+def test_ingest_gives_indexless_snapshot_calls_distinct_slots() -> None:
+    """A non-streaming snapshot has no per-call index; positions keep them apart.
+
+    ``message.tool_calls`` (returned when a provider ignores stream and sends the
+    whole message at once) omits the streaming-only ``index``. Defaulting every
+    one to 0 concatenated their ids, names and arguments into a single garbled
+    call; the position in the batch now keeps them distinct.
+    """
+    frags: dict[int, dict[str, str]] = {}
+    oc._ingest_tool_calls(
+        [
+            {"id": "call-a", "function": {"name": "session.get", "arguments": "{}"}},
+            {"id": "call-b", "function": {"name": "apk.open", "arguments": "{}"}},
+        ],
+        frags,
+        0,
+    )
+    assert frags[0] == {"id": "call-a", "name": "session.get", "arguments": "{}"}
+    assert frags[1] == {"id": "call-b", "name": "apk.open", "arguments": "{}"}
+
+
 def test_ingest_does_not_duplicate_an_id_or_name_already_seen() -> None:
     frags = {0: {"id": "call-a", "name": "session.get", "arguments": ""}}
     total, pieces = oc._ingest_tool_calls(
@@ -349,6 +370,50 @@ def _sse_body(*chunks: dict[str, Any]) -> str:
         "".join(f"data: {json.dumps(c, separators=(',', ':'))}\n\n" for c in chunks)
         + "data: [DONE]\n\n"
     )
+
+
+@pytest.mark.asyncio
+async def test_completion_keeps_snapshot_tool_calls_distinct() -> None:
+    """Two tool calls in a non-streaming message must not merge into one.
+
+    A provider that ignores ``stream`` and returns the whole message sends
+    ``message.tool_calls`` without the streaming index. Defaulting each to 0
+    merged them into one call with concatenated name and arguments, so the agent
+    issued a single garbled call instead of two. Positions now keep them apart,
+    so the completed event carries both calls with their own ids and arguments.
+    """
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        chunk = {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "function": {"name": "session.get", "arguments": "{}"},
+                            },
+                            {
+                                "id": "c2",
+                                "function": {"name": "apk.open", "arguments": '{"x":1}'},
+                            },
+                        ]
+                    }
+                }
+            ]
+        }
+        return httpx.Response(200, text=_sse_body(chunk))
+
+    events = [
+        event
+        async for event in _provider(respond).stream_chat(messages=[], tools=[], model="m")
+    ]
+    completed = events[-1]
+    assert completed.type == "completed"
+    assert [call.name for call in completed.tool_calls] == ["session.get", "apk.open"]
+    assert [call.id for call in completed.tool_calls] == ["c1", "c2"]
+    assert completed.tool_calls[1].arguments == {"x": 1}
 
 
 @pytest.mark.asyncio

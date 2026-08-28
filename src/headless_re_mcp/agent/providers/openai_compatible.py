@@ -134,10 +134,18 @@ def _ingest_tool_calls(
     if not isinstance(calls, list):
         return tool_buffer_bytes, []
     pieces: list[str] = []
-    for raw_call in calls:
+    for position, raw_call in enumerate(calls):
         if not isinstance(raw_call, dict):
             continue
-        index = int(raw_call.get("index", 0))
+        # Streaming deltas always carry an index; a non-streaming
+        # message.tool_calls snapshot does not. Defaulting a missing index to 0
+        # (the old behaviour) merged every snapshot call into one -- their ids,
+        # names and argument blobs concatenated into a single garbled call --
+        # whenever a provider returned the whole message instead of deltas. Fall
+        # back to this call's position in the batch so snapshot calls stay
+        # distinct; a lone call still lands at 0, matching the streaming default.
+        raw_index = raw_call.get("index")
+        index = position if raw_index is None else int(raw_index)
         if index not in tool_fragments and len(tool_fragments) >= _MAX_TOOL_CALLS:
             raise ValueError(
                 "provider tool-call count exceeded "
