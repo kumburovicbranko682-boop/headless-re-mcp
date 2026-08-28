@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（r2 JSON 扫描：无界 O(n²) 与深层嵌套 RecursionError 逃逸）
+
+- `parse_r2_json` 从 r2 stdout 里逐字符找第一段有效 JSON，方式是在每个 `[` / `{` 处试
+  `raw_decode`。但 `i` / `is` / `il` 这些非 JSON 列表会把符号名、库名、节名原样从被分析
+  的二进制回显出来，其自由文本最多可达 `_MAX_OUTPUT`（1 MB）且全是 `[` / `{`。
+  `parse_r2_json` 在 `enrich_r2_payload` 里、子进程已返回之后运行，没有任何超时；
+  `raw_decode(text, index)` 构造 JSONDecodeError 的行列号要 O(index)，逐个括号尝试即
+  O(n²)——实测 12 万个 `{` 就 2.1s，按平方增长到 1 MB 约 2.5 分钟纯 CPU 占用，一次
+  r2 工具调用即触发。现把候选扫描次数封顶到 `_MAX_JSON_SCANS`（512，远高于任何真实前
+  导），真实载荷的开括号在头几个候选内即命中并提前返回，不受影响。
+- 同一 `except` 只捕 `json.JSONDecodeError`，因此符号名里一长串 `[[[[`（约 2 万层未闭合）
+  会从 C 扫描器抛出 `RecursionError`（不是 JSONDecodeError）逃逸，成为每次 r2 调用的
+  `internal_error`。现把 `RecursionError` 并入捕获，与 `die._parse_json` 的既有做法一致。
+  新增确定性回归：括号洪流下 `raw_decode` 调用次数被封顶、深层嵌套输入不再抛异常而是
+  如实降级为 `parsed=False`，且短前导后的真实数组仍能解析。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

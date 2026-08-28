@@ -8,6 +8,17 @@ from headless_re_mcp.core.models import Address, Architecture
 
 JsonObject = dict[str, Any]
 _MAX_ITEMS = 4096
+# A real r2 payload's opening bracket sits at the very start of stdout, after
+# -q0's NUL and at most a short banner, so a valid document is found within the
+# first handful of candidates. The non-JSON listings (``i`` / ``is`` / ``il``)
+# instead echo symbol, library and section names lifted straight from the
+# binary, so their free text can be a megabyte (the _MAX_OUTPUT cap) of ``[``
+# and ``{``. parse_r2_json runs after the subprocess returned, with no deadline,
+# and ``raw_decode(text, index)`` pays O(index) building each JSONDecodeError's
+# line/column, so trying every brace in that flood is O(n^2). Cap the scan far
+# above any real preamble to keep it linear. (die._parse_json bounds the same
+# way for the same reason.)
+_MAX_JSON_SCANS = 512
 # Enough for any PE header: the DOS stub and the optional header live in the
 # first pages. The second read below covers the pathological ones.
 _HEADER_WINDOW = 64 * 1024
@@ -106,12 +117,21 @@ def parse_r2_json(raw: str) -> Any | None:
     if not text:
         return None
     decoder = json.JSONDecoder()
+    attempts = 0
     for index, char in enumerate(text):
         if char not in "[{":
             continue
+        if attempts >= _MAX_JSON_SCANS:
+            break
+        attempts += 1
         try:
             value, _end = decoder.raw_decode(text, index)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
+            # RecursionError joins the set because a deeply nested candidate --
+            # a long ``[[[[`` run inside a symbol name that a non-JSON ``is`` /
+            # ``il`` listing echoed verbatim -- raises it out of the C scanner,
+            # and it is not a JSONDecodeError. Uncaught it escaped this
+            # best-effort parser as an internal_error on every r2 tool call.
             continue
         return value
     return None
