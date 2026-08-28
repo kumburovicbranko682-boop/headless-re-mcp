@@ -24,6 +24,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（`frida.modules` 是唯一“靠设备回传的 `total` 推 `has_more`”的枚举:兄弟 RPC(`exports`/`java.classes`/`java.methods`)都多取一条、从“页被填满”判断是否还有;而 `modules` 只向设备要 `capped` 条再用 `total > count`。随包脚本确实回 `{modules, total}`,故当前 `has_more` 诚实——但这条诚实性寄托在设备一定回 `total` 上。一旦该 payload 被规整成与 classes/exports 一致的“遵守上限的纯数组”,无 `total` 分支就会把 `total` 记成截断后的页长,`has_more` 在被截断的列表上悄悄恒为 `False`(“就这些了”)——一次典型的“载荷形状漂移致谎报”）
+
+- `modules` 改为像 `exports`/`java_enumerate` 一样向设备多取一条(`capped + 1`),`has_more` 除 `total > count` 外再加 `len(held) > count` 兜底:设备报 `total` 时用 `total` 判定,不报时凭“页被填满(多取到的那条)”判定。诚实性自此只依赖页形状,不再寄托于设备回传 `total`;`count`/裁剪仍为 `held[:capped]`,上限钳制 `min(limit,256)` 不变(过分页/超时/钳制守卫)。随包脚本无需改动(它本就按 limit 回传且附带 `total`,只是多回一条)。
+- 测试:`test_frida_fields.py` 新增两例,用“遵守上限、无 `total` 的纯数组”设备伪装——满页断言 `has_more=True` 且校验读取器确向设备要了 `11`(=capped+1,证明诚实信号来自多取而非 `total`),短列表断言 `has_more=False`(反向)。带外验证:把多取回退成 `capped` → 三道分页/钳制/超时守卫仍全绿(都不覆盖这条),而满页用例如期失败(`has_more` 谎报 `False`)——对照证明这条诚实性此前无人守、现已有牙。
+
 ### 测试（`web.console` 是唯一“报 `has_more` 却不收 `offset`”的非 PE 读取器,分页守卫允许它靠的是一条只写在白名单注释里的不变量:读取器自身的上限钳制 `min(limit, _MAX_CONSOLE)` 恰等于环形缓冲容量 `deque(maxlen=_MAX_CONSOLE)`,故把 `limit` 拉满即可取回整环、清掉 `has_more`。今天两处共用 `_MAX_CONSOLE`,但没有任何结构强制它们保持相等——若钳制一旦低于环容,满环就会永远报 `has_more=True` 而无 `offset` 可推进,正是整套分页守卫要防的“尾部搁浅”,而只记录“console 无 offset”的白名单不会察觉。此前的 console 用例只覆盖了驱逐与小环 `has_more`,从未固定这条边界不变量）
 
 - 新增 `test_maxing_the_limit_reaches_the_whole_full_ring_so_no_tail_is_stranded`:经公共读取器把环填满(灌入 `_MAX_CONSOLE * 2` 条,只留最新一半),断言在上限处读取取回全部保留消息且 `has_more=False`(并校验最新尾序:首条为第 `_MAX_CONSOLE` 条、末条为第 `_MAX_CONSOLE*2-1` 条),`limit` 远超上限时钳回环容仍取全环,恰好低于上限一格才是满环唯一能看到 `has_more` 的情形——而这一缺口靠抬高 `limit` 即可触达,不需 `offset`。

@@ -79,6 +79,80 @@ def test_frida_modules_says_when_the_page_is_not_the_whole_list() -> None:
     doc = _tool_docstring("frida.modules")
     assert "has_more" in doc
 
+
+class _CapRespectingListExports:
+    """A device that returns a plain, cap-respecting array with no ``total``.
+
+    This is the shape modules' sibling RPCs (classes / exports) already return,
+    and the one the bundled script could drift to. It honours the requested
+    limit exactly -- so ``has_more`` cannot be recovered from a ``total`` field,
+    only from the page having filled -- which is precisely the case that used to
+    read as "that's everything".
+    """
+
+    def __init__(self, available: int) -> None:
+        self._available = available
+        self.requested: list[int] = []
+
+    def modules(self, limit: int) -> list[dict[str, Any]]:
+        self.requested.append(int(limit))
+        count = max(0, min(int(limit), self._available))
+        return [
+            {"name": f"m{index}", "base": "0x1", "size": 1, "path": ""}
+            for index in range(count)
+        ]
+
+
+def _client_with_modules_api(api: object) -> FridaClient:
+    script = type("_S", (), {"exports_sync": api, "load": lambda self: None})()
+    session = type(
+        "_Sess",
+        (),
+        {"create_script": lambda self, source: script, "detach": lambda self: None},
+    )()
+    frida = type("_F", (), {"attach": lambda self, pid: session})()
+    client = FridaClient()
+    client._available = True
+    client._frida = frida
+    return client
+
+
+def test_frida_modules_has_more_survives_a_totalless_cap_respecting_payload() -> None:
+    """A full page from a plain array must still report has_more.
+
+    modules is the only enumeration that derives has_more from a device-supplied
+    total; exports / java_enumerate fetch one past the page instead. If the
+    device payload ever became a plain, cap-respecting array (its siblings'
+    shape), the total-less branch would set total to the capped length and
+    has_more would silently be a permanent False on a truncated list. The
+    over-fetch of capped + 1 is what keeps has_more honest from the page shape
+    alone; this pins that so the honesty cannot regress with the payload shape.
+    """
+    api = _CapRespectingListExports(available=25)
+    client = _client_with_modules_api(api)
+    payload = client.modules(1, allowed_pid=1, limit=10)
+    assert payload["count"] == 10
+    assert len(payload["modules"]) == 10
+    assert payload["has_more"] is True
+    # The honest signal came from the over-fetch, not a total: the reader asked
+    # the device for one past the page so a filled page is recognisable as capped.
+    assert api.requested == [11]
+
+
+def test_frida_modules_totalless_payload_that_fits_is_not_flagged_has_more() -> None:
+    """The over-fetch must not turn a complete short list into a false has_more.
+
+    With fewer modules than the page, the device returns them all (below
+    capped + 1), so nothing was truncated and has_more must stay False -- the
+    other direction of the same honesty property.
+    """
+    api = _CapRespectingListExports(available=3)
+    client = _client_with_modules_api(api)
+    payload = client.modules(1, allowed_pid=1, limit=10)
+    assert payload["count"] == 3
+    assert payload["has_more"] is False
+
+
 class _ExportApi:
     def exports(self, name: str, count: int) -> dict[str, Any]:
         return {

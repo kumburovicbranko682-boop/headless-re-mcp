@@ -398,7 +398,18 @@ class FridaClient:
         capped = max(1, min(int(limit), 256))
 
         def use(script: Any) -> JsonObject:
-            raw = script.exports_sync.modules(capped)
+            # Fetch one past the page, the same probe exports / java_enumerate use.
+            # modules is the only enumeration that derives has_more from a
+            # device-supplied ``total``; its sibling RPCs return plain arrays and
+            # detect "there is more" from the extra element. The bundled script
+            # does return {modules, total}, so has_more is honest today -- but if
+            # that payload were ever normalised to a plain, cap-respecting array
+            # like classes/exports, the else-branch below would set total to the
+            # capped length and has_more would silently become a permanent False
+            # ("that's everything") on a list that was actually truncated. Asking
+            # for capped + 1 makes has_more honest from the page shape alone, so
+            # it no longer rests on the device reporting a total.
+            raw = script.exports_sync.modules(capped + 1)
             if isinstance(raw, dict):
                 held = list(raw.get("modules") or [])
                 total = int(raw.get("total") or len(held))
@@ -419,7 +430,10 @@ class FridaClient:
                 "modules": items,
                 "count": len(items),
                 "total": total,
-                "has_more": total > len(items),
+                # total catches truncation when the device reports one; the
+                # over-fetch (len(held) past the page) catches it when the payload
+                # is a plain array with no total to trust.
+                "has_more": total > len(items) or len(held) > len(items),
             }
 
         return self._run_local_script(pid, _ENUM_SCRIPT, use, timeout=timeout)
