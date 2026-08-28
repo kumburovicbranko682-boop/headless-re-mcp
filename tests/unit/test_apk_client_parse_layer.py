@@ -29,6 +29,7 @@ from headless_re_mcp.backends.apk.client import (
     _MAX_CERTIFICATES,
     ApkClient,
     ApkError,
+    _cap_names,
     _dotted_to_smali,
     _ParsedApk,
 )
@@ -417,3 +418,27 @@ def test_xrefs_skips_external_and_mismatched_methods(tmp_path: Path) -> None:
 def test_dotted_to_smali_passes_through_an_already_smali_name() -> None:
     assert _dotted_to_smali("Lcom/example/Foo;") == "Lcom/example/Foo;"
     assert _dotted_to_smali("com.example.Foo") == "Lcom/example/Foo;"
+
+
+def test_cap_names_returns_the_alphabetical_prefix_when_capped() -> None:
+    """A truncated page must be the alphabetically-first names, not a slice.
+
+    The smallest name arrives last, past the cap. Capping first and sorting the
+    survivors (the old behaviour) drops it and returns ["m1", "m2", "m3"] --
+    sorted, but a manifest-order window, so a caller reading the sorted list and
+    has_more never sees "aaa" and cannot page to it. Sorting the full list first
+    keeps it.
+    """
+    names, has_more = _cap_names(["m1", "m2", "m3", "aaa"], 3)
+    assert has_more is True
+    assert names == ["aaa", "m1", "m2"]
+
+
+def test_cap_names_sorts_and_reports_complete_when_it_fits() -> None:
+    names, has_more = _cap_names(["b", "a", "c"], 10)
+    assert has_more is False
+    assert names == ["a", "b", "c"]
+
+
+def test_cap_names_treats_none_as_empty() -> None:
+    assert _cap_names(None, 5) == ([], False)

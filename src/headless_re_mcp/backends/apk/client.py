@@ -45,15 +45,22 @@ class ApkError(RuntimeError):
 
 
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
-    items: list[str] = []
-    has_more = False
-    for item in values or []:
-        if len(items) >= limit:
-            has_more = True
-            break
-        items.append(str(item))
-    items.sort()
-    return items, has_more
+    """Return the alphabetically-first ``limit`` names, and whether more exist.
+
+    Sort before capping, not after. Capping first and sorting the survivors
+    returns an arbitrary manifest-order window that only *looks* sorted: the
+    names are not the alphabetically-first ones, so a caller that sees a sorted
+    list plus ``has_more`` -- the same contract ``apk.classes`` and
+    ``apk.strings`` honour -- is reading a slice that skips names it will never
+    reach (these readers have no offset). Sorting the full list first makes the
+    truncated page the honest alphabetical prefix. The inputs come from the
+    manifest, which the APK parse already bounds, so materialising them to sort
+    is safe.
+    """
+    names = sorted(str(item) for item in (values or []))
+    if len(names) > limit:
+        return names[:limit], True
+    return names, False
 
 
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:

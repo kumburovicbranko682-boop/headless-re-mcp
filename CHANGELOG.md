@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（apk.permissions/components 先截断后排序，超额时返回的是"看着有序"的任意窗口）
+
+- `backends/apk/client.py::_cap_names`（`apk.permissions` 与 `apk.components` 的清单类列表
+  共用）此前先按 androguard 的清单顺序取前 `limit` 个，再只对这批排序。于是当某项超过上限
+  （`_MAX_PERMISSIONS`/`_MAX_COMPONENT_NAMES` 均为 256，大型或恶意 APK 的活动/服务数很容易破
+  256）时，返回的是一段任意的清单顺序窗口、只是"看着有序"：它并非字母序最靠前的那批，调用方看到
+  一个有序列表加 `has_more`（与 `apk.classes`/`apk.strings` 同一契约）却在读一段跳过了、且这些
+  读取器没有 offset、永远取不到的名字。
+- 改为先排序再截断：对完整列表排序后取前 `limit` 个，超额页即字母序的诚实前缀；`has_more`
+  语义不变（存在多于上限的项）。输入来自清单，APK 解析本就对其定界，物化后排序是安全的。
+- 新增用例（改前红、改后绿，非空洞）：`test_apk_client_parse_layer.py` 的
+  `test_cap_names_returns_the_alphabetical_prefix_when_capped`（最小的名字排在最后、越过上限，
+  排序前截断会把它丢掉）、`test_cap_names_sorts_and_reports_complete_when_it_fits` 与
+  `test_cap_names_treats_none_as_empty`。既有的 `test_apk_components_fields`/
+  `test_apk_permissions_fields`/`test_components_past_the_cap_say_so` 只断言长度与 `has_more`，
+  改动后仍通过。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
