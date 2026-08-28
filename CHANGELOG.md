@@ -24,6 +24,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 机密性（会话时间线在写入边界脱敏，补上唯一一个不脱敏的可观测性汇聚点，与审计日志对齐）
+
+- `timeline.list` 是无人值守跑完后运维要看的可观测性面，一旦某条时间线 `details` 里进了密钥就是一次持久泄漏。\
+  审计行、Agent 事件、Provider 配置都在各自写入边界跑共用的 `redact`，唯独时间线没有——它完全依赖每个\
+  `_timeline_append` 调用方手工只传不含密钥的字段（如 `web.type` 只记 selector 与 length、绝不记键入文本），\
+  离一次疏忽就差一步。现在文件版（`append_session_timeline`）与内存版（`InMemoryAnalysisRepository`）时间线\
+  都在写入点脱敏：按密钥名（token / authorization / password / secret / credential …）与 `Bearer` 子串遮蔽，\
+  而调用方真正在传的 `url` / `selector` / `pid` / `count` 原样保留——是给未来某次疏忽兜底，不改动今天的条目。
+
 ### 可观测性（frida.hook.template 的脚本注入写入持久审计行，与 frida.spawn / frida.server.ensure 对齐）
 
 - `frida.hook.template` 会把模板脚本编译后加载进目标进程——在设备会话上就是把代码跑进设备 App 里，是 frida 面\

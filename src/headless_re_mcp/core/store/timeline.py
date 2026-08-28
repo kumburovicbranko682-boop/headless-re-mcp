@@ -9,6 +9,8 @@ from threading import Lock
 from typing import Any
 from uuid import uuid4
 
+from headless_re_mcp.redaction import redact
+
 JsonObject = dict[str, Any]
 _MAX_LINES = 10_000
 _MAX_BYTES = 8 * 1024 * 1024
@@ -68,7 +70,16 @@ def append_session_timeline(
         "at": datetime.now(UTC).isoformat(),
         "event": event,
         "message": message,
-        "details": dict(details or {}),
+        # Mask credentials the same way the audit log does at its own write
+        # boundary. timeline.list is an observability surface too, so leaning on
+        # every _timeline_append caller to hand-pick secret-free params (the way
+        # web.type records length, never the typed text) is one careless call
+        # away from persisting a secret in the clear. redact masks only values
+        # under secret-looking keys (token / authorization / password / ...) and
+        # bearer substrings, so the url / selector / pid / count params callers
+        # actually pass are untouched -- this is a net for a future slip, not a
+        # change to today's entries.
+        "details": redact(dict(details or {}), mask="***"),
     }
     try:
         line = (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")

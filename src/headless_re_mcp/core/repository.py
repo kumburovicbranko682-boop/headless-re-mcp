@@ -565,7 +565,11 @@ class InMemoryAnalysisRepository:
                     "at": datetime.now(UTC).isoformat(),
                     "event": event,
                     "message": message,
-                    "details": dict(details),
+                    # Mask credentials at the write boundary, exactly as the
+                    # file-backed timeline and the audit log do -- the timeline
+                    # is an observability surface, so it must not depend on every
+                    # caller hand-picking secret-free params to stay clean.
+                    "details": redact_audit_payload(dict(details)),
                 }
             )
             # Audit and knowledge are both trimmed here; the timeline was not,
