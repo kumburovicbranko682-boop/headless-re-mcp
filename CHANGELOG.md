@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Web 控制台 SSE 客户端只认 `\n\n` 帧界、且多行 data 无分隔拼接）
+
+- `webui/src/api/client.ts` 的 `streamEvents` 内联解析事件流时，用
+  `buffer.indexOf("\n\n")` 找帧界、`frame.split("\n")` 拆行、`data += line.slice(5).trim()`
+  攒 data。这三处都假设了「本进程当前的产出恰好是紧凑 JSON、LF 分帧」这一巧合：
+  一旦任何中间层（`agent.py` 的流响应带 `X-Accel-Buffering: no`，即可能有反代在前）
+  按 SSE 规范以 CRLF 分帧，`"\r\n\r\n"` 里并不含子串 `"\n\n"`，`indexOf` 永远找不到帧界，
+  整条流被折成一个永不终结的帧，UI 收不到任何事件却不报错；而多个 `data:` 行按规范应以
+  `\n` 相连，裸拼接会把一段多行 payload 合并成 `line1line2` 这种无法解析的串。
+  抽出纯函数模块 `webui/src/api/sse.ts`：`splitSseFrames` 按规范的三种空行
+  （`\r\n\r\n`/`\n\n`/`\r\r`）切帧并保留跨读残余，`parseSseFrame` 按 `\r\n`/`\r`/`\n`
+  拆行、只剥字段冒号后的单个前导空格、多 `data:` 行以 `\n` 相连，并对无 data 行的注释/
+  心跳帧返回 null（沿用旧的「空 data 不派发」语义）。当前 LF 紧凑 JSON 的产出解析结果不变，
+  同时对 CRLF 分帧与多行 payload 不再静默损坏。新增 `webui/src/api/sse.test.ts` 覆盖
+  LF/CRLF 分帧、跨读帧界、多行 data 拼接、单前导空格与注释/无 data 帧。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言

@@ -1,3 +1,5 @@
+import { parseSseFrame, splitSseFrames } from "./sse";
+
 const TOKEN_MISSING = "缺少 Web 令牌，请用启动时带 token 的链接重新打开";
 
 let token = "";
@@ -94,18 +96,11 @@ export async function streamEvents(
     const { value, done } = await reader.read();
     if (done) break;
     buffer += value;
-    let split = buffer.indexOf("\n\n");
-    while (split >= 0) {
-      const frame = buffer.slice(0, split).replace(/\r/g, "");
-      buffer = buffer.slice(split + 2);
-      let type = "message"; let data = ""; let id: string | undefined;
-      for (const line of frame.split("\n")) {
-        if (line.startsWith("event:")) type = line.slice(6).trim();
-        else if (line.startsWith("data:")) data += line.slice(5).trim();
-        else if (line.startsWith("id:")) id = line.slice(3).trim();
-      }
-      if (data) onEvent({ type, data, id });
-      split = buffer.indexOf("\n\n");
+    const { frames, rest } = splitSseFrames(buffer);
+    buffer = rest;
+    for (const frame of frames) {
+      const event = parseSseFrame(frame);
+      if (event) onEvent(event);
     }
   }
 }
