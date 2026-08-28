@@ -321,7 +321,9 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with markdown, path, bytes, findings, artifact_id and truncated.
         Markdown up to 64 KiB is inline; larger reports return a bounded preview
-        and hint, while the registered artifact always contains the full report.
+        and hint, while the registered artifact contains the full report. If
+        registering that artifact failed (a full or locked store) artifact_error
+        is set instead of artifact_id, and path still names the full report file.
         """
         return _dump(
             analysis.report_generate(

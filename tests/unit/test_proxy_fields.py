@@ -244,3 +244,7 @@ def test_proxy_export_har_names_path_and_entry_count(
     assert "path" in doc
     assert "entry_count" in doc
     assert "size" in doc
+    # HAR registration can fail (full/locked store); the doc must name the
+    # artifact_error fallback so path stays the documented recovery, like
+    # web.har.export and proxy.flow.get.
+    assert "artifact_error" in doc

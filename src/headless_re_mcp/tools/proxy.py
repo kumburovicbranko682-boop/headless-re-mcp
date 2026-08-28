@@ -113,11 +113,12 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Export captured flows to a spec-valid HAR 1.2 artifact.
 
         Answers with path, entry_count, truncated and size, plus artifact_id
-        when the HAR was registered. truncated is true when the oldest entries
-        were dropped to keep the file under the capture cap; size is the HAR
-        file's byte length. There is no har, output or artifact field. path is
-        the file; looking for har after a successful export reads as a missing
-        capture.
+        when the HAR was registered (or artifact_error if that registration
+        failed, with path still naming the file). truncated is true when the
+        oldest entries were dropped to keep the file under the capture cap; size
+        is the HAR file's byte length. There is no har, output or artifact field.
+        path is the file; looking for har after a successful export reads as a
+        missing capture.
         """
         return _dump(analysis.proxy_export_har(session_id))
 
