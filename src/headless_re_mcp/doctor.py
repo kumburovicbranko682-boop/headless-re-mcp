@@ -80,6 +80,44 @@ def required_probe_names(platform_name: str | None = None) -> frozenset[str]:
 REQUIRED_PROBES: frozenset[str] = required_probe_names()
 _MAX_CMAKE_FILE_BYTES = 1024 * 1024
 
+# Actionable install hints for the optional Android/Web backends. The PE probes
+# each spell out how to fix a MISSING backend (install X, set HEADLESS_RE_X), but
+# the Android/Web probes shipped with remediation=None -- so `doctor` printed a
+# "fix:" line for the mature line and stayed silent on exactly the newer, less
+# familiar ones. These name the same install path the runtime capability_
+# unavailable errors do: a pip extra for the bundled Python deps (adbutils/
+# androguard/frida -> android, playwright -> browser, mitmproxy -> proxy), and
+# PATH-or-HEADLESS_RE_* for the external CLIs the extras cannot install (jadx/
+# apktool/apksigner need a JRE, webcrack needs Node 22/24, wabt ships wasm2wat/
+# wasm-objdump). The env-var names match config_generate's HEADLESS_RE_* map.
+_ANDROID_EXTRA_HINT = (
+    "Install the android extra: pip install '.[android]' (adbutils, androguard, frida)."
+)
+_BROWSER_EXTRA_HINT = (
+    "Install the browser extra: pip install '.[browser]', then download a browser: "
+    "python -m playwright install chromium."
+)
+_PROXY_EXTRA_HINT = "Install the proxy extra: pip install '.[proxy]'."
+_ADB_HINT = (
+    "Install Android platform-tools (adb) on PATH, or set HEADLESS_RE_ADB to the adb binary."
+)
+_JADX_HINT = "Install jadx (needs a JRE on PATH) on PATH, or set HEADLESS_RE_JADX to its launcher."
+_APKTOOL_HINT = (
+    "Install apktool (needs a JRE on PATH) on PATH, or set HEADLESS_RE_APKTOOL to its launcher."
+)
+_APKSIGNER_HINT = (
+    "Install Android build-tools apksigner (needs a JRE on PATH) on PATH, or set "
+    "HEADLESS_RE_APKSIGNER to its launcher."
+)
+_WEBCRACK_HINT = (
+    "Install webcrack (needs Node 22/24 on PATH) on PATH, or set HEADLESS_RE_WEBCRACK "
+    "to its launcher."
+)
+_NODE_HINT = "Install Node.js 22 or 24 on PATH (Debian package: nodejs); webcrack needs it."
+_WABT_HINT = (
+    "Install wabt on PATH, or set HEADLESS_RE_WABT to the wabt binary or its bin/ directory."
+)
+
 
 @dataclass(frozen=True, slots=True)
 class DoctorReport:
@@ -189,7 +227,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         ),
         probe_optional_tool("radare2", current, "r2", ("r2", "rizin")),
         probe_ghidra(current),
-        probe_python_module("frida", "frida"),
+        probe_python_module("frida", "frida", remediation=_ANDROID_EXTRA_HINT),
         probe_command("java", ("java",)),
         (
             probe_command("windbg", ("cdb", "windbg", "windbgx"))
@@ -197,24 +235,34 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             else windows_only("windbg", "WinDbg/cdb requires Windows")
         ),
         # Android reverse-engineering (all optional; missing only degrades).
-        probe_python_module("androguard", "androguard"),
-        probe_python_module("adbutils", "adbutils"),
-        probe_optional_tool("adb", current, "adb", ("adb",)),
-        probe_optional_tool("jadx", current, "jadx", ("jadx", "jadx.bat")),
-        probe_optional_tool("apktool", current, "apktool", ("apktool", "apktool.bat")),
-        probe_optional_tool("apksigner", current, "apksigner", ("apksigner", "apksigner.bat")),
+        probe_python_module("androguard", "androguard", remediation=_ANDROID_EXTRA_HINT),
+        probe_python_module("adbutils", "adbutils", remediation=_ANDROID_EXTRA_HINT),
+        probe_optional_tool("adb", current, "adb", ("adb",), remediation=_ADB_HINT),
+        probe_optional_tool("jadx", current, "jadx", ("jadx", "jadx.bat"), remediation=_JADX_HINT),
+        probe_optional_tool(
+            "apktool", current, "apktool", ("apktool", "apktool.bat"), remediation=_APKTOOL_HINT
+        ),
+        probe_optional_tool(
+            "apksigner",
+            current,
+            "apksigner",
+            ("apksigner", "apksigner.bat"),
+            remediation=_APKSIGNER_HINT,
+        ),
         # Web reverse-engineering (all optional).
-        probe_python_module("playwright", "playwright"),
-        probe_python_module("mitmproxy", "mitmproxy"),
-        probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
+        probe_python_module("playwright", "playwright", remediation=_BROWSER_EXTRA_HINT),
+        probe_python_module("mitmproxy", "mitmproxy", remediation=_PROXY_EXTRA_HINT),
+        probe_optional_tool(
+            "webcrack", current, "webcrack", ("webcrack",), remediation=_WEBCRACK_HINT
+        ),
         # webcrack runs under Node 22/24 (its bin is a `#!/usr/bin/env node`
         # script), yet doctor reported the JVM runtime for jadx/apktool/ghidra and
         # nothing for node -- so a broken js.deobfuscate gave no runtime signal.
         # Report node like java does; on Debian the runtime is `nodejs`, so the
         # details show which name was found (a webcrack shebang needs `node`).
-        probe_command("node", ("node", "nodejs")),
-        probe_wabt_tool("wabt", current, "wasm2wat"),
-        probe_wabt_tool("wabt_objdump", current, "wasm-objdump"),
+        probe_command("node", ("node", "nodejs"), remediation=_NODE_HINT),
+        probe_wabt_tool("wabt", current, "wasm2wat", remediation=_WABT_HINT),
+        probe_wabt_tool("wabt_objdump", current, "wasm-objdump", remediation=_WABT_HINT),
     ]
     return DoctorReport(
         probes=tuple(probes),
@@ -1080,12 +1128,19 @@ def probe_scylla(settings: Settings) -> Probe:
     )
 
 
-def probe_command(name: str, candidates: tuple[str, ...]) -> Probe:
+def probe_command(
+    name: str, candidates: tuple[str, ...], *, remediation: str | None = None
+) -> Probe:
     found = {candidate: shutil.which(candidate) for candidate in candidates}
     found = {candidate: path for candidate, path in found.items() if path}
     if found:
         return Probe(name, ProbeStatus.DETECTED, f"{name} command detected", found)
-    return Probe(name, ProbeStatus.MISSING, f"Optional {name} backend is not installed")
+    return Probe(
+        name,
+        ProbeStatus.MISSING,
+        f"Optional {name} backend is not installed",
+        remediation=remediation,
+    )
 
 
 def probe_optional_tool(
@@ -1093,6 +1148,8 @@ def probe_optional_tool(
     settings: Settings,
     settings_attr: str,
     commands: tuple[str, ...],
+    *,
+    remediation: str | None = None,
 ) -> Probe:
     """Detect an optional CLI from its configured path or PATH, never blocking."""
     configured = getattr(settings, settings_attr, None)
@@ -1102,10 +1159,17 @@ def probe_optional_tool(
     found = {candidate: path for candidate, path in found.items() if path}
     if found:
         return Probe(name, ProbeStatus.DETECTED, f"{name} command detected", found)
-    return Probe(name, ProbeStatus.MISSING, f"Optional {name} tool is not installed")
+    return Probe(
+        name,
+        ProbeStatus.MISSING,
+        f"Optional {name} tool is not installed",
+        remediation=remediation,
+    )
 
 
-def probe_wabt_tool(name: str, settings: Settings, tool: str) -> Probe:
+def probe_wabt_tool(
+    name: str, settings: Settings, tool: str, *, remediation: str | None = None
+) -> Probe:
     """Detect one wabt binary exactly as WasmClient resolves it.
 
     wabt is a single configured toolkit path (``settings.wabt``) that feeds two
@@ -1123,13 +1187,23 @@ def probe_wabt_tool(name: str, settings: Settings, tool: str) -> Probe:
     resolved = resolve_wabt_tool(settings.wabt, tool)
     if resolved is not None:
         return Probe(name, ProbeStatus.DETECTED, f"{tool} (wabt) detected", {"path": str(resolved)})
-    return Probe(name, ProbeStatus.MISSING, f"Optional wabt tool {tool} is not installed")
+    return Probe(
+        name,
+        ProbeStatus.MISSING,
+        f"Optional wabt tool {tool} is not installed",
+        remediation=remediation,
+    )
 
 
-def probe_python_module(name: str, module: str) -> Probe:
+def probe_python_module(name: str, module: str, *, remediation: str | None = None) -> Probe:
     spec = importlib.util.find_spec(module)
     if spec is None:
-        return Probe(name, ProbeStatus.MISSING, f"Optional Python module {module} is not installed")
+        return Probe(
+            name,
+            ProbeStatus.MISSING,
+            f"Optional Python module {module} is not installed",
+            remediation=remediation,
+        )
     return Probe(
         name,
         ProbeStatus.DETECTED,

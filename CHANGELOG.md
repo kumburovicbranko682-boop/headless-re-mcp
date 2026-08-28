@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 诊断（doctor 对 Android/Web 后端只说"缺"、不说"怎么装"，补齐可照做的修复提示）
+
+- `doctor` 是排障时最先跑的命令，PE 线每个可选后端在 MISSING 时都给出可照做的 `fix:`（装什么、
+  设哪个 `HEADLESS_RE_*`），但 Android/Web 那批探针一律 `remediation=None`——于是同一份报告里成熟线
+  有修复指引、较新线却只有一句"X 未安装"，把操作者又赶回 README 查安装矩阵。这与上一轮把运行时
+  `capability_unavailable` 报错做成可照做（点名 pip extra）也不一致。现给这些探针补上提示，与运行时
+  报错、`pyproject` 的 extras 同源：进程内 Python 依赖点名对应 extra（adbutils/androguard/frida →
+  `pip install '.[android]'`，playwright → `pip install '.[browser]'` 并附 `playwright install chromium`，
+  mitmproxy → `pip install '.[proxy]'`）；extras 装不了的外部 CLI 则给 PATH 或对应 `HEADLESS_RE_*`
+  （jadx/apktool/apksigner 注明需 JRE、webcrack 需 Node 22/24、wabt 提供 wasm2wat/wasm-objdump），
+  `HEADLESS_RE_*` 名与 `config_generate` 的映射一致。做法上给
+  `probe_python_module` / `probe_optional_tool` / `probe_command` / `probe_wabt_tool` 加可选
+  `remediation` 形参并在各 Android/Web 调用点传入（radare2/java/windbg 等非本线探针不动，保持原样）。
+  新增守护测试：把这批依赖全部强制缺失，逐一断言 MISSING 探针带对应安装提示，并断言提示确实进了
+  `format_report` 的人类可读输出（而非仅在结构体里）。今后这几条线新加探针漏配提示即失败。纯属诊断
+  可操作性修复与守护，不改任何探针的判定行为。
+
 ### 修复（能力目录漏报 Frida/设备工具面，且把 frida.server.ensure 挂错探针）
 
 - 上一轮补的是 README 手写枚举，这轮补的是机器可读的 `capabilities.describe/search`——两者本是

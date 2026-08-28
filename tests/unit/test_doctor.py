@@ -172,6 +172,90 @@ def test_node_runtime_is_probed_like_the_jvm_for_the_webcrack_line(
     assert missing.status == ProbeStatus.MISSING
 
 
+def _android_web_report_with_everything_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Probe]:
+    """A doctor report with every optional Android/Web dependency forced missing.
+
+    find_spec returns None only for the bundled Python deps (delegating for
+    everything else so unrelated probes like idapro still resolve), shutil.which
+    finds nothing on PATH, and the CLI settings are blanked -- so each Android/Web
+    probe takes its MISSING branch and we can read back the remediation it emits.
+    """
+    real_find_spec = doctor_module.importlib.util.find_spec
+
+    def only_bundled_absent(module: str) -> object:
+        if module in {"frida", "androguard", "adbutils", "playwright", "mitmproxy"}:
+            return None
+        return real_find_spec(module)
+
+    monkeypatch.setattr(doctor_module.importlib.util, "find_spec", only_bundled_absent)
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
+
+    settings = _settings(None, tmp_path / "artifacts")
+    for attr in ("adb", "jadx", "apktool", "apksigner", "webcrack", "wabt", "r2"):
+        settings = replace(settings, **{attr: None})
+
+    return {probe.name: probe for probe in run_doctor(settings).probes}
+
+
+def test_android_web_probes_carry_actionable_install_remediation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every optional Android/Web probe must say how to install it when missing.
+
+    The PE probes each spell out a fix (install X, set HEADLESS_RE_X), and the
+    runtime capability_unavailable errors name the pip extra, but the Android/Web
+    doctor probes once returned remediation=None -- so `doctor` printed a "fix:"
+    line for the mature line and stayed silent on exactly the newer, less familiar
+    ones, sending the operator back to the README. This pins an actionable hint on
+    each: the pip extra for the bundled Python deps (matching the runtime error and
+    pyproject's extras), and PATH-or-HEADLESS_RE_* for the external CLIs the extras
+    cannot install. Missing a hint here means an operator running the one diagnostic
+    command learns a backend is absent but not how to get it.
+    """
+    probes = _android_web_report_with_everything_absent(tmp_path, monkeypatch)
+
+    # Bundled Python deps -> the pip extra, same install path the runtime error names.
+    for name in ("frida", "androguard", "adbutils"):
+        assert probes[name].status == ProbeStatus.MISSING
+        assert "pip install '.[android]'" in (probes[name].remediation or ""), name
+    assert probes["playwright"].status == ProbeStatus.MISSING
+    assert "pip install '.[browser]'" in (probes["playwright"].remediation or "")
+    # Playwright needs a browser download too; the hint must not stop at the wheel.
+    assert "playwright install chromium" in (probes["playwright"].remediation or "")
+    assert probes["mitmproxy"].status == ProbeStatus.MISSING
+    assert "pip install '.[proxy]'" in (probes["mitmproxy"].remediation or "")
+
+    # External CLIs the extras cannot install -> PATH or the configured env var.
+    for name, env_var in (
+        ("adb", "HEADLESS_RE_ADB"),
+        ("jadx", "HEADLESS_RE_JADX"),
+        ("apktool", "HEADLESS_RE_APKTOOL"),
+        ("apksigner", "HEADLESS_RE_APKSIGNER"),
+        ("webcrack", "HEADLESS_RE_WEBCRACK"),
+        ("wabt", "HEADLESS_RE_WABT"),
+        ("wabt_objdump", "HEADLESS_RE_WABT"),
+    ):
+        assert probes[name].status == ProbeStatus.MISSING, name
+        assert env_var in (probes[name].remediation or ""), name
+    # The runtimes jadx/apktool/apksigner and webcrack need are named in-line.
+    for name in ("jadx", "apktool", "apksigner"):
+        assert "JRE" in (probes[name].remediation or ""), name
+    assert "Node" in (probes["webcrack"].remediation or "")
+    assert probes["node"].status == ProbeStatus.MISSING
+    assert "Node.js" in (probes["node"].remediation or "")
+
+    # And the fix must actually surface in the human-readable report, not just the
+    # struct: format_report only prints a "fix:" line for a non-ready probe when it
+    # carries remediation, so a None hint would be silently dropped there.
+    text = format_report(
+        DoctorReport(tuple(probes.values()), required_probes=frozenset({"platform", "python"}))
+    )
+    assert "pip install '.[android]'" in text
+    assert "pip install '.[browser]'" in text
+
+
 def test_radare2_probe_falls_back_to_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
