@@ -515,6 +515,17 @@ class AnalysisService(
                 raise InvalidStateTransition(
                     f"session cannot be recovered in {session.state.value} state"
                 )
+            # backends is schema-typed as an array of strings, but the agent and
+            # OpenAI-bridge transports bind it straight from model output with no
+            # pydantic coercion. A non-iterable (int, float, bool) reached the
+            # ``for raw in backends`` loop in _recover_backend_kinds and raised a
+            # raw TypeError that _failure filed as a logged internal_error incident;
+            # a dict was silently iterated as its keys, so {"ida": ...} was accepted
+            # as backends=["ida"] instead of being refused. Require the declared
+            # list/tuple so a wrong container is the invalid_request caller fault it
+            # is (None still means "recover whatever this session already had").
+            if backends is not None and not isinstance(backends, (list, tuple)):
+                raise ValueError("backends must be a list of strings")
             if backends:
                 requested = _recover_backend_kinds(backends)
             else:

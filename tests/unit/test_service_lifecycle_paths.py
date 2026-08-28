@@ -11,6 +11,7 @@ Everything runs against the in-process FakeDynamicWorker.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -65,6 +66,33 @@ def test_recover_is_refused_for_a_closed_session(tmp_path: Path) -> None:
     assert not result.ok
     assert result.error is not None
     assert "cannot be recovered" in result.error.message
+
+
+@pytest.mark.parametrize("backends", [5, 1.5, True, {"ida": 1}, "ida"])
+def test_recover_rejects_a_non_list_backends(tmp_path: Path, backends: object) -> None:
+    """A non-list backends is the caller's mistake, not an internal_error incident.
+
+    A non-iterable (int/float/bool) reached ``for raw in backends`` and raised a
+    raw TypeError the service filed as internal_error, and a dict was silently
+    iterated as its keys so {"ida": ...} was accepted as ["ida"]. Both must read as
+    invalid_request naming the wrong container.
+    """
+    service = _service(tmp_path, FakeDynamicWorker())
+    session_id = _create(service, _binary(tmp_path))
+
+    result = service.session_recover(session_id, backends=cast(Any, backends))
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+
+
+def test_recover_accepts_a_none_backends_and_recovers_defaults(tmp_path: Path) -> None:
+    """backends=None keeps the documented 'recover what this session had' path."""
+    service = _service(tmp_path, FakeDynamicWorker())
+    session_id = _create(service, _binary(tmp_path))
+
+    assert service.session_recover(session_id, backends=None).ok
 
 
 # --- _recover_by_replacement ----------------------------------------------------
