@@ -107,6 +107,54 @@ def test_require_reports_a_missing_apk_as_not_found(
     assert caught.value.code == "not_found"
 
 
+def test_require_refuses_an_apk_past_the_in_process_size_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """androguard parses in-process, so an oversized file is refused up front.
+
+    Unlike jadx/apktool/ghidra/r2 (child process, own memory, bounded output),
+    _apk and _parsed run inside this server, so a multi-GB file or a zip bomb
+    would grow its RSS unbounded. The guard turns that into a precise too_large
+    before androguard ever opens the archive -- the same shape jsre uses for the
+    node tools. A sparse file gives the ceiling a logical size without writing
+    half a gigabyte to disk.
+    """
+    _install_androguard(monkeypatch)
+    oversized = tmp_path / "huge.apk"
+    with oversized.open("wb") as handle:
+        handle.seek(apk_mod._MAX_APK_BYTES)
+        handle.write(b"\0")
+    client = ApkClient()
+    with pytest.raises(ApkError) as caught:
+        client.open(oversized)
+    assert caught.value.code == "too_large"
+    assert caught.value.details["max_file_size"] == apk_mod._MAX_APK_BYTES
+    assert caught.value.details["size"] > apk_mod._MAX_APK_BYTES
+
+
+def test_require_reports_an_unreadable_apk_as_a_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file that passes is_file() but whose stat() then fails is not a crash.
+
+    The file can vanish between the existence check and the size read; map that
+    OSError to backend_error instead of letting it surface as an internal_error
+    incident, mirroring jsre._require_existing_file.
+    """
+    _install_androguard(monkeypatch)
+    client = ApkClient()
+    monkeypatch.setattr(apk_mod.Path, "is_file", lambda self: True)
+
+    def vanished_stat(self: Path, *args: Any, **kwargs: Any) -> Any:
+        raise OSError("file vanished between is_file and stat")
+
+    monkeypatch.setattr(apk_mod.Path, "stat", vanished_stat)
+    with pytest.raises(ApkError) as caught:
+        client.open(tmp_path / "app.apk")
+    assert caught.value.code == "backend_error"
+    assert "unreadable" in caught.value.message
+
+
 # --- _apk (light cache) ------------------------------------------------------
 
 
