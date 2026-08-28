@@ -308,7 +308,21 @@ class ApkAnalysisMixin:
     def _require_session_path(self, session_id: str, path: Path, *, what: str) -> Path:
         from headless_re_mcp.core.service import _session_owns_artifact_path
 
-        resolved = path.expanduser().resolve()
+        try:
+            resolved = path.expanduser().resolve()
+        except (OSError, RuntimeError, ValueError) as exc:
+            # These paths are caller-supplied (decoded_dir / apk_path /
+            # keystore). expanduser raises RuntimeError for a tilde it cannot
+            # resolve, resolve raises ValueError for an embedded NUL, and the
+            # outer handler turns either into an internal_error incident. A
+            # path that cannot even be resolved is definitionally outside the
+            # session tree, so answer with the same structured invalid_params
+            # this method already raises for a path that points elsewhere.
+            raise ApkError(
+                "invalid_params",
+                f"{what} is not a usable path",
+                path=str(path)[:256],
+            ) from exc
         if not _session_owns_artifact_path(self.settings.artifact_root, session_id, resolved):
             raise ApkError(
                 "invalid_params",
@@ -332,7 +346,10 @@ class ApkAnalysisMixin:
                 )
             self._apk_binary(session_id)
             root = self._repack_dir(session_id)
-            source = Path(decoded_dir).expanduser() if decoded_dir.strip() else root / "decoded"
+            # Left unexpanded: _require_session_path does expanduser().resolve()
+            # under a guard, so a hostile ~user or NUL becomes a structured
+            # invalid_params there rather than an internal_error incident here.
+            source = Path(decoded_dir) if decoded_dir.strip() else root / "decoded"
             source = self._require_session_path(session_id, source, what="decoded_dir")
             out_apk = root / "repacked.apk"
             data = self._apktool_client().build(source, out_apk, timeout=timeout)
@@ -380,13 +397,11 @@ class ApkAnalysisMixin:
                 )
             self._apk_binary(session_id)
             root = self._repack_dir(session_id)
-            source = Path(apk_path).expanduser() if apk_path.strip() else root / "repacked.apk"
+            source = Path(apk_path) if apk_path.strip() else root / "repacked.apk"
             source = self._require_session_path(session_id, source, what="apk_path")
             out_apk = root / "signed.apk"
             keystore_path = (
-                self._require_session_path(
-                    session_id, Path(keystore).expanduser(), what="keystore"
-                )
+                self._require_session_path(session_id, Path(keystore), what="keystore")
                 if keystore.strip()
                 else None
             )

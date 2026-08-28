@@ -421,6 +421,45 @@ def test_apk_repack_succeeds_and_maps_errors(tmp_path: Path, monkeypatch: Any) -
         service.close_all()
 
 
+@pytest.mark.parametrize("hostile", ["~nosuchuser-headless-re/decoded", "decoded\x00dir"])
+def test_apk_repack_rejects_an_unusable_decoded_dir_as_invalid_params(
+    tmp_path: Path, monkeypatch: Any, hostile: str
+) -> None:
+    """A tilde no user resolves, or a NUL byte, must be a client error not an incident.
+
+    expanduser raises RuntimeError for the former and resolve raises ValueError
+    for the latter; both used to fall through _require_session_path to the
+    apk_repack handler's ``except BaseException`` and surface as internal_error.
+    """
+    service = _service(tmp_path)
+    try:
+        session_id = _apk_session(service, tmp_path)
+        monkeypatch.setattr(service_apk, "ApktoolClient", _FakeApktool)
+        result = service.apk_repack(session_id, decoded_dir=hostile)
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_params"
+        assert result.error.code != "internal_error"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.parametrize("field", ["apk_path", "keystore"])
+def test_apk_sign_rejects_an_unusable_path_argument_as_invalid_params(
+    tmp_path: Path, monkeypatch: Any, field: str
+) -> None:
+    service = _service(tmp_path)
+    try:
+        session_id = _apk_session(service, tmp_path)
+        monkeypatch.setattr(service_apk, "ApktoolClient", _FakeApktool)
+        result = service.apk_sign(session_id, **{field: "~nosuchuser-headless-re/x"})
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_params"
+    finally:
+        service.close_all()
+
+
 def test_apk_sign_succeeds_and_maps_errors(tmp_path: Path, monkeypatch: Any) -> None:
     service = _service(tmp_path)
     try:
