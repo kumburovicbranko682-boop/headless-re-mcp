@@ -145,10 +145,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   富化成调用方记录:`from`→主地址+`from_address`、`fcn_addr`→`fcn_address`、保留 `opcode`/`fcn_name`、
   无 `to_address`」与文档串三条。新增 live gate(`test_r2_xrefs_to_address_live_gate.py`)配套夹具
   `fixtures/elf/xref_sample`(freestanding ELF,`helper` 被 `entry0` 调两次,`xref_sample.c` 附重建说明):
-  先读 radare2 自己给 `axtj @ helper` 的两个调用点、并确认 `axj` 回的是不同且更大的集合(守卫这条守卫:
+  先读 radare2 自己给 `axtj @ helper` 的两个调用点、并确认 `axj` 回的是不同的集合(守卫这条守卫:
   若二者相等则命令切换无从证明),再钉死 `r2.xrefs` 回的正是这两个调用方、且落成 `axtj` 形状
   (带 `opcode`/`fcn_name`、无 `addr`/`to_address`)。CI 新增 `linux-r2-xrefs` job 装 radare2 跑该 gate,
-  skip≠pass 守卫在 radare2 已装却仍 skip 时判失败。
+  skip≠pass 守卫在 radare2 已装却仍 skip 时判失败。gate 的 `_r2_json` 现把 `axj @ 地址` 的空输出
+  当成空集合(radare2 6.2+ 对 `axj @ 地址` 直接不打印任何 JSON、而非空数组),不再让 `json.loads("")`
+  在真机 radare2 6.2 上崩掉;守卫断言仍成立(空集 0 ≠ axtj 的 2),旧版 radare2 的整表转储同样 ≠ 2。
 
 ### 修复（CLI 适配器超时在后端边界夹取越界输入）
 

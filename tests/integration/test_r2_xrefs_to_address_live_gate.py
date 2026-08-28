@@ -15,9 +15,11 @@ tells the two commands apart without reading the spawned argv.
 The fixture ``fixtures/elf/xref_sample`` is a tiny freestanding ELF (rebuildable
 from ``xref_sample.c`` beside it) whose ``helper`` is called exactly twice from
 ``entry0``. The gate first reads the callers radare2 itself reports for
-``axtj @ helper`` and confirms ``axj`` returns a different, larger set (guarding
-the guard: if these ever coincide the command switch proves nothing), then pins
-that ``r2.xrefs`` returned exactly the ``axtj`` callers in the enriched shape.
+``axtj @ helper`` and confirms ``axj`` returns a different set -- empty on
+radare2 6.2+, the whole-binary dump on older builds, never the two callers
+(guarding the guard: if these ever coincide the command switch proves nothing)
+-- then pins that ``r2.xrefs`` returned exactly the ``axtj`` callers in the
+enriched shape.
 
 Skip != pass: the gate skips with a reason when radare2 is absent. CI installs
 it, so a skip there is a genuine regression rather than a bare machine.
@@ -45,6 +47,12 @@ def _r2_json(executable: Path, binary: Path, command: str) -> list[dict[str, obj
         timeout=60,
     )
     text = completed.stdout.decode("utf-8", errors="replace").replace("\x00", "").strip()
+    if not text:
+        # radare2 6.2+ prints nothing for ``axj @ addr`` (it ignores the seek and
+        # has no whole-binary xref table to emit for this address) instead of an
+        # empty array. Treat empty output as an empty xref set, not a parse error:
+        # ``json.loads("")`` would otherwise crash the gate on modern radare2.
+        return []
     value = json.loads(text)
     assert isinstance(value, list)
     return value
@@ -60,17 +68,23 @@ def test_r2_xrefs_returns_callers_of_the_address_not_the_whole_binary() -> None:
     executable = client.executable
 
     # Resolve helper's VA from r2 itself rather than hardcoding it.
-    helper_va_raw = subprocess.run(
-        [str(executable), "-q0", "-c", "aa\n?v sym.helper", str(_FIXTURE)],
-        capture_output=True,
-        timeout=60,
-    ).stdout.decode("utf-8", errors="replace").replace("\x00", "").strip()
+    helper_va_raw = (
+        subprocess.run(
+            [str(executable), "-q0", "-c", "aa\n?v sym.helper", str(_FIXTURE)],
+            capture_output=True,
+            timeout=60,
+        )
+        .stdout.decode("utf-8", errors="replace")
+        .replace("\x00", "")
+        .strip()
+    )
     helper_va = int(helper_va_raw, 0)
     assert helper_va > 0, helper_va_raw
 
     # Guard the guard: axtj (references to helper) is the two calls from entry0,
-    # and axj (the whole-binary dump the old command used) is a different,
-    # larger set. If these ever coincide, the command switch proves nothing.
+    # while axj @ addr (the old command) returns a different set entirely --
+    # empty on radare2 6.2+, the whole-binary dump on older builds -- never the
+    # two callers. If these ever coincide, the command switch proves nothing.
     raw_axtj = _r2_json(executable, _FIXTURE, f"axtj @ {helper_va}")
     raw_axj = _r2_json(executable, _FIXTURE, f"axj @ {helper_va}")
     assert raw_axtj, "radare2 reported no references to helper; fixture/analysis changed"
