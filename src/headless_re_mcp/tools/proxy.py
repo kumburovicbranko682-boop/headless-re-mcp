@@ -63,7 +63,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List captured HTTP flows (method, url, status, content type).
 
         Answers with flows (id, seq, method, url, host, status, content_type,
-        started_at as an epoch time), count, total, offset, has_more, and
+        started_at as an epoch time, and remote_ip/remote_port -- the upstream
+        server the flow actually reached, the C2/CDN host behind the domain,
+        present once a response arrived over a real connection), count, total,
+        offset, has_more, and
         dropped. body_omitted is set on a
         row whose request/response body was over the retain cap. A flow that
         failed before any response (upstream reset, TLS handshake failure,

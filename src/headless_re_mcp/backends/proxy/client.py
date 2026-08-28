@@ -365,6 +365,11 @@ class _FlowRecorder:
             resp.headers.get("content-type", "") if resp else "",
             _MAX_METADATA_BYTES,
         )
+        # The upstream server this flow actually reached -- the C2/CDN host
+        # behind the domain, a pivot the URL alone does not give. Kept on the
+        # summary row (like web.network.list's remote_ip) so it shows in
+        # proxy.flows at a glance, not only after a flow.get.
+        remote_ip, remote_port = _server_endpoint(flow)
         with self._lock:
             self._seq += 1
             flow_id = str(getattr(flow, "id", None) or self._seq)
@@ -382,6 +387,10 @@ class _FlowRecorder:
                 # now if mitmproxy did not stamp it.
                 "started_at": float(getattr(req, "timestamp_start", None) or time.time()),
             }
+            if remote_ip:
+                entry["remote_ip"] = remote_ip
+            if remote_port is not None:
+                entry["remote_port"] = remote_port
             if omitted:
                 entry["body_omitted"] = True
             if method_truncated or url_truncated or host_truncated or type_truncated:

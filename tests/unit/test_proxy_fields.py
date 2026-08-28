@@ -110,6 +110,38 @@ def test_proxy_flows_filters_by_url_substring(monkeypatch: Any) -> None:
     assert "url_filter" in doc
 
 
+def test_proxy_flows_row_carries_the_server_endpoint(monkeypatch: Any) -> None:
+    """proxy.flows shows the upstream IP:port at a glance, like web.network.list.
+
+    A flow that reached the server carries remote_ip/remote_port on its summary
+    row; one that never connected (no server_conn) simply omits them.
+    """
+    recorder = _FlowRecorder(capacity=50)
+    connected = SimpleNamespace(
+        id="1",
+        request=SimpleNamespace(method="GET", pretty_url="http://x/a", host="x"),
+        response=SimpleNamespace(status_code=200, headers={"content-type": "text/html"}),
+        server_conn=SimpleNamespace(ip_address=("93.184.216.34", 443)),
+    )
+    unconnected = SimpleNamespace(
+        id="2",
+        request=SimpleNamespace(method="GET", pretty_url="http://x/b", host="x"),
+        response=SimpleNamespace(status_code=200, headers={"content-type": "text/html"}),
+    )
+    recorder.response(connected)
+    recorder.response(unconnected)
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=recorder)
+    )
+    rows = {row["id"]: row for row in backend.flows("s")["flows"]}
+    assert rows["1"]["remote_ip"] == "93.184.216.34"
+    assert rows["1"]["remote_port"] == 443
+    assert "remote_ip" not in rows["2"]
+    assert "remote_port" not in rows["2"]
+    assert "remote_ip" in _tool_docstring("proxy.flows")
+
+
 def test_proxy_flows_names_has_more_and_dropped(monkeypatch: Any) -> None:
     """The catalog named the page and never said when the ring had already lost rows.
 
