@@ -25,11 +25,14 @@ until 1.0 the tool surface may still change between minor versions.
   重放出的 streamingText 同屏，同一段助手文本会整段重复。收尾对账则两个问题都没有：
   待决期间的显示与修前完全一致（重放文本 + 审批卡），终局一次性以落库消息为准。
 - 实测：新增 `webui/src/app/useWorkbench.test.ts`（renderHook + 模拟 api/SSE，门控
-  放流模拟"刷新后才批准"），在未修复代码上失败、修复后通过；真浏览器诊断
-  （审批待决→刷新→审批卡与重放文本仍在→批准→续跑输出流回且终局持久、转录含刷新前
-  对话、线程重新选中、SSE 以 `after=<seq>` 续传）连续 3 轮通过；修好选择器的完整
+  放流模拟"刷新后才批准"），在未修复代码上失败、修复后通过；修好选择器的完整
   smoke（只读轮、设置保存、不刷新批准、跨刷新拒绝）连续 3 轮通过。webui 全部
   64 项单测与 tsc 通过，SPA 已重建提交。
+- 新增集成 Gate `tests/integration/test_agent_reload_resume_gate.py`：真自带
+  Chromium + 已发货 SPA 端到端驱动整个场景（发起→审批待决→刷新→审批卡与重放文本
+  仍在、SSE 以 `after=<seq>` 续传→批准→续跑输出流回、终局持久、转录含刷新前对话且
+  线程重新选中）。对 main 的 SPA 跑必失败（45s 内 "tool round finished" 不出现），
+  对修后 SPA 连续 3 轮通过；自带浏览器缺席时按 skip != pass 显式跳过。
 
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
