@@ -97,3 +97,30 @@ def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
         assert "module" in result.data["wat"]
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_info_when_wabt_present(tmp_path: Path) -> None:
+    """wasm.info drives a different wabt tool (wasm-objdump) than wasm.wat.
+
+    The gate exercised wasm2wat via wasm.wat but never wasm-objdump via
+    wasm.info, so a break or CLI drift in the objdump invocation (its -h -x
+    flags, or its output going somewhere other than stdout) had no real-tool
+    coverage -- the same shape of gap that let the js.unpack_bundle break ship
+    while js.deobfuscate stayed green. WasmClient.available only reports
+    wasm2wat, so skip on the objdump tool specifically to keep skip != pass
+    honest when only half of wabt is present.
+    """
+    if WasmClient()._objdump is None:
+        pytest.skip("wabt (wasm-objdump) not installed — WASM info Gate not run (skip != pass)")
+    module = tmp_path / "empty.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    service = AnalysisService()
+    try:
+        result = service.wasm_info(str(module))
+        assert result.ok, result.error
+        # wasm-objdump always prints the "file format wasm ..." banner to stdout;
+        # its absence means the flags or the output channel drifted.
+        assert "wasm" in result.data["objdump"].lower()
+    finally:
+        service.close_all()

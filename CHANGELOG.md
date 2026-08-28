@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（wasm.info 补真 wabt 集成 gate：wasm-objdump 此前完全无真工具覆盖）
+
+- 缺口：`test_web_re_gate.py` 用 `test_wasm_wat_when_wabt_present` 验了 `wasm.wat`
+  （wasm2wat），却从没验过 `wasm.info`（`wasm-objdump -h -x`）——同一后端两条 shell-out
+  路径只覆盖了一条。这正是让 `js.unpack_bundle` 的 `-f` 缺陷得以发货的同形缺口（当时
+  gate 只测了不写 `-o` 目录的 `js.deobfuscate`）：`wasm-objdump` 的 `-h -x` 旗标或它的
+  输出通道一旦随 wabt 版本漂移，主路径坏掉也没有真工具能发现。
+- 补法：新增 `test_wasm_info_when_wabt_present`，喂最小 wasm 模块、断言 `wasm.info` 成功且
+  `objdump` 文本含 wasm-objdump 恒打印的 "file format wasm" 横幅。`WasmClient.available`
+  只反映 wasm2wat，故本例按 `wasm-objdump` 本身是否解析到来 skip，保持"半个 wabt 在场"时
+  skip != pass 的诚实。
+- 实测（真 wabt 1.0.34）：`wasm.wat` 与新增的 `wasm.info` 两例均通过；同文件的 CDP 与
+  webcrack 例在各自后端缺席时诚实跳过。仅加测试、不改源码；CI 的 `mypy` 只查
+  `headless_re_mcp` 包、不含 tests，本例与既有用例同构。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
