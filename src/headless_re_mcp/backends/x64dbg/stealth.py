@@ -150,8 +150,15 @@ def profile_from_candidates(
     architecture: Architecture | None = None,
 ) -> str | None:
     """Map DIE/packer.classify names onto a whitelist id, or None if unknown."""
+    forbidden = (
+        X64_FORBIDDEN_PROFILES if architecture is Architecture.X64 else frozenset()
+    )
     best: tuple[int, float] | None = None
     matched: str | None = None
+    # Tracked separately so a profile that cannot apply on this architecture
+    # (armadillo on x64) does not suppress a real match on the same sample.
+    best_applicable: tuple[int, float] | None = None
+    matched_applicable: str | None = None
     for item in candidates:
         if not isinstance(item, dict):
             continue
@@ -170,10 +177,17 @@ def profile_from_candidates(
                 if best is None or score > best:
                     best = score
                     matched = profile
+                if profile not in forbidden and (
+                    best_applicable is None or score > best_applicable
+                ):
+                    best_applicable = score
+                    matched_applicable = profile
     if matched is None:
         return None
     if architecture is Architecture.X64 and matched in X64_FORBIDDEN_PROFILES:
-        return "basic"
+        # Armadillo is x86-only; prefer any other profile detected on the same
+        # sample and fall back to basic only when it was the sole match.
+        return matched_applicable if matched_applicable is not None else "basic"
     return matched
 
 
