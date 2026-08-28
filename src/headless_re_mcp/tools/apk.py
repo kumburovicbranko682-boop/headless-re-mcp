@@ -293,6 +293,49 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="apk.endpoints")
+    def apk_endpoints(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        name_filter: str = "",
+        include_paths: bool = True,
+    ) -> dict[str, Any]:
+        """Extract the network surface (URLs, hosts, request paths) from the DEX pool.
+
+        The "what backends does this app talk to" answer, and the mobile analogue
+        of js.endpoints: where apk.strings dumps the whole DEX string pool, this
+        runs the same shared URL/path recogniser js.endpoints uses over each
+        string constant and returns only the endpoints -- the scheme'd URLs
+        (http/https/ws/wss/ftp) and, unless include_paths is false, the
+        whole-constant request paths (/api/..., /v1/users, any two-segment path)
+        -- deduplicated and aggregated by occurrence. Answers with endpoints (each
+        {value (clipped with value_truncated when long), kind (url|path), scheme,
+        host, source (the containing DEX constant, clipped with source_truncated
+        when long -- copy it into apk.string_xrefs to find where it is used),
+        count (how many distinct constants held it)}, sorted by count then value),
+        count, total, offset, has_more, hosts (the distinct host set of the URL
+        endpoints, the domains at a glance) with hosts_truncated when that set
+        overflowed its cap, and scan_capped when the distinct-endpoint ceiling or
+        the pool scan budget was hit. A path endpoint has empty scheme/host.
+        name_filter keeps only endpoints whose value or host contains that
+        substring (case-insensitive), applied before the host summary and paging
+        so total is the match count -- the way to isolate one api host among many.
+        include_paths false drops the relative paths to leave only external URLs.
+        The list field is endpoints; for the raw pool use apk.strings, for
+        hardcoded keys use apk.secrets, and to locate an endpoint in code use
+        apk.string_xrefs on its source.
+        """
+        return _dump(
+            analysis.apk_endpoints(
+                session_id,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_paths=include_paths,
+            )
+        )
+
     @tools.tool(name="apk.xrefs")
     def apk_xrefs(
         session_id: str,

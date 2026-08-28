@@ -294,6 +294,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **移动逆向最先要问的另一问是「这个 app 到底连哪些后端」——host、URL、api 路径；`apk.strings` 能倒出整个 DEX 字符串池，但得自己从上千条里挑**。
+  新增只读工具 `apk.endpoints`：把 `js.endpoints` 用的同一套 URL/路径识别（现已抽到共享模块 `backends/common/endpoint_scan.py`，JS 与 APK 两条线
+  共用一份规则）跑在每一条 DEX 字符串常量上，抽出带协议的 URL（http/https/ws/wss/ftp）以及（`include_paths` 为真时）整条即路径的请求路径
+  （`/api/...`、`/v1/users`、任意两段路径），去重并按出现次数聚合。答复带 `endpoints`（每行 `{value（过长置 value_truncated）, kind（url|path）,
+  scheme, host, source（命中所在的 DEX 常量，过长置 source_truncated——丢进 apk.string_xrefs 即可定位用法）, count（含它的不同常量数）}`，按 count
+  再 value 排序）、`count`/`total`/`offset`/`has_more`、`hosts`（URL 端点的去重 host 集合，超上限置 `hosts_truncated`），以及命中数超上限或扫描
+  预算耗尽时的 `scan_capped`。路径端点的 scheme/host 为空。`name_filter` 对 value 或 host 做大小写不敏感子串匹配、在 host 汇总与分页前应用，故
+  `total` 是命中数；`include_paths` 置假则只留外部 URL。列表字段是 `endpoints`；原始池用 `apk.strings`，硬编码 key 用 `apk.secrets`，定位用法用
+  `apk.string_xrefs`。只读，工具总数 289→290（172 只读 / 118 写）。
 - **移动逆向和前端一样，最先要问的两问之一是「这个 app 把哪些凭据写死进去了」；`apk.strings` 能倒出整个 DEX 字符串池，但要不要肉眼在成千上万条里挑
   key**。新增只读工具 `apk.secrets`：把 `js.secrets` 用的同一套高精度凭据探测器（现已抽到共享模块 `backends/common/secret_scan.py`，JS 与 APK
   两条线共用一份规则）跑在每一条 DEX 字符串常量上，只返回命中——AWS access-key id、Google API key 与 OAuth token、GitHub token（classic 与

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, ClassVar, TypeVar
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.endpoint_scan import iter_endpoint_matches
 from headless_re_mcp.backends.common.secret_scan import iter_secret_matches
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 
@@ -47,6 +48,15 @@ _MAX_SECRET_FINDINGS = 20000
 _MAX_SECRET_VALUE = 512
 _MAX_SECRET_SOURCE = 256
 _MAX_SECRET_SCAN_STRINGS = 200_000
+# apk.endpoints aggregation bounds, mirroring the js.endpoints ceilings. Distinct
+# endpoints and the distinct-host summary are each capped; the endpoint value and
+# the containing DEX constant it came from (source, the apk.string_xrefs pivot)
+# are clipped; a scan budget bounds how many pool constants are examined.
+_MAX_ENDPOINT_FINDINGS = 50000
+_MAX_ENDPOINT_HOSTS = 512
+_MAX_ENDPOINT_VALUE = 512
+_MAX_ENDPOINT_SOURCE = 256
+_MAX_ENDPOINT_SCAN_STRINGS = 200_000
 _MAX_NATIVE_LIBS = 256
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
@@ -1177,6 +1187,88 @@ class ApkClient:
             "offset": start,
             "has_more": start + len(window) < len(secrets),
             "detectors": detectors,
+            "scan_capped": scan_capped,
+        }
+
+    def endpoints(
+        self,
+        path: Path,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        include_paths: bool = True,
+    ) -> JsonObject:
+        """Extract network endpoints (URLs, hosts, request paths) from the DEX pool.
+
+        The apk analogue of js.endpoints: the same shared URL/path recogniser run
+        over every DEX string constant. Where apk.strings dumps the whole pool,
+        this returns only the endpoints -- the "what backends does this app talk
+        to" answer -- deduplicated and aggregated by occurrence, with the distinct
+        URL host set summarised. Each finding echoes the containing constant as
+        ``source`` so apk.string_xrefs can pivot to where it is used. Paged, with
+        a distinct-endpoint ceiling, a host-summary cap and a scan budget
+        (scan_capped when any is hit).
+        """
+        parsed = self._parsed(path)
+        needle = name_filter.strip() if isinstance(name_filter, str) else ""
+        aggregates: dict[str, JsonObject] = {}
+        scan_capped = False
+        stop = False
+        for scanned, item in enumerate(parsed.analysis.get_strings()):
+            if scanned >= _MAX_ENDPOINT_SCAN_STRINGS:
+                scan_capped = True
+                break
+            source = str(item.get_value())[:_MAX_STRING_LEN]
+            for value, kind, scheme, host in iter_endpoint_matches(
+                source, include_paths=include_paths
+            ):
+                current = aggregates.get(value)
+                if current is None:
+                    if len(aggregates) >= _MAX_ENDPOINT_FINDINGS:
+                        scan_capped = True
+                        stop = True
+                        break
+                    row: JsonObject = {
+                        "value": value[:_MAX_ENDPOINT_VALUE],
+                        "kind": kind,
+                        "scheme": scheme,
+                        "host": host,
+                        "source": source[:_MAX_ENDPOINT_SOURCE],
+                        "count": 1,
+                    }
+                    if len(value) > _MAX_ENDPOINT_VALUE:
+                        row["value_truncated"] = True
+                    if len(source) > _MAX_ENDPOINT_SOURCE:
+                        row["source_truncated"] = True
+                    aggregates[value] = row
+                else:
+                    current["count"] = int(current["count"]) + 1
+            if stop:
+                break
+        endpoints = list(aggregates.values())
+        if needle:
+            low = needle.lower()
+            endpoints = [
+                e
+                for e in endpoints
+                if low in str(e["value"]).lower() or low in str(e["host"]).lower()
+            ]
+        endpoints.sort(key=lambda e: (-int(e["count"]), str(e["value"])))
+        host_set = sorted(
+            {str(e["host"]) for e in endpoints if e["kind"] == "url" and e["host"]}
+        )
+        hosts_truncated = len(host_set) > _MAX_ENDPOINT_HOSTS
+        start, capped = _page_bounds(offset, limit, cap=_MAX_STRINGS_PAGE)
+        window = endpoints[start : start + capped]
+        return {
+            "endpoints": window,
+            "count": len(window),
+            "total": len(endpoints),
+            "offset": start,
+            "has_more": start + len(window) < len(endpoints),
+            "hosts": host_set[:_MAX_ENDPOINT_HOSTS],
+            "hosts_truncated": hosts_truncated,
             "scan_capped": scan_capped,
         }
 

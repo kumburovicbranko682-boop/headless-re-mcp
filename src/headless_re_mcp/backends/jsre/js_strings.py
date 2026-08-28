@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from headless_re_mcp.backends.common.endpoint_scan import iter_endpoint_matches
 from headless_re_mcp.backends.common.secret_scan import iter_secret_matches
 
 JsonObject = dict[str, Any]
@@ -48,26 +49,6 @@ _MAX_SECRETS_COLLECT = 20000
 # A matched secret value is clipped (value_truncated) so a PEM body or an
 # oversized token cannot bloat a row; count/first_offset still report the hit.
 _MAX_SECRET_VALUE = 512
-
-# A scheme'd URL inside a string literal. The character class stops at anything
-# that cannot sit unencoded in a URL (whitespace, quotes, backtick, backslash,
-# angle brackets, and the template/pipe/caret punctuation), and the trailing
-# punctuation a URL is often followed by is stripped afterwards.
-_URL_RE = re.compile(r"(?:https?|wss?|ftp)://[^\s\"'`<>\\{}|^]+", re.IGNORECASE)
-# A whole-literal request path: starts with '/', an alnum second char (so '//'
-# and '/?...' are not paths), then path/query characters.
-_PATH_RE = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9._~%/@:{}?=&*-]*$")
-# Path segments that mark a single-segment literal as a real endpoint (so '/api'
-# counts but a bare '/x' does not); a path with two or more segments counts
-# regardless.
-_API_SEGMENTS = frozenset(
-    {
-        "api", "v1", "v2", "v3", "v4", "graphql", "gql", "rest", "oauth", "auth",
-        "token", "login", "logout", "signin", "signup", "session", "account",
-        "admin", "upload", "download", "callback", "webhook", "rpc", "ws",
-    }
-)
-_URL_TRAILING = ".,;:!?)]}>\"'`"
 
 _DELIM_RE = re.compile(r"['\"`/]")
 
@@ -381,39 +362,6 @@ def extract_strings(
     return results, capped
 
 
-def _clean_url(url: str) -> str:
-    """Trim the trailing punctuation a URL is commonly written next to."""
-    end = len(url)
-    while end > 0 and url[end - 1] in _URL_TRAILING:
-        end -= 1
-    return url[:end]
-
-
-def _url_scheme(url: str) -> str:
-    return url.split("://", 1)[0].lower()
-
-
-def _url_host(url: str) -> str:
-    """The host of a scheme'd URL: authority minus userinfo and port, lowered."""
-    after = url.split("://", 1)[1] if "://" in url else url
-    authority = re.split(r"[/?#]", after, maxsplit=1)[0]
-    if "@" in authority:
-        authority = authority.rsplit("@", 1)[1]
-    return authority.split(":", 1)[0].lower()
-
-
-def _looks_like_path(text: str) -> bool:
-    """Whether a whole literal reads as an HTTP request path worth surfacing."""
-    if not (2 <= len(text) <= 512) or not _PATH_RE.match(text):
-        return False
-    segments = [s for s in text.split("/") if s]
-    if not segments:
-        return False
-    if len(segments) >= 2:
-        return True
-    return segments[0].split("?", 1)[0].lower() in _API_SEGMENTS
-
-
 def extract_endpoints(
     source: str, *, include_paths: bool = True, name_filter: str = ""
 ) -> tuple[list[JsonObject], list[str], bool, bool]:
@@ -461,22 +409,14 @@ def extract_endpoints(
     for row in rows:
         text = str(row.get("text", ""))
         offset = int(row.get("offset", 0))
-        for match in _URL_RE.finditer(text):
-            value = _clean_url(match.group())
-            if "://" not in value:
-                continue
-            host = _url_host(value)
-            if not host:
-                continue
-            if not add(value, "url", _url_scheme(value), host, offset):
+        for value, kind, scheme, host in iter_endpoint_matches(
+            text, include_paths=include_paths
+        ):
+            if not add(value, kind, scheme, host, offset):
                 stop = True
                 break
         if stop:
             break
-        if include_paths:
-            trimmed = text.strip()
-            if _looks_like_path(trimmed) and not add(trimmed, "path", "", "", offset):
-                break
 
     needle = name_filter.strip().lower() if isinstance(name_filter, str) else ""
     endpoints = list(aggregates.values())
