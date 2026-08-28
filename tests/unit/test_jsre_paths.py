@@ -8,9 +8,9 @@ mapping, tool-failure raises, and the wabt bin/ fallback.
 from __future__ import annotations
 
 import os
-from pathlib import Path, PosixPath
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -29,13 +29,20 @@ from headless_re_mcp.backends.jsre.client import (
 )
 from headless_re_mcp.core.service_jsre import JsReAnalysisMixin, prune_jsre_unpack_dirs
 
+# The wabt resolver appends ``.exe`` on Windows; match that so fixtures resolve
+# on either platform.
+_EXE = ".exe" if os.name == "nt" else ""
+# A concrete Path flavour for this OS so the stat-overriding subclasses can be
+# instantiated everywhere (PosixPath cannot be constructed on Windows).
+_ConcretePath = type(Path())
+
 
 class _Harness(JsReAnalysisMixin):
     def __init__(self, root: Path) -> None:
-        self.settings = SimpleNamespace(artifact_root=root, webcrack=None, wabt=None)
+        self.settings = cast(Any, SimpleNamespace(artifact_root=root, webcrack=None, wabt=None))
 
 
-class _SecondStatFails(PosixPath):
+class _SecondStatFails(_ConcretePath):  # type: ignore[misc,valid-type]
     """stat succeeds once (the is_dir/is_file probe) then fails; a file that
     vanished between the listing and the sort takes exactly this shape."""
 
@@ -47,7 +54,7 @@ class _SecondStatFails(PosixPath):
             self._calls[str(self)] = count
             if count > 1:
                 raise OSError("stat lost a race")
-        return super().stat(follow_symlinks=follow_symlinks)
+        return cast(os.stat_result, super().stat(follow_symlinks=follow_symlinks))
 
 
 # ------------------------------------------------- prune_jsre_unpack_dirs
@@ -219,7 +226,7 @@ def test_require_existing_file_maps_a_stat_race_to_backend_error(tmp_path: Path)
 
 
 def test_an_unreadable_file_does_not_look_like_wasm(tmp_path: Path) -> None:
-    class _UnopenablePath(PosixPath):
+    class _UnopenablePath(_ConcretePath):  # type: ignore[misc,valid-type]
         def open(self, *args: Any, **kwargs: Any) -> Any:
             raise OSError("permission denied")
 
@@ -286,8 +293,8 @@ def test_unpack_that_fails_without_files_is_backend_error(
 def _wabt_dir(tmp_path: Path) -> Path:
     wabt = tmp_path / "wabt"
     wabt.mkdir()
-    (wabt / "wasm2wat").write_text("#!/bin/sh\n", encoding="utf-8")
-    (wabt / "wasm-objdump").write_text("#!/bin/sh\n", encoding="utf-8")
+    (wabt / f"wasm2wat{_EXE}").write_text("#!/bin/sh\n", encoding="utf-8")
+    (wabt / f"wasm-objdump{_EXE}").write_text("#!/bin/sh\n", encoding="utf-8")
     return wabt
 
 
@@ -329,7 +336,7 @@ def test_info_that_fails_without_output_is_backend_error(
 def test_wabt_root_falls_back_to_its_bin_directory(tmp_path: Path) -> None:
     wabt = tmp_path / "wabt"
     (wabt / "bin").mkdir(parents=True)
-    tool = wabt / "bin" / "wasm2wat"
+    tool = wabt / "bin" / f"wasm2wat{_EXE}"
     tool.write_text("#!/bin/sh\n", encoding="utf-8")
 
     assert _resolve_wabt_tool(wabt, "wasm2wat") == tool
