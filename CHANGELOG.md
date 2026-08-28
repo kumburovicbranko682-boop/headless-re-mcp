@@ -24,6 +24,48 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（x64dbg RPC 客户端派发与 trace 校验）
+
+- `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
+  `wait_for_state`、`close` 与重连,但二十多个细请求包装器、`trace.*` 生命周期与
+  `_validate_trace_result` 守卫、`request` 的能力/关闭/退出门以及若干辅助函数仍未覆盖。
+  新增 `tests/unit/test_xdbg_client_dispatch.py`,只测各平台都为纯 Python 的部分,不碰
+  Win32 传输:每个包装器(threads/stack/disassembly/symbols/breakpoints/patches/
+  pe.headers/imports 等)的参数整形与方法名(含 `output_path`/`rights`/`limit`/
+  `size` 等可选项在给与不给两种情形)、`trace_start` 的边界校验与派发、`trace_stop`/
+  `trace_status` 在未初始化时跳过校验、`trace_cancel` 委派 `trace_stop`、
+  `_validate_trace_result` 的布尔录制态/路径匹配(含内嵌 null 字节的非法路径)/边界
+  不符/计数器归零与非法值各分支、`request` 门(已关闭报 `session_closed`、进程已退报
+  `worker_exited`、无能力方法先于传输报 `capability_unavailable`、`rpc.` 前缀绕过能力
+  门)、`_note_debuggee_pid` 只接受正数 pid(int/数字串/0/非数字/缺字段)、
+  `seed_headless_event_settings` 写一次且幂等、`XdbgRpcError.from_payload` 非字典分支,
+  以及 `pid`/`exit_code`/`capabilities`/`metadata`(防御性拷贝)属性。行覆盖 42% → 62%
+  (余量为 Windows 专有的命名管道传输、`__init__` 真实拉起与桌面/收尾路径)。
+
+### 测试（共享受管子进程 mixin 的跨平台合同）
+
+- `backends/common/subprocess_rpc.py` 的既有 terminate 测试只验证 Win32 后代枚举、在
+  Linux 上 skip，导致 mixin 的启动 kwargs、`pid` / `analyzer_windows` 属性与 `_lock`
+  接缝在 Linux CI 上从未被执行。新增 `tests/unit/test_subprocess_rpc_mixin.py` 固定各
+  平台都成立的部分:`no_window_popen_kwargs()` 的返回形态(Linux 上 `creationflags==0`、
+  `startupinfo is None`;Windows 上抑制控制台窗口且 `wShowWindow==0`)、`pid` 属性、
+  `analyzer_windows` 排序并累积目击集(窗口关闭后仍留在累积集里)、`terminate_process`
+  在有无 `_lock` 两种情形下都真实回收进程且释放锁。Linux 行覆盖 44% → 89%(仅余
+  Windows 专有的 `STARTUPINFO` 分支,由形态测试在 Windows job 覆盖)。
+
+### 测试（IDA worker RPC 客户端合同测试）
+
+- `IdaWorkerClient` 的传输层此前只有窗口历史上限一项合同有测试（行覆盖 32%）。新增
+  `tests/unit/test_ida_worker_client_rpc.py`：通过 `PYTHONPATH` 遮蔽真实
+  `backends.ida.worker` 模块、以脚本化假 worker 子进程走完整协议，不需要 idalib、
+  Windows 与 Linux 均可运行。覆盖 ready/fatal 握手（含 capabilities 非列表、data 非
+  对象、启动前崩溃携带 stderr 诊断）、请求按 id 关联与错误载荷映射、超时/未读消息
+  溢出后 worker 被强制退休（不复用卡死进程）、close 的三种收尾（应答后不退出则杀树、
+  worker 已死静默收尾、不应答则上抛超时且二次 close 幂等）、分析器窗口在启动与请求
+  两个时点的拒答及重复目击不膨胀历史，另有 `next_receive_deadline` /
+  `startup_receive_remaining` / `IdaWorkerError.from_payload` 纯函数合同。该模块行
+  覆盖 32% → 98%。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
@@ -58,6 +100,54 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `values_truncated`:本页含被裁字符串时为真并附 `note`,点明展示的是前缀而非整条。`values_truncated`
   (单条被裁到 2000)与 `scan_capped`(收集在 5000 条封顶)、`has_more`(分页)三者正交。回归测试以打桩的
   `_parsed`(含一条超长串与全部合规两种情形)覆盖,不依赖真实 APK/androguard。
+### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
+
+- `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
+  作为输出路径，指望它触发 `run_scylla` 的“output_path must differ from input_path”守卫。
+  但该断言依赖 POSIX 特有行为：`Path.exists()` 不会穿过不存在的中间目录 `nope` 去解析 `..`，
+  于是路径读作“尚不存在”，执行落到 differ 守卫。Windows 则把 `..` 按词法折叠回已存在的
+  `input.exe`，`exists()` 为真，先触发更早的“output_path must not already exist”守卫，测试遂在
+  Windows 3.11/3.12 失败。产品代码本身无恙——两条守卫拒绝的是同一危险（输出别名到输入），
+  且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
+  拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
+
+### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
+
+- `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
+  `sys.platform` 强制成 `linux` 后再 monkeypatch `os.sysconf`，但 Windows 的 `os` 模块
+  根本没有 `sysconf` 属性，`monkeypatch.setattr` 默认 `raising=True` 便当场抛
+  `AttributeError`——被测代码从未跑到。产品代码本身无恙（Windows 走
+  `GlobalMemoryStatusEx`，POSIX 分支也捕获 `AttributeError`），纯属测试脚手架在
+  非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
+    创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
+
+### 测试（地址同步层补齐失败关闭分支）
+
+- `core/addressing.py` 把 x64dbg 的模块快照和磁盘上的 PE 头翻译成静态/运行时地址映射，
+  三处输入都受攻击者影响（模块列表走 RPC、selector 来自模型、PE 字节来自被调试进程映射
+  的任意文件）。既有测试覆盖了主路径与常见拒绝，新增
+  `tests/unit/test_addressing_hostile_input.py` 钉住其余失败关闭分支：模块结果不是对象 /
+  没有 modules 数组 / 条目既无名也无路径一律 `module_list_invalid`；selector 命中某模块后
+  附带的 path/name 约束不符报 `module_identity_mismatch`（两处不符都如实回报）、命不中报
+  `module_not_found`、`\??\` 设备前缀被规整后仍可匹配；`ModuleAddressSpace` 的 RVA 越界报
+  `address_out_of_range`、负地址在做任何运算前即 `invalid_address`；运行时元数据架构非字符串
+  或不受支持报 `runtime_metadata_invalid`、同一会话路径命中多个模块报 `module_ambiguous`；
+  运行时模块无路径 / 指向目录报 `module_file_unavailable`、`\??\` 前缀路径能被解析读出；
+  非 PE / 截断的 COFF 头 / 截断的可选头 / 可选头 magic 不符 / 镜像基址为 0 分别报
+  `module_file_invalid`；并补 `RuntimeModuleCatalog` 与 `RebasedModuleMapping` 的 `to_dict`
+  序列化。模块覆盖率 88% → 99%。
+
+### 修复（device.install/uninstall 把无法核实误报成明确成败）
+
+- `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
+  三态——null 表示复核跑不起来。但 `_pm_path` 只找 `package:` 行，没做其余 adb 读取（getprop /
+  pm list）都会做的 `_is_host_error_output` 判定：adbutils 的 `shell` 有时把 adb 主机端自己的
+  `error:` / `adb:` 消息当 stdout 返回而不抛异常（例如设备在改动与复核之间掉线）。这种主机错误
+  被读成“没有 package: 行”，于是真装上的包报成 `installed=false`（假阴性），真卸掉的复核报成
+  `uninstalled=true`（假阳性）——正是三态里 null 分支要避免的误报。现让 `_pm_path` 对主机错误
+  输出抛 `AdbError`，两个调用方已有的 `except AdbError` 分支即把结果如实报成 null + “could not
+  verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
+  新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
@@ -80,6 +170,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   整个缓冲,故不需要 offset。文档串同步说明,并扩展回归测试断言 `total`。
 
 ### 修复（事故日志脱敏关键字与结构化脱敏对齐）
+
+### 修复（apk.sign / apk.decode 先验证输入是有效 zip，再启 JVM）
+
+- `apk.sign`（apksigner）与 `apk.decode`（apktool `d`）此前只检查输入路径存在（`is_file`）就把它
+  交给 JVM。APK 本质是 zip：一个被截断的下载、指错的路径，或某个漏过自身校验的构建产物一旦不是
+  zip，apksigner/apktool 仍会先拉起一个 JVM、再吐出一段晦涩的 Java 错误才失败——白白付出 JVM 启动
+  开销，还把「参数错」报成 `backend_error`。现两条路径在开进程前先用 `zipfile.is_zipfile` 判定输入
+  确是 zip（只读归档尾部、不解压，故校验本身没有 zip 炸弹暴露面），不是就回精确的 `invalid_params`，
+  与 `apk.repack` 已经校验自己的产物是有效 zip、以及 wasm 工具在启 wabt 前先查 `\0asm` 魔数属同一快速
+  失败范式。直接调后端的 apk.decode / apk.sign 单测相应改用真实（极小）zip 作输入，并新增直测钉住
+  非 zip 输入在开进程前即被拒、有效 zip 仍照常交给工具。
 
 ### 修复（apk.repack 不再把空/损坏产物报成重打包成功）
 
@@ -121,6 +222,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   能力检查前即拒，与 jadx 一致）、巨大超时被封到各自上限；r2 一路在真 radare2 上对本地 ELF
   验过：正常分析照旧，非正/NaN 回 `invalid_params` 不再开进程，巨大值封到 120s。
 
+### 修复（`web.open` / `web.navigate` 不报 HTTP 状态，错误页与命中难分）
+
+- Playwright 的 `page.goto` 只在传输层失败（DNS、拒连、超时）时抛异常；一个 4xx/5xx 主文档会
+  正常返回，于是导航到一个错误页与真正命中回的信封一模一样，无人值守的一遍会把错误页当成
+  成功。现在把 `goto` 的响应状态取出来，`web.open`（给了 URL 时）与 `web.navigate` 在产生了
+  HTTP 响应时附带 `status`，调用方据此区分错误页与命中；`about:blank`、同文档导航等没有响应的
+  情况不回 `status`（缺省即诚实，编个 200 反而不实），与 `proxy.flows` / `web.network.list`
+  早已回报的状态口径一致。
+
 ### 修复（Web 导航超时在后端边界夹取越界输入）
 
 - **`web.open` / `web.navigate` 把调用方的 `timeout` 直接算进 `Future.result(timeout=…)`**，
@@ -153,6 +263,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   这里看不到的原因缺类」。退出码为 0 时这些字段一概不出现;「非零退出且磁盘无源码」仍照旧抛 `backend_error`。
 - 新增回归:非零退出带部分树时各字段齐备并经 export→decompile 透传、干净退出无失败字段、非零且无输出仍抛错、
   surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及两个工具的描述都点名 `exit_code` / `tool_failed`。
+
+### 修复（frida 设备解析卡死不再永占 worker）
+
+- **`_resolve_device` 与 `add_remote_device` 里对 frida 的设备查找此前不带可由本侧兜底的截止时间。**
+  `frida.get_local_device()`、`get_usb_device(timeout=5)`、`get_device(..., timeout=5)`、
+  device manager 的 `get_device(..., timeout=1)` 与 `add_remote_device(...)` 都被直接调用——实测
+  一个睡 8s 的查找即便带 `timeout=5` 也要到 8.000s 才返回，frida 的 `timeout=` 形参并不是本侧能
+  强制的截止时间。`spawn` / `applications` / `java.*` 都在各自 deadline 起算之前先解析设备，于是一个
+  永不返回的 USB 或 host:port 查找会把 worker 一直占住，直到进程被杀。
+- 现在每个查找都像枚举那几个操作(`enumerate_devices` 等)一样跑在守护线程上并共用 `_PROBE_TIMEOUT_S`
+  (30s)截止：卡死的查找抛 `timeout`，worker 立即释放，仍在后台的守护线程不会阻止进程退出。remote
+  路径上「先复用已注册设备」的最佳努力查找若超时/报错，照旧退化到 `add_remote_device`(同样有界)。
+- 新增回归：卡死的 USB 解析与卡死的 host:port `add_remote_device` 都在截止时间内抛 `timeout`
+  而非空等(把 `_PROBE_TIMEOUT_S` 打小后计时断言)。
 
 ### 修复（js/wasm 工具非零退出不再伪装成干净结果）
 
@@ -220,6 +344,28 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `7f454c46`。frida 原生 runtime 在 CI 跑不了，故按仓库既有做法（见 hook-template schema 测试）
   以源码静态断言钉住脚本用的是指针方法、不再出现被删的全局名。
 
+### 修复（PE 扫描每次读取都吃满 256 MiB 预算）
+
+- `scan_pe` 的 `_read_pe_bytes` 过去以 `stream.read(max_file_size + 1)` 一次性把整份输入读进
+  内存。这一步刻意不信 `stat()`（文件可能在检查与读取之间变大）并把读取封顶在预算内，但
+  Python 带缓冲的 `read(n)` 会先按 `n` 预分配再收缩——于是默认 256 MiB 上限下，**每一次扫描
+  无论文件多大都瞬时吃掉 256 MiB 堆**（实测一个 4 KiB 文件峰值 256 MiB）。scan_pe 在每个二进制、
+  每个会话上都跑，`inspect_dotnet` 与 `.NET` 枚举里的 `_load_metadata_context` 还会各自再读一遍，
+  并发会话下这类瞬时尖峰是真实的 OOM/RSS 风险。现改为分块读到 `max_file_size + 1`：常规文件
+  短读即 EOF，仍是一次「读满预算」的 `read`（I/O 边界不变，超限照样拒绝、文件增长照样封顶），
+  只有大到填满一个分块的文件才多读，且绝不超过实际存在的字节。实测同一个 4 KiB 文件峰值降到
+  约 1 MiB。回归测试断言小文件在默认 256 MiB 上限下的分配与文件大小成比例，而非与上限成比例。
+
+### 修复（内存版仓库时间线无界增长）
+
+- `InMemoryAnalysisRepository`（与 SQLite 端口同契约、供自定义组合使用的生产模块）的
+  审计日志裁到 `AUDIT_RETAINED_ROWS`、知识表裁到 `KNOWLEDGE_RETAINED_PER_SESSION`、
+  关闭会话裁到 `CLOSED_SESSION_RETAINED`，唯独时间线只 `append` 不裁：每个生命周期
+  事件与工具备注都往该会话的 Python list 里加一条，长驻进程用这个端口跑一夜就攒一夜。
+  文件版时间线自身有 10,000 行 / 8 MB 的裁剪上限，现新增
+  `TIMELINE_RETAINED_PER_SESSION`（10,000，与文件版行数上限一致）在 `append_timeline`
+  里同样只留最新条目。新增回归：把保留数调小后断言旧条目被裁、无关会话不受影响。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
@@ -269,6 +415,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   溢出省略与环淘汰逻辑对两条路径完全一致;顺带把请求字段取值改为 `getattr` 兜底,请求缺失也不炸。
 - 新增回归:出错流被捕获并标记、与完成流可区分、错误消息受上限约束、无消息时回退、出错流可经 raw 取回
   (环不变量成立)、完成响应路径不带 error 字段,以及 `proxy.flows` 描述点名 `error` / `error_msg`。
+### 修复（device.install 先验证输入是有效 APK（zip），再向设备推送）
+
+- `device.install`（adb install）此前只检查本地路径存在（`is_file`）就把文件交给 adbutils 推送到设备
+  再跑 `pm install`。APK 本质是 zip：一个被截断的下载、指错的路径，或某个被当成重打包产物的解码资源
+  一旦不是 zip，只能在整份传输之后失败，而 `pm` 报的是一段晦涩的设备错误，而非其实是「参数错」。现在
+  在推送前先用 `zipfile.is_zipfile` 判定输入确是 zip（只读归档尾部、不解压，故校验本身没有 zip 炸弹
+  暴露面），不是就回精确的 `invalid_params`，设备侧一次都不碰——与 `apk.decode` / `apk.sign` 在开 JVM
+  前先验证输入是 zip 属同一快速失败范式。相应新增直测：非 APK 输入在设备传输前即被拒；`_apk_package_name`
+  被打桩的两条 install 单测改用真实（极小）zip 作输入。
+
 ### 修复（device.pull 写不出文件时不再报成 size 0 的成功）
 
 - `device.pull` 过去在 adb sync“干净返回却没写出本地文件”时（远端路径不存在，较旧 adbutils 不抛异常，
@@ -856,6 +1012,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **APK 组件/权限列表和 manifest 截断不说话**。加壳样本可以塞进几千个空组件；manifest
   超过 200k 字符时只切一刀、回包仍像完整 XML。组件与权限封顶并回 `has_more`，manifest
   回 `truncated`。
+- **`apk.open` 对读不出包名的 zip 仍回 `{opened: True, package: None}`**。一个不是 APK
+  的普通 zip（androguard 的 `get_package()` 返回 None）会被无人值守的 agent 当成已打开的
+  包继续分析。现在空包名记为 `backend_error`（`opened: False`），而不是一个没有身份的
+  成功结果。
 - **jadx 导出源码列表和 webcrack unpack 文件列表同样切到 2000 条却不说**。旁边虽有
   `java_file_count` / `file_count` 是全量，只看列表的调用方仍会当成完整目录。补上
   `has_more`。
@@ -863,6 +1023,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   之后看起来就像「页面只打了这些日志」。回 `has_more`。证书列表同样封顶并披露。
 - **Ghidra 导出的函数/符号/xref 列表停在 limit 上不说话**，反编译 C 超过 200k 字符也只
   切一刀。脚本补上 `has_more` / `truncated`。
+- **`analyzeHeadless` 退出非零却留下空 `{}` 时被当成空成功**。脚本失败后遗留的空导出会让
+  `ghidra.functions/symbols/xrefs` 回 `items=[]`、`ghidra.decompile` 回空 C，无人值守的
+  导出据此把失败的运行读成「这个二进制没有函数」。现在非零退出且导出无内容记为
+  `backend_error`；`analyzeHeadless` 常在真正写出 postScript 结果后仍退出 1，这种带内容的
+  非零退出仍算成功。
 - **`proxy.ca.install_android` 和 `frida.server.ensure` 每次新建一个 AdbBackend**。
   那个实例记不住本进程建过的转发，`close_all` 拆不掉它们。改为走服务持有的那一个。
 - **`frida.applications` / `frida.modules` 以及 apk 的 classes/methods/strings 分页
@@ -904,6 +1069,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`device.install` / `uninstall` / `force_stop` 同样把 adb 返回当成成功**。装包不查
   `pm path`、卸包不看包是否还在、强停不看 pidof，无人值守循环会以为应用已经装上、卸掉或
   停掉。现在对照设备侧状态回 `installed` / `uninstalled` / `stopped`（核不上就 `null`）。
+- **`device.current_activity` 在 `app_current()` 返回 None 时仍回 `{package: None,
+  activity: None}`**。dumpsys 读失败被无人值守的 agent 当成「前台没有应用」这一事实，而不是
+  一次失败的读取。现在读不出包名记为 `backend_error`，真实的包名/activity 组合行为不变。
 - **`device.list` 对每个设备再调一次 `get_state`**。adbutils 的 `open_transport` 默认等
   600 秒，假死的 adb server 会把工作线程占满十分钟；而且 `device_list()` 只回在线设备，
   offline 看起来像「没有这台设备」。改为一次 `host:devices`（带 socket 超时），offline 也
@@ -913,6 +1081,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`device.pull` 会把整棵目录拷到宿主机**。adbutils 在远端是目录时递归拉取，没有体积上限；
   一次 `/sdcard` 就能把磁盘写满，而产物表看不见这些文件。目录和超过捕获上限的文件在拷贝前
   拒绝。`device.push` 同样拒绝超过上限的本地文件。
+- **`device.install` / `device.push` 先连设备、后查本地文件**。「文件在不在、多大」是廉价的本地
+  事实，也是最常见的手误，而 `_device` 要够到 adb server。把本地检查排在后面，意味着写错的路径
+  要白搭一次设备往返，而当 adb server 恰好连不上时，真正的问题（文件不存在/超限）还会被设备
+  错误盖掉。改为先判本地文件：路径不存在回 `not_found`、`push` 的超限文件回 `too_large`，都在
+  连设备之前当场返回，合法输入才去连设备（与 `frida.spawn` 先判包名同一处理）。
 - **`proxy.replay` 把命令排进代理线程就算成功**。循环已死或命令稍后失败时，调用方仍拿到
   `replayed: True`。现在等到 mitmproxy 真正执行完（15 秒上限）才回成功。
 - **`frida.java.classes` 会在设备上把已加载类全部列一遍**。`enumerateLoadedClassesSync`
@@ -955,6 +1128,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **会话层对敌意与降级输入的 fail-closed 契约成套固定**（`core/session.py` 85%→99%）：
+  崩溃残留的 SQLite 行——带路径分隔符的 id(遍历企图)、空 locator、未知 state 列、
+  非法 architecture、天真/垃圾时间戳、`resolve()` 抛 OSError 的死挂载——一律安静跳过或
+  归一化恢复而不是让 hydration 崩掉;store 源本身抛异常或返回非 Mapping 行时启动照常。
+  注册表护栏直测:同态迁移是无副作用的 no-op(不更新 `updated_at`)、CLOSING/CLOSED
+  会话拒绝挂 backend、`remove_closed` 拒删活会话、重启后 adopt 进来的 closed 行可被
+  正常退休。目标分类直面伪造文件:PK 魔数但 zip 损坏回落 PE、无扩展名时按 wasm/带
+  manifest 的 zip 魔数识别、`.apk` 非 zip 或缺 `AndroidManifest.xml` 报结构化 ValueError、
+  伪造 MZ/PE 头与不支持的 machine 各自 fail-closed;本地 `.js` 资产建会话时哈希入册,
+  远程 URL 不碰磁盘。
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
   `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
   分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。

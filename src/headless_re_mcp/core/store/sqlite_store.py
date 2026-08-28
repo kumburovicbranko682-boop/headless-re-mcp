@@ -87,6 +87,14 @@ KNOWLEDGE_RETAINED_PER_SESSION = 10_000
 # climbing, plus every knowledge fact those sessions recorded.
 CLOSED_SESSION_RETAINED = 64
 
+# The in-memory repository keeps each session's timeline as a Python list and,
+# unlike its audit log and knowledge table, never trimmed it: every lifecycle
+# event and tool note appended for the life of the process. The file-backed
+# timeline caps itself at 10,000 lines; the in-memory port bounds the same way
+# so a long-lived composition using it does not grow one list per session
+# without end.
+TIMELINE_RETAINED_PER_SESSION = 10_000
+
 # A knowledge value is stored as JSON text. The bound used to be applied by
 # slicing the serialised form, which stops it being JSON: the write answered
 # successfully and the next read returned a string fragment. Refuse instead.
