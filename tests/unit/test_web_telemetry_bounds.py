@@ -47,12 +47,18 @@ def _request_event(request_id: str, url: str = "https://x/") -> dict[str, Any]:
 
 
 def test_wiring_enables_all_four_cdp_domains() -> None:
-    """Telemetry is only delivered for enabled domains; all four must be on."""
+    """Telemetry is only delivered for enabled domains; all four must be on.
+
+    loadingFailed is a Network event, so it adds a handler but no new domain --
+    the four enables stay exactly these, while the handler set gains the failure
+    hook so a request that never got a response is still observed.
+    """
     _, cdp = _wired_session()
     assert cdp.enabled == ["Network.enable", "Runtime.enable", "Debugger.enable", "Page.enable"]
     assert set(cdp.handlers) == {
         "Network.requestWillBeSent",
         "Network.responseReceived",
+        "Network.loadingFailed",
         "Debugger.scriptParsed",
         "Runtime.consoleAPICalled",
     }
@@ -101,6 +107,82 @@ def test_response_enriches_its_request_and_ignores_an_unknown_id() -> None:
     assert handle.requests["r1"]["mimeType"] == "text/html"
     on_response({"requestId": "ghost", "response": {"status": 500, "mimeType": "x"}})
     assert "ghost" not in handle.requests
+
+
+def test_loading_failed_marks_the_request_and_ignores_an_unknown_id() -> None:
+    """loadingFailed flags its request error=true with the CDP errorText.
+
+    A request that never produced a response (DNS/connect failure, a block, or a
+    superseded fetch) otherwise kept status None forever, indistinguishable from
+    one still in flight. The failure hook marks it the way the proxy marks an
+    errored flow -- error=true, error_msg, null status -- and, like the response
+    hook, a loadingFailed for an already-evicted id must be a no-op, never
+    resurrecting a row.
+    """
+    handle, cdp = _wired_session()
+    cdp.handlers["Network.requestWillBeSent"](_request_event("r1"))
+    on_failed = cdp.handlers["Network.loadingFailed"]
+    on_failed(
+        {"requestId": "r1", "errorText": "net::ERR_NAME_NOT_RESOLVED", "canceled": False}
+    )
+    entry = handle.requests["r1"]
+    assert entry["error"] is True
+    assert entry["error_msg"] == "net::ERR_NAME_NOT_RESOLVED"
+    assert entry["status"] is None
+    # A hard failure is not a cancellation, so canceled must not be set.
+    assert "canceled" not in entry
+    assert "blocked_reason" not in entry
+
+    on_failed({"requestId": "ghost", "errorText": "net::ERR_FAILED", "canceled": False})
+    assert "ghost" not in handle.requests
+
+
+def test_loading_failed_records_a_block_and_a_cancellation_distinctly() -> None:
+    """A CSP/client block carries blocked_reason; a benign abort sets canceled.
+
+    CDP reports both on loadingFailed, and they mean different things to an
+    analyst: a block (blockedReason set) is a finding -- the browser refused the
+    request -- while a plain canceled=true is usually a navigation superseding
+    an in-flight fetch. Keep them separate so one is not read as the other.
+    """
+    handle, cdp = _wired_session()
+    on_failed = cdp.handlers["Network.loadingFailed"]
+
+    cdp.handlers["Network.requestWillBeSent"](_request_event("blocked"))
+    on_failed(
+        {
+            "requestId": "blocked",
+            "errorText": "net::ERR_BLOCKED_BY_CLIENT",
+            "canceled": False,
+            "blockedReason": "inspector",
+        }
+    )
+    blocked = handle.requests["blocked"]
+    assert blocked["error"] is True
+    assert blocked["blocked_reason"] == "inspector"
+    assert "canceled" not in blocked
+
+    cdp.handlers["Network.requestWillBeSent"](_request_event("aborted"))
+    on_failed({"requestId": "aborted", "errorText": "net::ERR_ABORTED", "canceled": True})
+    aborted = handle.requests["aborted"]
+    assert aborted["error"] is True
+    assert aborted["canceled"] is True
+    assert "blocked_reason" not in aborted
+
+
+def test_loading_failed_metadata_is_clipped_and_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hostile errorText/blockedReason is bounded like every other metadata."""
+    monkeypatch.setattr(web_client, "_MAX_METADATA_BYTES", 8)
+    handle, cdp = _wired_session()
+    cdp.handlers["Network.requestWillBeSent"](_request_event("r1"))
+    cdp.handlers["Network.loadingFailed"](
+        {"requestId": "r1", "errorText": "e" * 100, "canceled": False}
+    )
+    entry = handle.requests["r1"]
+    assert len(entry["error_msg"].encode()) <= 8
+    assert entry["metadata_truncated"] is True
 
 
 def test_oversized_mime_type_is_clipped_and_flagged(

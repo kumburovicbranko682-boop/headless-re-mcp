@@ -83,8 +83,15 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         also carries timings (measured send/wait durations in milliseconds,
         from CDP's response timing; phases it could not measure are absent) --
         the same values the HAR export puts in each entry's timings, whose
-        non-negative sum is that entry's time. metadata_truncated marks
-        bounded oversized request fields. There is no type field.
+        non-negative sum is that entry's time. A request the browser could not
+        complete (DNS/connect failure, a CSP/mixed-content/client block, or a
+        fetch a navigation superseded) carries error=true and error_msg (CDP's
+        errorText) with a null status, the same shape the proxy uses;
+        canceled=true marks a benign abort as distinct from a hard failure, and
+        blocked_reason names why a block happened when CDP reports one. A
+        completed request carries a numeric status and no error field.
+        metadata_truncated marks bounded oversized request fields. There is no
+        type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 

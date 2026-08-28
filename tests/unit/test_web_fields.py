@@ -133,6 +133,9 @@ def test_web_network_list_puts_the_page_in_requests_not_type(
     # timings (measured send/wait ms) rides on a row the same way and feeds the
     # HAR's per-entry timings, so the catalog must name it too.
     assert "timings" in doc
+    # A failed request carries error/error_msg (like the proxy's errored flow),
+    # so the catalog must name that contract too.
+    assert "error_msg" in doc
 
 
 def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
