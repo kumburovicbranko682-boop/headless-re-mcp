@@ -290,7 +290,9 @@ def run_vmp_dumper(
     """
     del max_file_size  # retained for call-site compatibility; unused in process mode
     exe = Path(executable).expanduser()
-    source = Path(input_path).expanduser().resolve(strict=True)
+    # resolve() without strict=True so a missing input surfaces as the structured
+    # INPUT_NOT_FOUND error below instead of a raw FileNotFoundError from resolve().
+    source = Path(input_path).expanduser().resolve()
     destination = Path(output_path).expanduser()
     if not exe.is_file():
         raise VmpDumperError(
