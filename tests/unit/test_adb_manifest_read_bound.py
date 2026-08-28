@@ -144,3 +144,32 @@ def test_reads_the_package_from_a_utf8_string_pool(tmp_path: Path) -> None:
     _write_apk(apk, manifest)
 
     assert _apk_package_name(apk) == "com.example.app"
+
+
+def test_namespace_uri_host_is_not_mistaken_for_the_package(tmp_path: Path) -> None:
+    """The AXML namespace URI host must never be returned as the app package.
+
+    Every manifest carries the namespace URI http://schemas.android.com/apk/res/
+    android, whose host "schemas.android.com" is a dotted id the package regex
+    matches and which is not android./com.android.-prefixed. The scan prefers the
+    id within 400 chars of the "package" marker, but aapt2 sorts the string pool,
+    so on a real manifest the package value can sit farther than that -- and then
+    the whole-manifest fallback would return the URI host. That is worse than
+    returning nothing: "schemas.android.com" is not a real package, so the install
+    readback's pm-path check finds no such package and reports a successfully
+    installed APK as installed=False. Model exactly that layout -- the URI before
+    the "package" marker, the real id padded well past the window -- and pin that
+    the real package still wins.
+    """
+    pool = [
+        "manifest",
+        "http://schemas.android.com/apk/res/android",
+        "package",
+        *[f"attr_{i}_name" for i in range(80)],
+        "com.example.realapp",
+    ]
+    manifest = b"\x03\x00\x08\x00\xa8\xff" + "\x00".join(pool).encode("utf-8")
+    apk = tmp_path / "faraway.apk"
+    _write_apk(apk, manifest)
+
+    assert _apk_package_name(apk) == "com.example.realapp"

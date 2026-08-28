@@ -284,12 +284,23 @@ def _device_info_row(info: Any) -> JsonObject:
     return {"serial": serial, "state": state or "unknown"}
 
 
+# Dotted ids present in every manifest that are never the app package. The
+# android framework namespace and permission values are obvious; "schemas.android"
+# is the host of the AXML namespace URI (http://schemas.android.com/apk/res/...),
+# which the dotted-id regex extracts as "schemas.android.com". That one only bites
+# the whole-manifest fallback: when the real package sits farther than the 400-char
+# window past the "package" marker, the fallback would otherwise return the URI
+# host as the package -- and since it is not a real app id, the install readback's
+# pm-path check then reports a successfully installed APK as installed=False.
+_NON_PACKAGE_PREFIXES = ("android.", "com.android.", "schemas.android")
+
+
 def _scan_decoded_for_package(decoded: str) -> str | None:
     """Pull a package-shaped id out of one decoding of the manifest bytes.
 
     Prefer the id right after the ``package`` marker (a 400-char window), then
-    fall back to the first non-framework dotted id anywhere. The android/
-    com.android skip keeps a framework string -- the namespace URI, an
+    fall back to the first non-framework dotted id anywhere. The framework-prefix
+    skip keeps a manifest-ubiquitous string -- the namespace URI host, an
     ``android.permission.*`` value -- from being named as the app's package.
     """
     window = decoded
@@ -298,7 +309,7 @@ def _scan_decoded_for_package(decoded: str) -> str | None:
         window = decoded[marker : marker + 400]
     for blob in (window, decoded):
         for candidate in _PACKAGE_IN_TEXT.findall(blob):
-            if candidate.startswith("android.") or candidate.startswith("com.android."):
+            if candidate.startswith(_NON_PACKAGE_PREFIXES):
                 continue
             if _PACKAGE_RE.match(candidate):
                 return str(candidate)

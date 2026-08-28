@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复+测试（adb 包名读回：AXML 命名空间 URI 主机名不再被误当成 app 包名）
+
+- 承接上一条 UTF-8 池修复：`_scan_decoded_for_package` 先在 "package" 标记后 400 字符的窗口里找点分标识
+  符，找不到再退回全 manifest 扫第一个非 `android.`/`com.android.` 的点分 id。但每个 manifest 都带着命名
+  空间 URI `http://schemas.android.com/apk/res/android`，其中的 `schemas.android.com` 正是一个点分 id、
+  且不以那两个前缀打头。aapt2 会对字符串池排序，真实包名可能落在离 "package" 标记 400 字符之外——这时
+  窗口扫不到，全量回退就把 URI 主机名 `schemas.android.com` 当成包名返回。
+- 这比返回 None 更糟：`schemas.android.com` 不是真包名，install 读回随后 `pm path schemas.android.com`
+  查无此包，于是把一个装成功的 APK 报成 `installed=False`（假阴性）。上一条 UTF-8 修复让现代 manifest
+  真正走到这条扫描（此前它们回落 None，是诚实的"验不了"），所以这个隐患从此可达，必须一并堵上。
+- 修复：把跳过前缀集中为 `_NON_PACKAGE_PREFIXES = ("android.", "com.android.", "schemas.android")`。
+  没有任何真实 app 包名以 `schemas.android` 打头，所以跳过它对两种编码路径都是严格变好。
+- 实测确认（真实布局：URI 在 "package" 之前、真包名用 80 个填充串顶到窗口之外）：修复前 `_apk_package_name`
+  返回 `schemas.android.com`，修复后返回真包名 `com.example.realapp`。
+- 单测 `test_namespace_uri_host_is_not_mistaken_for_the_package` 钉死该布局；变异验证承重：把跳过前缀退回
+  只有 `android.`/`com.android.`，该测立即失败（返回 URI 主机名），改回复绿。纯单测，不需要 androguard。
+
 ### 修复+测试（adb 的 APK 包名读回支持 UTF-8 字符串池：现代 aapt2 产物不再读不出包名）
 
 - `device.install` / `device.uninstall` 装完后要把包名从会话 APK 里读回来核对安装结果，这一步走的是
