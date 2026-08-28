@@ -28,12 +28,12 @@ from headless_re_mcp.backends.jsre.client import (
     _capped_file_listing,
     _looks_like_wasm,
     _require_existing_file,
-    _resolve_wabt_tool,
+    resolve_wabt_tool,
 )
 
 _RUN_BOUNDED = "headless_re_mcp.backends.jsre.client.run_bounded"
 
-# _resolve_wabt_tool looks for "<tool>.exe" on Windows, so the fake wabt
+# resolve_wabt_tool looks for "<tool>.exe" on Windows, so the fake wabt
 # binaries must carry the platform suffix or resolution returns None there.
 _EXE = ".exe" if os.name == "nt" else ""
 
@@ -185,14 +185,14 @@ def test_wabt_tool_resolves_through_a_bin_directory(tmp_path: Path) -> None:
     tool = wabt / "bin" / f"wasm2wat{_EXE}"
     tool.write_text("#!/bin/sh\n", encoding="utf-8")
 
-    assert _resolve_wabt_tool(wabt, "wasm2wat") == tool
+    assert resolve_wabt_tool(wabt, "wasm2wat") == tool
 
 
 def test_wabt_pointing_at_the_binary_itself_is_accepted(tmp_path: Path) -> None:
     tool = tmp_path / "wasm2wat"
     tool.write_text("#!/bin/sh\n", encoding="utf-8")
 
-    assert _resolve_wabt_tool(tool, "wasm2wat") == tool
+    assert resolve_wabt_tool(tool, "wasm2wat") == tool
 
 
 def test_wabt_resolution_falls_back_to_path_and_may_find_nothing(
@@ -200,4 +200,4 @@ def test_wabt_resolution_falls_back_to_path_and_may_find_nothing(
 ) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: None)
 
-    assert _resolve_wabt_tool(tmp_path / "empty", "wasm2wat") is None
+    assert resolve_wabt_tool(tmp_path / "empty", "wasm2wat") is None

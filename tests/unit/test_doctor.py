@@ -21,6 +21,7 @@ from headless_re_mcp.doctor import (
     probe_exeinfope,
     probe_optional_tool,
     probe_upx,
+    probe_wabt_tool,
     probe_x64dbg_binaries,
     probe_x64dbg_source,
     run_doctor,
@@ -84,6 +85,60 @@ def test_radare2_probe_honors_a_configured_off_path_binary(
     probe = next(p for p in report.probes if p.name == "radare2")
     assert probe.status == ProbeStatus.DETECTED
     assert probe.details.get("path") == str(r2)
+
+
+def test_wabt_probes_resolve_each_binary_the_way_the_client_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wabt toolkit path must light up both wabt probes via the shared resolver.
+
+    settings.wabt is one configured path feeding two binaries, and WasmClient
+    resolves each through resolve_wabt_tool (accepting a bin/ directory). The
+    doctor now shares that resolver, so pointing wabt at a directory holding both
+    binaries must detect wasm2wat under the wabt probe and wasm-objdump under the
+    wabt_objdump probe -- not miss the directory the way a bare PATH lookup would.
+    """
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
+    exe = ".exe" if os.name == "nt" else ""
+    wabt = tmp_path / "wabt"
+    wabt.mkdir()
+    wat = wabt / f"wasm2wat{exe}"
+    wat.write_text("#!/bin/sh\n", encoding="utf-8")
+    objdump = wabt / f"wasm-objdump{exe}"
+    objdump.write_text("#!/bin/sh\n", encoding="utf-8")
+    settings = replace(_settings(None, tmp_path / "artifacts"), wabt=wabt)
+
+    wat_probe = probe_wabt_tool("wabt", settings, "wasm2wat")
+    objdump_probe = probe_wabt_tool("wabt_objdump", settings, "wasm-objdump")
+
+    assert wat_probe.status == ProbeStatus.DETECTED
+    assert wat_probe.details.get("path") == str(wat)
+    assert objdump_probe.status == ProbeStatus.DETECTED
+    assert objdump_probe.details.get("path") == str(objdump)
+
+
+def test_wabt_objdump_probe_is_missing_when_only_wasm2wat_is_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """wasm-objdump absence must show as its own missing probe, not a ready wabt.
+
+    This is the divergence the wabt split fixes: a host with wasm2wat but not
+    wasm-objdump can run wasm.wat but not wasm.info. The wabt probe (wasm2wat)
+    stays detected so wasm.wat is still advertised, while the wabt_objdump probe
+    reports missing so capabilities.search does not offer wasm.info as ready and
+    then fail capability_unavailable when it is called.
+    """
+    wat = tmp_path / "wasm2wat"
+    wat.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_module.shutil,
+        "which",
+        lambda cmd: str(wat) if cmd == "wasm2wat" else None,
+    )
+    settings = replace(_settings(None, tmp_path / "artifacts"), wabt=None)
+
+    assert probe_wabt_tool("wabt", settings, "wasm2wat").status == ProbeStatus.DETECTED
+    assert probe_wabt_tool("wabt_objdump", settings, "wasm-objdump").status == ProbeStatus.MISSING
 
 
 def test_radare2_probe_falls_back_to_path(

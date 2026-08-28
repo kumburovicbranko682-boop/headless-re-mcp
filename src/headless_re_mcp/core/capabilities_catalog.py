@@ -203,8 +203,22 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "wasm.wabt",
         "backend": "web",
         "status_probe": "wabt",
-        "tools": ["wasm.info", "wasm.wat"],
-        "summary": "WebAssembly inspection via wabt (wasm2wat, wasm-objdump)",
+        "tools": ["wasm.wat"],
+        "summary": "WebAssembly text (wat) conversion via wabt wasm2wat",
+        "optional": True,
+    },
+    {
+        # wasm.info runs wasm-objdump, which WasmClient resolves independently of
+        # wasm2wat and guards with its own capability_unavailable degrade path, so
+        # a host with wasm2wat but not wasm-objdump makes the two diverge. Keying
+        # wasm.info on the wasm-objdump probe stops capabilities.search advertising
+        # it ready when only wasm2wat is present -- a call that then fails
+        # capability_unavailable -- the same probe-vs-gating split as apk.sign.
+        "id": "wasm.objdump",
+        "backend": "web",
+        "status_probe": "wabt_objdump",
+        "tools": ["wasm.info"],
+        "summary": "WebAssembly section/detail dump via wabt wasm-objdump",
         "optional": True,
     },
     {

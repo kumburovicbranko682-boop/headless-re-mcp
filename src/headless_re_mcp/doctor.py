@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.jsre.client import resolve_wabt_tool
 from headless_re_mcp.backends.x64dbg.gate import run_command_loop_gate
 from headless_re_mcp.config import (
     Settings,
@@ -206,7 +207,8 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         probe_python_module("playwright", "playwright"),
         probe_python_module("mitmproxy", "mitmproxy"),
         probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
-        probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
+        probe_wabt_tool("wabt", current, "wasm2wat"),
+        probe_wabt_tool("wabt_objdump", current, "wasm-objdump"),
     ]
     return DoctorReport(
         probes=tuple(probes),
@@ -1095,6 +1097,27 @@ def probe_optional_tool(
     if found:
         return Probe(name, ProbeStatus.DETECTED, f"{name} command detected", found)
     return Probe(name, ProbeStatus.MISSING, f"Optional {name} tool is not installed")
+
+
+def probe_wabt_tool(name: str, settings: Settings, tool: str) -> Probe:
+    """Detect one wabt binary exactly as WasmClient resolves it.
+
+    wabt is a single configured toolkit path (``settings.wabt``) that feeds two
+    independently-resolved binaries -- ``wasm2wat`` (gates wasm.wat) and
+    ``wasm-objdump`` (gates wasm.info) -- and the client finds each via
+    ``resolve_wabt_tool`` (accepting a path to the binary itself or to a bin/
+    directory). The generic optional-CLI probe cannot express that: keying it on
+    the ``wabt`` attribute would report the configured wasm2wat path as though it
+    were wasm-objdump, and a bare PATH lookup would miss a directory-configured
+    toolkit -- the same doctor/tool divergence the r2 and webcrack resolvers
+    fixed. Resolve through the shared helper so a probe never disagrees with the
+    tool that actually runs, and emit one probe per binary so wasm.info's
+    advertised readiness follows wasm-objdump rather than wasm2wat.
+    """
+    resolved = resolve_wabt_tool(settings.wabt, tool)
+    if resolved is not None:
+        return Probe(name, ProbeStatus.DETECTED, f"{tool} (wabt) detected", {"path": str(resolved)})
+    return Probe(name, ProbeStatus.MISSING, f"Optional wabt tool {tool} is not installed")
 
 
 def probe_python_module(name: str, module: str) -> Probe:

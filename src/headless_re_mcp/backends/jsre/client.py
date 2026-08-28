@@ -233,8 +233,8 @@ class WasmClient:
     """wabt-backed WebAssembly inspection (wasm2wat, wasm-objdump)."""
 
     def __init__(self, wabt: Path | None = None) -> None:
-        self._wasm2wat = _resolve_wabt_tool(wabt, "wasm2wat")
-        self._objdump = _resolve_wabt_tool(wabt, "wasm-objdump")
+        self._wasm2wat = resolve_wabt_tool(wabt, "wasm2wat")
+        self._objdump = resolve_wabt_tool(wabt, "wasm-objdump")
 
     @property
     def available(self) -> bool:
@@ -286,7 +286,7 @@ def _discover_webcrack() -> Path | None:
     return Path(found) if found else None
 
 
-def _resolve_wabt_tool(wabt: Path | None, tool: str) -> Path | None:
+def resolve_wabt_tool(wabt: Path | None, tool: str) -> Path | None:
     exe = tool + (".exe" if os.name == "nt" else "")
     if wabt is not None:
         candidate = wabt if wabt.name.lower().startswith(tool) else wabt / exe

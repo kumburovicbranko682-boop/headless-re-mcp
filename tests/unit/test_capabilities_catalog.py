@@ -106,6 +106,27 @@ def test_web_cdp_capability_advertises_the_cdp_observation_surface() -> None:
     assert "web.wasm.list" not in set(by_id["wasm.wabt"]["tools"])
 
 
+def test_wasm_tools_are_probed_by_the_binary_that_actually_runs_them() -> None:
+    """wasm.wat must follow the wasm2wat probe and wasm.info the wasm-objdump one.
+
+    WasmClient resolves wasm2wat and wasm-objdump independently and guards each
+    tool with its own capability_unavailable path, so a host with wasm2wat but no
+    wasm-objdump (a partial wabt install) makes them diverge. When both tools sat
+    under a single wabt probe keyed on wasm2wat, capabilities.search advertised
+    wasm.info ready on such a host -- a call that then failed capability_unavailable.
+    Pin each wasm tool to the probe for the binary that runs it, mirroring the
+    apk.sign/apktool split.
+    """
+    by_tool = {
+        tool: cap["status_probe"]
+        for cap in _CORE_CAPABILITIES
+        for tool in cap["tools"]
+        if cap["backend"] == "web" and tool.startswith("wasm.")
+    }
+    assert by_tool["wasm.wat"] == "wabt"
+    assert by_tool["wasm.info"] == "wabt_objdump"
+
+
 def test_each_capability_has_the_required_shape_and_a_unique_id() -> None:
     seen: set[str] = set()
     for cap in _CORE_CAPABILITIES:
