@@ -18,13 +18,38 @@ from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Result, SessionState, TargetKind
 from headless_re_mcp.core.results import _failure, _success, rpc_from_backend_error
 from headless_re_mcp.core.service_ext import _record_backend, _register_capture, _timeline_append
-from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry
+from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry, is_http_url
 
 JsonObject = dict[str, Any]
 
 
 def _as_rpc(exc: WebError) -> XdbgRpcError:
     return rpc_from_backend_error(exc)
+
+
+def _navigation_target(raw: str) -> str:
+    """Resolve a navigation target to something the browser can actually open.
+
+    A web session created from a *local* asset (a downloaded .html/.js/.wasm)
+    keeps its filesystem path as the locator -- ``session.create`` stored a path
+    precisely because it was ``not is_http_url``. ``web.open`` falls back to that
+    locator when given no url, but Playwright's ``page.goto`` needs a scheme, so a
+    bare path like ``/tmp/app.html`` navigates nowhere. Convert an existing local
+    file to a ``file://`` URL (``Path.as_uri`` also encodes any awkward
+    characters). Remote URLs, schemeless hosts, ``about:``/``data:``/``file:``
+    targets and anything not on disk pass through unchanged, so only a real local
+    file is rewritten.
+    """
+    text = raw.strip()
+    if not text or is_http_url(text):
+        return text
+    try:
+        candidate = Path(text).expanduser()
+        if candidate.is_file():
+            return candidate.resolve().as_uri()
+    except OSError:
+        return text
+    return text
 
 
 class WebAnalysisMixin:
@@ -87,7 +112,7 @@ class WebAnalysisMixin:
                 raise InvalidStateTransition(
                     f"web.open cannot run in {session.state.value} state"
                 )
-            target = url.strip() or (session.locator or "")
+            target = _navigation_target(url.strip() or (session.locator or ""))
             if session.target is not TargetKind.WEB and not target:
                 raise WebError("invalid_params", "a url is required for a non-web session")
             data = self._web.open(session_id, target, headless=headless, timeout=timeout)
@@ -114,7 +139,9 @@ class WebAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def web_navigate(self, session_id: str, url: str, timeout: float = 30.0) -> Result[JsonObject]:
-        return self._web_wrap(session_id, "navigate", session_id, url, timeout=timeout)
+        return self._web_wrap(
+            session_id, "navigate", session_id, _navigation_target(url), timeout=timeout
+        )
 
     def web_close(self, session_id: str) -> Result[JsonObject]:
         try:

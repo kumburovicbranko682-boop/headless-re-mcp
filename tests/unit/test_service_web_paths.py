@@ -17,6 +17,7 @@ from headless_re_mcp.backends.web import WebError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Session, TargetKind
 from headless_re_mcp.core.service import AnalysisService
+from headless_re_mcp.core.service_web import _navigation_target
 
 JsonObject = dict[str, Any]
 
@@ -293,5 +294,61 @@ def test_web_wrap_forwards_arguments_and_maps_unexpected_errors(tmp_path: Path) 
         result = service.web_dom_snapshot(session.id)
         assert result.ok is False
         assert result.error is not None
+    finally:
+        service.close_all()
+
+
+def test_navigation_target_rewrites_a_local_file_and_leaves_urls_alone(tmp_path: Path) -> None:
+    asset = tmp_path / "app.html"
+    asset.write_text("<html></html>", encoding="utf-8")
+    # A real local asset becomes a file:// URL a browser can open.
+    assert _navigation_target(str(asset)) == asset.resolve().as_uri()
+    assert _navigation_target(f"  {asset}  ") == asset.resolve().as_uri()
+    # Remote URLs, non-http schemes, schemeless hosts and non-files pass through.
+    for passthrough in (
+        "https://example.com/app",
+        "http://example.com",
+        "about:blank",
+        "file:///already/a/url",
+        "example.com/not/a/local/file",
+        str(tmp_path / "missing.html"),
+        "",
+        "   ",
+    ):
+        assert _navigation_target(passthrough) == passthrough.strip()
+
+
+def test_web_open_opens_a_local_asset_locator_as_a_file_url(tmp_path: Path) -> None:
+    """A downloaded .html/.js/.wasm classifies as a web session whose locator is
+    a filesystem path; web.open with no url must hand the browser a file:// URL,
+    not the bare path Playwright cannot navigate to."""
+    service, web = _service(tmp_path)
+    try:
+        asset = tmp_path / "page.html"
+        asset.write_text("<html><body>local</body></html>", encoding="utf-8")
+        session = service.registry.create(str(asset))
+        assert session.target is TargetKind.WEB
+        web.answers["open"] = {"opened": True, "url": asset.resolve().as_uri()}
+        result = service.web_open(session.id, headless=True, timeout=9.0)
+        assert result.ok is True
+        assert _calls(web, "open") == [
+            ("open", (session.id, asset.resolve().as_uri()), {"headless": True, "timeout": 9.0})
+        ]
+    finally:
+        service.close_all()
+
+
+def test_web_navigate_rewrites_a_local_file_path_to_a_file_url(tmp_path: Path) -> None:
+    service, web = _service(tmp_path)
+    try:
+        session = service.registry.create("https://example.invalid")
+        asset = tmp_path / "next.html"
+        asset.write_text("<html></html>", encoding="utf-8")
+        web.answers["navigate"] = {"url": asset.resolve().as_uri()}
+        result = service.web_navigate(session.id, str(asset), timeout=4.0)
+        assert result.ok is True
+        assert _calls(web, "navigate") == [
+            ("navigate", (session.id, asset.resolve().as_uri()), {"timeout": 4.0})
+        ]
     finally:
         service.close_all()
