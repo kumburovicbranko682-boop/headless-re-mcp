@@ -1,12 +1,28 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
 from headless_re_mcp.core.models import ModuleSelector, Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.tools.binding import BoundTool, ToolSetBuilder
+
+# The readiness states capabilities.search filters on. This is exactly the
+# ProbeStatus (doctor.py) vocabulary that list_capabilities compares against:
+# a filter value outside this set matches nothing, so a bare str let an agent
+# ask for status="available"/"ok" and read the empty result as "nothing is
+# ready" rather than "that is not a status". A Literal turns the schema into an
+# enum so the discovery tool advertises the words it actually accepts. Kept in
+# lockstep with ProbeStatus by a unit test rather than imported, because Literal
+# needs its members spelled out at type-check time.
+CapabilityStatus = Literal[
+    "ready",
+    "detected",
+    "missing",
+    "blocked",
+    "unsupported_on_platform",
+]
 
 
 def _dump(result: Result[JsonObject]) -> dict[str, Any]:
@@ -89,12 +105,14 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="capabilities.search")
     def capabilities_search(
         backend: str | None = None,
-        status: str | None = None,
+        status: CapabilityStatus | None = None,
     ) -> dict[str, Any]:
         """Search discovered backend capabilities and readiness.
 
         Answers with capabilities (each: id, backend, status, status_probe,
-        summary, tools) and count. There is no items field.
+        summary, tools) and count. status filters on the readiness enum
+        (ready, detected, missing, blocked, unsupported_on_platform); a value
+        outside it matches nothing. There is no items field.
         """
         return _dump(analysis.capabilities_search(backend=backend, status=status))
 

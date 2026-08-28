@@ -127,6 +127,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`capabilities.search` 的 status 暴露为 ProbeStatus 枚举）
+
+- `capabilities.search` 的 `status` 过去标注为裸 `str | None`，schema 里只是一个不带取值
+  提示的字符串。但 `list_capabilities` 是拿它逐一比对各能力的探测状态，而那正是
+  `ProbeStatus`（doctor.py）的取值 `ready`/`detected`/`missing`/`blocked`/
+  `unsupported_on_platform`；集合外的值一个都匹配不上。这是 agent 用来发现“哪些后端可用”
+  的工具，裸 `str` 让它可能按 `available`/`ok` 过滤，拿到空列表后误读成“没有就绪的能力”
+  而非“这不是一个合法状态”。现把 `status` 收窄为与 `ProbeStatus` 对齐的 `Literal`，schema
+  直接给出这五个取值的枚举，不传（`None`）仍是“不过滤”。新增回归测试断言该枚举与
+  `ProbeStatus` 逐项相等，防止两边漂移。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
