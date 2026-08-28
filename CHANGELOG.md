@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **277（159 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **278（160 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -341,6 +341,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   条请求，绝大多数是静态资源；分析者最常要的下一步是「只看 XHR/Fetch」以聚焦接口调用。行里本就有 `resourceType`，故给
   `web.network.list` 加上 `type_filter`：对 `resourceType` 做大小写不敏感的精确匹配（如 `XHR`/`Fetch`），与 `url_filter` 同处
   分页之前、两者需同时满足，于是能把 API 流量从资源噪声里单独拉出来，`total` 即过滤后的匹配数，`dropped` 仍为环形缓冲淘汰计数。
+- **繁忙抓包里想知道「这个 App 到底连了哪些主机、各连了多少、有没有失败」，只能对着 `proxy.flows` 一页页翻**。`proxy.flows`
+  是一行一个请求；判断哪个是 C2/CDN/遥测端点、哪个域名握手全失败，得把整份抓包读一遍。新增只读工具 `proxy.hosts`：把环形缓冲里
+  保留的流按 `host` 汇总，一主机一行——`flows`（请求数）、`failed`（从未拿到响应的数）、`methods`（用过的方法，去重排序）、
+  `content_types`（响应 MIME 的 `;` 前主类型，去重排序）、`statuses`（`{状态码: 次数}` 映射），以及见到上游 IP 时的 `remote_ips`。
+  按 `flows` 降序（最吵的主机在前）、同数再按主机名排，故翻页稳定。答复另带 `count`/`total`（过滤后不同主机数）/`offset`/`has_more`、
+  `total_flows`（汇总的流总数，即整份保留抓包）与 `dropped`（环形淘汰数，与 `proxy.flows` 同源）。每主机的四个去重集合都有上限
+  （方法 16、类型/状态/IP 各 32），被恶意服务器用无限多样的取值撑爆时丢弃多余值并给该行置 `truncated`。`host_filter` 对主机名做
+  大小写不敏感子串匹配、在分页前应用，故 `total` 是命中数；要看某主机下的逐条请求仍用 `proxy.flows` 配 `url_filter`。列表字段是
+  `hosts`、每行请求数是 `flows`。只读，工具总数 277→278（160 只读 / 118 写）。
 - **`proxy.flows` 只能按 URL 过滤，繁忙抓包里 API 流量与失败连接都挑不出**。`proxy.flows` 此前只有 `url_filter`，而 `error()`
   钩子专门记录连接失败（上游 reset、TLS 握手失败——正是 pinned 移动 App 挂到代理后最常见的证据）却只能靠逐页翻看每行的
   `failed` 字段才找得到，API 流量也埋在 image/script/css 响应里。延续 `web.network.list` 的思路，给 `proxy.flows` 加两个过滤：

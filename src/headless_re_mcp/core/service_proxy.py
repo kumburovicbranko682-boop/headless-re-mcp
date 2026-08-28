@@ -122,6 +122,22 @@ class ProxyAnalysisMixin:
             failed_only=failed_only,
         )
 
+    def proxy_hosts(
+        self,
+        session_id: str,
+        offset: int = 0,
+        limit: int = 100,
+        host_filter: str = "",
+    ) -> Result[JsonObject]:
+        return self._proxy_wrap(
+            session_id,
+            "hosts",
+            session_id,
+            offset=offset,
+            limit=limit,
+            host_filter=host_filter,
+        )
+
     def proxy_flow_get(self, session_id: str, flow_id: str) -> Result[JsonObject]:
         try:
             data = self._proxy.flow_get(session_id, flow_id, self._proxy_artifact_dir(session_id))

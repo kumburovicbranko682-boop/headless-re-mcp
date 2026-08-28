@@ -47,6 +47,30 @@ _MAX_METADATA_BYTES = 1024
 # decoding has to stop at a fixed ceiling rather than trust the wire length.
 _MAX_DECODED_BODY = 8 * 1024 * 1024
 _OMITTED_BODY = object()
+# proxy.hosts rolls the capture up per host. The distinct-value sets it keeps per
+# host (methods, response content-types, status codes, upstream IPs) are normally
+# tiny, but a hostile server can answer with an unbounded variety, so each is
+# capped and the host row is flagged truncated when one overflowed.
+_MAX_HOST_METHODS = 16
+_MAX_HOST_CONTENT_TYPES = 32
+_MAX_HOST_STATUSES = 32
+_MAX_HOST_IPS = 32
+
+
+def _add_capped(target: set[str], value: str, cap: int, agg: dict[str, Any]) -> None:
+    """Add a non-empty value to a per-host set, flagging the row when it is full.
+
+    The empty string (a missing method/content-type/IP) is never added, so it
+    does not show up as a bogus member; a distinct value past ``cap`` is dropped
+    and the host row marked ``truncated`` rather than growing without bound on a
+    server that answers with unbounded variety.
+    """
+    if not value or value in target:
+        return
+    if len(target) >= cap:
+        agg["truncated"] = True
+        return
+    target.add(value)
 
 
 def _response_encoding(resp: Any) -> str:
@@ -719,6 +743,105 @@ class ProxyBackend:
             "has_more": start + len(window) < len(items),
             "dropped": dropped,
         }
+
+    def hosts(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        host_filter: str = "",
+    ) -> JsonObject:
+        """Roll the capture up per host: who the target talked to, at a glance.
+
+        proxy.flows is one row per request; on a busy capture the question
+        "which hosts did this app reach, how often, and did any fail" needs a
+        page-by-page walk. This aggregates the retained flows by host into one
+        row each -- flow count, failed count, the methods used, the response
+        content-types and status codes seen, and the upstream IPs the host
+        resolved to -- so a C2/CDN/telemetry endpoint stands out without reading
+        every flow. Rows are ordered by flow count (busiest first), then host.
+        """
+        inst = self._get(session_id)
+        items = inst.recorder.snapshot()
+        # dropped reflects ring eviction across the whole capture, computed from
+        # the unfiltered snapshot the same way proxy.flows does.
+        dropped = 0
+        if items:
+            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
+        aggregates: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        for item in items:
+            host = str(item.get("host", "") or "")
+            agg = aggregates.get(host)
+            if agg is None:
+                agg = {
+                    "flows": 0,
+                    "failed": 0,
+                    "methods": set(),
+                    "content_types": set(),
+                    "statuses": {},
+                    "remote_ips": set(),
+                    "truncated": False,
+                }
+                aggregates[host] = agg
+            agg["flows"] += 1
+            if item.get("failed"):
+                agg["failed"] += 1
+            _add_capped(agg["methods"], str(item.get("method", "") or ""), _MAX_HOST_METHODS, agg)
+            content_type = str(item.get("content_type", "") or "").split(";", 1)[0].strip()
+            _add_capped(agg["content_types"], content_type, _MAX_HOST_CONTENT_TYPES, agg)
+            _add_capped(agg["remote_ips"], str(item.get("remote_ip", "") or ""), _MAX_HOST_IPS, agg)
+            status = item.get("status")
+            if isinstance(status, int):
+                self._tally_status(agg, status)
+        needle = host_filter.strip().lower() if isinstance(host_filter, str) else ""
+        rows = [
+            self._shape_host_row(host, agg)
+            for host, agg in aggregates.items()
+            if not needle or needle in host.lower()
+        ]
+        # Busiest host first so the dominant endpoint leads the page; host name
+        # breaks ties so paging is stable across calls.
+        rows.sort(key=lambda row: (-int(row["flows"]), str(row["host"])))
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = rows[start : start + cap]
+        return {
+            "hosts": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "total_flows": len(items),
+            "dropped": dropped,
+        }
+
+    @staticmethod
+    def _tally_status(agg: dict[str, Any], status: int) -> None:
+        statuses: dict[str, int] = agg["statuses"]
+        key = str(status)
+        if key in statuses:
+            statuses[key] += 1
+        elif len(statuses) >= _MAX_HOST_STATUSES:
+            agg["truncated"] = True
+        else:
+            statuses[key] = 1
+
+    @staticmethod
+    def _shape_host_row(host: str, agg: dict[str, Any]) -> JsonObject:
+        row: JsonObject = {
+            "host": host,
+            "flows": agg["flows"],
+            "failed": agg["failed"],
+            "methods": sorted(agg["methods"]),
+            "content_types": sorted(agg["content_types"]),
+            "statuses": dict(sorted(agg["statuses"].items())),
+        }
+        if agg["remote_ips"]:
+            row["remote_ips"] = sorted(agg["remote_ips"])
+        if agg["truncated"]:
+            row["truncated"] = True
+        return row
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
         inst = self._get(session_id)

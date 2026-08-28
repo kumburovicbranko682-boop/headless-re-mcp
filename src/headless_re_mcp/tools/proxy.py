@@ -100,6 +100,40 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="proxy.hosts")
+    def proxy_hosts(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        host_filter: str = "",
+    ) -> dict[str, Any]:
+        """Roll the capture up per host: who the target talked to, at a glance.
+
+        proxy.flows is one row per request; this aggregates the retained flows
+        by host so the question "which hosts did this app reach, how often, did
+        any fail" is one call instead of a page-by-page walk -- the way a
+        C2/CDN/telemetry endpoint stands out in a busy capture. Answers with
+        hosts, count, total (distinct hosts after the filter), offset, has_more,
+        total_flows (flows aggregated, the whole retained capture), and dropped
+        (ring evictions, same as proxy.flows). Each hosts row is {host, flows
+        (request count), failed (flows that never got a response), methods
+        (sorted), content_types (sorted response MIME types, the part before
+        ';'), statuses (a {code: count} map)} plus remote_ips (the upstream
+        IPs the host resolved to) when any were seen and truncated when one of
+        that row's sets overflowed its cap (a server answering with unbounded
+        variety). Rows are ordered by flow count (busiest first), then host.
+        host_filter keeps only hosts whose name contains that substring
+        (case-insensitive), applied before paging so total is the match count;
+        total_flows still counts the whole capture. The list field is hosts, and
+        each row's request count is flows. For the individual requests to one
+        host use proxy.flows with url_filter.
+        """
+        return _dump(
+            analysis.proxy_hosts(
+                session_id, offset=offset, limit=limit, host_filter=host_filter
+            )
+        )
+
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
         """Fetch one flow's headers and body (large bodies spill to an artifact).
