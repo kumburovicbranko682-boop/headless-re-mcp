@@ -24,6 +24,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（补齐 Agent 工作台 `PersonaStore` 三条已实现却没被钉住的失败闭合/校验契约——覆盖率 83%,缺口都在错误分支)
+
+- 损坏的 `index.json`(非法 JSON)必须降级到默认人格、绝不让每次人格读取抛异常:`_read_index` 捕获 `JSONDecodeError` 回默认目录,`list_public`/`current_id`/`current_prompt` 仍作答,默认提示词照旧从 `default.md` 直出;重建 store 会重新种入合法索引,损坏是一次性的、不粘连。既有测试只覆盖“超限截断”那条分支,这条覆盖更常见的“写一半被崩溃/磁盘满打断”式损坏。新增 `test_a_corrupt_index_degrades_to_the_default_persona`。带外验证:临时把 `except (OSError, json.JSONDecodeError)` 收窄成 `except OSError` → 该测试如期抛 `JSONDecodeError` 失败,复原转绿。
+- 内置人格(default/seagull)是工作台的底线,不可删除:两道删除护栏(id 判定 + meta `builtin` 标志)确保调用方无法把控制台删到“没有默认可回退”。新增 `test_builtin_personas_cannot_be_deleted`,断言删任一内置均抛 `persona_builtin` 且两者仍在、仍可选。
+- `import_path` 在读取前先校验目标:非 `.md`/`.txt` 后缀报 `persona_not_markdown`、不存在的路径报 `persona_path_missing`,都在读字节之前,使误拖拽干净失败而非以解码/IO 错误冒出。新增 `test_import_path_rejects_non_markdown_suffix_and_missing_file`(兄弟测试已覆盖过大/非 UTF-8 内容两条)。
+
 ### 测试（把“恢复告警一律 info”这条约定收成一处 AST 漂移哨兵——上一条修好了 `artifact_collection_recovered` 这个离群点,但没有任何东西拦住下一个恢复告警再取默认 `warning`。全库五条 `*_recovered` 现都显式 `severity="info"`,`test_watchdog` 明写“恢复是要记录的事实,不是要叫醒人的呼叫”)
 
 - 新增 `test_recovery_alert_severity_guard.py`:扫描整个包里每一处 `record_alert(...)` / `self._alert(...)` 调用,凡首个字面 kind 以 `_recovered` 结尾者,必须显式传 `severity="info"`,否则计为违规(缺省即 `warning`,正是原 bug 形状)。约定是单向的——非恢复告警仍可合法为 info(`provider_retry` 就是),故只管 `*_recovered`。非空判定:断言扫描确实见到五条已知恢复告警(`backend_recovered`/`session_health_recovered`/`artifact_collection_recovered`/`artifact_usage_measurement_recovered`/`event_drain_recovered`),避免“匹配为空也全绿”。带外验证:临时抽掉 retention 那处 `severity="info"` → 哨兵精确点名 `('retention','artifact_collection_recovered',行号,None)`,复原转绿。源码级扫描(非行为测试):这些告警散落在 core/、agent/ 与顶层模块、且从难以驱动的失败路径发出,在源头钉住形状才能在下一个恢复告警落地时立刻拦住。
