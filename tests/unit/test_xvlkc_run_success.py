@@ -332,8 +332,129 @@ def test_run_refuses_a_destination_that_already_exists(tmp_path: Path) -> None:
     assert destination.read_bytes() == b"pre-existing"
 
 
+class _SecondOpenFails:
+    """A path whose file vanishes between the header read and the PE-sig read."""
+
+    def __init__(self, real: Path) -> None:
+        self._real = real
+        self._opens = 0
+
+    def open(self, mode: str) -> Any:
+        self._opens += 1
+        if self._opens > 1:
+            raise OSError("vanished mid-check")
+        return self._real.open(mode)
+
+
+def test_is_pe_file_reports_false_when_the_file_vanishes_mid_check(tmp_path: Path) -> None:
+    real = tmp_path / "flaky.exe"
+    _write_min_pe(real)
+
+    assert xvlkc_mod._is_pe_file(_SecondOpenFails(real)) is False  # type: ignore[arg-type]
+
+
+class _Entry:
+    """A work-dir entry with injectable resolve/stat failures."""
+
+    def __init__(
+        self, real: Path, *, resolve_error: bool = False, stat_error: bool = False
+    ) -> None:
+        self._real = real
+        self._resolve_error = resolve_error
+        self._stat_error = stat_error
+
+    def is_file(self) -> bool:
+        return True
+
+    def resolve(self) -> Path:
+        if self._resolve_error:
+            raise OSError("unresolvable")
+        return self._real.resolve()
+
+    def open(self, mode: str) -> Any:
+        return self._real.open(mode)
+
+    def stat(self) -> Any:
+        if self._stat_error:
+            raise OSError("no stat")
+        return self._real.stat()
+
+    def __str__(self) -> str:
+        return str(self._real)
+
+
+def test_collect_newest_pe_skips_directories_and_unreadable_entries(tmp_path: Path) -> None:
+    """Entries that cannot be classified are skipped, not fatal, and not chosen."""
+    work_input = tmp_path / "work-copy.exe"
+    work_input.write_bytes(b"input")
+    subdir = tmp_path / "extracted"
+    subdir.mkdir()
+    unresolvable = tmp_path / "unresolvable.exe"
+    _write_min_pe(unresolvable)
+    unstatable = tmp_path / "unstatable.exe"
+    _write_min_pe(unstatable)
+    good = tmp_path / "good.exe"
+    _write_min_pe(good, extra=b"payload")
+    entries: list[Any] = [
+        subdir,
+        _Entry(unresolvable, resolve_error=True),
+        _Entry(unstatable, stat_error=True),
+        good,
+    ]
+    from types import SimpleNamespace
+
+    work_dir: Any = SimpleNamespace(rglob=lambda pattern: iter(entries))
+
+    picked = xvlkc_mod._collect_newest_pe(work_dir, work_input)
+
+    assert picked == good
+
+
+def test_run_refuses_a_destination_that_resolves_to_the_input(tmp_path: Path) -> None:
+    """A dest routed through a missing directory can still resolve onto the input."""
+    exe, source, _destination, sha = _prepare(tmp_path)
+    tricky = tmp_path / "missing-dir" / ".." / source.name
+
+    with pytest.raises(XvlkcError) as excinfo:
+        run_xvlkc(exe, source, tricky, input_sha256=sha)
+
+    assert excinfo.value.code == XvlkcErrorCode.INVALID_ARGUMENT
+    assert "must differ" in str(excinfo.value)
+
+
+def test_run_removes_a_partial_destination_after_a_late_failure(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A tool that wrote to the final path before failing must not leave it behind."""
+    exe, source, destination, sha = _prepare(tmp_path)
+
+    def writer(work_copy: Path) -> _ProcessCapture:
+        _write_min_pe(destination, extra=b"partial")
+        return _capture(returncode=3, stderr="died late")
+
+    _install(monkeypatch, writer)
+
+    with pytest.raises(XvlkcError) as excinfo:
+        run_xvlkc(exe, source, destination, input_sha256=sha)
+
+    assert excinfo.value.code == XvlkcErrorCode.PROCESS_FAILED
+    assert not destination.exists()
+
+
 def test_probe_reports_absent_for_a_missing_executable(tmp_path: Path) -> None:
     ok, text = xvlkc_mod.probe_xvlkc(tmp_path / "nope.exe")
+    assert ok is False
+    assert text == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission semantics")
+def test_probe_reports_absent_for_an_unrunnable_executable(tmp_path: Path) -> None:
+    exe = tmp_path / "not-executable.bin"
+    exe.write_bytes(b"data, not a program")
+    exe.chmod(0o644)
+
+    ok, text = xvlkc_mod.probe_xvlkc(exe)
+
     assert ok is False
     assert text == ""
 
