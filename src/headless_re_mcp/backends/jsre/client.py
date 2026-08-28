@@ -16,6 +16,15 @@ from typing import Any
 from uuid import uuid4
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.jsre.js_sourcemap import (
+    SourceMapError,
+    decode_data_uri,
+    find_source_mapping_url,
+    flatten_sources,
+    is_probably_map_json,
+    is_remote_url,
+    parse_source_map,
+)
 from headless_re_mcp.backends.jsre.js_strings import extract_endpoints as extract_js_endpoints
 from headless_re_mcp.backends.jsre.js_strings import extract_secrets as extract_js_secrets
 from headless_re_mcp.backends.jsre.js_strings import extract_strings as extract_js_strings
@@ -63,6 +72,11 @@ _MAX_JS_STRINGS_PAGE = 2000
 _MAX_JS_ENDPOINTS_PAGE = 2000
 # Same rationale for js.secrets.
 _MAX_JS_SECRETS_PAGE = 2000
+# js.sourcemap list-page ceiling, same transport rationale as the others.
+_MAX_JS_SOURCEMAP_PAGE = 2000
+# A single original source returned in extract mode is clipped here so one huge
+# recovered file cannot make the response unbounded; content_truncated says so.
+_MAX_SOURCEMAP_CONTENT_BYTES = 2 * 1024 * 1024
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -392,6 +406,157 @@ class JsClient:
             "detectors": detectors,
             "scan_capped": scan_capped,
         }
+
+    def _load_map_text(self, source: str, resolved: Path) -> tuple[str, str]:
+        """Resolve the map document for ``resolved``; returns (json_text, origin).
+
+        ``resolved`` may be the ``.map`` itself, or a JS file whose trailing
+        ``sourceMappingURL`` points at an inline data: URI or an adjacent file. A
+        remote (http/protocol-relative) reference is refused with guidance rather
+        than fetched, because this backend does no network I/O.
+        """
+        if is_probably_map_json(source):
+            return source, "file"
+        url = find_source_mapping_url(source)
+        if url is None:
+            raise JsReError(
+                "not_found",
+                "input is neither a source map nor a JS file with a sourceMappingURL",
+                path=str(resolved),
+            )
+        if url.startswith("data:"):
+            try:
+                return decode_data_uri(url, max_bytes=_MAX_INPUT_BYTES), "inline"
+            except SourceMapError as exc:
+                raise JsReError(exc.code, exc.message, path=str(resolved)) from exc
+        if is_remote_url(url):
+            raise JsReError(
+                "capability_unavailable",
+                "source map is at a remote URL; fetch it and pass the .map file",
+                path=str(resolved),
+                url=url,
+            )
+        candidate = (resolved.parent / url).expanduser()
+        map_file = _require_existing_file(candidate, missing="referenced source map not found")
+        try:
+            return map_file.read_bytes().decode("utf-8", errors="replace"), f"external:{url}"
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"referenced source map unreadable: {exc}", path=str(map_file)
+            ) from exc
+
+    def sourcemap(
+        self,
+        path: Path,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        extract: str = "",
+    ) -> JsonObject:
+        """Recover original sources from a JS source map, without webcrack.
+
+        Dependency-free: the file is read and parsed in process, so it stays
+        available when webcrack is not configured. Accepts the ``.map`` itself, or
+        a ``.js`` whose trailing sourceMappingURL is an inline data: URI or an
+        adjacent file (a remote URL is refused with guidance, not fetched). In the
+        default list mode it returns one row per original source; in extract mode
+        (extract set) it returns that source's full original text from
+        sourcesContent. Flat maps and index maps (``sections``) are both handled.
+        """
+        resolved = _require_existing_file(path, missing="input file not found")
+        try:
+            raw = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        source = raw.decode("utf-8", errors="replace")
+        map_text, origin = self._load_map_text(source, resolved)
+        try:
+            data = parse_source_map(map_text)
+            sources, contents, meta = flatten_sources(data)
+        except SourceMapError as exc:
+            raise JsReError(exc.code, exc.message, path=str(resolved)) from exc
+        with_content = sum(1 for value in contents if value is not None)
+        if extract:
+            return self._sourcemap_extract(sources, contents, meta, origin, extract, with_content)
+        needle = name_filter.strip().lower() if isinstance(name_filter, str) else ""
+        rows: list[JsonObject] = []
+        for name, content in zip(sources, contents, strict=True):
+            if needle and needle not in name.lower():
+                continue
+            rows.append(
+                {
+                    "source": name,
+                    "has_content": content is not None,
+                    "length": len(content) if content is not None else 0,
+                }
+            )
+        start = max(0, int(offset))
+        capped = max(1, min(int(limit), _MAX_JS_SOURCEMAP_PAGE))
+        window = rows[start : start + capped]
+        return {
+            "sources": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "sources_total": len(sources),
+            "with_content": with_content,
+            "map": meta,
+            "origin": origin,
+        }
+
+    def _sourcemap_extract(
+        self,
+        sources: list[str],
+        contents: list[str | None],
+        meta: JsonObject,
+        origin: str,
+        extract: str,
+        with_content: int,
+    ) -> JsonObject:
+        """Return one original source's full text, matched exactly then by substring."""
+        index = -1
+        for position, name in enumerate(sources):
+            if name == extract:
+                index = position
+                break
+        if index < 0:
+            lowered = extract.lower()
+            for position, name in enumerate(sources):
+                if lowered in name.lower():
+                    index = position
+                    break
+        if index < 0:
+            return {
+                "extract": extract,
+                "matched": False,
+                "sources_total": len(sources),
+                "with_content": with_content,
+                "map": meta,
+                "origin": origin,
+            }
+        content = contents[index]
+        result: JsonObject = {
+            "extract": extract,
+            "matched": True,
+            "source": sources[index],
+            "map": meta,
+            "origin": origin,
+        }
+        if content is None:
+            result["has_content"] = False
+            result["content"] = ""
+            result["length"] = 0
+            return result
+        clipped = content[:_MAX_SOURCEMAP_CONTENT_BYTES]
+        result["has_content"] = True
+        result["content"] = clipped
+        result["length"] = len(content)
+        result["content_truncated"] = len(content) > len(clipped)
+        return result
 
 
 class WasmClient:

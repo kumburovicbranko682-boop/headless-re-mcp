@@ -209,6 +209,28 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
+    def js_sourcemap(
+        self,
+        path: str,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        extract: str = "",
+    ) -> Result[JsonObject]:
+        try:
+            data = JsClient(getattr(self.settings, "webcrack", None)).sourcemap(
+                Path(path),
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                extract=extract,
+            )
+            return _success(data, backend="jsre")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
     def wasm_wat(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         root: Path | None = None
         try:

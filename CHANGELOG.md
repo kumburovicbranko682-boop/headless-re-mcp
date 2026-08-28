@@ -294,6 +294,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **JS 这条线有 deobfuscate/beautify（只能把压缩代码重新排版），却没有 source map 支持——而真正的
+  「反压缩」是拿回原始源码**。新增只读工具 `js.sourcemap`：一个 bundle 的 `.map` 在 `sourcesContent` 里带着
+  压缩前的源码文本（原始标识符、模块结构、注释），把它捞回来远胜过给压缩代码重新排版。依赖无关（不走
+  Node/webcrack），文件可读就能用。`path` 可以是 `.map` 本身，也可以是末尾带 `//# sourceMappingURL=` 的 `.js`
+  ——内联 data: URI 或相邻 `.map` 文件都能解析；远程（http/协议相对）URL 不抓取，而是以 capability_unavailable
+  连同 url 返回，因为该后端不做网络 I/O。扁平 map 与索引 map（`sections`）都支持。两种模式：`extract` 为空（默认）
+  时列出原始源，答复 `sources`（每项 `{source（应用 sourceRoot 后的名字）, has_content（map 是否内嵌其文本）,
+  length（该文本字符数）}`）、`count`、`total`、`offset`、`has_more`、`sources_total`、`with_content`（多少源带了文本）、
+  `map`（`{version, file, source_root, index_map}`）与 `origin`（file|inline|external:<url>）；`name_filter` 按名字子串
+  过滤、分页前应用故 `total` 是命中数。`extract` 非空时返回该源的原始文本：`matched`（先精确名匹配、再首个子串匹配），
+  命中则给 `source`、`content`（截断到 2 MiB，附 `content_truncated`）、`length` 与 `has_content`。列表字段是 `sources`。
+  缺文件 not_found；超 16 MiB too_large；`.js` 里没有 sourceMappingURL 且自身也不是 map 则 not_found。
+  只读，工具总数 305→306（186 只读 / 120 写）。
 - **Ghidra 这条线有 functions/symbols/xrefs/decompile，却没有字符串——于是「找到一个字符串→查谁引用它→
   反编译引用函数」这条链在 Ghidra 内部走不通，因为没法在 Ghidra 里发现字符串地址**。新增只读工具
   `ghidra.strings`：r2.strings 在 Ghidra 线上的对应物，列出程序里 Ghidra 分析标记为字符串的已定义数据，

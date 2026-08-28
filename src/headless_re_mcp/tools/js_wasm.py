@@ -205,6 +205,51 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="js.sourcemap")
+    def js_sourcemap(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        name_filter: str = "",
+        extract: str = "",
+    ) -> dict[str, Any]:
+        """Recover a bundle's original sources from its source map, without webcrack.
+
+        The real "unminify": js.beautify only reflows minified code, but a
+        bundle's .map carries the pre-minification source text (original
+        identifiers, module layout, comments) in sourcesContent, and this pulls
+        it back out -- dependency-free (no Node/webcrack), so it works when
+        webcrack is not configured. path may be the .map itself, or a .js whose
+        trailing //# sourceMappingURL= is an inline data: URI or an adjacent .map
+        file; a remote (http/protocol-relative) URL is refused as
+        capability_unavailable with the url, rather than fetched, because this
+        backend does no network I/O. Both flat maps and index maps (sections) are
+        handled. Two modes: with extract empty (the default) it lists the original
+        sources, answering with sources (each {source (the name, with sourceRoot
+        applied), has_content (whether the map embedded its text), length (that
+        text's char length)}), count, total, offset, has_more, sources_total,
+        with_content (how many sources shipped their text), map ({version, file,
+        source_root, index_map}) and origin (file|inline|external:<url>).
+        name_filter keeps only sources whose name contains that substring
+        (case-insensitive), applied before paging so total is the match count.
+        With extract set it returns that one source's original text: matched (by
+        exact source name first, then the first substring match), and on a hit
+        source, content (clipped at 2 MiB with content_truncated), length and
+        has_content -- has_content false when the map listed the source but did
+        not embed its text. The list field is sources. A missing file is
+        not_found; one over 16 MiB is too_large; a .js with no sourceMappingURL
+        (and not itself a map) is not_found.
+        """
+        return _dump(
+            analysis.js_sourcemap(
+                path,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                extract=extract,
+            )
+        )
+
     @tools.tool(name="wasm.summary")
     def wasm_summary(
         path: str,
