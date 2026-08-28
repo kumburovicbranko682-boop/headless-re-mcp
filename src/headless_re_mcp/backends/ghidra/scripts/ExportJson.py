@@ -18,6 +18,13 @@ except Exception:
     limit = 256
 
 address_arg = ARGS[3] if len(ARGS) > 3 else None
+offset = 0
+try:
+    if len(ARGS) > 4:
+        offset = max(0, int(ARGS[4]))
+except Exception:
+    offset = 0
+
 payload = {"mode": mode, "items": [], "count": 0, "has_more": False}
 monitor = ConsoleTaskMonitor()
 program = currentProgram
@@ -33,7 +40,15 @@ def _addr(value):
 
 if mode == "functions":
     items = []
+    seen = 0
     for fn in fm.getFunctions(True):
+        # Skip the first `offset` in address order, then take a page. Peeking one
+        # past the page (the next iteration finds an item, so has_more) is what
+        # makes higher pages reachable: getFunctions(True) is stable address
+        # order, so advancing offset by count walks the whole program.
+        if seen < offset:
+            seen += 1
+            continue
         if len(items) >= limit:
             payload["has_more"] = True
             break
@@ -46,9 +61,14 @@ if mode == "functions":
             }
         )
     payload["items"] = items
+    payload["offset"] = offset
 elif mode == "symbols":
     items = []
+    seen = 0
     for sym in st.getAllSymbols(True):
+        if seen < offset:
+            seen += 1
+            continue
         if len(items) >= limit:
             payload["has_more"] = True
             break
@@ -60,12 +80,17 @@ elif mode == "symbols":
             }
         )
     payload["items"] = items
+    payload["offset"] = offset
 elif mode == "xrefs":
     items = []
+    seen = 0
     if address_arg:
         addr = _addr(address_arg)
         if addr is not None:
             for ref in refmgr.getReferencesTo(addr):
+                if seen < offset:
+                    seen += 1
+                    continue
                 if len(items) >= limit:
                     payload["has_more"] = True
                     break
@@ -77,6 +102,7 @@ elif mode == "xrefs":
                     }
                 )
     payload["items"] = items
+    payload["offset"] = offset
 elif mode == "decompile":
     text = ""
     found = False

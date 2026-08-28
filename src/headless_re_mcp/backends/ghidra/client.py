@@ -84,6 +84,7 @@ class GhidraClient:
         binary: Path,
         project_dir: Path,
         *,
+        offset: int = 0,
         limit: int = 256,
         timeout: float = 180.0,
         max_heap: str = "2G",
@@ -92,6 +93,7 @@ class GhidraClient:
             binary,
             project_dir,
             mode="functions",
+            offset=offset,
             limit=limit,
             timeout=timeout,
             max_heap=max_heap,
@@ -102,6 +104,7 @@ class GhidraClient:
         binary: Path,
         project_dir: Path,
         *,
+        offset: int = 0,
         limit: int = 256,
         timeout: float = 180.0,
         max_heap: str = "2G",
@@ -110,6 +113,7 @@ class GhidraClient:
             binary,
             project_dir,
             mode="symbols",
+            offset=offset,
             limit=limit,
             timeout=timeout,
             max_heap=max_heap,
@@ -121,6 +125,7 @@ class GhidraClient:
         project_dir: Path,
         address: str | int,
         *,
+        offset: int = 0,
         limit: int = 256,
         timeout: float = 180.0,
         max_heap: str = "2G",
@@ -129,6 +134,7 @@ class GhidraClient:
             binary,
             project_dir,
             mode="xrefs",
+            offset=offset,
             limit=limit,
             address=address,
             timeout=timeout,
@@ -161,6 +167,7 @@ class GhidraClient:
         *,
         mode: str,
         limit: int,
+        offset: int = 0,
         address: str | int | None = None,
         timeout: float,
         max_heap: str,
@@ -171,6 +178,7 @@ class GhidraClient:
                 project_dir,
                 mode=mode,
                 limit=limit,
+                offset=offset,
                 address=address,
                 timeout=timeout,
                 max_heap=max_heap,
@@ -183,6 +191,7 @@ class GhidraClient:
         *,
         mode: str,
         limit: int,
+        offset: int = 0,
         address: str | int | None = None,
         timeout: float,
         max_heap: str,
@@ -199,6 +208,10 @@ class GhidraClient:
             out_path.unlink()
         addr = "" if address is None else (hex(address) if isinstance(address, int) else str(address))
         capped = max(1, min(int(limit), 1024))
+        # Clamp defensively: the agent/OpenAI transports bypass the tool schema's
+        # offset >= 0 bound, and a negative offset passed to the script would skip
+        # a negative count (skipping nothing) and mislabel the page's offset.
+        skip = max(0, int(offset))
         extra = [
             "-scriptPath",
             str(_SCRIPT_DIR),
@@ -208,6 +221,7 @@ class GhidraClient:
             str(out_path),
             str(capped),
             addr,
+            str(skip),
         ]
         stdout, stderr, code = self._run_headless(
             project_dir,
@@ -277,6 +291,12 @@ class GhidraClient:
             # a foreign-interpreter boundary, so derive it here when the script
             # did not emit it rather than trusting the field to be present.
             payload.setdefault("found", bool(payload.get("function")))
+        else:
+            # Guarantee offset in the payload even if an older ExportJson.py did
+            # not emit it, the same way `found` is derived above: the JSON
+            # crosses a foreign-interpreter boundary, so do not trust the field
+            # to be present. A caller pages by advancing offset while has_more.
+            payload.setdefault("offset", skip)
         return payload
 
     def _run_headless(

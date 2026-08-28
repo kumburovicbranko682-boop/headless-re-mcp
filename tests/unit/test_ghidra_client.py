@@ -13,6 +13,7 @@ import pytest
 
 import headless_re_mcp.backends.ghidra.client as ghidra_client
 from headless_re_mcp.backends.common.bounded_run import Completed
+from headless_re_mcp.tools.binding import input_schema_for
 from headless_re_mcp.tools.ghidra import build_ghidra_tools
 
 
@@ -239,16 +240,19 @@ def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     assert "entry" in functions
     assert "body_size" in functions
     assert "has_more" in functions
+    assert "offset" in functions
     assert "address, size and name" not in functions
 
     symbols = _tool_docstring("ghidra.symbols")
     assert "type" in symbols
     assert "has_more" in symbols
+    assert "offset" in symbols
     assert "with address and namespace" not in symbols
 
     xrefs = _tool_docstring("ghidra.xrefs")
     assert "from" in xrefs
     assert "has_more" in xrefs
+    assert "offset" in xrefs
     assert "to and from" not in xrefs
     assert "Outgoing refs are not listed" in xrefs
 
@@ -256,6 +260,131 @@ def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     assert "decompiled" in decompile
     assert "truncated" in decompile
     assert "found" in decompile
+
+
+def _script_offset_arg(argv: list[str]) -> str:
+    # The postScript args follow the script name in order: mode, out_path,
+    # limit, address, offset. Locate the script rather than reading from the
+    # end -- delete_project appends -deleteProject after them.
+    idx = argv.index(ghidra_client._EXPORT_SCRIPT)
+    return argv[idx + 5]
+
+
+def test_ghidra_export_passes_the_offset_to_the_postscript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """functions/symbols/xrefs page by offset; the script must receive it.
+
+    The ghidra list tools advertised has_more with no offset: on a binary with
+    more functions than the 1024 max limit, everything past the first page was
+    unreachable -- has_more said "there is more" with no cursor to reach it, the
+    same broken contract frida.modules/exports and apk.xrefs carried before they
+    gained offset. The offset rides as the fifth postScript arg (after mode,
+    out_path, limit, address) so the Jython side can skip the first offset items.
+    """
+    calls = _capture_run(monkeypatch)
+    client = _client(tmp_path)
+    client.functions(_binary(tmp_path), tmp_path / "project", offset=300)
+    idx = calls[0].index(ghidra_client._EXPORT_SCRIPT)
+    assert calls[0][idx + 1] == "functions"
+    assert _script_offset_arg(calls[0]) == "300"
+
+
+def test_ghidra_export_defaults_the_offset_arg_to_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _capture_run(monkeypatch)
+    client = _client(tmp_path)
+    client.symbols(_binary(tmp_path), tmp_path / "project")
+    idx = calls[0].index(ghidra_client._EXPORT_SCRIPT)
+    assert calls[0][idx + 1] == "symbols"
+    assert _script_offset_arg(calls[0]) == "0"
+
+
+def test_ghidra_export_clamps_a_negative_offset_before_the_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A negative offset must clamp to 0 before it reaches the script.
+
+    The agent and OpenAI transports bypass the tool schema's offset >= 0 bound,
+    so a negative can arrive at the client. Handed to the Jython script it would
+    skip a negative count (skipping nothing) and label the page with a negative
+    offset; clamping here keeps the first page the first page.
+    """
+    calls = _capture_run(monkeypatch)
+    client = _client(tmp_path)
+    client.xrefs(_binary(tmp_path), tmp_path / "project", "0x401000", offset=-5)
+    idx = calls[0].index(ghidra_client._EXPORT_SCRIPT)
+    assert calls[0][idx + 1] == "xrefs"
+    assert _script_offset_arg(calls[0]) == "0"
+
+
+def test_ghidra_export_surfaces_the_offset_the_script_reports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The offset the script paged at is returned so a caller can advance it."""
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(str(arg)).write_text(
+                    '{"mode": "functions", "items": [], "count": 0,'
+                    ' "has_more": true, "offset": 300}',
+                    encoding="utf-8",
+                )
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+    payload = client.functions(_binary(tmp_path), tmp_path / "project", offset=300)
+    assert payload["offset"] == 300
+    assert payload["has_more"] is True
+
+
+def test_ghidra_export_fills_offset_when_an_older_script_omits_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-offset ExportJson.py must not leave offset missing from the payload.
+
+    The client derives offset from the requested value the same way it derives
+    decompile's found: the JSON crosses a foreign-interpreter boundary, so the
+    field cannot be trusted to be present, and a caller reading result["offset"]
+    to page must not hit a missing key against an older bundled script.
+    """
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(str(arg)).write_text(
+                    '{"mode": "functions", "items": [], "count": 0, "has_more": false}',
+                    encoding="utf-8",
+                )
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+    payload = client.functions(_binary(tmp_path), tmp_path / "project", offset=64)
+    assert payload["offset"] == 64
+
+
+def test_ghidra_list_schema_refuses_a_negative_offset() -> None:
+    """The offset each list tool now exposes must be bounded >= 0 at the schema.
+
+    The client clamps defensively, but the schema is the first line of defence
+    for the MCP transports that enforce it; functions/symbols/xrefs each expose
+    offset now, so guard all three the way apk's list tools are guarded.
+    """
+    handlers = {
+        binding.name: binding.handler
+        for binding in build_ghidra_tools(object())  # type: ignore[arg-type]
+    }
+    for name in ("ghidra.functions", "ghidra.symbols", "ghidra.xrefs"):
+        offset = input_schema_for(handlers[name])["properties"]["offset"]
+        assert offset.get("type") == "integer", name
+        assert offset.get("minimum") == 0, name
+        assert "maximum" not in offset, name
 
 
 def _decompile_run(monkeypatch: pytest.MonkeyPatch, payload: str) -> None:

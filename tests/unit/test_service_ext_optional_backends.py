@@ -303,21 +303,40 @@ class _FakeGhidra:
         return payload
 
     def functions(
-        self, binary: Path, project: Path, *, limit: int = 256, timeout: float = 180.0
+        self,
+        binary: Path,
+        project: Path,
+        *,
+        offset: int = 0,
+        limit: int = 256,
+        timeout: float = 180.0,
     ) -> dict[str, Any]:
-        del binary, limit, timeout
+        del binary, offset, limit, timeout
         return self._export(project)
 
     def symbols(
-        self, binary: Path, project: Path, *, limit: int = 256, timeout: float = 180.0
+        self,
+        binary: Path,
+        project: Path,
+        *,
+        offset: int = 0,
+        limit: int = 256,
+        timeout: float = 180.0,
     ) -> dict[str, Any]:
-        del binary, limit, timeout
+        del binary, offset, limit, timeout
         return self._export(project)
 
     def xrefs(
-        self, binary: Path, project: Path, address: Any, *, limit: int = 256, timeout: float = 180.0
+        self,
+        binary: Path,
+        project: Path,
+        address: Any,
+        *,
+        offset: int = 0,
+        limit: int = 256,
+        timeout: float = 180.0,
     ) -> dict[str, Any]:
-        del binary, limit, timeout
+        del binary, offset, limit, timeout
         return {"address": address, "items": []}
 
     def decompile(

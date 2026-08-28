@@ -36,45 +36,62 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="ghidra.functions")
     def ghidra_functions(
         session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1024)] = 256,
         timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
     ) -> dict[str, Any]:
-        """Functions Ghidra found.
+        """Functions Ghidra found (address order, paginated).
 
-        Answers with items, each carrying name, entry and body_size, plus count
-        and has_more so a page that filled the limit is not read as the whole list.
+        Answers with items, each carrying name, entry and body_size, plus count,
+        offset and has_more so a page that filled the limit is not read as the
+        whole list. Read the next page by advancing offset by count while
+        has_more is true (there is no total: the export caps as it enumerates,
+        so the full count is not known without paging to the end). Each call
+        re-imports and re-analyzes the binary, so paging is minutes per page.
         A failed export is an error, not a binary with no functions.
         """
-        return _dump(analysis.ghidra_functions(session_id, limit=limit, timeout=timeout))
+        return _dump(
+            analysis.ghidra_functions(session_id, offset=offset, limit=limit, timeout=timeout)
+        )
 
     @tools.tool(name="ghidra.symbols")
     def ghidra_symbols(
         session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1024)] = 256,
         timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
     ) -> dict[str, Any]:
-        """Symbols Ghidra recovered.
+        """Symbols Ghidra recovered (address order, paginated).
 
-        Answers with items, each carrying name, address and type, plus count
-        and has_more. The listing does not include a containing scope. A failed
+        Answers with items, each carrying name, address and type, plus count,
+        offset and has_more. Read the next page by advancing offset by count
+        while has_more is true (there is no total: the export caps as it
+        enumerates). The listing does not include a containing scope. A failed
         export is an error, not an empty listing.
         """
-        return _dump(analysis.ghidra_symbols(session_id, limit=limit, timeout=timeout))
+        return _dump(
+            analysis.ghidra_symbols(session_id, offset=offset, limit=limit, timeout=timeout)
+        )
 
     @tools.tool(name="ghidra.xrefs")
     def ghidra_xrefs(
         session_id: str,
         address: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1024)] = 256,
         timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
     ) -> dict[str, Any]:
-        """References to address, as Ghidra resolved them.
+        """References to address, as Ghidra resolved them (paginated).
 
         Only incoming refs (getReferencesTo). Answers with items carrying from,
-        to and type, plus count and has_more. Outgoing refs are not listed.
+        to and type, plus count, offset and has_more. Read the next page by
+        advancing offset by count while has_more is true (there is no total:
+        the export caps as it enumerates). Outgoing refs are not listed.
         A failed export is an error, not an address with no references.
         """
-        return _dump(analysis.ghidra_xrefs(session_id, address, limit=limit, timeout=timeout))
+        return _dump(
+            analysis.ghidra_xrefs(session_id, address, offset=offset, limit=limit, timeout=timeout)
+        )
 
     @tools.tool(name="ghidra.decompile")
     def ghidra_decompile(

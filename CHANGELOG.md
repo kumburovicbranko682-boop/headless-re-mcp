@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（ghidra.functions/symbols/xrefs 报 has_more 却无 offset:超过一页的部分永远够不着）
+
+- `ghidra.functions`/`symbols`/`xrefs` 三个便携静态分析读取都返回 `has_more`,却都没有 `offset` 参数,而每次调用又都在
+  `-deleteProject` 下把二进制重新导入并从头分析一遍,只按地址序返回头 `limit` 个。于是在函数/符号数超过 `limit`
+  上限(最大 1024)的二进制上,第一页之后的内容永远够不着——`has_more` 说"还有",却没有游标能拿到它,正是我此前修过的
+  `frida.modules`/`exports`/`java.classes` 与 `apk.xrefs` 的同款可达性坏契约。现在给这三个工具加上 `offset`,贯穿
+  Jython 导出脚本(`ExportJson.py`)→client→service→tool:脚本在按地址序枚举时跳过前 `offset` 个、再取一页,并通过
+  "往后多看一个"来判定 `has_more`(`getFunctions(True)`/`getAllSymbols(True)` 是稳定地址序,所以按 count 递增 offset
+  即可走遍全程序);payload 回带 `offset` 供调用方翻页。有意不报 `total`——脚本是边枚举边封顶、走不到末尾就不知道总数,
+  谎报不如不报,工具文档如实写明"按 count 递增 offset 直到 has_more 为假,且没有 total"。client 侧把负 offset 归零
+  (agent/OpenAI 传输会绕过 schema 的 `ge=0`),并像 decompile 的 `found` 一样对 `offset` 做 `setdefault`——JSON 跨的是
+  外部解释器边界,旧版脚本没写这个字段时也不能让翻页的调用方读到缺键。`decompile` 不涉及(limit=1,单函数)。新增测试:
+  断言 offset 作为第 5 个 postScript 参数下传(默认 0、显式值、负值归零)、脚本报的 offset 回流到 payload、旧脚本漏写时由
+  client 兜底,以及三个工具的 `offset` schema 下界为 0(仿 `test_apk_offset_schema.py`);既有的字段/文档守卫同步补断言
+  `offset`。`test_service_ext_optional_backends.py` 的 `_FakeGhidra` 桩同步接受 `offset`。
+
 ### 文档 / 测试（r2.functions 只提了 items_truncated,漏了 items_total / items_limit,与四个姊妹工具不一致）
 
 - `enrich_r2_payload` 对所有 r2 列表(functions/strings/imports/exports/xrefs)一视同仁:列表超过 4096 的 item

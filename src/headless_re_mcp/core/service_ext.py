@@ -438,20 +438,29 @@ class ExtAnalysisMixin(UiDriveMixin):
             return _failure(exc, session_id=session_id)
 
     def ghidra_functions(
-        self, session_id: str, limit: int = 256, timeout: float = 180.0
-    ) -> Result[JsonObject]:
-        return _ghidra_export(self, session_id, "functions", limit=limit, timeout=timeout)
-
-    def ghidra_symbols(
-        self, session_id: str, limit: int = 256, timeout: float = 180.0
-    ) -> Result[JsonObject]:
-        return _ghidra_export(self, session_id, "symbols", limit=limit, timeout=timeout)
-
-    def ghidra_xrefs(
-        self, session_id: str, address: str | int, limit: int = 256, timeout: float = 180.0
+        self, session_id: str, offset: int = 0, limit: int = 256, timeout: float = 180.0
     ) -> Result[JsonObject]:
         return _ghidra_export(
-            self, session_id, "xrefs", limit=limit, address=address, timeout=timeout
+            self, session_id, "functions", offset=offset, limit=limit, timeout=timeout
+        )
+
+    def ghidra_symbols(
+        self, session_id: str, offset: int = 0, limit: int = 256, timeout: float = 180.0
+    ) -> Result[JsonObject]:
+        return _ghidra_export(
+            self, session_id, "symbols", offset=offset, limit=limit, timeout=timeout
+        )
+
+    def ghidra_xrefs(
+        self,
+        session_id: str,
+        address: str | int,
+        offset: int = 0,
+        limit: int = 256,
+        timeout: float = 180.0,
+    ) -> Result[JsonObject]:
+        return _ghidra_export(
+            self, session_id, "xrefs", offset=offset, limit=limit, address=address, timeout=timeout
         )
 
     def ghidra_decompile(
@@ -1156,6 +1165,7 @@ def _ghidra_export(
     session_id: str,
     mode: str,
     *,
+    offset: int = 0,
     limit: int = 256,
     address: str | int | None = None,
     timeout: float = 180.0,
@@ -1173,13 +1183,24 @@ def _ghidra_export(
         client = GhidraClient(home=getattr(service.settings, "ghidra_home", None))
         project = service.settings.artifact_root.expanduser().resolve() / "ghidra" / session_id
         if mode == "functions":
-            data = client.functions(session.require_binary(), project, limit=limit, timeout=timeout)
+            data = client.functions(
+                session.require_binary(), project, offset=offset, limit=limit, timeout=timeout
+            )
         elif mode == "symbols":
-            data = client.symbols(session.require_binary(), project, limit=limit, timeout=timeout)
+            data = client.symbols(
+                session.require_binary(), project, offset=offset, limit=limit, timeout=timeout
+            )
         elif mode == "xrefs":
             if address is None:
                 raise GhidraError("invalid_params", "address required for ghidra.xrefs")
-            data = client.xrefs(session.require_binary(), project, address, limit=limit, timeout=timeout)
+            data = client.xrefs(
+                session.require_binary(),
+                project,
+                address,
+                offset=offset,
+                limit=limit,
+                timeout=timeout,
+            )
         elif mode == "decompile":
             if address is None:
                 raise GhidraError("invalid_params", "address required for ghidra.decompile")
