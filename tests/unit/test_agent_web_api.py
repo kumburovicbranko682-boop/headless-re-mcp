@@ -139,6 +139,29 @@ def test_agent_message_limits_are_client_errors_not_incidents(
         assert "run model" in invalid_model.json()["detail"]
 
 
+def test_provider_list_survives_one_misconfigured_profile(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    # An env override that points a stored profile's base_url somewhere invalid
+    # must not turn GET /api/providers into a 500 that hides every profile.
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    app = create_app(AnalysisService(settings), token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        saved = client.put(
+            "/api/providers/default",
+            headers=headers,
+            json={"base_url": "https://api.openai.com/v1", "model": "m"},
+        )
+        assert saved.status_code == 200
+        monkeypatch.setenv("HEADLESS_RE_PROVIDER_DEFAULT_BASE_URL", "ftp://bad")
+        listed = client.get("/api/providers", headers=headers)
+        assert listed.status_code == 200
+        assert listed.json()["profiles"] == []
+
+
 def test_missions_are_queued_over_http_and_the_scheduler_runs(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """The unattended entry point, over the wire.
 

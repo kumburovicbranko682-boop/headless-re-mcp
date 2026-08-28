@@ -188,9 +188,26 @@ class ProviderConfigStore:
             data = self._read()
         profiles_value = data.get("profiles")
         profiles: dict[str, Any] = profiles_value if isinstance(profiles_value, dict) else {}
+        public: list[dict[str, Any]] = []
+        for key, value in profiles.items():
+            if not isinstance(value, dict):
+                continue
+            try:
+                public.append(self._profile_from_raw(key, value).public(source="file"))
+            except (TypeError, ValueError):
+                # One unusable profile must not take the whole list down. A
+                # hand-edited entry, or an env override (e.g.
+                # HEADLESS_RE_PROVIDER_<ID>_BASE_URL) that points base_url
+                # somewhere invalid, makes _profile_from_raw raise; the GET
+                # providers route has no error handler, so that raise is a 500
+                # that hides every other, valid, profile. Skip the broken one
+                # exactly as a non-dict entry above is skipped. Whole-file
+                # failures still surface from _read: those are the operator's to
+                # fix, not one stray profile's.
+                continue
         return {
             "current": data.get("current"),
-            "profiles": [self._profile_from_raw(key, value).public(source="file") for key, value in profiles.items() if isinstance(value, dict)],
+            "profiles": public,
         }
 
     def _profile_from_raw(self, profile_id: str, raw: dict[str, Any]) -> ProviderProfile:

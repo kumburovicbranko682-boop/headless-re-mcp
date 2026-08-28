@@ -64,6 +64,41 @@ def test_remote_plaintext_without_a_secret_remains_supported() -> None:
     assert profile.base_url == "http://provider.example/v1"
 
 
+def test_list_public_skips_one_unusable_profile_instead_of_500ing(
+    tmp_path: Path,
+) -> None:
+    # A single malformed profile -- here a hand-edited base_url -- used to make
+    # _profile_from_raw raise straight out through the GET /api/providers route,
+    # which has no error handler, so one bad entry hid every good one behind a
+    # 500. The valid profiles must still list; the broken one is dropped like a
+    # non-dict entry.
+    import json
+
+    path = tmp_path / "providers.json"
+    store = ProviderConfigStore(path)
+    store.save(ProviderProfile("good", "https://api.openai.com/v1", "m"))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["profiles"]["bad"] = {"base_url": "not-a-url", "model": "m"}
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    listed = store.list_public()
+    assert [profile["id"] for profile in listed["profiles"]] == ["good"]
+
+
+def test_list_public_tolerates_a_bad_env_override_of_a_profile_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The env override is checked before the stored value, so a valid saved
+    # profile plus a malformed HEADLESS_RE_PROVIDER_<ID>_BASE_URL is enough to
+    # break _profile_from_raw. The list endpoint must degrade, not 500.
+    store = ProviderConfigStore(tmp_path / "providers.json")
+    store.save(ProviderProfile("default", "https://api.openai.com/v1", "m"))
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_DEFAULT_BASE_URL", "ftp://bad")
+
+    listed = store.list_public()
+    assert listed["profiles"] == []
+
+
 def test_provider_config_is_rejected_before_an_unbounded_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
