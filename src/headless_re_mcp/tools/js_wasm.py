@@ -220,4 +220,30 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_functions(path, contains=contains))
 
+    @tools.tool(name="wasm.exports")
+    def wasm_exports(path: str, contains: str | None = None) -> dict[str, Any]:
+        """The module's export table -- its callable surface -- with signatures.
+
+        The export section is the module's public API: the names JS reaches via
+        instance.exports. wasm.summary lists them coarsely (name/kind/index) and
+        wasm.functions lists every function but not which are exported; neither
+        resolves an exported function's signature. This joins the export section
+        to the type/import/function sections, so a function export comes back
+        with the exact ABI a caller invokes. Parsed in pure Python, so it answers
+        even when wasm2wat/wasm-objdump are absent.
+
+        Answers with exports, each carrying name (the exported name), kind
+        (func/table/memory/global) and index (into that kind's space). A func
+        export also carries origin (imported/defined -- a re-exported host import
+        versus a module function), type_index, params and results (value-type
+        names such as i32/i64/f32/f64/v128/funcref/externref), internal_name when
+        the name section has one, and signature_unknown when the type cannot be
+        resolved. Also count, total and scan_capped (more exports exist than the
+        4096 listed). Pass contains to keep only exports whose name/kind holds a
+        case-insensitive substring; the reply then also carries filtered true and
+        query. An input over 16 MiB is refused as too_large and a non-module as
+        invalid_params.
+        """
+        return _dump(analysis.wasm_exports(path, contains=contains))
+
     return tools.bindings

@@ -852,3 +852,157 @@ def list_wasm_functions(path: Path, *, contains: str | None = None) -> JsonObjec
     except OSError as exc:
         raise JsReError("backend_error", f"wasm unreadable: {exc}", path=str(resolved)) from exc
     return list_wasm_functions_bytes(data, contains=contains)
+
+
+def _resolve_func_signature(
+    global_index: int,
+    imported_type_indices: list[int],
+    imported_func_total: int,
+    defined_indices: list[int],
+    types: list[tuple[list[str], list[str]] | None],
+) -> tuple[str, int | None, list[str], list[str], bool]:
+    """Map a global function index to (origin, type_index, params, results, unknown).
+
+    Imported functions occupy the low index space ``[0, imported_func_total)``;
+    the module's own functions follow. ``origin`` is "imported" or "defined".
+    The type index (and thus the signature) is unresolvable -- reported by the
+    trailing bool -- when the index falls past the section that would carry it
+    (a count beyond the parser's cap, or a truncated section), or when the type
+    entry itself is a GC form the type parser stopped at.
+    """
+    if global_index < imported_func_total:
+        origin = "imported"
+        type_index = (
+            imported_type_indices[global_index]
+            if 0 <= global_index < len(imported_type_indices)
+            else None
+        )
+    else:
+        origin = "defined"
+        offset = global_index - imported_func_total
+        type_index = (
+            defined_indices[offset] if 0 <= offset < len(defined_indices) else None
+        )
+    if type_index is None:
+        return origin, None, [], [], True
+    signature = types[type_index] if 0 <= type_index < len(types) else None
+    if signature is None:
+        return origin, type_index, [], [], True
+    return origin, type_index, list(signature[0]), list(signature[1]), False
+
+
+def list_wasm_exports_bytes(data: bytes, *, contains: str | None = None) -> JsonObject:
+    """List a module's exports -- its callable/public surface -- with signatures.
+
+    The export section is the module's public API: the names JS reaches through
+    ``instance.exports``. wasm.summary lists them coarsely (name/kind/index) and
+    wasm.functions lists every function but not which ones are exported; neither
+    resolves an exported function's signature. This joins the export section to
+    the type/import/function sections so a function export comes back with its
+    resolved params/results -- the exact ABI a caller invokes -- and, from the
+    ``name`` custom section, the internal name behind the export name.
+
+    Each entry carries name (the exported name), kind (func/table/memory/global)
+    and index (the index into that kind's space). For a func export it also
+    carries origin (imported/defined -- a re-exported host import versus a
+    module function), type_index, params and results (value-type names), the
+    internal_name when the name section has one, and signature_unknown when the
+    type cannot be resolved. Also count, total and scan_capped (more exports
+    exist than were listed). Only the type/import/function/export/name sections
+    are read; every other section is skipped by its declared length. Bad magic
+    raises invalid_params.
+    """
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        raise JsReError("invalid_params", "not a WebAssembly module: bad magic")
+    needle = contains.casefold() if contains else None
+    cursor = _Cursor(data)
+    cursor.pos = 8
+
+    types: list[tuple[list[str], list[str]] | None] = []
+    imported_type_indices: list[int] = []
+    imported_func_total = 0
+    defined_indices: list[int] = []
+    exports_raw: list[JsonObject] = []
+    exports_total = 0
+    while not cursor.eof:
+        section_id = cursor.byte()
+        section_len = cursor.uleb()
+        body = _Cursor(cursor.take(section_len))
+        if section_id == 1:  # type
+            types = _parse_functypes(body)
+        elif section_id == 2:  # import
+            imported_funcs, imported_func_total = _parse_import_funcs(body)
+            imported_type_indices = [type_index for _, _, type_index in imported_funcs]
+        elif section_id == 3:  # function
+            defined_indices, _ = _parse_function_section(body, _MAX_ITEMS)
+        elif section_id == 7:  # export
+            exports_raw, exports_total = _parse_exports(body)
+        # Every other section is skipped by its declared length.
+
+    # The name section is a bonus join; a corrupt one must not fail the listing.
+    names: dict[int, str] = {}
+    with contextlib.suppress(JsReError):
+        names = _function_name_map(data)
+
+    exports: list[JsonObject] = []
+    matched = 0
+    emission_capped = False
+    for record in exports_raw:
+        name = str(record.get("name", ""))
+        kind = str(record.get("kind", ""))
+        index = int(record.get("index", 0))
+        if needle is not None and needle not in f"{name} {kind}".casefold():
+            continue
+        matched += 1
+        if len(exports) >= _MAX_ITEMS:
+            emission_capped = True
+            continue
+        entry: JsonObject = {"name": name, "kind": kind, "index": index}
+        if kind == "func":
+            origin, type_index, params, results, unknown = _resolve_func_signature(
+                index, imported_type_indices, imported_func_total, defined_indices, types
+            )
+            entry["origin"] = origin
+            entry["type_index"] = type_index
+            entry["params"] = params
+            entry["results"] = results
+            if unknown:
+                entry["signature_unknown"] = True
+            internal = names.get(index)
+            if internal is not None:
+                entry["internal_name"] = internal
+        exports.append(entry)
+
+    # exports_raw is already capped at _MAX_ITEMS by _parse_exports, with the
+    # true count in exports_total. Unfiltered, the listing is everything that
+    # fit; scan_capped means more existed. Filtered, total is the matches seen
+    # in that head, and scan_capped also fires when exports past the cap could
+    # not be examined.
+    not_all_scanned = exports_total > len(exports_raw)
+    if needle is None:
+        total = exports_total
+        scan_capped = exports_total > len(exports)
+    else:
+        total = matched
+        scan_capped = emission_capped or not_all_scanned
+
+    result: JsonObject = {
+        "exports": exports,
+        "count": len(exports),
+        "total": total,
+        "scan_capped": scan_capped,
+    }
+    if needle is not None:
+        result["filtered"] = True
+        result["query"] = contains
+    return result
+
+
+def list_wasm_exports(path: Path, *, contains: str | None = None) -> JsonObject:
+    """List the exports of the module at ``path`` (applies the shared 16 MiB cap)."""
+    resolved = _require_existing_file(path, missing="wasm file not found")
+    try:
+        data = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError("backend_error", f"wasm unreadable: {exc}", path=str(resolved)) from exc
+    return list_wasm_exports_bytes(data, contains=contains)

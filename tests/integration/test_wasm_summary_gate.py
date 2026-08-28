@@ -519,6 +519,139 @@ def test_wasm_functions_reads_a_wat2wasm_built_module(tmp_path: Path) -> None:
         service.close_all()
 
 
+def _module_with_export_surface() -> bytes:
+    """A module whose exports cover a defined func, a re-exported import, memory."""
+    magic = b"\x00asm\x01\x00\x00\x00"
+    # type0 = () -> (); type1 = (i32) -> (i32)
+    type_sec = _section(1, _vec([b"\x60\x00\x00", b"\x60\x01\x7f\x01\x7f"]))
+    import_sec = _section(
+        2,
+        _vec(
+            [
+                _name("env") + _name("log") + b"\x00" + _leb128(1),  # func, type1
+                _name("env") + _name("mem") + b"\x02" + b"\x00" + _leb128(1),  # memory
+            ]
+        ),
+    )
+    func_sec = _section(3, _vec([_leb128(0), _leb128(1)]))  # defined: type0, type1
+    export_sec = _section(
+        7,
+        _vec(
+            [
+                _name("run") + b"\x00" + _leb128(1),  # defined func (type0)
+                _name("calc") + b"\x00" + _leb128(2),  # defined func (type1)
+                _name("log2") + b"\x00" + _leb128(0),  # re-export of the import
+                _name("memory") + b"\x02" + _leb128(0),  # memory
+            ]
+        ),
+    )
+    name_sec = _section(
+        0, _name("name") + _function_names_sub([(1, "run_internal"), (2, "calc_internal")])
+    )
+    return magic + type_sec + import_sec + func_sec + export_sec + name_sec
+
+
+@pytest.mark.integration
+def test_wasm_exports_drives_the_service_end_to_end(tmp_path: Path) -> None:
+    """wasm.exports must resolve the callable surface through the real service.
+
+    The export table names a defined func, another defined func, a re-exported
+    host import, and a memory. Driving AnalysisService.wasm_exports end to end
+    must resolve each func export's signature and origin (imported/defined),
+    attach the internal name from the name section, and leave non-func exports
+    without a signature -- and a non-module must come back as an invalid_params
+    envelope, not an internal error.
+    """
+    module = tmp_path / "exports.wasm"
+    module.write_bytes(_module_with_export_surface())
+
+    service = AnalysisService()
+    try:
+        result = service.wasm_exports(str(module))
+        assert result.ok, result.error
+        data = result.data
+        assert data is not None
+        assert data["count"] == data["total"] == 4
+
+        run = _find(data["exports"], name="run", kind="func")
+        assert run is not None
+        assert run["origin"] == "defined"
+        assert run["params"] == [] and run["results"] == []
+        assert run["internal_name"] == "run_internal"
+
+        calc = _find(data["exports"], name="calc", kind="func")
+        assert calc is not None
+        assert calc["params"] == ["i32"] and calc["results"] == ["i32"]
+
+        # The imported memory must not have shifted the function index space, so
+        # the re-exported import at index 0 resolves to the imported func's type.
+        log2 = _find(data["exports"], name="log2", kind="func")
+        assert log2 is not None
+        assert log2["origin"] == "imported"
+        assert log2["params"] == ["i32"] and log2["results"] == ["i32"]
+
+        mem = _find(data["exports"], name="memory", kind="memory")
+        assert mem is not None
+        assert "origin" not in mem and "params" not in mem
+
+        filtered = service.wasm_exports(str(module), contains="calc")
+        assert filtered.ok, filtered.error
+        assert [e["name"] for e in filtered.data["exports"]] == ["calc"]
+        assert filtered.data["filtered"] is True
+
+        bogus = tmp_path / "not.wasm"
+        bogus.write_bytes(b"PK\x03\x04 this is a zip, not wasm")
+        failed = service.wasm_exports(str(bogus))
+        assert failed.ok is False
+        assert failed.error is not None
+        assert failed.error.code == "invalid_params"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_exports_reads_a_wat2wasm_built_module(tmp_path: Path) -> None:
+    """Cross-check the export/signature join against a toolchain-built module."""
+    wat2wasm = shutil.which("wat2wasm")
+    if wat2wasm is None:
+        pytest.skip("wat2wasm (wabt) not installed — toolchain gate not run (skip != pass)")
+    wat = tmp_path / "exp.wat"
+    wat.write_text(
+        "(module\n"
+        '  (import "env" "log" (func $log (param i32)))\n'
+        '  (memory (export "mem") 1)\n'
+        '  (func (export "add") (param i32 i32) (result i32) local.get 0)\n'
+        "  (func $init))\n",
+        encoding="utf-8",
+    )
+    module = tmp_path / "exp.wasm"
+    built = subprocess.run(  # noqa: S603 - fixed argv, tool discovered on PATH
+        [wat2wasm, str(wat), "-o", str(module)],
+        capture_output=True,
+        timeout=60,
+    )
+    if built.returncode != 0 or not module.is_file():
+        detail = built.stderr.decode("utf-8", "replace")[:200]
+        pytest.skip(f"wat2wasm could not build the fixture ({detail}) — skip != pass")
+
+    service = AnalysisService()
+    try:
+        result = service.wasm_exports(str(module))
+        assert result.ok, result.error
+        data = result.data
+        assert data is not None
+        add = _find(data["exports"], name="add", kind="func")
+        assert add is not None
+        # $add is the module's only defined func exported by name; it follows the
+        # single imported func, so it resolves to (i32,i32)->i32 -- no wabt help.
+        assert add["origin"] == "defined"
+        assert add["params"] == ["i32", "i32"]
+        assert add["results"] == ["i32"]
+        assert _find(data["exports"], name="mem", kind="memory") is not None
+    finally:
+        service.close_all()
+
+
 @pytest.mark.integration
 def test_wasm_summary_reads_a_wat2wasm_built_module(tmp_path: Path) -> None:
     """Cross-check the parser against a module a real toolchain produced."""

@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **292（172 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **293（173 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -654,6 +654,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   （public|native=0x101）、`has_code` 为假、描述符解析为无参返回 void，并断言未知方法 `not_found`；单测另覆盖描述符解析器
   （数组/对象/基元与畸形尾串）、富签名解析、点分名解析、重载消歧、外部方法零标志降级、空名与 docstring 形状。该工具计入
   读效果，工具面因此 291→292。
+- **WASM 的导出表——模块对外的可调用面——之前拿不到带签名的视图**。导出段就是模块的公开 API：JS 通过
+  `instance.exports` 触达的那些名字。`wasm.summary` 只把它们粗列成 name/kind/index，`wasm.functions` 列全部函数却不标
+  哪些被导出，两者都不解析导出函数的签名。新增只读的 `wasm.exports`：把导出段与类型/导入/函数段 join 起来，于是一个函数
+  导出带回它解析出的 params/results（调用方真正调用的 ABI），并从 `name` 自定义段挂上导出名背后的内部名——纯 Python 解析
+  （无需 wabt）。回 `exports`，每条带 `name`（导出名）、`kind`（func/table/memory/global）与 `index`（该类空间内的索引）；
+  函数导出另带 `origin`（imported/defined——转导出的宿主导入 vs 模块自有函数）、`type_index`、`params` 与 `results`（值类型
+  名），名字段有名时带 `internal_name`，类型无法解析时置 `signature_unknown`。外加 `count`、`total` 与 `scan_capped`（导出
+  超过 4096 未全列）。传 `contains` 按导出名/kind 大小写不敏感子串过滤，回包另带 `filtered` 与 `query`。输入超 16 MiB 报
+  `too_large`、非模块报 `invalid_params`。活体门经真服务用手搓模块断言函数导出签名解析、导入/自定义 origin（导入的 memory
+  不移动函数索引空间，故转导出的导入在索引 0 仍解析为导入函数类型）、内部名挂接与非函数导出无签名字段，并另有 wat2wasm
+  交叉校验（缺 wabt 时 skip≠pass）；单测另覆盖过滤、`signature_unknown`、空导出、4096 截断与非模块拒绝。该工具计入读效果，
+  工具面因此 292→293。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`

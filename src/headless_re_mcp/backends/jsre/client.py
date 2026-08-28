@@ -305,6 +305,18 @@ class WasmClient:
 
         return list_wasm_functions(path, contains=contains)
 
+    def exports(self, path: Path, *, contains: str | None = None) -> JsonObject:
+        """The module's export table -- its callable surface -- with signatures.
+
+        Needs no wabt tool: the export section is joined to the type/import/
+        function sections directly, so each exported function's resolved
+        params/results (the ABI JS calls into) and the internal name behind the
+        export name are available even when wasm2wat/wasm-objdump are absent.
+        """
+        from headless_re_mcp.backends.jsre.wasm_summary import list_wasm_exports
+
+        return list_wasm_exports(path, contains=contains)
+
     def info(
         self, path: Path, *, timeout: float = 120.0, spill_path: Path | None = None
     ) -> JsonObject:
