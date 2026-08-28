@@ -23,7 +23,7 @@ from headless_re_mcp.core.application_services import ApplicationServices
 from headless_re_mcp.core.capabilities_catalog import describe_capability, list_capabilities
 from headless_re_mcp.core.models import Result, RpcError, SessionState
 from headless_re_mcp.core.repository import AnalysisRepository, SqliteAnalysisRepository
-from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.results import _failure, _success, rpc_from_backend_error
 from headless_re_mcp.core.session import (
     InvalidStateTransition,
     SessionNotFound,
@@ -326,7 +326,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "r2.open", "r2 binary open validated")
             return _success(data, session_id=session_id, backend="radare2")
         except R2Error as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(rpc_from_backend_error(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -379,7 +379,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "r2.disasm", "r2 disasm", address=address, count=count)
             return _success(data, session_id=session_id, backend="radare2")
         except R2Error as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(rpc_from_backend_error(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -409,7 +409,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "r2.xrefs", "r2 xrefs", address=address)
             return _success(data, session_id=session_id, backend="radare2")
         except R2Error as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(rpc_from_backend_error(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -449,7 +449,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "ghidra.analyze", "ghidra analyze finished")
             return _success(data, session_id=session_id, backend="ghidra")
         except GhidraError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(rpc_from_backend_error(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -484,7 +484,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "frida.attach", "frida probe attach", pid=pid)
             return _success(data, session_id=session_id, backend="frida")
         except FridaError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(rpc_from_backend_error(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -496,7 +496,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "frida.modules", "frida modules listed", count=data.get("count"))
             return _success(data, session_id=session_id, backend="frida")
         except FridaError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(rpc_from_backend_error(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -517,7 +517,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             )
             return _success(data, session_id=session_id, backend="frida")
         except FridaError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(rpc_from_backend_error(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -530,7 +530,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             data = client.memory_read(pid, address, size, allowed_pid=pid)
             return _success(data, session_id=session_id, backend="frida")
         except FridaError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(rpc_from_backend_error(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -574,7 +574,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             )
             return _success(data, session_id=session_id, backend="frida")
         except FridaError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(rpc_from_backend_error(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -595,7 +595,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             )
             return _success(data, backend="windbg")
         except WindbgError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)))
+            return _failure(rpc_from_backend_error(exc))
         except BaseException as exc:
             return _failure(exc)
 
@@ -604,7 +604,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             client = _windbg_client(self)
             return _success(client.threads(Path(dump_path), timeout=timeout), backend="windbg")
         except WindbgError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)))
+            return _failure(rpc_from_backend_error(exc))
         except BaseException as exc:
             return _failure(exc)
 
@@ -613,7 +613,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             client = _windbg_client(self)
             return _success(client.modules(Path(dump_path), timeout=timeout), backend="windbg")
         except WindbgError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)))
+            return _failure(rpc_from_backend_error(exc))
         except BaseException as exc:
             return _failure(exc)
 
@@ -631,7 +631,7 @@ class ExtAnalysisMixin(UiDriveMixin):
                 backend="windbg",
             )
         except WindbgError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)))
+            return _failure(rpc_from_backend_error(exc))
         except BaseException as exc:
             return _failure(exc)
 
@@ -644,7 +644,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "windbg.attach", "windbg noninvasive attach probe", pid=pid)
             return _success(data, session_id=session_id, backend="windbg")
         except WindbgError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(rpc_from_backend_error(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -656,7 +656,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "windbg.live_threads", "windbg live threads", pid=pid)
             return _success(data, session_id=session_id, backend="windbg")
         except WindbgError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(rpc_from_backend_error(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -668,7 +668,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             _timeline_append(self, session_id, "windbg.live_modules", "windbg live modules", pid=pid)
             return _success(data, session_id=session_id, backend="windbg")
         except WindbgError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(rpc_from_backend_error(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -690,7 +690,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             )
             return _success(data, session_id=session_id, backend="windbg")
         except WindbgError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            return _failure(rpc_from_backend_error(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
@@ -1152,7 +1152,7 @@ def _r2_request(service: Any, session_id: str, commands: list[str], *, timeout: 
         _timeline_append(service, session_id, "r2.request", "r2 whitelist command", commands=commands)
         return _success(data, session_id=session_id, backend="radare2")
     except R2Error as exc:
-        return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+        return _failure(rpc_from_backend_error(exc), session_id=session_id)
     except BaseException as exc:
         return _failure(exc, session_id=session_id)
 
@@ -1229,7 +1229,7 @@ def _ghidra_export(
             data["artifact_id"] = art["id"]
         return _success(data, session_id=session_id, backend="ghidra")
     except GhidraError as exc:
-        return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+        return _failure(rpc_from_backend_error(exc), session_id=session_id)
     except BaseException as exc:
         return _failure(exc, session_id=session_id)
 
@@ -1265,7 +1265,7 @@ def _ui_drive(
     try:
         normalized = normalize_drive_steps(steps)
     except UiPidBoundaryError as exc:
-        return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+        return _failure(rpc_from_backend_error(exc), session_id=session_id)
 
     deadline = drive_deadline(float(timeout))
     step_results: list[JsonObject] = []

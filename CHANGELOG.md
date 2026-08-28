@@ -5,6 +5,27 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（非 PE 后端 timeout 现在如实标记 retryable，与其余错误信封一致）
+
+- 审计错误信封映射时发现:每个非 PE 后端（apk/adb/frida/web/proxy/jsre/r2/ghidra/jadx/apktool）都把
+  自己的 `*Error`（带 `code`/`message`/`details`,但无 `retryable`）经
+  `XdbgRpcError(exc.code, exc.message, details=…)` 转成 `_failure` 认得的信封——而这条构造路径没传
+  `retryable`,于是全部落到 `XdbgRpcError` 的类默认值 `False`。可 r2/ghidra/jsre/jadx/apktool 这些有界 CLI
+  后端都是"捕获 `TimedOut` → 重抛 `code="timeout"`",web/proxy 会话与 adb 设备 shell 亦然;这类瞬时超时
+  本该可重试(系统别处的 `TimedOut`/`TimeoutError` 与 x64dbg 自身超时都标 `retryable=True`),却被读成
+  永久失败——据 `retryable` 分支的无人值守调用者因此拒绝重试一个只需再试一次的超时。
+- 在 `results.py`（`_success`/`_failure` 所在的叶子模块）新增单一收敛点 `rpc_from_backend_error(exc)`:
+  保留 `code`/`message`/`details`,并据 `code` 推导 `retryable`（`_RETRYABLE_BACKEND_CODES = {"timeout"}`,
+  刻意收窄——`capability_unavailable`/`not_found`/`invalid_params`/`backend_error` 重试只会空转/死循环）。
+  6 个重复的 `_as_rpc`（web/proxy/jsre/device/apk/frida）与 service_ext 里 20 处内联 r2/ghidra 转换
+  全部改走此收敛点,顺带消除了这处长期重复;Win32 UI 的 3 处（`UiPidBoundaryError`/`window_gone`,永不为
+  timeout）不在本次非 PE 范围内,行为不变故不动。
+- 新增两处载荷用例并 mutation 验证(把 `retryable` 改回 `False` 即失败):`test_result_failure_mapping.py`
+  钉住收敛点契约(timeout→可重试、`capability_unavailable`→不可重试,且 details 透传);
+  `test_jsre_service_envelope.py` 让打桩的 `run_bounded` 抛 `TimedOut`,驱动整条 service→client 路径,
+  在调用者真正看到的信封上钉住 `code="timeout"` 且 `retryable is True`。受影响的非 PE 单测全绿
+  （3048 passed）。
+
 ### 测试（补齐 adb 后端"模块缺席"构造分支的密闭覆盖）
 
 - 与上一条 frida 同源同型:`AdbBackend.__init__` 的 `except`（`import adbutils` 失败 → `_available=False`）

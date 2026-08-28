@@ -16,7 +16,7 @@ from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Result, SessionState
-from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.results import _failure, _success, rpc_from_backend_error
 from headless_re_mcp.core.service_ext import _record_backend, _timeline_append
 from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry
 
@@ -28,7 +28,7 @@ _MAX_AUTHORIZED = 64
 
 
 def _as_rpc(exc: FridaError | AdbError) -> XdbgRpcError:
-    return XdbgRpcError(exc.code, exc.message, details=dict(exc.details))
+    return rpc_from_backend_error(exc)
 
 
 class FridaDeviceMixin:

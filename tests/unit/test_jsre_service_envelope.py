@@ -199,6 +199,41 @@ def test_an_unexpected_backend_exception_is_contained_as_a_failure(
     assert result.error.code == "internal_error"
 
 
+def test_a_backend_timeout_is_reported_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-PE tool timeout must reach the caller as retryable=True.
+
+    The bounded jsre client catches TimedOut and re-raises code="timeout"; the
+    service converts every backend *Error through rpc_from_backend_error, which
+    derives retryable from the code. Before that funnel, XdbgRpcError's default
+    made a transient timeout read as permanent, so an unattended caller keying
+    off retryable refused to retry it -- unlike the TimedOut/TimeoutError paths
+    the same envelope already marks retryable. Drive the whole service -> client
+    path so the fix is pinned at the surface a caller actually sees, not only at
+    the funnel helper.
+    """
+    from headless_re_mcp.backends.common.bounded_run import TimedOut
+
+    def time_out(cmd: list[str], **kwargs: Any) -> Completed:
+        del cmd, kwargs
+        raise TimedOut(0.01, [4321])
+
+    monkeypatch.setattr(jsre_client, "run_bounded", time_out)
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    service = _service(tmp_path)
+    try:
+        result = service.js_deobfuscate(str(src))
+    finally:
+        service.close_all()
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "timeout"
+    assert result.error.retryable is True
+
+
 def test_prune_jsre_unpack_dirs_is_a_safe_no_op_when_the_root_is_gone(
     tmp_path: Path,
 ) -> None:

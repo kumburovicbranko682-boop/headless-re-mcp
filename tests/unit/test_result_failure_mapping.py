@@ -15,7 +15,7 @@ from pathlib import Path
 
 from headless_re_mcp.core.addressing import AddressSyncError
 from headless_re_mcp.core.models import TargetKind, TargetMismatch
-from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.results import _failure, _success, rpc_from_backend_error
 from headless_re_mcp.core.session import InvalidStateTransition, SessionNotFound
 
 
@@ -82,6 +82,34 @@ def test_domain_errors_keep_their_own_codes_and_details() -> None:
     assert addr.error is not None
     assert addr.error.code == "address_out_of_range"
     assert addr.error.details["address"] == 0x10
+
+
+def test_a_backend_timeout_is_retryable_but_other_backend_codes_are_not() -> None:
+    """rpc_from_backend_error is the funnel every non-PE service conversion uses.
+
+    Each non-PE backend (apk, adb, frida, web, proxy, jsre, r2, ghidra, jadx,
+    apktool) raises its own *Error with a code but no retryable flag; the bounded
+    CLI ones re-raise a TimedOut as code="timeout". Routing them straight through
+    XdbgRpcError once dropped retryability to the class default of False, so that
+    transient timeout read as permanent. Pin timeout -> retryable and a
+    non-transient code -> not, through _failure so the whole envelope path is
+    covered and details survive the reshape.
+    """
+    from headless_re_mcp.backends.apk.client import ApkError
+    from headless_re_mcp.backends.r2.client import R2Error
+
+    timed = _failure(rpc_from_backend_error(R2Error("timeout", "r2 timed out", timeout=30.0)))
+    assert timed.error is not None
+    assert timed.error.code == "timeout"
+    assert timed.error.retryable is True
+    assert timed.error.details["timeout"] == 30.0
+
+    unavailable = _failure(
+        rpc_from_backend_error(ApkError("capability_unavailable", "androguard missing"))
+    )
+    assert unavailable.error is not None
+    assert unavailable.error.code == "capability_unavailable"
+    assert unavailable.error.retryable is False
 
 
 def test_an_unmapped_exception_becomes_a_redacted_internal_error(

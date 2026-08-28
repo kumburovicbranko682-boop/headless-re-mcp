@@ -29,6 +29,39 @@ def _success(data: JsonObject, **meta: object) -> Result[JsonObject]:
     return Result[JsonObject](ok=True, data=data, meta=dict(meta))
 
 
+# Codes a caller should retry: the same request may succeed on a second try.
+# ``timeout`` is the one every non-PE backend already raises for a transient
+# bound -- the bounded CLI adapters (r2, ghidra, jsre, jadx, apktool) catch
+# TimedOut and re-raise ``code="timeout"``, the web/proxy lines clamp and time
+# out navigation/replay, and the adb line classifies device-shell timeouts the
+# same way. Kept deliberately narrow: capability_unavailable/not_found/
+# invalid_params/backend_error say "this will not work on retry", and a caller
+# that retries them loops forever.
+_RETRYABLE_BACKEND_CODES = frozenset({"timeout"})
+
+
+def rpc_from_backend_error(exc: Any) -> XdbgRpcError:
+    """Reshape a structured backend error into the canonical RPC envelope.
+
+    Every non-PE backend (apk, adb, frida, web, proxy, jsre, r2, ghidra, jadx,
+    apktool) raises its own ``*Error`` carrying ``code``/``message``/``details``
+    but no ``retryable`` flag. Routing them through ``XdbgRpcError`` -- the type
+    ``_failure`` already understands -- used to drop retryability to the class
+    default of False, so a transient ``code="timeout"`` read as permanent and an
+    unattended caller keying off ``retryable`` refused to retry it, unlike the
+    bounded ``TimedOut``/``TimeoutError`` and x64dbg timeouts the same system
+    marks retryable. Derive it from the code here, in the one place all those
+    conversions funnel through, so the whole non-PE surface agrees.
+    """
+    code = getattr(exc, "code", "backend_error")
+    return XdbgRpcError(
+        code,
+        getattr(exc, "message", None) or str(exc),
+        details=dict(getattr(exc, "details", {}) or {}),
+        retryable=code in _RETRYABLE_BACKEND_CODES,
+    )
+
+
 def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
     if isinstance(exc, BoundedCancelled):
         # A caller cancel is a control signal, not a fault. Endpoints that run a
