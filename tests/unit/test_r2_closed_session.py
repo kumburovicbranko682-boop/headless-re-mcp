@@ -36,6 +36,18 @@ class _TrackingR2:
         self.runs += 1
         return {"raw": "ok", "commands": []}
 
+    def disasm(
+        self, binary: Path, address: int, *, count: int = 32, timeout: float = 30.0
+    ) -> dict[str, Any]:
+        del binary, address, count, timeout
+        self.runs += 1
+        return {"raw": "[]", "commands": ["pdj"]}
+
+    def xrefs(self, binary: Path, address: int, *, timeout: float = 30.0) -> dict[str, Any]:
+        del binary, address, timeout
+        self.runs += 1
+        return {"raw": "[]", "commands": ["axtj"]}
+
 
 def test_r2_open_on_a_closed_session_does_not_start_r2(
     tmp_path: Path, monkeypatch: Any
@@ -132,5 +144,136 @@ def test_r2_functions_on_a_closed_session_does_not_start_r2(
         assert result.error.code == "invalid_request"
         assert "closed" in result.error.message
         assert tracker.runs == 0
+    finally:
+        service.close_all()
+
+
+def _closed_session_id(service: AnalysisService, binary: Path) -> str:
+    created = service.create_session(str(binary))
+    assert created.ok and created.data is not None, created.error
+    session_id = created.data["session"]["id"]
+    closed = service.close_session(session_id)
+    assert closed.ok, closed.error
+    return session_id
+
+
+def test_r2_disasm_on_a_closed_session_does_not_start_r2(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """r2.disasm carries its own state guard, distinct from the request helper.
+
+    disasm and xrefs each open a fresh pipe rather than routing through
+    _r2_request, so their pre-call checks are the only thing standing between a
+    retained CLOSED session and a radare2 process the closed session can never
+    reap.
+    """
+    tracker = _TrackingR2()
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_ext.R2Client",
+        lambda *args, **kwargs: tracker,
+    )
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    binary = tmp_path / "sample.exe"
+    _write_minimal_pe(binary)
+    try:
+        session_id = _closed_session_id(service, binary)
+        result = service.r2_disasm(session_id, 0x1000)
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+        assert "closed" in result.error.message
+        assert tracker.runs == 0
+    finally:
+        service.close_all()
+
+
+def test_r2_disasm_does_not_report_success_if_the_session_closes_during_run(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A close landing mid-disasm must not hand back rows for a dead session."""
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    binary = tmp_path / "sample.exe"
+    _write_minimal_pe(binary)
+
+    class _CloseThenDisasm(_TrackingR2):
+        def disasm(
+            self, binary: Path, address: int, *, count: int = 32, timeout: float = 30.0
+        ) -> dict[str, Any]:
+            service.close_session(session_id)
+            return super().disasm(binary, address, count=count, timeout=timeout)
+
+    tracker = _CloseThenDisasm()
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_ext.R2Client",
+        lambda *args, **kwargs: tracker,
+    )
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        result = service.r2_disasm(session_id, 0x1000)
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+        assert "closed" in result.error.message
+    finally:
+        service.close_all()
+
+
+def test_r2_xrefs_on_a_closed_session_does_not_start_r2(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """r2.xrefs mirrors disasm: its own pre-call guard, not the shared helper."""
+    tracker = _TrackingR2()
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_ext.R2Client",
+        lambda *args, **kwargs: tracker,
+    )
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    binary = tmp_path / "sample.exe"
+    _write_minimal_pe(binary)
+    try:
+        session_id = _closed_session_id(service, binary)
+        result = service.r2_xrefs(session_id, 0x1000)
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+        assert "closed" in result.error.message
+        assert tracker.runs == 0
+    finally:
+        service.close_all()
+
+
+def test_r2_xrefs_does_not_report_success_if_the_session_closes_during_run(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The post-call guard rejects xrefs collected for a session that just closed."""
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    binary = tmp_path / "sample.exe"
+    _write_minimal_pe(binary)
+
+    class _CloseThenXrefs(_TrackingR2):
+        def xrefs(self, binary: Path, address: int, *, timeout: float = 30.0) -> dict[str, Any]:
+            service.close_session(session_id)
+            return super().xrefs(binary, address, timeout=timeout)
+
+    tracker = _CloseThenXrefs()
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_ext.R2Client",
+        lambda *args, **kwargs: tracker,
+    )
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        result = service.r2_xrefs(session_id, 0x1000)
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+        assert "closed" in result.error.message
     finally:
         service.close_all()
