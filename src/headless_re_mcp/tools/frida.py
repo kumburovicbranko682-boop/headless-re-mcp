@@ -131,6 +131,47 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="frida.memory.scan")
+    def frida_memory_scan(
+        session_id: str,
+        pattern: str,
+        pattern_type: Annotated[str, Field(pattern="^(text|hex)$")] = "text",
+        protection: Annotated[str, Field(pattern="^[r-][w-][x-]$")] = "r--",
+        limit: Annotated[int, Field(ge=1, le=1024)] = 64,
+    ) -> dict[str, Any]:
+        """Search the target's memory for a byte pattern via a short-lived Frida probe.
+
+        The payoff of frida.memory.ranges: it shows the map, this finds a needle
+        in it. A short-lived probe walks the ranges a protection mask selects and
+        runs Memory.scanSync over each, so a runtime-decrypted key, an auth token,
+        or a struct signature that exists only in the live process becomes an
+        address you can hand to frida.memory.read. pattern is read two ways:
+        pattern_type 'text' (default) utf-8 encodes the string (find a known token
+        or error message), and 'hex' takes a Frida match pattern of space-separated
+        byte pairs with '??' wildcards (e.g. 'de ad ?? ef' -- find a magic or
+        signature); an all-wildcard or malformed hex pattern is invalid_params.
+        protection is the same three-character r/w/x mask as frida.memory.ranges:
+        the default 'r--' scans readable regions, 'rw-' narrows to writable ones
+        (where a decrypted secret lands at runtime and where you usually want to
+        look). Answers with matches (address, size, protection, file -- the mapped
+        path or '' for anonymous), count, scanned_ranges (how many regions were
+        visited), and truncated (a match, range, or per-range byte ceiling was hit,
+        so there may be more -- narrow the pattern or protection, or raise limit up
+        to 1024). There is no offset: scanning is one-shot and bounded, not paged.
+        The target is the connected device's authorized pid when this session has
+        one (frida.device.connect + frida.spawn); otherwise the local debuggee. The
+        list field is matches. Read-only (it reads memory; it does not write it).
+        """
+        return _dump(
+            analysis.frida_memory_scan(
+                session_id,
+                pattern,
+                pattern_type=pattern_type,
+                protection=protection,
+                limit=limit,
+            )
+        )
+
     @tools.tool(name="frida.memory.read")
     def frida_memory_read(
         session_id: str, address: int, size: Annotated[int, Field(ge=1, le=262144)] = 16

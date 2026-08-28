@@ -170,6 +170,50 @@ rpc.exports = {
     }
     return {ranges: items, total: total};
   },
+  scan: function (protection, pattern, maxMatches, maxRanges, maxBytesPerRange) {
+    var ranges = Process.enumerateRanges(protection || 'r--');
+    var matches = [];
+    var scannedRanges = 0;
+    var truncated = false;
+    for (var i = 0; i < ranges.length; i++) {
+      if (scannedRanges >= maxRanges) {
+        truncated = true;
+        break;
+      }
+      var r = ranges[i];
+      scannedRanges++;
+      var size = r.size;
+      if (maxBytesPerRange > 0 && size > maxBytesPerRange) {
+        size = maxBytesPerRange;
+      }
+      var found;
+      try {
+        found = Memory.scanSync(r.base, size, pattern);
+      } catch (e) {
+        // A range that turned unreadable between enumeration and scan makes
+        // scanSync throw; skip it rather than abort the whole scan.
+        continue;
+      }
+      var path = (r.file && r.file.path) ? r.file.path : '';
+      for (var j = 0; j < found.length; j++) {
+        if (matches.length >= maxMatches) {
+          truncated = true;
+          break;
+        }
+        matches.push({
+          address: found[j].address.toString(),
+          size: found[j].size,
+          protection: r.protection,
+          file: path
+        });
+      }
+      if (matches.length >= maxMatches) {
+        truncated = true;
+        break;
+      }
+    }
+    return {matches: matches, scanned_ranges: scannedRanges, truncated: truncated};
+  },
   read: function (address, size) {
     return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
   }
@@ -304,6 +348,89 @@ def _shape_ranges(raw: Any, capped: int) -> JsonObject:
         "count": len(items),
         "total": total,
         "has_more": total > len(items),
+    }
+
+
+# frida.memory.scan runs Memory.scanSync over the ranges a protection mask
+# selects. scanSync is native and fast, but the address space can be huge, so the
+# agent is handed hard ceilings: how many matches to collect, how many ranges to
+# visit, and how many bytes of any one (possibly multi-GB) mapping to scan -- so
+# even the local path, which has no probe deadline, cannot run away. truncated in
+# the reply says a ceiling was hit and there may be more.
+_MAX_SCAN_MATCHES = 1024
+_MAX_SCAN_RANGES = 4096
+_MAX_SCAN_BYTES_PER_RANGE = 128 * 1024 * 1024
+_MAX_SCAN_PATTERN_BYTES = 1024
+_HEX_TOKEN_RE = re.compile(r"^([0-9A-Fa-f]{2}|\?\?)$")
+
+
+def _check_scan_pattern(pattern: str, pattern_type: str) -> str:
+    """Turn the caller's needle into a Frida match pattern, or reject it.
+
+    Two entry forms so the common case stays ergonomic and the binary case stays
+    possible: ``text`` utf-8 encodes the string to a byte pattern (find a known
+    token or error message in memory), and ``hex`` takes a Frida-style pattern of
+    space-separated byte pairs with ``??`` wildcards (find a struct signature or
+    magic). The MCP schema constrains both, but the agent transport skips
+    pydantic, so everything is re-validated here before it reaches scanSync:
+    a hex token off ``[0-9a-f]{2}|??`` or an all-wildcard pattern (which would
+    match everywhere) is invalid_params, as is an over-long needle.
+    """
+    if not isinstance(pattern, str) or not pattern.strip():
+        raise FridaError("invalid_params", "pattern is required")
+    ptype = pattern_type.strip().lower() if isinstance(pattern_type, str) else ""
+    if ptype not in ("text", "hex"):
+        raise FridaError("invalid_params", "pattern_type must be 'text' or 'hex'")
+    if ptype == "text":
+        data = pattern.encode("utf-8")
+        if len(data) > _MAX_SCAN_PATTERN_BYTES:
+            raise FridaError(
+                "invalid_params",
+                f"pattern too long (> {_MAX_SCAN_PATTERN_BYTES} bytes)",
+            )
+        return " ".join(f"{byte:02x}" for byte in data)
+    tokens = pattern.replace(",", " ").split()
+    if len(tokens) > _MAX_SCAN_PATTERN_BYTES:
+        raise FridaError(
+            "invalid_params", f"pattern too long (> {_MAX_SCAN_PATTERN_BYTES} bytes)"
+        )
+    concrete = 0
+    normalized: list[str] = []
+    for token in tokens:
+        if not _HEX_TOKEN_RE.match(token):
+            raise FridaError(
+                "invalid_params",
+                f"invalid hex token {token!r}; use byte pairs (e.g. 'de ad') or '??'",
+            )
+        if token != "??":
+            concrete += 1
+        normalized.append(token.lower())
+    if concrete == 0:
+        raise FridaError(
+            "invalid_params", "hex pattern needs at least one concrete byte"
+        )
+    return " ".join(normalized)
+
+
+def _shape_scan(raw: Any, capped: int) -> JsonObject:
+    if not isinstance(raw, dict):
+        raise FridaError("backend_error", "unexpected frida scan payload")
+    held = list(raw.get("matches") or [])
+    items = [
+        {
+            "address": str(item.get("address", "")),
+            "size": int(item.get("size", 0) or 0),
+            "protection": str(item.get("protection", "")),
+            "file": str(item.get("file", "")),
+        }
+        for item in held[:capped]
+        if isinstance(item, dict)
+    ]
+    return {
+        "matches": items,
+        "count": len(items),
+        "scanned_ranges": int(raw.get("scanned_ranges") or 0),
+        "truncated": bool(raw.get("truncated")),
     }
 
 
@@ -605,6 +732,32 @@ class FridaClient:
             with contextlib.suppress(Exception):
                 session.detach()
 
+    def scan(
+        self,
+        pid: int,
+        *,
+        allowed_pid: int,
+        pattern: str,
+        pattern_type: str = "text",
+        protection: str = "r--",
+        limit: int = 64,
+    ) -> JsonObject:
+        self._require(pid, allowed_pid)
+        prot = _normalize_protection(protection)
+        scan_pattern = _check_scan_pattern(pattern, pattern_type)
+        session = self._attach_local(pid)
+        try:
+            return self._run_enum(
+                session,
+                kind="scan",
+                protection=prot,
+                scan_pattern=scan_pattern,
+                limit=limit,
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                session.detach()
+
     def memory_read(
         self, pid: int, address: int, size: int, *, allowed_pid: int
     ) -> JsonObject:
@@ -628,6 +781,7 @@ class FridaClient:
         limit: int = 64,
         name_filter: str = "",
         protection: str = "r--",
+        scan_pattern: str = "",
     ) -> JsonObject:
         """Load the enumeration agent into an attached session and run one query.
 
@@ -649,6 +803,18 @@ class FridaClient:
             capped = max(1, min(int(limit), 256))
             return _shape_ranges(
                 script.exports_sync.ranges(protection, needle, capped), capped
+            )
+        if kind == "scan":
+            capped = max(1, min(int(limit), _MAX_SCAN_MATCHES))
+            return _shape_scan(
+                script.exports_sync.scan(
+                    protection,
+                    scan_pattern,
+                    capped,
+                    _MAX_SCAN_RANGES,
+                    _MAX_SCAN_BYTES_PER_RANGE,
+                ),
+                capped,
             )
         if kind == "exports":
             capped = max(1, min(int(limit), 512))
@@ -1114,6 +1280,32 @@ class FridaClient:
             timeout=timeout,
         )
 
+    def scan_device(
+        self,
+        device_id: str | None,
+        pid: int,
+        *,
+        allowed_pids: Iterable[int],
+        pattern: str,
+        pattern_type: str = "text",
+        protection: str = "r--",
+        limit: int = 64,
+        timeout: float = _PROBE_TIMEOUT_S,
+    ) -> JsonObject:
+        self._authorize(pid, allowed_pids)
+        prot = _normalize_protection(protection)
+        scan_pattern = _check_scan_pattern(pattern, pattern_type)
+        device = self._resolve_device(device_id)
+        return self._enum_on_device(
+            device,
+            pid,
+            kind="scan",
+            protection=prot,
+            scan_pattern=scan_pattern,
+            limit=limit,
+            timeout=timeout,
+        )
+
     def memory_read_device(
         self,
         device_id: str | None,
@@ -1143,6 +1335,7 @@ class FridaClient:
         limit: int = 64,
         name_filter: str = "",
         protection: str = "r--",
+        scan_pattern: str = "",
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
         """attach on the resolved device, run one enumeration, detach.
@@ -1172,6 +1365,7 @@ class FridaClient:
                     limit=limit,
                     name_filter=name_filter,
                     protection=protection,
+                    scan_pattern=scan_pattern,
                 )
             finally:
                 with contextlib.suppress(Exception):

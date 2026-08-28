@@ -609,6 +609,51 @@ class ExtAnalysisMixin(UiDriveMixin):
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def frida_memory_scan(
+        self,
+        session_id: str,
+        pattern: str,
+        pattern_type: str = "text",
+        protection: str = "r--",
+        limit: int = 64,
+    ) -> Result[JsonObject]:
+        try:
+            client = FridaClient()
+            target = _frida_device_target(self, session_id)
+            if target is not None:
+                device_id, pid, allowed = target
+                data = client.scan_device(
+                    device_id,
+                    pid,
+                    allowed_pids=allowed,
+                    pattern=pattern,
+                    pattern_type=pattern_type,
+                    protection=protection,
+                    limit=limit,
+                )
+            else:
+                pid = _require_debuggee_pid(self, session_id)
+                data = client.scan(
+                    pid,
+                    allowed_pid=pid,
+                    pattern=pattern,
+                    pattern_type=pattern_type,
+                    protection=protection,
+                    limit=limit,
+                )
+            _timeline_append(
+                self,
+                session_id,
+                "frida.memory.scan",
+                "frida memory scanned",
+                count=data.get("count"),
+            )
+            return _success(data, session_id=session_id, backend="frida")
+        except FridaError as exc:
+            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
     def frida_memory_read(
         self, session_id: str, address: int, size: int
     ) -> Result[JsonObject]:

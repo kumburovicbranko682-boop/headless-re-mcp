@@ -294,6 +294,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **有了 `frida.memory.ranges` 能看内存图、`frida.memory.read` 能按地址读，却仍缺最关键的一步：在运行进程里「找」东西**。新增只读工具 `frida.memory.scan`：
+  短命探针注入，按 protection 掩码枚举内存段并对每段跑 `Memory.scanSync`，把运行时才解密出来、只存在于活进程内存里的密钥/令牌/结构体特征变成一个地址，
+  可直接丢给 `frida.memory.read` 读上下文。`pattern` 支持两种解读：`pattern_type='text'`（默认）把字符串按 utf-8 编成字节模式（找已知令牌或错误串），
+  `'hex'` 接受 Frida 匹配模式——空格分隔的字节对加 `??` 通配（如 'de ad ?? ef'，找 magic/签名）；全通配或格式错误的 hex 是 invalid_params。`protection`
+  与 ranges 同为三位 r/w/x 掩码：默认 'r--' 扫可读段，'rw-' 收窄到可写段（运行时解密密钥的落脚处，通常正是要找的地方）。答复带 `matches`（每个 `address`、
+  `size`、`protection`、`file`（映射路径或匿名 ''））、`count`、`scanned_ranges`（访问了多少段）与 `truncated`（命中数、段数或单段字节任一上限被触及，可能还有更多——
+  收窄 pattern/protection 或把 limit 提到上限 1024）。没有 offset：扫描是一次性有界操作，不分页；即使本地路径（无探针 deadline）也被「最多 1024 命中 / 4096 段 /
+  单段 128 MiB」硬上限约束，不会失控。目标与其它 frida 探针一致：会话已连设备时用其授权 pid，否则用本地被调试进程。列表字段是 `matches`，与 ranges/read 一起
+  构成「看图→扫描→读取」的运行时内存取证闭环。只读（读内存、不写），工具总数 297→298（180 只读 / 118 写）。
 - **Frida 线能 `frida.memory.read` 从一个地址读字节，却没有任何工具告诉你「哪些地址是映射的、可读还是可写、背后是哪个模块」——而运行时解密出来的密钥/令牌恰恰
   落在可写匿名区里，你得先看到内存图才知道去读哪儿**。新增只读工具 `frida.memory.ranges`：短命探针注入 `Process.enumerateRanges`，列出目标进程的映射内存段。
   答复带 `ranges`（每段 `base`、`size`、`protection`（如 'rw-'、'r-x'）、`file`（映射文件路径，匿名段为 ''））、`count`、`total` 与 `has_more`，故填满一页
