@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（webcrack 配置路径失效时降级为 capability_unavailable，而非 spawn 期 backend_error）
+
+- 上一条审计顺带暴露的分类不一致:`JsClient.available` 只查 `is not None` 不查 `is_file`,于是
+  `HEADLESS_RE_WEBCRACK` 打错字时守门放行、直到 `run_bounded` spawn 失败才报一条晦涩的
+  `backend_error: failed to launch ...`——而 r2/jadx/apktool 对同一状态(配置了但不是文件)
+  一律报 `capability_unavailable`,doctor 现在也把它读作 MISSING。同一种错配,三种读数。
+- `available` 补上 `is_file` 检查与其余 CLI 客户端对齐;`_require_input` 对"配置了但不是文件"
+  给出带 `executable` 详情的 `capability_unavailable`,操作者能直接看到该改哪个路径。未配置
+  (None)与 spawn 竞态窗口(OSError → backend_error)两条既有路径不变。
+- 新增单测钉住失效配置 → `available is False`、`capability_unavailable` 且详情带坏路径;
+  mutation 验证(把 `available` 改回只查 `is not None`,该测即红——回到 spawn 期 backend_error)。
+  全量单测 6639 passed / 55 skipped。
+
 ### 修复（doctor 对"配置路径失效"的可选 CLI 不再静默回落 PATH 谎报 DETECTED）
 
 - doctor/客户端发现漂移审计的反向情形:`probe_optional_tool` 在配置路径不是文件时会静默回落
