@@ -33,6 +33,24 @@ skip（skip ≠ pass）。同时补两处单测护栏：`_find_analyze_headless`
 舍、以及 `ExportJson.py` 必须经 `getScriptArgs()` 取参并在读取前先给 `ARGS` 赋值。已在装有
 Ghidra 11.4.3 + JDK 21 的 Linux x86_64 上实跑通过（analyze≈5s，每个导出≈6s）。
 
+### 测试（Web/Android 流量拦截线首次真机证明 mitmproxy 确实抓到了流）
+
+`test_proxy_lifecycle_gate.py` 证明的是进程契约——start 即在监听、stop 即释放端口、占用端口被
+拒——但它刻意不放任何流量过去，`flow_count` 恒为 0，代理真正存在的意义（拦下一个请求、让 RE
+工具把它读回来）从没端到端跑过；所有抓取断言都只对着手搓的假 flow 在单测里跑，从没有一个字节
+真的穿过代理。新增 `tests/integration/test_proxy_capture_gate.py`，起一个一次性 origin 服务、
+经运行中的代理发一个真实 HTTP GET，再用 proxy.* 工具同款 API 把抓取读回来：
+
+- **flows/status**：请求以真实的 method、URL、状态码被记录下来。
+- **flow_get**：记录下的响应带着 origin 原样发回的响应体——证明代理看到的是响应本身，而不只是
+  请求行。
+- **export_har**：抓取能序列化成一条 HAR entry。
+- **replay**：重放一条抓到的 flow 会再产生一条新记录，而不是凭空消失。
+
+刻意用明文 HTTP：不需要 CA 信任，于是这条 Gate 证明的是抓取路径本身，而非 TLS 配发。
+skip ≠ pass：仅当 mitmproxy 确实缺失时干净 skip，绝不静默略过。已在装有 mitmproxy 12 的
+Linux x86_64 上实跑通过（抓取往返≈2s，重放≈1s）。
+
 ### 测试（Android 重打包线首次真机跑通 apktool 回构与 apksigner 重签名）
 
 Android 修改线的「解包」侧已有真机 Gate，但「写回」侧——把解包目录回构成 APK、再重签名——
