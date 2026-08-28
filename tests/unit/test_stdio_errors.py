@@ -136,6 +136,72 @@ async def test_wrapper_writes_a_reply_for_each_addressed_message(
     assert all(r["error"]["code"] == INVALID_REQUEST_CODE for r in replies)
 
 
+class _ClosedStdin:
+    """A stdin buffer whose readline reports the resource has gone away.
+
+    Models the read side being torn down mid-shutdown: ``_read_bounded_line``
+    runs ``readline`` in a worker thread, and a ClosedResourceError there must
+    surface as a graceful stop, not a task-group crash.
+    """
+
+    def readline(self, *_args: object) -> bytes:
+        raise anyio.ClosedResourceError
+
+
+class _ExplodingStdout(BytesIO):
+    """A stdout buffer whose write reports the resource has gone away.
+
+    ``stdout_writer`` wraps this in a TextIOWrapper and flushes after every
+    reply; a ClosedResourceError raised out of that write is the write side
+    closing during shutdown, which the writer must swallow rather than let
+    escape the task group.
+    """
+
+    def write(self, *_args: object, **_kwargs: object) -> int:
+        raise anyio.ClosedResourceError
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_stdin_reader_swallows_a_closed_resource_on_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A ClosedResourceError anywhere in the read loop is a shutdown race, not a
+    # crash: the reader must catch it and exit so the task group unwinds
+    # cleanly instead of surfacing the teardown as a server fault.
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=_ClosedStdin()))
+    stdout_buffer = _CapturingBytesIO()
+    monkeypatch.setattr(sys, "stdout", SimpleNamespace(buffer=stdout_buffer))
+
+    with anyio.fail_after(10):
+        async with stdio_server_with_parse_replies() as (_read_stream, write_stream):
+            # Closing our write handle lets the writer drain once the reader has
+            # closed its own error clone on the way out.
+            await write_stream.aclose()
+    # Reaching here without an exception escaping is the assertion.
+
+
+@pytest.mark.asyncio
+async def test_stdout_writer_swallows_a_closed_resource_on_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # One id-carrying invalid line produces a reply the writer will try to
+    # flush; a stdout that reports ClosedResourceError models the write channel
+    # closing mid-flush. The writer must swallow it and exit rather than let it
+    # tear down the task group.
+    invalid_with_id = b'{"jsonrpc":"2.0","id":7,"method":123}\n'
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=BytesIO(invalid_with_id)))
+    monkeypatch.setattr(sys, "stdout", SimpleNamespace(buffer=_ExplodingStdout()))
+
+    with anyio.fail_after(10):
+        async with stdio_server_with_parse_replies() as (_read_stream, write_stream):
+            await write_stream.aclose()
+    # Reaching here without an exception escaping is the assertion: the write
+    # failure was caught, not propagated.
+
+
 def test_textiowrapper_smoke_is_not_left_open() -> None:
     # Guard the test's own assumption that a BytesIO survives TextIOWrapper use
     # (the wrapper must not detach/close the underlying buffer we read back).
