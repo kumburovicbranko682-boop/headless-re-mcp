@@ -196,6 +196,28 @@ class ProxyAnalysisMixin:
             session_id, "ws_frames", session_id, flow_id, offset=offset, limit=limit
         )
 
+    def proxy_ws_search(
+        self,
+        session_id: str,
+        query: str,
+        case_sensitive: bool = False,
+        direction: str = "",
+        flow_id: str = "",
+        offset: int = 0,
+        limit: int = 100,
+    ) -> Result[JsonObject]:
+        return self._proxy_wrap(
+            session_id,
+            "ws_search",
+            session_id,
+            query,
+            case_sensitive=case_sensitive,
+            direction=direction,
+            flow_id=flow_id,
+            offset=offset,
+            limit=limit,
+        )
+
     def proxy_replay(self, session_id: str, flow_id: str) -> Result[JsonObject]:
         return self._proxy_wrap(session_id, "replay", session_id, flow_id)
 

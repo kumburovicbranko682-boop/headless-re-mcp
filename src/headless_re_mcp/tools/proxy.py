@@ -232,6 +232,51 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.proxy_ws_frames(session_id, flow_id, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="proxy.ws.search")
+    def proxy_ws_search(
+        session_id: str,
+        query: str,
+        case_sensitive: bool = False,
+        direction: str = "",
+        flow_id: str = "",
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Search captured WebSocket frames for a literal string, across flows.
+
+        proxy.search reads HTTP bodies/headers/URLs but never the WebSocket
+        conversation, and proxy.ws.frames needs a flow id and pages one socket at
+        a time. Real-time protocols, auth tokens and RPC payloads ride the
+        WebSocket, so this is the frame-level twin of proxy.search: a literal
+        substring scan (case-insensitive unless case_sensitive) over the decoded
+        content of every retained frame -- text and binary opcodes alike, so a
+        JSON payload sent on a binary message is still found. Scope with flow_id
+        (one socket) or direction (sent = client to server, received = server to
+        client).
+
+        Answers with matches, each carrying flow_id, url, frame_index (its
+        position in that socket's retained frames, usable as a proxy.ws.frames
+        offset), direction, type (text or binary), match_count (a bounded
+        per-frame tally), snippet (a one-line context window) and payload_len/ts;
+        plus count, total (matching frames), offset and has_more for paging.
+        ws_flows is how many WebSocket flows were considered, frames_searched how
+        many frames were scanned, and frames_capped / matches_capped disclose the
+        50000-frame scan and 5000-match ceilings. The list field is matches (not
+        frames or results). An unknown flow_id is not_found and a non-WebSocket
+        one is invalid_state.
+        """
+        return _dump(
+            analysis.proxy_ws_search(
+                session_id,
+                query,
+                case_sensitive=case_sensitive,
+                direction=direction,
+                flow_id=flow_id,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
     @tools.tool(name="proxy.replay")
     def proxy_replay(session_id: str, flow_id: str) -> dict[str, Any]:
         """Replay a captured request through the proxy.

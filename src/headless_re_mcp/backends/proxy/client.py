@@ -289,6 +289,30 @@ def _normalize_ws_message(msg: Any) -> JsonObject:
     return record
 
 
+def _ws_search_text(msg: Any) -> tuple[str, str, str, int, Any]:
+    """A WebSocket message rendered for content search: (text, direction, type, len, ts).
+
+    Unlike ``_normalize_ws_message`` (which base64s binary and bounds the preview
+    for display), this decodes the full frame content -- text or binary alike --
+    with replacement so a JSON payload sent on a binary opcode is still matchable.
+    """
+    content = getattr(msg, "content", b"") or b""
+    if not isinstance(content, bytes | bytearray):
+        content = str(content).encode(errors="replace")
+    content = bytes(content)
+    opcode = getattr(msg, "type", None)
+    opcode_int = int(opcode) if isinstance(opcode, int) else None
+    kind = "text" if opcode_int == 0x1 else "binary"
+    direction = "sent" if bool(getattr(msg, "from_client", False)) else "received"
+    return (
+        content.decode("utf-8", errors="replace"),
+        direction,
+        kind,
+        len(content),
+        getattr(msg, "timestamp", None),
+    )
+
+
 def _ws_messages_view(
     flow: Any, *, offset: int = 0, limit: int = _MAX_WS_MESSAGES
 ) -> JsonObject | None:
@@ -823,6 +847,11 @@ _MAX_SEARCH_QUERY = 1024
 _SEARCH_SNIPPET_CONTEXT = 80
 _MAX_SEARCH_MATCHES_PER_FLOW = 1000
 _MAX_SEARCH_RESULTS = 1000
+# proxy.ws.search walks individual frames, not flows, so it needs its own scan
+# ceiling (a long socket can hold far more frames than the ring holds flows) and
+# a collected-match ceiling so a chatty channel cannot build an unbounded reply.
+_MAX_WS_SEARCH_SCAN = 50_000
+_MAX_WS_SEARCH_MATCHES = 5000
 
 
 def _headers_text(part: Any) -> str:
@@ -1314,6 +1343,146 @@ class ProxyBackend:
             "closed": view["closed"],
             **({"close_code": view["close_code"]} if "close_code" in view else {}),
         }
+
+    def ws_search(
+        self,
+        session_id: str,
+        query: str,
+        *,
+        case_sensitive: bool = False,
+        direction: str = "",
+        flow_id: str = "",
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        """Find a literal string inside captured WebSocket frames, across flows.
+
+        proxy.search reads the HTTP request/response bodies, headers and URL but
+        never the WebSocket conversation, and proxy.ws.frames needs a flow id and
+        pages one socket at a time. Real-time app protocols, auth tokens and RPC
+        payloads ride the WebSocket, so this is the frame-level twin of
+        proxy.search: a literal (case-insensitive unless case_sensitive)
+        substring scan over the decoded content of every retained frame -- text
+        and binary opcodes alike, so a JSON payload sent as a binary message is
+        still found. Restrict to one socket with flow_id, or to a direction with
+        ``sent`` (client -> server) / ``received`` (server -> client).
+
+        Answers with matches, each carrying flow_id, url, frame_index (its
+        position in that socket's retained frame list, feedable to
+        proxy.ws.frames offset), direction, type (text/binary), match_count (a
+        bounded per-frame tally), snippet (a one-line context window) and
+        payload_len/ts; plus count, total (matching frames), offset and has_more
+        for paging. ws_flows is how many WebSocket flows were considered,
+        frames_searched how many frames were scanned, and frames_capped /
+        matches_capped disclose when the 50000-frame scan or the 5000-match
+        collection ceiling was hit. The list field is matches (there is no frames
+        or results field). A flow_id that is not a WebSocket is invalid_state and
+        an unknown one is not_found.
+        """
+        inst = self._get(session_id)
+        if not isinstance(query, str) or not query:
+            raise ProxyError("invalid_params", "query is required")
+        if len(query) > _MAX_SEARCH_QUERY:
+            raise ProxyError(
+                "invalid_params", f"query must be at most {_MAX_SEARCH_QUERY} chars"
+            )
+        dir_filter = direction.strip().lower()
+        if dir_filter and dir_filter not in ("sent", "received"):
+            raise ProxyError(
+                "invalid_params", "direction must be 'sent', 'received' or empty"
+            )
+        needle = query if case_sensitive else query.lower()
+
+        # Resolve the candidate WebSocket flows. A pinned flow_id is validated
+        # like proxy.ws.frames (not_found / invalid_state); otherwise every
+        # WebSocket flow the ring still retains is a candidate.
+        candidates: list[tuple[str, Any, str]] = []
+        if flow_id:
+            raw = inst.recorder.raw(flow_id)
+            if raw is None:
+                raise ProxyError(
+                    "not_found",
+                    "unknown flow id (it may have been evicted from the capture ring)",
+                    flow_id=flow_id,
+                )
+            if raw is _OMITTED_BODY or getattr(raw, "websocket", None) is None:
+                raise ProxyError("invalid_state", "flow is not a websocket", flow_id=flow_id)
+            url = str(getattr(getattr(raw, "request", None), "pretty_url", "") or "")
+            candidates.append((flow_id, raw, url))
+        else:
+            for row in inst.recorder.snapshot():
+                if not row.get("websocket"):
+                    continue
+                fid = str(row.get("id"))
+                raw = inst.recorder.raw(fid)
+                if raw is None or raw is _OMITTED_BODY:
+                    continue
+                if getattr(raw, "websocket", None) is None:
+                    continue
+                candidates.append((fid, raw, str(row.get("url") or "")))
+
+        ws_flows = len(candidates)
+        matches: list[JsonObject] = []
+        frames_searched = 0
+        frames_capped = False
+        matches_capped = False
+        for fid, flow, url in candidates:
+            ws = getattr(flow, "websocket", None)
+            messages = list(getattr(ws, "messages", None) or [])
+            for index, msg in enumerate(messages):
+                if frames_searched >= _MAX_WS_SEARCH_SCAN:
+                    frames_capped = True
+                    break
+                frames_searched += 1
+                text, msg_dir, kind, payload_len, ts = _ws_search_text(msg)
+                if dir_filter and msg_dir != dir_filter:
+                    continue
+                hay = text if case_sensitive else text.lower()
+                hit = hay.find(needle)
+                if hit < 0:
+                    continue
+                if len(matches) >= _MAX_WS_SEARCH_MATCHES:
+                    matches_capped = True
+                    break
+                matches.append(
+                    {
+                        "flow_id": fid,
+                        "url": url,
+                        "frame_index": index,
+                        "direction": msg_dir,
+                        "type": kind,
+                        "match_count": _count_occurrences(
+                            hay, needle, _MAX_SEARCH_MATCHES_PER_FLOW
+                        ),
+                        "snippet": _search_snippet(text, hit, len(query)),
+                        "payload_len": payload_len,
+                        "ts": ts,
+                    }
+                )
+            if frames_capped or matches_capped:
+                break
+        total = len(matches)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_SEARCH_RESULTS))
+        window = matches[start : start + cap]
+        result: JsonObject = {
+            "query": query,
+            "case_sensitive": bool(case_sensitive),
+            "matches": window,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
+            "ws_flows": ws_flows,
+            "frames_searched": frames_searched,
+            "frames_capped": frames_capped,
+            "matches_capped": matches_capped,
+        }
+        if dir_filter:
+            result["direction"] = dir_filter
+        if flow_id:
+            result["flow_id"] = flow_id
+        return result
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:
         inst = self._get(session_id)
