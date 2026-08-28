@@ -257,6 +257,8 @@ def test_one_click_setup_on_windows_runs_the_bundle_pipeline(
 def test_one_click_setup_on_linux_skips_the_windows_bundle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Pin the platform so the Linux branch is exercised on a Windows CI host too.
+    monkeypatch.setattr(installer, "os", SimpleNamespace(name="posix"))
     empty = _settings(tmp_path)
     monkeypatch.setattr(Settings, "load", staticmethod(lambda config_path=None: empty))
     monkeypatch.setattr(installer, "discover_ida_home", lambda: None)
