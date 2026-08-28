@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -127,6 +127,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 PE / 截断的 COFF 头 / 截断的可选头 / 可选头 magic 不符 / 镜像基址为 0 分别报
   `module_file_invalid`；并补 `RuntimeModuleCatalog` 与 `RebasedModuleMapping` 的 `to_dict`
   序列化。模块覆盖率 88% → 99%。
+
+### 新增（`device.ipv6_addrs` 从 `/proc/net/if_inet6` 列设备自身的 IPv6 地址）
+
+- 新增只读工具 `device.ipv6_addrs`，解析 `/proc/net/if_inet6`。接口计数（`device.netdev`）
+  报出链路名却没有地址，此前也没有任何读取暴露设备自身的 IP 地址。每行给出接口名、解码后的
+  IPv6 地址、前缀长度与地址作用域（global / link / host / site），从而把可路由的全局地址与
+  `fe80::` 链路本地地址区分开。IPv4 没有对应的 `/proc` 文件，故本工具刻意只做 IPv6。与
+  `/proc/net/tcp6`、`udp6` 不同，`if_inet6` 以网络字节序连续存放 16 字节，直接解码、不做字反转。
+  诚实边界:三种结局严格区分——设备离线（adb 主机错误回包）报 `backend_error`;内核关闭 IPv6 或
+  文件被限制（回 "No such file" / "Permission denied" 且无地址）如实报 `available: false`，既非
+  失败也非空的成功;可读文件则 `available: true` 并给出地址（仅当内核确无地址时才是空列表）。无法
+  识别的非错误输出报 `backend_error` 而不臆测为空。列表有界并在超过上限时置 `has_more`。新增
+  `tests/unit/test_device_ipv6_addrs_fields.py` 覆盖直解码（含 `::1`/`fe80::` 作用域）、离线报错、
+  IPv6 关闭的 available=false、清洁空文件与无法识别输出等分支。工具面 265 → 266（只读 148 → 149）。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
