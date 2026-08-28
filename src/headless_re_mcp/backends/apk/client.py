@@ -61,6 +61,10 @@ _APK_FILE_TYPES = (
 # apk.capabilities caps the distinct calling methods sampled per capability; the
 # call_sites total is still exact, only the caller list is clipped.
 _MAX_CAP_CALLERS = 25
+# apk.native_methods collect/page ceilings (JNI declarations are usually few, but
+# a generated binding layer can produce thousands).
+_MAX_NATIVE_COLLECT = 5000
+_MAX_NATIVE_PAGE = 1000
 # The security-relevant platform APIs apk.capabilities fingerprints: each row is
 # (category, label, class-name regex, method-name regex). The regexes are matched
 # with re.match (start-anchored) exactly as androguard's find_methods does, so a
@@ -235,6 +239,48 @@ def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     start = max(0, int(offset))
     cap = max(1, min(int(limit), max_limit))
     return start, cap
+
+
+def _jni_mangle(text: str) -> str:
+    """Mangle one component of a JNI short symbol name (JNI spec, table 2-1).
+
+    Alphanumerics pass through; the package separators ``/`` and ``.`` become
+    ``_``; the reserved characters escape to ``_1`` (underscore), ``_2`` (``;``)
+    and ``_3`` (``[``); everything else (``$`` in an inner class, any non-ASCII
+    identifier char) becomes ``_0xxxx`` with the lowercase 4-digit code point.
+    """
+    out: list[str] = []
+    for ch in text:
+        if ("a" <= ch <= "z") or ("A" <= ch <= "Z") or ("0" <= ch <= "9"):
+            out.append(ch)
+        elif ch in "/.":
+            out.append("_")
+        elif ch == "_":
+            out.append("_1")
+        elif ch == ";":
+            out.append("_2")
+        elif ch == "[":
+            out.append("_3")
+        else:
+            out.append(f"_0{ord(ch):04x}")
+    return "".join(out)
+
+
+def _jni_short_symbol(class_smali: str, method: str) -> str:
+    """Build the short JNI export name a native method resolves to by default.
+
+    Turns a smali class (``Lcom/example/Foo;``) and method name into
+    ``Java_com_example_Foo_method`` -- the exact symbol to grep for in the .so.
+    The short form applies unless the native name is overloaded (then the JVM
+    also looks for a long form with the argument signature appended), so this is
+    the primary lookup, not the only possible one.
+    """
+    inner = class_smali
+    if inner.startswith("L"):
+        inner = inner[1:]
+    if inner.endswith(";"):
+        inner = inner[:-1]
+    return f"Java_{_jni_mangle(inner)}_{_jni_mangle(method)}"
 
 
 class _ParsedApk:
@@ -1422,6 +1468,64 @@ class ApkClient:
             "categories": categories,
             "count": len(rows),
             "scan_capped": scan_capped,
+        }
+
+    def native_methods(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """List the JNI entry points -- the app's methods declared ``native``.
+
+        The DEX-to-native bridge apk.native_libs (which .so files ship) and
+        apk.capabilities (where System.loadLibrary is called) only point at: this
+        names the Java side of the boundary, the methods with no bytecode whose
+        body lives in a native library. For each it computes jni_symbol, the
+        default ``Java_<class>_<method>`` export the runtime binds to (mangled per
+        the JNI spec: package dots/slashes to ``_``, ``_``/``;``/``[`` escaped, an
+        inner-class ``$`` to ``_00024``), so the exact symbol to grep for in the
+        .so is in hand -- the natural pivot into apk.native_libs and a native
+        disassembler. Overloaded natives also resolve through a longer signature-
+        qualified form, so treat jni_symbol as the primary name, not the only one.
+        Needs the full DEX analysis (like apk.classes/methods). Answers with
+        native_methods rows (class, method, descriptor, access and jni_symbol)
+        sorted by class then method, count, total (all native methods found),
+        offset, has_more, and scan_capped when the 5000 collect ceiling was hit.
+        """
+        parsed = self._parsed(path)
+        collected: list[JsonObject] = []
+        scan_more = False
+        for klass in parsed.analysis.get_classes():
+            if scan_more:
+                break
+            if klass.is_external():
+                continue
+            for method in klass.get_methods():
+                access = str(getattr(method, "access", ""))
+                if "native" not in access.split():
+                    continue
+                if len(collected) >= _MAX_NATIVE_COLLECT:
+                    scan_more = True
+                    break
+                cls = str(getattr(method, "class_name", klass.name))
+                name = str(method.name)
+                collected.append(
+                    {
+                        "class": cls,
+                        "method": name,
+                        "descriptor": str(getattr(method, "descriptor", "")),
+                        "access": access,
+                        "jni_symbol": _jni_short_symbol(cls, name),
+                    }
+                )
+        collected.sort(
+            key=lambda row: (str(row["class"]), str(row["method"]), str(row["descriptor"]))
+        )
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_NATIVE_PAGE)
+        window = collected[start : start + cap]
+        return {
+            "native_methods": window,
+            "count": len(window),
+            "total": len(collected),
+            "offset": start,
+            "has_more": start + len(window) < len(collected),
+            "scan_capped": scan_more,
         }
 
 

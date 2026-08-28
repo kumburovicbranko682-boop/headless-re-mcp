@@ -447,6 +447,32 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_capabilities(session_id))
 
+    @tools.tool(name="apk.native_methods")
+    def apk_native_methods(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List the JNI entry points -- the app's methods declared native.
+
+        The Java side of the DEX-to-native boundary that apk.native_libs (which
+        .so files ship) and apk.capabilities (where System.loadLibrary runs) only
+        point at: these are the methods with no bytecode whose body lives in a
+        native library. For each it computes jni_symbol, the default
+        Java_<class>_<method> export the runtime binds to (mangled per the JNI
+        spec -- package dots/slashes to _, the reserved _ / ; / [ escaped, an
+        inner-class $ to _00024), so the exact symbol to grep for in the .so is in
+        hand: the natural pivot into apk.native_libs and a native disassembler.
+        Overloaded natives also resolve through a longer signature-qualified
+        form, so treat jni_symbol as the primary name, not the only one. Needs the
+        full DEX analysis (like apk.classes and apk.methods).
+        Answers with native_methods rows (class, method, descriptor, access and
+        jni_symbol) sorted by class then method, count, total (all native methods
+        found), offset, has_more so a filled page is not read as the whole list,
+        and scan_capped when the 5000-method collect ceiling was hit.
+        """
+        return _dump(analysis.apk_native_methods(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.decompile")
     def apk_decompile(
         session_id: str,

@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **303（186 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **304（187 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -610,6 +610,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   比清单类工具重。每条命中含 `api`(标签)、`category`、`call_sites`(调用点总数)与 `callers`(去重的调用方
   class/method 样本,上限 25)。输出 `capabilities`(按 call_sites 再按 api 排序)、`categories`(命中的去重类别)、
   `count` 与 `scan_capped`(某条 caller 样本被裁)。这是出现次数指纹、不是恶意判定;只经反射到达的 API 它看不到。
+- **`apk.native_methods`**：DEX↔native 边界的 Java 侧——列出所有声明为 `native` 的方法(无字节码、方法体在 .so
+  里)。`apk.native_libs`(装了哪些 .so)与 `apk.capabilities`(哪里调 System.loadLibrary)只指到边界,这里指出
+  边界另一头的入口。每行算出 `jni_symbol`,即运行时默认绑定的 `Java_<类>_<方法>` 导出名(按 JNI 规范做名字改
+  编:包名的 `.`/`/` 变 `_`、保留字符 `_`/`;`/`[` 转义、内部类 `$` 变 `_00024`),于是拿到该去 .so 里 grep 的确切
+  符号——顺势接 `apk.native_libs` 与原生反汇编器。重载的 native 还会经更长的带签名形式解析,故 `jni_symbol` 是
+  首选名、非唯一名。需要全量 DEX 分析(同 `apk.classes`/`apk.methods`)。输出 `native_methods`(每行 `class`、
+  `method`、`descriptor`、`access`、`jni_symbol`,按类再按方法排序)、`count`、`total`(找到的 native 方法总数)、
+  `offset`、`has_more`,以及命中 5000 收集上限时的 `scan_capped`。
 - **`apk.files`**：`apk.native_libs`(只看 lib/)给不了的整包清单——遍历 zip,报每个文件的解压/压缩大小
   与按路径判定的类型:`dex`(多出的 classesN.dex 提示多 dex 或动态加载代码)、`native_lib`、`resource`、
   `asset`(内嵌配置、JS bundle、ML 模型常藏在这)、`arsc` 与 `manifest` 单例、META-INF 下的 v1 签名文件,
