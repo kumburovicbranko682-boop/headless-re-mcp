@@ -971,6 +971,93 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    def callees(
+        self,
+        path: Path,
+        method_name: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        class_name: str = "",
+    ) -> JsonObject:
+        """Methods a method named ``method_name`` calls (outgoing xrefs).
+
+        The companion direction to :meth:`xrefs`: xrefs answers "who calls
+        this", callees answers "what does this call". androguard's
+        MethodAnalysis.get_xref_to() gives the invoked targets -- the
+        framework/library API surface a method touches (Cipher.doFinal,
+        Runtime.exec, an HttpURLConnection call, a JNI native), the fastest read
+        on an obfuscated method short of decompiling it. Distinct targets are
+        listed once each (deduped by class+method+descriptor), unlike xrefs
+        which lists a row per call site, because the value here is the set of
+        APIs reached, not how many times each is hit.
+        """
+        parsed = self._parsed(path)
+        target = method_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "method_name is required")
+        # Same optional declaring-class scope as xrefs: matching by name alone
+        # unions the callees of every method sharing it, which in an obfuscated
+        # app (a/b/c) or for a common name (run, decrypt, <init>) conflates
+        # unrelated methods and blows the collect cap.
+        scope = class_name.strip() if isinstance(class_name, str) else ""
+        scope_smali = _dotted_to_smali(scope) if scope else ""
+        targets: list[JsonObject] = []
+        seen: set[tuple[str, str, str]] = set()
+        scan_more = False
+        for method in parsed.analysis.get_methods():
+            if method.is_external() or method.name != target:
+                continue
+            if scope:
+                owner = str(getattr(method, "class_name", ""))
+                if owner != scope and owner != scope_smali:
+                    continue
+            for entry in method.get_xref_to():
+                # androguard yields (ClassAnalysis, MethodAnalysis, offset);
+                # older shapes vary, so unpack defensively like string_xrefs.
+                if not isinstance(entry, (tuple, list)) or len(entry) < 2:
+                    continue
+                callee = entry[1]
+                if callee is None:
+                    continue
+                klass = str(getattr(callee, "class_name", ""))
+                name = str(getattr(callee, "name", ""))
+                descriptor = str(getattr(callee, "descriptor", ""))
+                key = (klass, name, descriptor)
+                if key in seen:
+                    continue
+                if len(seen) >= _MAX_XREFS_COLLECT:
+                    scan_more = True
+                    break
+                seen.add(key)
+                row: JsonObject = {
+                    "class": klass,
+                    "method": name,
+                    "descriptor": descriptor,
+                }
+                # external marks a framework/library target (not defined in this
+                # app) -- the JNI/crypto/exec/network surface an analyst wants to
+                # spot at a glance. Guarded: older MethodAnalysis may lack it.
+                try:
+                    row["external"] = bool(callee.is_external())
+                except Exception:  # noqa: BLE001
+                    row["external"] = False
+                targets.append(row)
+            if scan_more:
+                break
+        start, capped = _page_bounds(offset, limit, cap=_MAX_XREFS_PAGE)
+        window = targets[start : start + capped]
+        return {
+            "method_name": target,
+            "class_name": scope or None,
+            "callees": window,
+            "count": len(window),
+            "total": len(targets),
+            "offset": start,
+            "has_more": start + len(window) < len(targets),
+            "scan_capped": scan_more,
+        }
+
     def string_xrefs(
         self, path: Path, value: str, *, offset: int = 0, limit: int = 100
     ) -> JsonObject:

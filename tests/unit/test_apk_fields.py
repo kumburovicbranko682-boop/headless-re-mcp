@@ -134,6 +134,180 @@ def test_apk_xrefs_class_name_scopes_to_one_declaring_class(
     assert scoped_smali["total"] == 2
 
 
+class _FakeCallee:
+    def __init__(
+        self, class_name: str, name: str, descriptor: str = "()V", external: bool = True
+    ) -> None:
+        self.class_name = class_name
+        self.name = name
+        self.descriptor = descriptor
+        self._external = external
+
+    def is_external(self) -> bool:
+        return self._external
+
+
+class _FakeCallerMethod:
+    """A method whose outgoing xrefs (callees) are configurable."""
+
+    def __init__(
+        self, name: str, callees: list[_FakeCallee], class_name: str = ""
+    ) -> None:
+        self.name = name
+        self.class_name = class_name
+        self._callees = callees
+
+    def is_external(self) -> bool:
+        return False
+
+    def get_xref_to(self) -> list[tuple[object, _FakeCallee, int]]:
+        return [(None, callee, index) for index, callee in enumerate(self._callees)]
+
+
+class _FakeCalleeParsed:
+    def __init__(self, methods: list[_FakeCallerMethod]) -> None:
+        self.analysis = self
+        self._methods = methods
+
+    def get_methods(self) -> list[_FakeCallerMethod]:
+        return self._methods
+
+
+def test_apk_callees_puts_the_list_in_callees_and_says_when_it_stopped(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The companion direction to xrefs must name its own payload.
+
+    Measured: 25 distinct targets, limit 10 -> count 10, total 25, has_more
+    True, field is callees not calls or targets. Each row carries class,
+    method, descriptor and external.
+    """
+    callees = [_FakeCallee(f"Lapi/A{index};", f"m{index}") for index in range(25)]
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeCalleeParsed([_FakeCallerMethod("decrypt", callees)]),
+    )
+    client = ApkClient()
+    payload = client.callees(tmp_path / "app.apk", "decrypt", limit=10)
+    assert "calls" not in payload
+    assert "targets" not in payload
+    assert payload["count"] == 10
+    assert payload["total"] == 25
+    assert len(payload["callees"]) == 10
+    assert payload["has_more"] is True
+    row = payload["callees"][0]
+    assert set(row) == {"class", "method", "descriptor", "external"}
+    doc = _tool_docstring("apk.callees")
+    assert "Answers with callees" in doc
+    assert "has_more" in doc
+    assert "external" in doc
+
+
+def test_apk_callees_dedupes_repeated_call_sites(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """xrefs lists a row per call site; callees lists distinct targets.
+
+    A method that calls the same target at five sites plus one other target
+    yields two callee rows, not six -- the value here is the set of APIs
+    reached, so class+method+descriptor collapses to one.
+    """
+    same = [_FakeCallee("Ljavax/crypto/Cipher;", "doFinal", "([B)[B") for _ in range(5)]
+    other = [_FakeCallee("Ljava/lang/Runtime;", "exec", "(Ljava/lang/String;)")]
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeCalleeParsed(
+            [_FakeCallerMethod("run", same + other)]
+        ),
+    )
+    client = ApkClient()
+    payload = client.callees(tmp_path / "app.apk", "run", limit=100)
+    assert payload["total"] == 2
+    pairs = {(row["class"], row["method"]) for row in payload["callees"]}
+    assert pairs == {
+        ("Ljavax/crypto/Cipher;", "doFinal"),
+        ("Ljava/lang/Runtime;", "exec"),
+    }
+
+
+def test_apk_callees_marks_external_targets(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """external true marks a framework/library target not defined in this app."""
+    callees = [
+        _FakeCallee("Ljavax/crypto/Cipher;", "doFinal", "([B)[B", external=True),
+        _FakeCallee("Lcom/app/Helper;", "internal", "()V", external=False),
+    ]
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeCalleeParsed([_FakeCallerMethod("run", callees)]),
+    )
+    client = ApkClient()
+    payload = client.callees(tmp_path / "app.apk", "run", limit=100)
+    by_class = {row["class"]: row["external"] for row in payload["callees"]}
+    assert by_class["Ljavax/crypto/Cipher;"] is True
+    assert by_class["Lcom/app/Helper;"] is False
+
+
+def test_apk_callees_class_name_scopes_to_one_declaring_class(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Name-only matching unions the callees of every method sharing the name.
+
+    Crypto.decrypt calls one target, Util.decrypt calls two -> unscoped total 3
+    (class_name null), scoped to com.target.Crypto total 1, dotted and Lsmali/
+    forms both resolve.
+    """
+    methods = [
+        _FakeCallerMethod(
+            "decrypt",
+            [_FakeCallee("Lapi/Only;", "a")],
+            class_name="Lcom/target/Crypto;",
+        ),
+        _FakeCallerMethod(
+            "decrypt",
+            [_FakeCallee("Lapi/B;", "b"), _FakeCallee("Lapi/C;", "c")],
+            class_name="Lcom/other/Util;",
+        ),
+    ]
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeCalleeParsed(methods)
+    )
+    client = ApkClient()
+    unscoped = client.callees(tmp_path / "app.apk", "decrypt", limit=100)
+    assert unscoped["total"] == 3
+    assert unscoped["class_name"] is None
+    scoped = client.callees(
+        tmp_path / "app.apk", "decrypt", limit=100, class_name="com.target.Crypto"
+    )
+    assert scoped["total"] == 1
+    assert scoped["class_name"] == "com.target.Crypto"
+    scoped_smali = client.callees(
+        tmp_path / "app.apk", "decrypt", limit=100, class_name="Lcom/target/Crypto;"
+    )
+    assert scoped_smali["total"] == 1
+
+
+def test_apk_callees_requires_a_method_name(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from headless_re_mcp.backends.apk.client import ApkError
+
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeCalleeParsed([])
+    )
+    client = ApkClient()
+    try:
+        client.callees(tmp_path / "app.apk", "   ", limit=100)
+    except ApkError as exc:
+        assert exc.code == "invalid_params"
+    else:  # pragma: no cover - the call must raise
+        raise AssertionError("expected ApkError for an empty method_name")
+
+
 class _ManifestBody:
     def get_xml(self) -> bytes:
         return b"<manifest/>" * ((_MAX_MANIFEST_CHARS // 10) + 20)

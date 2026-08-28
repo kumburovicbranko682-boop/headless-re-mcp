@@ -219,6 +219,39 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="apk.callees")
+    def apk_callees(
+        session_id: str,
+        method_name: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        class_name: str = "",
+    ) -> dict[str, Any]:
+        """List the methods a method named method_name calls (outgoing xrefs).
+
+        The companion direction to apk.xrefs: xrefs answers "who calls this",
+        callees answers "what does this call" -- the framework/library API
+        surface a method touches (Cipher.doFinal, Runtime.exec, an
+        HttpURLConnection call, a JNI native), the fastest read on an obfuscated
+        method short of decompiling it. Answers with callees (each {class,
+        method, descriptor, external}, where external true marks a
+        framework/library target not defined in this app), method_name,
+        class_name, count, total, offset, and has_more so a page that filled the
+        limit is not read as the whole list, plus scan_capped when the collection
+        hit its ceiling. Distinct targets are listed once each (deduped by
+        class+method+descriptor), unlike apk.xrefs which lists a row per call
+        site, because the value here is the set of APIs reached, not how many
+        times each is hit. class_name (dotted or Lsmali/ form) scopes the search
+        to one declaring class; without it every method sharing the name is
+        unioned, and class_name in the answer echoes the scope (null when
+        unscoped). The list field is callees, not calls or targets.
+        """
+        return _dump(
+            analysis.apk_callees(
+                session_id, method_name, offset=offset, limit=limit, class_name=class_name
+            )
+        )
+
     @tools.tool(name="apk.string_xrefs")
     def apk_string_xrefs(
         session_id: str,

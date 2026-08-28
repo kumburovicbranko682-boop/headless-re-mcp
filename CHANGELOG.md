@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **269（152 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **270（153 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -266,6 +266,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `system`/`ptrace` 是行为线索。新增 `frida.imports`，用 `Module.enumerateImports` 完整镜像 exports 那条路径：同样的
   在 agent 内先按子串过滤再取上限（`limit+1` 分页、无 offset），返回 `found`/`module`/`base` 与 `imports`（`name`、`type`、
   提供方 `module`、绑定后的 `address`），以及 `count`/`has_more`，只作用于 debuggee pid。工具总数 266→267。
+- **`apk.callees` 缺席：能查一个 DEX 方法被谁调用，却看不到它调用了什么**。`apk.xrefs` 用 androguard 的
+  `MethodAnalysis.get_xref_from()` 回答"谁调用了这个方法"，但拿到一个混淆过的方法时，分析者的第一问往往是反过来的——
+  "它做了什么"：它触及的框架/库 API（`Cipher.doFinal`、`Runtime.exec`、`HttpURLConnection`、某个 JNI native）就是不反编译也能
+  看清方法意图的最快读法，正如 `frida.imports` 之于 `frida.exports`。新增 `apk.callees`，用 `get_xref_to()` 镜像出这条出边方向：
+  同样的可选 `class_name` 声明类限定（点分或 `Lsmali/` 形式，避免在混淆 app 里把同名方法的调用目标混作一团并撑爆采集上限）、
+  同样的 `offset`/`limit` 分页、`total`/`has_more`/`scan_capped`。每行是 `{class, method, descriptor, external}`，其中
+  `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
+  列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
+  只读，工具总数 269→270（153 只读 / 117 写）。
 - **`device.logcat` 只能拉最后 N 行，噪声设备上错误被淹没**。它一直只按 `-t N` 取尾，等价于 console 加 `type_filter` 之前的样子。
   现给它加上 `min_priority`（`V`/`D`/`I`/`W`/`E`/`F`）：交给 logcat 自己的 `*:<级别>` filterspec 在源头过滤，于是 `-t N` 取到的是
   最后 N 条**匹配**行，而不是先取 N 行再由客户端筛剩下寥寥几条——传 `E` 即可从吵闹的设备里只捞错误。级别在固定集合内校验，
