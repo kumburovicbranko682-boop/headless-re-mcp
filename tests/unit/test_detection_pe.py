@@ -468,6 +468,18 @@ def test_import_directory_smaller_than_descriptor_is_rejected(tmp_path: Path) ->
         scan_pe(path)
 
 
+def test_missing_input_is_rejected_with_a_format_error(tmp_path: Path) -> None:
+    # A missing path must surface as the structured PeFormatError, not leak the
+    # raw FileNotFoundError from resolve(strict=True)/stat().
+    with pytest.raises(PeFormatError, match="not a regular file"):
+        scan_pe(tmp_path / "missing.exe")
+
+
+def test_directory_input_is_rejected_with_a_format_error(tmp_path: Path) -> None:
+    with pytest.raises(PeFormatError, match="not a regular file"):
+        scan_pe(tmp_path)
+
+
 def test_size_limit_is_inclusive_and_validated(tmp_path: Path) -> None:
     path = tmp_path / "bounded.exe"
     path.write_bytes(_sample("x64", imports=False, tls=False, dotnet=False))

@@ -153,10 +153,13 @@ def scan_pe(
     if max_file_size < 0:
         raise ValueError("max_file_size must not be negative")
     started = monotonic()
-    resolved = path.expanduser().resolve(strict=True)
-    stat = resolved.stat()
+    # resolve() without strict=True, and check is_file() before stat(), so a
+    # missing input surfaces as the structured PeFormatError below rather than a
+    # raw FileNotFoundError from resolve()/stat().
+    resolved = path.expanduser().resolve()
     if not resolved.is_file():
         raise PeFormatError(f"input is not a regular file: {resolved}")
+    stat = resolved.stat()
     if stat.st_size > max_file_size:
         raise PeFormatError(
             f"input exceeds the {max_file_size}-byte built-in scan limit: {resolved}"
