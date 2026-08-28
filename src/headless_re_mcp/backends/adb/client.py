@@ -346,9 +346,20 @@ def _pids_for_package(dev: Any, package: str) -> list[int] | None:
             return None
         pids: list[int] = []
         for line in str(ps).splitlines():
-            if package not in line:
+            tokens = line.split()
+            if not tokens:
                 continue
-            for token in line.split()[:3]:
+            # Match the process-NAME column (the last field) exactly, or with a
+            # ``package:process`` multiprocess suffix -- not a substring of the
+            # whole line. A bare ``package in line`` also matches a *different*
+            # app whose id merely contains this one (``com.example.app`` inside
+            # ``com.example.app2`` or ``com.example.application``), so a still-
+            # running sibling would hand force_stop a foreign pid and make it
+            # report the app it actually stopped as still up.
+            name = tokens[-1]
+            if name != package and not name.startswith(package + ":"):
+                continue
+            for token in tokens[:3]:
                 if token.isdigit():
                     pids.append(int(token))
                     break

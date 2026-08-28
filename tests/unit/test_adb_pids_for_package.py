@@ -126,13 +126,66 @@ def test_a_ps_fallback_error_is_undeterminable(monkeypatch: pytest.MonkeyPatch) 
 def test_a_ps_line_without_a_digit_in_the_first_columns_contributes_no_pid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The pid must come from the leading columns, not a digit buried in the name."""
+    """A matching line whose leading columns hold no digit contributes no pid.
+
+    The name matches this package exactly, so the row is not skipped by the
+    name check -- the point is the pid must come from the leading process
+    columns, and when those hold no digit the row yields nothing rather than
+    scavenging a number from further right on the line.
+    """
     _shell(
         monkeypatch,
         pidof="pidof: not found",
-        ps=f"appuser  appuser  appuser  {_PKG}-v2024\n",
+        ps=f"appuser  appuser  appuser  {_PKG}\n",
     )
     assert _pids_for_package(object(), _PKG) == []
+
+
+def test_a_ps_fallback_ignores_a_sibling_package_whose_id_contains_this_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback must match the process NAME column, not a whole-line substring.
+
+    ``_pids_for_package`` is force_stop's only verifier: it force-stops this
+    package, then reads the process list back and reports ``stopped`` iff no pid
+    remains. The old fallback tested ``package in line``, which also matches a
+    *different* app whose id merely contains this one -- ``com.example.app`` is a
+    substring of ``com.example.app2`` and ``com.example.application``. With such
+    a sibling still running, the verify would return the sibling's pid and
+    force_stop would report the app it actually stopped as still up. Only the
+    exact process (and its ``package:process`` children) may count.
+    """
+    _shell(
+        monkeypatch,
+        pidof="pidof: not found",
+        ps=(
+            "USER      PID  PPID  NAME\n"
+            f"u0_a900  7777   567  {_PKG}2\n"
+            f"u0_a901  7788   567  {_PKG}.application\n"
+            f"u0_a902  7799   567  {_PKG}sync\n"
+        ),
+    )
+    # Every row is a different app whose id merely contains this one; none is the
+    # queried process or a package:process child of it, so force_stop reads the
+    # app it stopped as confirmed gone rather than still running on a namesake.
+    assert _pids_for_package(object(), _PKG) == []
+
+
+def test_a_ps_fallback_matches_the_exact_process_and_its_process_children(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exact name and ``package:process`` children count; a namesake sibling does not."""
+    _shell(
+        monkeypatch,
+        pidof="pidof: not found",
+        ps=(
+            "USER      PID  PPID  NAME\n"
+            f"u0_a123  4321   567  {_PKG}\n"
+            f"u0_a123  8899   567  {_PKG}:svc\n"
+            f"u0_a900  7777   567  {_PKG}2\n"
+        ),
+    )
+    assert _pids_for_package(object(), _PKG) == [4321, 8899]
 
 
 def test_the_ps_fallback_is_capped_so_a_huge_table_cannot_return_unbounded(
