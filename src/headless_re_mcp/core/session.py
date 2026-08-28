@@ -158,10 +158,14 @@ class SessionRegistry:
                 # static EXE with no imports, a non-DLL with no exports).
                 # Delay imports are the lazy channel a scan of the regular
                 # table misses: those DLLs bind on first call, not at load.
-                imports, delay_imports, exports = _pe_capability_surface(path)
+                imports, delay_imports, exports, forwarded = _pe_capability_surface(path)
                 metadata["pe"]["imports"] = imports
                 metadata["pe"]["delay_imports"] = delay_imports
                 metadata["pe"]["exports"] = exports
+                # Exports whose implementation lives in another DLL -- the PE
+                # pair to a Mach-O reexport. Empty is a real answer (an EXE,
+                # or a DLL that implements everything it exports).
+                metadata["pe"]["forwarded_exports"] = forwarded
                 # Subsystem, loader mitigations and entry VA off the optional
                 # header -- the native PE build posture, the pair to the ELF
                 # nx/relro/canary/pie and Mach-O nx/pie facts.
@@ -4721,8 +4725,8 @@ def _pe_read_cstr(raw: bytes, off: int | None, cap: int) -> str:
 
 def _pe_capability_surface(
     path: Path,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
-    """``(imports, delay_imports, exports)`` off the PE import/export directories.
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str], list[dict[str, str]]]:
+    """``(imports, delay_imports, exports, forwarded_exports)`` off the PE.
 
     The native PE capability surface -- the pair to an ELF/Mach-O's imported and
     exported symbols, and the strongest triage signal after arch: which native
@@ -4733,6 +4737,8 @@ def _pe_capability_surface(
     imports read as ``#N``. Delay imports are the lazy channel (directory 13):
     the DLLs bind on first call rather than at load, so a scan that stops at
     the regular import table understates what the binary can reach.
+    ``forwarded_exports`` names the exports whose implementation lives in
+    another DLL (``{"name", "forward"}``) -- the PE pair to a Mach-O reexport.
 
     Bounded and fail-closed: the whole read is capped, the descriptor walks, the
     per-DLL thunk walk and all reported lists are bounded, and any structural
@@ -4740,19 +4746,19 @@ def _pe_capability_surface(
     """
     try:
         if path.stat().st_size > _PE_MAX_IMPORT_FILE:
-            return [], [], []
+            return [], [], [], []
         with path.open("rb") as stream:
             raw = stream.read(_PE_MAX_IMPORT_FILE)
     except OSError:
-        return [], [], []
+        return [], [], [], []
     view = _pe_header_view(raw)
     if view is None:
-        return [], [], []
+        return [], [], [], []
     magic, dir_count, dir_off, sections, image_base = view
     imports = _pe_imports(raw, magic, dir_count, dir_off, sections)
     delay = _pe_delay_imports(raw, magic, dir_count, dir_off, sections, image_base)
-    exports = _pe_exports(raw, dir_count, dir_off, sections)
-    return imports, delay, exports
+    exports, forwarders = _pe_exports(raw, dir_count, dir_off, sections)
+    return imports, delay, exports, forwarders
 
 
 def _pe_import_thunks(
@@ -4886,34 +4892,75 @@ def _pe_exports(
     dir_count: int,
     dir_off: int,
     sections: list[tuple[int, int, int, int]],
-) -> list[str]:
-    """The export name table (index 0) as a sorted list of names."""
+) -> tuple[list[str], list[dict[str, str]]]:
+    """``(names, forwarders)`` off the export directory (index 0).
+
+    ``names`` is the sorted export-name table. ``forwarders`` are the subset
+    whose export-address-table entry points back inside the export directory's
+    own range instead of at code: the string there is ``TARGET.Func`` (or
+    ``TARGET.#ord``), meaning the real implementation lives in another DLL.
+    This is the PE pair to a Mach-O reexport -- API forwarding, the whole of
+    an api-ms-win-* set DLL and much of kernel32 (forwarded to ntdll /
+    kernelbase). Each forwarder reads as ``{"name", "forward"}`` where name is
+    the export's own name, or ``#ordinal`` when it is exported by ordinal only.
+    """
     if dir_count <= _PE_EXPORT_DIR:
-        return []
+        return [], []
     entry = dir_off + _PE_EXPORT_DIR * 8
     if entry + 8 > len(raw):
-        return []
+        return [], []
     exp_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    dir_size = int.from_bytes(raw[entry + 4 : entry + 8], "little")
     if exp_rva == 0:
-        return []
+        return [], []
     exp_off = _pe_rva_to_offset(sections, exp_rva)
     if exp_off is None or exp_off + 40 > len(raw):
-        return []
+        return [], []
+    ordinal_base = int.from_bytes(raw[exp_off + 16 : exp_off + 20], "little")
+    num_funcs = int.from_bytes(raw[exp_off + 20 : exp_off + 24], "little")
     num_names = int.from_bytes(raw[exp_off + 24 : exp_off + 28], "little")
+    funcs_rva = int.from_bytes(raw[exp_off + 28 : exp_off + 32], "little")
     names_rva = int.from_bytes(raw[exp_off + 32 : exp_off + 36], "little")
+    ords_rva = int.from_bytes(raw[exp_off + 36 : exp_off + 40], "little")
     names_off = _pe_rva_to_offset(sections, names_rva)
-    if names_off is None:
-        return []
+    ords_off = _pe_rva_to_offset(sections, ords_rva)
+    funcs_off = _pe_rva_to_offset(sections, funcs_rva)
+    # Walk the name table alongside the parallel ordinal table so each name is
+    # tied to its export-address-table index (the ordinal walk detects which
+    # EAT entries are forwarders, then names them back).
     exports: list[str] = []
-    for i in range(min(num_names, _PE_MAX_EXPORTS)):
-        pointer = names_off + i * 4
-        if pointer + 4 > len(raw):
-            break
-        name_off = _pe_rva_to_offset(sections, int.from_bytes(raw[pointer : pointer + 4], "little"))
-        name = _pe_read_cstr(raw, name_off, _PE_MAX_SYMBOL_NAME)
-        if name:
-            exports.append(name)
-    return sorted(exports)
+    index_to_name: dict[int, str] = {}
+    if names_off is not None and ords_off is not None:
+        for i in range(min(num_names, _PE_MAX_EXPORTS)):
+            name_ptr = names_off + i * 4
+            ord_ptr = ords_off + i * 2
+            if name_ptr + 4 > len(raw) or ord_ptr + 2 > len(raw):
+                break
+            name_off = _pe_rva_to_offset(
+                sections, int.from_bytes(raw[name_ptr : name_ptr + 4], "little")
+            )
+            name = _pe_read_cstr(raw, name_off, _PE_MAX_SYMBOL_NAME)
+            eat_index = int.from_bytes(raw[ord_ptr : ord_ptr + 2], "little")
+            if name:
+                exports.append(name)
+                index_to_name.setdefault(eat_index, name)
+    forwarders: list[dict[str, str]] = []
+    if funcs_off is not None and dir_size > 0:
+        for i in range(min(num_funcs, _PE_MAX_EXPORTS)):
+            func_ptr = funcs_off + i * 4
+            if func_ptr + 4 > len(raw):
+                break
+            func_rva = int.from_bytes(raw[func_ptr : func_ptr + 4], "little")
+            # A forwarder's EAT entry points inside the export directory, at
+            # the "DLL.Symbol" string; a real export points at code outside it.
+            if func_rva == 0 or not exp_rva <= func_rva < exp_rva + dir_size:
+                continue
+            target = _pe_read_cstr(raw, _pe_rva_to_offset(sections, func_rva), _PE_MAX_SYMBOL_NAME)
+            if target:
+                label = index_to_name.get(i, f"#{ordinal_base + i}")
+                forwarders.append({"name": label, "forward": target})
+    forwarders.sort(key=lambda item: item["name"])
+    return sorted(exports), forwarders
 
 
 def _pe_hardening_facts(path: Path) -> dict[str, Any]:
