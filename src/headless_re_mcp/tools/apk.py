@@ -182,6 +182,29 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_string_xrefs(session_id, value, limit=limit))
 
+    @tools.tool(name="apk.field_xrefs")
+    def apk_field_xrefs(
+        session_id: str,
+        field_name: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List the methods that read or write a given field.
+
+        The field counterpart of apk.xrefs: name a field and this reports every
+        method that reads or writes it -- how state (a token, a flag, a
+        singleton) flows through the app. Field names are not unique across
+        classes, so the name is matched across the whole module and every row
+        names the field's declaring class. Answers with accesses (each row is
+        class and method of the accessing code, kind read or write, and
+        field_class the class that declares the field), field_name, matched
+        _fields (how many distinct fields the name resolved to), found (true
+        when the name matched any field, so an unaccessed field reads apart
+        from an absent one), count, and has_more so a page that filled the
+        limit is not read as the whole list. There is no callers or callees
+        field here.
+        """
+        return _dump(analysis.apk_field_xrefs(session_id, field_name, limit=limit))
+
     @tools.tool(name="apk.decompile")
     def apk_decompile(
         session_id: str,

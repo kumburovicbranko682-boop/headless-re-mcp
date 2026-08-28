@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **283（166 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **284（167 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -551,6 +551,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `referrers`（class/method）、回显的 `value`、`found`（该字符串是否存在于模块中，借此把"存在但
   无人引用"与"根本不存在"区分开）、`count` 与仅在真丢行时才为真的 `has_more`。与 `apk.xrefs`
   共用 1000 的分页上限。
+- **`apk.field_xrefs`**：`apk.xrefs` 的字段版——给定字段名列出读/写它的每个方法
+  （`get_xref_read`/`get_xref_write`），看清某个状态（令牌、标志位、单例）如何在应用里流动。
+  字段名跨类不唯一（TAG、mContext……），故按名在整个模块聚合，每行都带上字段的声明类。输出
+  `accesses`（每行 `class`/`method` 为访问方代码，`kind` 为 read/write，`field_class` 为声明该
+  字段的类）、`field_name`、`matched_fields`（该名解析到多少个不同字段）、`found`（是否匹配到任一
+  字段，借此把"未被访问"与"根本不存在"区分开）、`count` 与仅在真丢行时才为真的 `has_more`。
+  与 `apk.xrefs` 共用 1000 的分页上限。
 - **改包**：`apk.decode/repack/sign`，apktool 解包回编 + apksigner 重签，缺省用 Android
   debug keystore；签名失败时 stderr 里的口令会被抹掉再进错误信封。
 - **设备**：`device.*` 15 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、

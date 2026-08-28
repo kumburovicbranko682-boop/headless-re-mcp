@@ -523,6 +523,59 @@ class ApkClient:
             "has_more": has_more,
         }
 
+    def field_xrefs(
+        self, path: Path, field_name: str, *, limit: int = 100
+    ) -> JsonObject:
+        parsed = self._parsed(path)
+        # A field name is an identifier, so -- like a method name and unlike a
+        # string constant -- it is stripped and a blank query rejected.
+        target = field_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "field_name is required")
+        _, cap = _clamp_page(0, limit, max_limit=_MAX_XREFS_PAGE)
+        accesses: list[JsonObject] = []
+        matched_fields = 0
+        has_more = False
+        for field in parsed.analysis.get_fields():
+            if field.name != target:
+                continue
+            matched_fields += 1
+            # Field names are not unique across classes (TAG, mContext, ...), so
+            # each row carries the declaring class to disambiguate which field an
+            # access touched; class/method stay the accessing code, as in the
+            # sibling xref tools.
+            field_class = str(field.get_field().get_class_name())
+            # get_xref_read/get_xref_write yield (class, method) pairs; the
+            # method is a MethodAnalysis with the same class_name/name.
+            for kind, edges in (
+                ("read", field.get_xref_read()),
+                ("write", field.get_xref_write()),
+            ):
+                for _, method in edges:
+                    if len(accesses) >= cap:
+                        has_more = True
+                        break
+                    accesses.append(
+                        {
+                            "class": str(method.class_name),
+                            "method": str(method.name),
+                            "kind": kind,
+                            "field_class": field_class,
+                        }
+                    )
+                if has_more:
+                    break
+            if has_more:
+                break
+        return {
+            "field_name": target,
+            "found": matched_fields > 0,
+            "matched_fields": matched_fields,
+            "accesses": accesses,
+            "count": len(accesses),
+            "has_more": has_more,
+        }
+
 
 def _dotted_to_smali(name: str) -> str:
     """com.example.Foo -> Lcom/example/Foo; so either form resolves a class."""
