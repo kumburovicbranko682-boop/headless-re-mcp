@@ -101,6 +101,7 @@ _EXPECTED_LIMIT_CEILING: dict[str, float] = {
     "web.network.list": web_mod._MAX_PAGE,
     "web.scripts": web_mod._MAX_PAGE,
     "web.wasm.list": web_mod._MAX_PAGE,
+    "web.har.read": web_mod._MAX_PAGE,
     "web.console": web_mod._MAX_CONSOLE,
     "apk.classes": apk_mod._MAX_CLASSES_PAGE,
     "apk.methods": apk_mod._MAX_METHODS_PAGE,

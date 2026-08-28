@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -39,6 +39,8 @@ Android 线的包名校验现在跨 adb 与 frida 两后端锁定一致。`devic
 补上偏移分页 `has_more` 的精确边界测试。整条 offset 分页的非 PE 面（proxy.flows、web.network/scripts、apk.classes/methods/strings、jsre 文件列表）都用同一个公式 `has_more = start + len(window) < total`，而 `proxy.flows` 既有用例只覆盖了中段页（`has_more` True）与空捕获（False），没有钉住"最后一页恰好填满 limit（`start + count == total`）时 `has_more` 必须为 False、差一行时必须为 True"这条 `<` vs `<=` 的差一边界——正是这类公式最易被改错的地方。新增 `test_flows_has_more_is_false_when_the_last_page_exactly_fills` 两侧钉死该边界（验证方式：把 `<` 改成 `<=`，该测试即转红）。
 
 `web.open` / `web.navigate`现在能真正打开本地网页资产。会话模型明确支持"Web 目标是本地资产"（下载下来的 `.html`/`.js`/`.wasm`/`.har`：`classify_target` 按后缀或 `\x00asm` 魔数归为 WEB，`session.create` 因 `not is_http_url` 而把*文件系统路径*存进 locator，并算好 `binary`/`sha256`），但 `web.open` 在未给 url 时回退到该 locator、`web.navigate` 直接收 url，两者都把这个裸路径（如 `/tmp/app.html`）交给 Playwright 的 `page.goto`——而 goto 需要带 scheme 的 URL，裸路径哪儿都navigate不到，于是这条被建模为一等公民的本地资产 Web 会话其实根本打不开（此前无任何测试覆盖本地文件 Web 会话，URL 会话才有）。新增 `service_web._navigation_target`：对既存的本地文件用 `Path.as_uri()` 转成 `file://` URL（顺带对特殊字符做 URL 编码），远程 URL、无 scheme 的主机名、`about:`/`data:`/`file:` 目标以及任何非磁盘文件原样透传，只重写真实的本地文件；复用 `is_http_url`，使"远程还是本地"的判定与当初 `session.create` 把它存成路径时用的是同一个谓词。`web.open`（locator 回退处）与 `web.navigate`（url 处）都过这一步。`test_service_web_paths.py` 固定：本地 `.html` 会话的 `web.open` 与传本地路径的 `web.navigate` 交给后端的都是 `file://` URL，而 URL/非 http scheme/主机名/不存在的路径原样透传。随后把该归一化收紧为全函数（total）契约：它处理的是调用方任意给出的 url，且在 `web.navigate` 里作为实参在 `_web_wrap` 的 try 之外求值，一旦路径探测抛异常就会越过失败信封直接逃逸——而其中 `expanduser` 在解析不出 home 目录时抛 `RuntimeError`、`is_file`/`resolve` 对内嵌空字节或超长路径按 Python 版本可能抛 `OSError`/`ValueError`（3.8+ 的 `is_file` 恰好吞掉后者，原来的 `except OSError` 只是碰巧安全）。现明确捕获 `(OSError, ValueError, RuntimeError)` 并回退为原文透传，让浏览器自己报导航错误；`test_navigation_target_never_raises_on_a_hostile_url` 用空字节、超长串、`~` 前缀等敌意输入固定"绝不抛出、原样透传"（验证方式：在 try 体内注入模拟的路径操作异常，窄 except 下该测试失败、宽 except 下通过）。
+
+新增 `web.har.read`：把磁盘上的 HAR 文件按请求逐页读回，作为 `web.har.export` 的对读侧。会话模型早已把 `.har` 归为 Web 目标（`classify_target` 按后缀归 WEB，`session.create` 因 `not is_http_url` 把文件系统路径存进 locator 并算好 `binary`/`sha256`），且 `web.har.export` 与 `proxy.export_har` 都会产出 HAR，但此前没有任何工具能消费一个 HAR——一个被建模成一等公民的目标类型其实是死路。新增 `backends/common/har.read_har_entries` 把 HAR 1.2 log 投影成与 `web.network.list` 相同的紧凑请求摘要（`url`/`method`/`status`/`mime_type`/`started_date_time`，HAR 带 Chrome `_resourceType` 扩展时附 `resource_type`），使 agent 翻阅一个存盘的 HAR 与翻阅一个在跑的采集用的是同一套字段与同一套 `offset`/`has_more` 分页；对畸形 entry 逐个降级而非整份读失败，只有顶层不是「带 entries 数组的 log」才抛 `HarReadError`（服务层映射为 `invalid_params`）。`WebBackend.read_har` 是这里唯一无需浏览器会话的读取器：解析路径后，缺失报 `not_found`、非 HAR 报 `invalid_params`、超过采集上限 `UNREGISTERED_CAPTURE_MAX_BYTES` 在 stat 阶段就报 `too_large`（且绝不删除调用方的输入——它不是本次运行写的 capture，`capped_file_size` 的「拒收即删」不适用），并沿用与 `network_list` 相同的 `_MAX_PAGE` 钳取，杜绝绕过 schema 的 agent 传输请求无界页。该工具在 `tools/catalog.py` 显式归为只读，全表面从 265 增至 **266（149 只读 / 117 写）**；`test_tool_schema_backend_bound_alignment.py` 把它的 `limit` 天花板钉到 `web._MAX_PAGE`，`test_web_har_read.py` 从解析器、后端到服务层三层固定（`serialize_har` → `read_har_entries` 往返读回同一批字段、`not_found`/`invalid_params`/`too_large`、`offset`/`has_more` 差一边界与 `limit` 钳取、无会话即可读）。
 
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 

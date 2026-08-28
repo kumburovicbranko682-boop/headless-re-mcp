@@ -190,4 +190,23 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_har_export(session_id))
 
+    @tools.tool(name="web.har.read")
+    def web_har_read(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List the requests in a HAR file on disk, one page at a time.
+
+        The read counterpart to web.har.export: point it at a .har (one this
+        run exported, or captured by another tool) with no browser session
+        needed. Answers with path, entries (url, method, status, mime_type,
+        started_date_time, plus resource_type when the HAR carried it), count,
+        total, offset and has_more, so a page that filled the limit is not read
+        as the whole capture. A file that is not a HAR 1.2 log is refused as
+        invalid_params, a missing path as not_found, and a HAR over the capture
+        cap as too_large rather than read into memory.
+        """
+        return _dump(analysis.web_har_read(path, offset=offset, limit=limit))
+
     return tools.bindings

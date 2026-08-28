@@ -27,7 +27,12 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
-from headless_re_mcp.backends.common.har import har_entry, serialize_har
+from headless_re_mcp.backends.common.har import (
+    HarReadError,
+    har_entry,
+    read_har_entries,
+    serialize_har,
+)
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
 
@@ -836,6 +841,61 @@ class WebBackend:
             "entry_count": serialized.entry_count,
             "truncated": serialized.truncated,
             "size": serialized.size,
+        }
+
+    def read_har(self, path: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """List the requests recorded in a HAR file on disk, one page at a time.
+
+        Unlike every other reader here this needs no browser session: it reads a
+        static ``.har`` off disk, the counterpart to ``har_export`` writing one.
+        A HAR classifies as a web target (``session.create`` on a ``.har``), and
+        an exported capture pairs with reading it back, but nothing consumed one
+        until now.
+
+        The input is not deleted -- it is the caller's file, not a capture this
+        run wrote, so the ``capped_file_size`` "refuse and unlink" contract does
+        not apply. Over the capture cap it is refused as ``too_large`` (a stat,
+        before the file is read into memory), a HAR that is not a HAR as
+        ``invalid_params``, and a missing path as ``not_found``. Rows are paged
+        with the same ``_MAX_PAGE`` clamp and ``offset``/``has_more`` shape as
+        ``network_list`` so the agent transport (which bypasses the schema) can
+        never request an unbounded page.
+        """
+        resolved = Path(path).expanduser()
+        if not resolved.is_file():
+            raise WebError("not_found", "har file not found", path=str(resolved))
+        try:
+            size = int(resolved.stat().st_size)
+        except OSError as exc:
+            raise WebError("backend_error", f"har unreadable: {exc}", path=str(resolved)) from exc
+        if size > UNREGISTERED_CAPTURE_MAX_BYTES:
+            raise WebError(
+                "too_large",
+                f"har exceeds the {UNREGISTERED_CAPTURE_MAX_BYTES}-byte read limit",
+                path=str(resolved),
+                size=size,
+                max_file_size=UNREGISTERED_CAPTURE_MAX_BYTES,
+            )
+        try:
+            text = resolved.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise WebError("backend_error", f"har unreadable: {exc}", path=str(resolved)) from exc
+        try:
+            entries = read_har_entries(text)
+        except HarReadError as exc:
+            raise WebError(
+                "invalid_params", f"not a HAR 1.2 file: {exc}", path=str(resolved)
+            ) from exc
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_PAGE))
+        window = entries[start : start + cap]
+        return {
+            "path": str(resolved),
+            "entries": window,
+            "count": len(window),
+            "total": len(entries),
+            "offset": start,
+            "has_more": start + len(window) < len(entries),
         }
 
     def close_all(self) -> None:

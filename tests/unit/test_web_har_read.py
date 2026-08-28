@@ -1,0 +1,240 @@
+"""web.har.read: parse a HAR file off disk and page it like a live capture.
+
+Three layers are pinned here because a HAR reader spans all of them and each
+carries its own contract:
+
+* ``read_har_entries`` (backends/common/har.py) -- projects a HAR 1.2 log onto
+  the same compact request shape ``web.network.list`` returns, tolerates a
+  malformed entry, and refuses a document that is not a HAR log at all.
+* ``WebBackend.read_har`` -- the only reader here that needs no browser session;
+  it resolves a path, refuses an oversized or missing or non-HAR file with the
+  canonical codes, never deletes the caller's input, and pages with the shared
+  ``_MAX_PAGE`` / ``offset`` / ``has_more`` clamp.
+* ``AnalysisService.web_har_read`` -- wraps the backend into the ``Result``
+  envelope with no session id, since the read is session-independent.
+
+The round-trip case (``serialize_har`` -> ``read_har_entries``) is the load-
+bearing one: it proves an exported capture reads back into the same fields,
+which is the whole point of pairing the reader with ``web.har.export``.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from headless_re_mcp.backends.common.har import (
+    HarReadError,
+    build_har,
+    har_entry,
+    read_har_entries,
+    serialize_har,
+)
+from headless_re_mcp.backends.web import WebBackend, WebError
+from headless_re_mcp.backends.web import client as web_client
+from headless_re_mcp.config import Settings
+from headless_re_mcp.core.service import AnalysisService
+
+
+def _entries(count: int) -> list[dict]:
+    return [
+        har_entry(
+            method="GET",
+            url=f"https://a.test/{i}",
+            status=200,
+            mime_type="text/html",
+        )
+        for i in range(count)
+    ]
+
+
+def _write_har(tmp_path: Path, entries: list[dict]) -> Path:
+    path = tmp_path / "capture.har"
+    path.write_text(json.dumps(build_har(entries), ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+# ---- read_har_entries: the parser ----------------------------------------
+
+
+def test_a_serialized_har_reads_back_into_the_network_list_shape() -> None:
+    entries = [
+        har_entry(
+            method="GET",
+            url="https://a.test/app.js?x=1",
+            status=200,
+            mime_type="application/javascript",
+            resource_type="script",
+        ),
+        har_entry(
+            method="POST",
+            url="https://a.test/api",
+            status=500,
+            mime_type="application/json",
+        ),
+    ]
+    text = serialize_har(entries, max_bytes=10_000_000).text
+    summaries = read_har_entries(text)
+
+    assert [s["url"] for s in summaries] == ["https://a.test/app.js?x=1", "https://a.test/api"]
+    assert summaries[0]["method"] == "GET"
+    assert summaries[0]["status"] == 200
+    assert summaries[0]["mime_type"] == "application/javascript"
+    assert summaries[0]["resource_type"] == "script"
+    # A static HAR is the one place the request timestamp survives.
+    assert summaries[0]["started_date_time"]
+    # No _resourceType on the second entry -> the key is simply absent.
+    assert "resource_type" not in summaries[1]
+    assert summaries[1]["status"] == 500
+
+
+def test_non_json_is_a_har_read_error() -> None:
+    with pytest.raises(HarReadError):
+        read_har_entries("<html>not json</html>")
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["[]", '"a string"', "{}", '{"log": {}}', '{"log": {"entries": {}}}'],
+)
+def test_json_that_is_not_a_har_log_is_a_har_read_error(bad: str) -> None:
+    with pytest.raises(HarReadError):
+        read_har_entries(bad)
+
+
+def test_a_har_with_no_entries_is_empty_not_an_error() -> None:
+    assert read_har_entries('{"log": {"entries": []}}') == []
+
+
+def test_a_malformed_entry_contributes_what_it_has_without_crashing() -> None:
+    text = json.dumps(
+        {
+            "log": {
+                "entries": [
+                    "not-an-object",
+                    {"request": {"url": "https://x.test/"}},
+                    {"request": 5, "response": {"status": "oops"}},
+                ]
+            }
+        }
+    )
+    summaries = read_har_entries(text)
+
+    # The bare string is skipped; the two objects survive.
+    assert len(summaries) == 2
+    assert summaries[0]["url"] == "https://x.test/"
+    assert summaries[0]["method"] == ""
+    assert summaries[0]["status"] is None
+    # A non-object request and a non-int status degrade to blanks, not a crash.
+    assert summaries[1]["url"] == ""
+    assert summaries[1]["status"] is None
+
+
+# ---- WebBackend.read_har: session-independent file reader ------------------
+
+
+def test_backend_reads_a_har_with_no_open_session(tmp_path: Path) -> None:
+    path = _write_har(tmp_path, _entries(2))
+    result = WebBackend().read_har(str(path))
+    assert result["total"] == 2
+    assert result["count"] == 2
+    assert result["path"] == str(path.resolve()) or result["path"] == str(path)
+
+
+def test_backend_missing_file_is_not_found(tmp_path: Path) -> None:
+    with pytest.raises(WebError) as info:
+        WebBackend().read_har(str(tmp_path / "nope.har"))
+    assert info.value.code == "not_found"
+
+
+def test_backend_non_har_is_invalid_params(tmp_path: Path) -> None:
+    path = tmp_path / "bad.har"
+    path.write_text("not json at all", encoding="utf-8")
+    with pytest.raises(WebError) as info:
+        WebBackend().read_har(str(path))
+    assert info.value.code == "invalid_params"
+
+
+def test_backend_over_the_cap_is_too_large_and_leaves_the_input_on_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write_har(tmp_path, _entries(3))
+    monkeypatch.setattr(web_client, "UNREGISTERED_CAPTURE_MAX_BYTES", 10)
+    with pytest.raises(WebError) as info:
+        WebBackend().read_har(str(path))
+    assert info.value.code == "too_large"
+    assert info.value.details["max_file_size"] == 10
+    # The caller owns this file -- unlike a capture we wrote, it is never deleted.
+    assert path.is_file()
+
+
+def test_backend_pages_with_offset_and_the_has_more_boundary(tmp_path: Path) -> None:
+    path = _write_har(tmp_path, _entries(6))
+    backend = WebBackend()
+
+    first = backend.read_har(str(path), offset=0, limit=3)
+    assert first["count"] == 3
+    assert first["total"] == 6
+    assert first["offset"] == 0
+    assert first["has_more"] is True
+    assert [e["url"] for e in first["entries"]] == [
+        "https://a.test/0",
+        "https://a.test/1",
+        "https://a.test/2",
+    ]
+
+    # Last page exactly fills: 3 + 3 == 6 -> has_more False.
+    last = backend.read_har(str(path), offset=3, limit=3)
+    assert last["count"] == 3
+    assert last["has_more"] is False
+    # One row short of the end: 2 + 3 == 5 < 6 -> has_more True.
+    short = backend.read_har(str(path), offset=2, limit=3)
+    assert short["has_more"] is True
+
+
+def test_backend_clamps_the_limit_to_the_page_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(web_client, "_MAX_PAGE", 2)
+    path = _write_har(tmp_path, _entries(5))
+    page = WebBackend().read_har(str(path), offset=0, limit=1000)
+    assert page["count"] == 2
+    assert page["has_more"] is True
+
+
+# ---- AnalysisService.web_har_read: the mixin ------------------------------
+
+
+def _service(tmp_path: Path) -> AnalysisService:
+    return AnalysisService(replace(Settings.load(), artifact_root=tmp_path / "artifacts"))
+
+
+def test_service_reads_a_har_without_a_session(tmp_path: Path) -> None:
+    path = _write_har(tmp_path, _entries(2))
+    service = _service(tmp_path)
+    try:
+        result = service.web_har_read(str(path))
+        assert result.ok is True
+        assert result.data is not None
+        assert result.data["total"] == 2
+        assert result.data["count"] == 2
+        # A path-based reader needs no session, so none rides in the envelope.
+        assert "session_id" not in result.meta
+    finally:
+        service.close_all()
+
+
+def test_service_maps_a_non_har_to_invalid_params(tmp_path: Path) -> None:
+    path = tmp_path / "bad.har"
+    path.write_text("{not a har}", encoding="utf-8")
+    service = _service(tmp_path)
+    try:
+        result = service.web_har_read(str(path))
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_params"
+    finally:
+        service.close_all()

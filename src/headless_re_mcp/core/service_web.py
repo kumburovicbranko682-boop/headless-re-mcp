@@ -267,6 +267,18 @@ class WebAnalysisMixin:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def web_har_read(
+        self, path: str, offset: int = 0, limit: int = 100
+    ) -> Result[JsonObject]:
+        """Read a HAR file off disk. Session-independent, so no session_id."""
+        try:
+            data = self._web.read_har(path, offset=offset, limit=limit)
+            return _success(data, backend="web")
+        except WebError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
     def _web_wrap(
         self, session_id: str, op: str, /, *args: Any, **kwargs: Any
     ) -> Result[JsonObject]:

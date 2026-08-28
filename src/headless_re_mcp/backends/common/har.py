@@ -58,6 +58,69 @@ class SerializedHar(NamedTuple):
     size: int
 
 
+class HarReadError(ValueError):
+    """Bytes handed to :func:`read_har_entries` are not a HAR 1.2 log.
+
+    The reader raises this rather than returning an empty list so a caller can
+    tell "a HAR with no requests" from "not a HAR at all" and map the latter to
+    ``invalid_params`` instead of silently answering with zero entries.
+    """
+
+
+def read_har_entries(text: str) -> list[JsonObject]:
+    """Normalise a HAR 1.2 document's entries to the compact request summary.
+
+    Reads back what :func:`serialize_har` writes -- and any spec HAR a browser,
+    proxy or ``har-validator`` produced -- projecting each entry onto the same
+    ``url``/``method``/``status``/``mime_type``/``resource_type`` shape the live
+    ``web.network.list`` reader returns, so an agent pages a saved capture the
+    way it pages a running one. ``started_date_time`` rides along because a
+    static HAR is the one place that timestamp survives.
+
+    Sub-objects are read defensively: a malformed entry (not an object, or with
+    a non-object ``request``/``response``) contributes its available fields
+    rather than aborting the whole read, since a partial HAR is still worth
+    listing. Raises :class:`HarReadError` only when the top-level shape is not a
+    HAR log with an ``entries`` array -- the structural contract the caller maps
+    to ``invalid_params``.
+    """
+    try:
+        document = json.loads(text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HarReadError(f"not valid JSON: {exc}") from exc
+    if not isinstance(document, dict):
+        raise HarReadError("HAR root is not a JSON object")
+    log = document.get("log")
+    if not isinstance(log, dict):
+        raise HarReadError("HAR has no log object")
+    entries = log.get("entries")
+    if not isinstance(entries, list):
+        raise HarReadError("HAR log has no entries array")
+    summaries: list[JsonObject] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        request = entry.get("request")
+        request = request if isinstance(request, dict) else {}
+        response = entry.get("response")
+        response = response if isinstance(response, dict) else {}
+        content = response.get("content")
+        content = content if isinstance(content, dict) else {}
+        status = response.get("status")
+        summary: JsonObject = {
+            "url": str(request.get("url", "")),
+            "method": str(request.get("method", "")),
+            "status": status if isinstance(status, int) else None,
+            "mime_type": str(content.get("mimeType", "")),
+            "started_date_time": str(entry.get("startedDateTime", "")),
+        }
+        resource_type = entry.get("_resourceType")
+        if isinstance(resource_type, str) and resource_type:
+            summary["resource_type"] = resource_type
+        summaries.append(summary)
+    return summaries
+
+
 def _iso_now() -> str:
     """Export-time instant in ISO 8601 with an explicit offset (the TZD HAR wants)."""
     return datetime.now(UTC).isoformat()
