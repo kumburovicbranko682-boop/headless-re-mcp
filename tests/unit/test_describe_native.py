@@ -2353,6 +2353,127 @@ def test_macho_superblob_without_a_codedirectory_slot(tmp_path: Path) -> None:
     assert "signature" not in facts
 
 
+def _superblob_multi(blobs: list[tuple[int, bytes]]) -> bytes:
+    # A SuperBlob carrying several slots -- what a real signature looks like
+    # (CodeDirectory plus entitlements plus the CMS blob).
+    header = 12 + 8 * len(blobs)
+    index, payload, at = b"", b"", header
+    for slot, blob in blobs:
+        index += struct.pack(">II", slot, at)
+        payload += blob
+        at += len(blob)
+    return struct.pack(">III", 0xFADE0CC0, at, len(blobs)) + index + payload
+
+
+def _entitlements_blob(plist: bytes, magic: int = 0xFADE7171) -> bytes:
+    # GenericBlob: magic, total length, then the XML property list verbatim.
+    return struct.pack(">II", magic, 8 + len(plist)) + plist
+
+
+def _entitlements_plist(body: str) -> bytes:
+    return (
+        b'<?xml version="1.0" encoding="UTF-8"?>\n'
+        b'<plist version="1.0"><dict>' + body.encode() + b"</dict></plist>"
+    )
+
+
+def test_macho_entitlements_ride_the_signature(tmp_path: Path) -> None:
+    """The signer's capability claims: the macOS pair to APK permissions.
+
+    Slot 5 of the SuperBlob wraps an XML plist; the reader hands back its
+    keys sorted with the boolean, string and string-list values entitlements
+    actually use -- get-task-allow is the "debuggable" bit of macOS triage.
+    """
+    ent = _entitlements_blob(
+        _entitlements_plist(
+            "<key>com.apple.security.get-task-allow</key><true/>"
+            "<key>com.apple.security.cs.allow-jit</key><false/>"
+            "<key>application-identifier</key><string>T123.com.example.app</string>"
+            "<key>keychain-access-groups</key><array><string>T123.example</string></array>"
+        )
+    )
+    blob = _superblob_multi([(0, _code_directory()), (5, ent)])
+    facts = describe_native(_write(tmp_path, "e.bin", _signed_macho(blob)))["native"]
+    assert facts["signature"]["entitlements"] == {
+        "application-identifier": "T123.com.example.app",
+        "com.apple.security.cs.allow-jit": False,
+        "com.apple.security.get-task-allow": True,
+        "keychain-access-groups": ["T123.example"],
+    }
+
+
+def test_macho_signature_without_the_slot_reports_no_entitlements(tmp_path: Path) -> None:
+    # An ad-hoc signature with no entitlements slot (the common case): the
+    # key stays absent rather than inventing an empty claim set.
+    facts = describe_native(
+        _write(tmp_path, "n.bin", _signed_macho(_superblob(_code_directory())))
+    )["native"]
+    assert "entitlements" not in facts["signature"]
+
+
+def test_macho_entitlements_with_a_foreign_magic_are_refused(tmp_path: Path) -> None:
+    # Slot 5 pointing at a blob that is not 0xfade7171: nothing is decoded.
+    ent = _entitlements_blob(_entitlements_plist("<key>a</key><true/>"), magic=0xFADE0B01)
+    blob = _superblob_multi([(0, _code_directory()), (5, ent)])
+    facts = describe_native(_write(tmp_path, "m.bin", _signed_macho(blob)))["native"]
+    assert "entitlements" not in facts["signature"]
+
+
+def test_macho_entitlements_hostile_bytes_stay_out(tmp_path: Path) -> None:
+    # A well-framed blob whose payload is not XML at all: plistlib's failure
+    # is swallowed, the rest of the signature facts survive.
+    ent = _entitlements_blob(b"\xde\xad\xbe\xef not a plist")
+    blob = _superblob_multi([(0, _code_directory()), (5, ent)])
+    facts = describe_native(_write(tmp_path, "h.bin", _signed_macho(blob)))["native"]
+    assert "entitlements" not in facts["signature"]
+    assert facts["signature"]["identifier"] == "com.example.app"
+
+
+def test_macho_entitlements_empty_or_non_dict_report_nothing(tmp_path: Path) -> None:
+    # An empty dict and a top-level array are both legal plists but carry no
+    # claims; neither produces the key.
+    for payload in (_entitlements_plist(""), b'<plist version="1.0"><array/></plist>'):
+        blob = _superblob_multi([(0, _code_directory()), (5, _entitlements_blob(payload))])
+        facts = describe_native(_write(tmp_path, "x.bin", _signed_macho(blob)))["native"]
+        assert "entitlements" not in facts["signature"]
+
+
+def test_macho_entitlements_lying_length_is_refused(tmp_path: Path) -> None:
+    # The GenericBlob claims more bytes than the SuperBlob holds: refused
+    # rather than read out of bounds.
+    ent = _entitlements_blob(_entitlements_plist("<key>a</key><true/>"))
+    lying = ent[:4] + (0x7FFFFFFF).to_bytes(4, "big") + ent[8:]
+    blob = _superblob_multi([(0, _code_directory()), (5, lying)])
+    facts = describe_native(_write(tmp_path, "l.bin", _signed_macho(blob)))["native"]
+    assert "entitlements" not in facts["signature"]
+
+
+def test_macho_entitlements_values_come_back_bounded(tmp_path: Path) -> None:
+    # A hostile plist cannot balloon the fact: long strings truncate to 256
+    # and lists cap at 16 items.
+    long_string = "<key>s</key><string>" + "A" * 600 + "</string>"
+    long_list = "<key>l</key><array>" + "<string>x</string>" * 20 + "</array>"
+    ent = _entitlements_blob(_entitlements_plist(long_string + long_list))
+    blob = _superblob_multi([(0, _code_directory()), (5, ent)])
+    facts = describe_native(_write(tmp_path, "b.bin", _signed_macho(blob)))["native"]
+    claims = facts["signature"]["entitlements"]
+    assert claims["s"] == "A" * 256
+    assert claims["l"] == ["x"] * 16
+
+
+def test_macho_entitlements_key_count_caps_at_64(tmp_path: Path) -> None:
+    # 70 keys claimed, 64 kept -- and because keys come back sorted, which 64
+    # survive is deterministic.
+    keys = "".join(f"<key>k{i:03}</key><true/>" for i in range(70))
+    ent = _entitlements_blob(_entitlements_plist(keys))
+    blob = _superblob_multi([(0, _code_directory()), (5, ent)])
+    facts = describe_native(_write(tmp_path, "c.bin", _signed_macho(blob)))["native"]
+    claims = facts["signature"]["entitlements"]
+    assert len(claims) == 64
+    assert claims["k000"] is True and claims["k063"] is True
+    assert "k064" not in claims and "k069" not in claims
+
+
 def test_committed_macho_fixture_entry_matches_its_layout() -> None:
     # The committed fixture's LC_MAIN points at its code blob inside __TEXT
     # (vmaddr 0x100000000, fileoff 0), so the mapped entry is a known constant

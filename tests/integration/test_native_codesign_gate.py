@@ -17,6 +17,7 @@ digest against apksigner --print-certs. skip != pass when rcodesign is absent.
 
 from __future__ import annotations
 
+import plistlib
 import re
 import shutil
 import subprocess
@@ -115,3 +116,131 @@ def test_macho_signature_facts_agree_with_rcodesign(tmp_path: Path) -> None:
         assert signature["cd_sha256"] == printed_cd.group(1)
     finally:
         service.close_all()
+
+
+# The claims the gate signs into the fixture: one true boolean (the
+# "debuggable" bit of macOS triage), one false, one string identity and one
+# string list -- the value shapes real entitlements use.
+_ENTITLEMENTS_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+\t<key>com.apple.security.get-task-allow</key>
+\t<true/>
+\t<key>com.apple.security.cs.allow-jit</key>
+\t<false/>
+\t<key>application-identifier</key>
+\t<string>TEAM12345.com.example.minimal</string>
+\t<key>keychain-access-groups</key>
+\t<array>
+\t\t<string>TEAM12345.com.example.shared</string>
+\t</array>
+</dict>
+</plist>
+"""
+
+_EXPECTED_CLAIMS = {
+    "application-identifier": "TEAM12345.com.example.minimal",
+    "com.apple.security.cs.allow-jit": False,
+    "com.apple.security.get-task-allow": True,
+    "keychain-access-groups": ["TEAM12345.com.example.shared"],
+}
+
+
+def _printed_entitlements_xml(stdout: str) -> str | None:
+    """The XML plist rcodesign prints under ``entitlements_plist:``.
+
+    print-signature-info renders the slot-5 blob it extracted as a YAML list
+    of source lines (quoted where leading whitespace matters); joining them
+    back recovers the exact XML the signature carries -- decoded by rcodesign
+    from the binary, independently of the reader under test.
+    """
+    lines = stdout.splitlines()
+    for at, line in enumerate(lines):
+        if line.strip() != "entitlements_plist:":
+            continue
+        collected = []
+        for follow in lines[at + 1 :]:
+            item = follow.strip()
+            if not item.startswith("- "):
+                break
+            item = item[2:]
+            if item.startswith("'") and item.endswith("'"):
+                item = item[1:-1].replace("''", "'")
+            collected.append(item)
+        return "\n".join(collected)
+    return None
+
+
+@pytest.mark.integration
+def test_macho_entitlements_agree_with_rcodesign(tmp_path: Path) -> None:
+    """The signer's capability claims read back claim for claim.
+
+    describe_native now parses the SuperBlob's entitlements slot -- the macOS
+    pair to the Android manifest permissions the APK gate already
+    cross-checks. Here rcodesign (a production signer) embeds a known claim
+    set into the committed fixture; the reader must hand back exactly those
+    claims, and rcodesign's own decode of the blob it wrote
+    (print-signature-info's entitlements_plist) must parse to the same
+    dictionary -- so the reader, the signer and the referee all agree on the
+    bytes and their meaning. A signature written without entitlements must
+    keep the key absent: no claims invented. skip != pass when rcodesign is
+    missing.
+    """
+    rcodesign = shutil.which("rcodesign")
+    if rcodesign is None:
+        pytest.skip("rcodesign not installed — codesign cross-check not run (skip != pass)")
+    if not _MACHO_FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_MACHO_FIXTURE}")
+
+    plain = tmp_path / "plain.macho"
+    result = subprocess.run(
+        [rcodesign, "sign", "--binary-identifier", _IDENTIFIER, str(_MACHO_FIXTURE), str(plain)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+    claims_path = tmp_path / "claims.plist"
+    claims_path.write_text(_ENTITLEMENTS_XML)
+    entitled = tmp_path / "entitled.macho"
+    result = subprocess.run(
+        [
+            rcodesign,
+            "sign",
+            "--binary-identifier",
+            _IDENTIFIER,
+            "--entitlements-xml-file",
+            str(claims_path),
+            str(_MACHO_FIXTURE),
+            str(entitled),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+    service = AnalysisService()
+    try:
+        # No entitlements signed in, none reported: absence is a fact too.
+        assert "entitlements" not in _session_native(service, plain)["signature"]
+
+        claims = _session_native(service, entitled)["signature"]["entitlements"]
+        assert claims == _EXPECTED_CLAIMS
+    finally:
+        service.close_all()
+
+    # The referee: rcodesign re-extracts the slot-5 blob from the signed
+    # binary and prints its XML; parsed, it must equal the reader's dict.
+    info = subprocess.run(
+        [rcodesign, "print-signature-info", str(entitled)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert info.returncode == 0, info.stderr or info.stdout
+    printed_xml = _printed_entitlements_xml(info.stdout)
+    assert printed_xml, info.stdout
+    assert plistlib.loads(printed_xml.encode()) == claims

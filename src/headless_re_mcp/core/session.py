@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import math
+import plistlib
 import re
 import uuid
 import zipfile
@@ -968,9 +969,16 @@ _MACHO_MAX_TRIE_NAME = 512
 _CS_SUPERBLOB_MAGIC = 0xFADE0CC0
 _CS_CODEDIRECTORY_MAGIC = 0xFADE0C02
 _CS_SLOT_CODEDIRECTORY = 0
+# The entitlements slot: an XML plist of the capabilities the signer claims
+# (get-task-allow, allow-jit, disable-library-validation, ...) -- the macOS
+# pair to the Android manifest permissions and the PE UAC manifest.
+_CS_SLOT_ENTITLEMENTS = 5
+_CS_ENTITLEMENTS_MAGIC = 0xFADE7171
 _CS_FLAG_ADHOC = 0x2
 _CS_MAX_BLOBS = 64
 _CS_MAX_NAME = 256
+_CS_MAX_ENTITLEMENTS = 64
+_CS_MAX_ENTITLEMENT_ITEMS = 16
 # An embedded signature is a few KB (ad-hoc) to a few tens of KB (a real CMS
 # chain plus entitlements); this only refuses a pathological datasize.
 _CS_MAX_SIG_BYTES = 4 * 1024 * 1024
@@ -9064,7 +9072,8 @@ def _macho_code_signature(stream: BinaryIO, dataoff: int, datasize: int) -> dict
     where it was blessed), and the digest algorithm. ``cd_sha256`` is the
     SHA-256 over the CodeDirectory blob itself -- the digest Apple's tooling
     derives the cdhash from and what rcodesign prints, so a gate can compare
-    the two hex for hex.
+    the two hex for hex. When the SuperBlob also carries an entitlements slot
+    the parsed claims ride along under ``entitlements``.
 
     Fail-closed and bounded: an unreadable, truncated or foreign blob yields
     None (the image still reports ``signed``), never an exception.
@@ -9080,13 +9089,16 @@ def _macho_code_signature(stream: BinaryIO, dataoff: int, datasize: int) -> dict
         return None
     count = int.from_bytes(blob[8:12], "big")
     cd_at: int | None = None
+    ent_at: int | None = None
     for index in range(min(count, _CS_MAX_BLOBS)):
         entry = 12 + 8 * index
         if entry + 8 > len(blob):
             break
-        if int.from_bytes(blob[entry : entry + 4], "big") == _CS_SLOT_CODEDIRECTORY:
+        slot_type = int.from_bytes(blob[entry : entry + 4], "big")
+        if slot_type == _CS_SLOT_CODEDIRECTORY and cd_at is None:
             cd_at = int.from_bytes(blob[entry + 4 : entry + 8], "big")
-            break
+        elif slot_type == _CS_SLOT_ENTITLEMENTS and ent_at is None:
+            ent_at = int.from_bytes(blob[entry + 4 : entry + 8], "big")
     if cd_at is None or cd_at + 40 > len(blob):
         return None
     if int.from_bytes(blob[cd_at : cd_at + 4], "big") != _CS_CODEDIRECTORY_MAGIC:
@@ -9112,7 +9124,54 @@ def _macho_code_signature(stream: BinaryIO, dataoff: int, datasize: int) -> dict
         team_off = int.from_bytes(cd[48:52], "big")
         if team_off:
             signature["team_id"] = _macho_cs_string(cd, team_off)
+    entitlements = _macho_entitlements(blob, ent_at)
+    if entitlements is not None:
+        signature["entitlements"] = entitlements
     return signature
+
+
+def _macho_entitlements(blob: bytes, ent_at: int | None) -> dict[str, Any] | None:
+    """The signer's capability claims out of the entitlements slot, or None.
+
+    The SuperBlob's slot 5 is a GenericBlob (magic 0xfade7171) wrapping an XML
+    property list: the macOS answer to "what does this code declare it may
+    do" -- get-task-allow (debuggable), allow-jit, disable-library-validation
+    and friends -- read here with stdlib plistlib alone. Keys come back
+    sorted and capped; values are kept as the scalars and scalar lists real
+    entitlements use, anything exotic stringified. Absent slot, foreign magic
+    or a plist that will not parse all yield None: the fact stays honest by
+    staying away.
+    """
+    if ent_at is None or ent_at < 0 or ent_at + 8 > len(blob):
+        return None
+    if int.from_bytes(blob[ent_at : ent_at + 4], "big") != _CS_ENTITLEMENTS_MAGIC:
+        return None
+    length = int.from_bytes(blob[ent_at + 4 : ent_at + 8], "big")
+    if length < 8 or ent_at + length > len(blob):
+        return None
+    try:
+        parsed = plistlib.loads(blob[ent_at + 8 : ent_at + length])
+    except Exception:  # plistlib raises Expat, ValueError, ... on hostile bytes
+        return None
+    if not isinstance(parsed, dict) or not parsed:
+        return None
+    return {
+        str(key)[:_CS_MAX_NAME]: _entitlement_value(parsed[key])
+        for key in sorted(parsed, key=str)[:_CS_MAX_ENTITLEMENTS]
+    }
+
+
+def _entitlement_value(value: Any) -> Any:
+    """A JSON-safe rendering of one entitlement value, bounded."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:_CS_MAX_NAME]
+    if isinstance(value, list):
+        return [_entitlement_value(item) for item in value[:_CS_MAX_ENTITLEMENT_ITEMS]]
+    # dict/bytes/datetime values are legal plist but exotic as entitlements;
+    # a stringified rendering keeps them visible without an open-ended shape.
+    return str(value)[:_CS_MAX_NAME]
 
 
 def _macho_cs_string(cd: bytes, offset: int) -> str | None:
