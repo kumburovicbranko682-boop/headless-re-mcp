@@ -141,6 +141,34 @@ class ProxyAnalysisMixin:
             status=status,
         )
 
+    def proxy_search(
+        self,
+        session_id: str,
+        query: str,
+        case_sensitive: bool = False,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        status: int = 0,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> Result[JsonObject]:
+        return self._proxy_wrap(
+            session_id,
+            "search",
+            session_id,
+            query,
+            case_sensitive=case_sensitive,
+            method=method,
+            host=host,
+            url_contains=url_contains,
+            content_type=content_type,
+            status=status,
+            offset=offset,
+            limit=limit,
+        )
+
     def proxy_flow_get(self, session_id: str, flow_id: str) -> Result[JsonObject]:
         try:
             data = self._proxy.flow_get(session_id, flow_id, self._proxy_artifact_dir(session_id))

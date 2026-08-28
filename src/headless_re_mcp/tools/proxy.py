@@ -87,6 +87,59 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="proxy.search")
+    def proxy_search(
+        session_id: str,
+        query: str,
+        case_sensitive: bool = False,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        status: Annotated[int, Field(ge=0, le=599)] = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Search captured request/response content for a literal string.
+
+        Where proxy.flows and proxy.stats only see a flow's metadata, this reads
+        the retained headers and bodies, so it answers which exchange actually
+        carries a token, an endpoint, a marker or a leaked secret -- the
+        traffic-side twin of static.search / r2.search. It is a literal
+        substring search (case-insensitive unless case_sensitive is true) across,
+        per flow, the response body, request body, response headers, request
+        headers and the URL, in that priority order. The same filters as
+        proxy.flows (method exact verb; host, url_contains, content_type
+        case-insensitive substrings; status exact code, 0 means any; combined
+        with AND) narrow the candidates first, echoed back as filter.
+
+        Answers with matches, each carrying id, method, url, status,
+        content_type, matched_in (locations that hit, priority-ordered),
+        match_count (bounded occurrence tally), snippet (a one-line context
+        window around the first hit) and snippet_from; plus count, total (the
+        matching flows), offset and has_more for paging. captured is every flow
+        in the ring, searched is how many candidates still had body/headers
+        retained, and body_unavailable is how many were body-omitted or evicted
+        so only their URL could be searched -- so a miss reads as "not present"
+        rather than "not retained". The list field is matches, not flows or
+        results, and there is no body field; fetch a hit's full body with
+        proxy.flow.get by its id.
+        """
+        return _dump(
+            analysis.proxy_search(
+                session_id,
+                query,
+                case_sensitive=case_sensitive,
+                method=method,
+                host=host,
+                url_contains=url_contains,
+                content_type=content_type,
+                status=status,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
     @tools.tool(name="proxy.flows")
     def proxy_flows(
         session_id: str,

@@ -816,6 +816,70 @@ def _flow_matches(row: JsonObject, active: JsonObject) -> bool:
     return not ("status" in active and row.get("status") != active["status"])
 
 
+# proxy.search bounds: the query length, the context shown around each hit, the
+# per-flow occurrence tally (so one flow full of the needle cannot dominate the
+# count), and the number of matching flows one reply carries.
+_MAX_SEARCH_QUERY = 1024
+_SEARCH_SNIPPET_CONTEXT = 80
+_MAX_SEARCH_MATCHES_PER_FLOW = 1000
+_MAX_SEARCH_RESULTS = 1000
+
+
+def _headers_text(part: Any) -> str:
+    """One flow part's headers rendered as ``key: value`` lines for searching.
+
+    Kept multi so a duplicated header (several Set-Cookie) is each searchable,
+    and defensive because header containers differ across mitmproxy versions.
+    """
+    headers = getattr(part, "headers", None)
+    if headers is None:
+        return ""
+    try:
+        try:
+            items = headers.items(multi=True)
+        except TypeError:
+            items = headers.items()
+        return "\n".join(f"{key}: {value}" for key, value in items)
+    except Exception:  # noqa: BLE001 - header containers vary by version
+        return ""
+
+
+def _body_text(part: Any) -> str:
+    """A flow part's decoded body as text for substring search.
+
+    ``_har_body`` returns the decompressed bytes; decoding with replacement
+    keeps a text query matchable even when a body is partly binary, and the
+    stored-body cap already bounds the length scanned.
+    """
+    return _har_body(part).decode("utf-8", errors="replace")
+
+
+def _search_snippet(text: str, index: int, needle_len: int) -> str:
+    """A one-line context window around a hit, with ellipses when clipped."""
+    start = max(0, index - _SEARCH_SNIPPET_CONTEXT)
+    end = min(len(text), index + needle_len + _SEARCH_SNIPPET_CONTEXT)
+    fragment = text[start:end].replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    prefix = "\u2026" if start > 0 else ""
+    suffix = "\u2026" if end < len(text) else ""
+    return f"{prefix}{fragment}{suffix}"
+
+
+def _count_occurrences(haystack: str, needle: str, cap: int) -> int:
+    """Count non-overlapping occurrences of ``needle`` in ``haystack``, capped."""
+    if not needle:
+        return 0
+    count = 0
+    start = 0
+    while True:
+        index = haystack.find(needle, start)
+        if index < 0:
+            return count
+        count += 1
+        if count >= cap:
+            return count
+        start = index + len(needle)
+
+
 class ProxyBackend:
     def __init__(self) -> None:
         self._instances: dict[str, _ProxyInstance] = {}
@@ -1032,6 +1096,130 @@ class ProxyBackend:
             result["content_types_truncated"] = True
         if len(status_ordered) > _MAX_STATS_GROUPS:
             result["statuses_truncated"] = True
+        if active:
+            result["filter"] = active
+        return result
+
+    def search(
+        self,
+        session_id: str,
+        query: str,
+        *,
+        case_sensitive: bool = False,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        status: int = 0,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        """Find captured flows whose content contains a literal string.
+
+        proxy.flows and proxy.stats only see a flow's metadata (method, url,
+        host, status, content type); this reads the retained request/response
+        headers and bodies, so it answers the question those cannot -- which
+        exchange actually carries a token, an endpoint, a marker, a leaked
+        secret. It is the traffic-side twin of static.search / r2.search: a
+        literal (case-insensitive by default) substring search across, per flow,
+        the response body, request body, response headers, request headers and
+        the URL, in that priority order. Accepts the same filter surface as
+        proxy.flows (method/host/url_contains/content_type/status) so a caller
+        can search just one host or content type first. Answers with matches,
+        each carrying id, method, url, status, content_type, matched_in (the
+        locations that hit, in the priority order above), match_count (bounded
+        occurrence tally), snippet (a one-line context window around the first
+        hit) and snippet_from (which location it came from), plus count, total
+        (matching flows), offset and has_more for paging. captured is the whole
+        ring, searched is how many candidate flows still had their body/headers
+        retained, and body_unavailable is how many were body-omitted or evicted
+        so only their URL could be searched -- so a miss is legible as "not
+        present" versus "not retained". There is no flows or results field.
+        """
+        inst = self._get(session_id)
+        if not isinstance(query, str) or not query:
+            raise ProxyError("invalid_params", "query is required")
+        if len(query) > _MAX_SEARCH_QUERY:
+            raise ProxyError(
+                "invalid_params", f"query must be at most {_MAX_SEARCH_QUERY} chars"
+            )
+        items = inst.recorder.snapshot()
+        captured = len(items)
+        dropped = 0
+        if items:
+            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
+        active = _flow_filter(method, host, url_contains, content_type, status)
+        candidates = [row for row in items if _flow_matches(row, active)] if active else items
+        needle = query if case_sensitive else query.lower()
+        matches: list[JsonObject] = []
+        searched = 0
+        body_unavailable = 0
+        for summary in candidates:
+            flow_id = str(summary.get("id"))
+            raw = inst.recorder.raw(flow_id)
+            flow = raw if (raw is not None and raw is not _OMITTED_BODY) else None
+            if flow is None:
+                body_unavailable += 1
+            else:
+                searched += 1
+            # Priority order: the most informative location first, so the
+            # snippet is taken from the response body when it matched there and
+            # matched_in reads highest-value first. URL is always searchable.
+            haystacks: list[tuple[str, str]] = []
+            if flow is not None:
+                req = getattr(flow, "request", None)
+                resp = getattr(flow, "response", None)
+                haystacks.append(("response_body", _body_text(resp)))
+                haystacks.append(("request_body", _body_text(req)))
+                haystacks.append(("response_headers", _headers_text(resp)))
+                haystacks.append(("request_headers", _headers_text(req)))
+            haystacks.append(("url", str(summary.get("url") or "")))
+            matched_in: list[str] = []
+            match_count = 0
+            snippet = ""
+            snippet_from = ""
+            for location, text in haystacks:
+                hay = text if case_sensitive else text.lower()
+                index = hay.find(needle)
+                if index < 0:
+                    continue
+                matched_in.append(location)
+                match_count += _count_occurrences(hay, needle, _MAX_SEARCH_MATCHES_PER_FLOW)
+                if not snippet:
+                    snippet = _search_snippet(text, index, len(query))
+                    snippet_from = location
+            if not matched_in:
+                continue
+            matches.append(
+                {
+                    "id": flow_id,
+                    "method": summary.get("method"),
+                    "url": summary.get("url"),
+                    "status": summary.get("status"),
+                    "content_type": summary.get("content_type"),
+                    "matched_in": matched_in,
+                    "match_count": match_count,
+                    "snippet": snippet,
+                    "snippet_from": snippet_from,
+                }
+            )
+        total = len(matches)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_SEARCH_RESULTS))
+        window = matches[start : start + cap]
+        result: JsonObject = {
+            "query": query,
+            "case_sensitive": bool(case_sensitive),
+            "matches": window,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
+            "captured": captured,
+            "dropped": dropped,
+            "searched": searched,
+            "body_unavailable": body_unavailable,
+        }
         if active:
             result["filter"] = active
         return result
