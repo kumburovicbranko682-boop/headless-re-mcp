@@ -145,6 +145,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "r2.symbols",
         "r2.entrypoints",
         "r2.relocations",
+        "r2.classes",
         "r2.disasm",
         "r2.xrefs",
         "ghidra.analyze",

@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **335（217 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **336（218 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -368,6 +368,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
   `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
   `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
+
+### 新增（radare2 类结构）
+
+- 新增 `r2.classes`:把 radare2 线补上"对象结构"这一层——`r2.symbols`/`r2.functions` 给的是扁平的名字表,
+  这个跑 `icj`,恢复二进制自带的类元数据:C++ RTTI、Objective-C、Swift、Java、.NET 的类,连同挂在类上的
+  方法(及虚表/方法地址)。原生库里真正的 API 面与派发表就长在这儿,所以拿到一个 C++/ObjC 目标先看它,
+  ghidra 线没有对应物。它直接读类元数据、不跑分析 pass,故一个不带类的纯 C 二进制回空 items。走与
+  `r2.sections`/`r2.symbols` 同一条通用 `*j` 通道:回 items,每条带 classname、addr 与 methods(每个方法各自
+  name/addr/type),外加 count;类自身的 addr 映射成 address(va/rva/module),嵌套方法的 addr 仍是 radare2 给的
+  整数。无 classes、truncated 或 has_more 字段;命中 4096 上限时置 items_truncated/items_total/items_limit。
+  命令 `icj` 已并入白名单,组合变体(如 `icj @@ sym.*`)仍被拒。
 
 ### 新增（Android 自定义权限声明）
 

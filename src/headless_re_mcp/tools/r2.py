@@ -160,6 +160,31 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_relocations(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.classes")
+    def r2_classes(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Classes radare2 recovered from the binary's own metadata.
+
+        Runs ``icj``. Where r2.symbols/r2.functions give a flat name list,
+        this recovers object structure: the C++ RTTI, Objective-C, Swift,
+        Java and .NET classes a binary carries, each with the methods (and
+        vtable/method addresses) that hang off it. On a native library that
+        is where the real API and dispatch tables live, so this is the first
+        map to reach for on a C++/ObjC target -- there is no ghidra-line
+        counterpart. It reads the binary's class metadata directly and runs
+        no analysis pass, so a plain C binary that carries none answers with
+        an empty items list.
+
+        Answers with items, each carrying classname, addr and methods (each
+        method its own name, addr and type), plus count. The class's own
+        addr is mapped to address (va/rva/module); the nested method addr
+        values are left as radare2's integers. There is no integer address,
+        classes, truncated or has_more field. Read items_truncated,
+        items_total and items_limit when the list filled the cap (4096).
+        """
+        return _dump(analysis.r2_classes(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,
