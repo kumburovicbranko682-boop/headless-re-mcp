@@ -141,6 +141,20 @@ def test_symbols_resolve_rejects_an_empty_expression(service: Any, session_id: s
     assert _code(service.symbols_resolve(session_id, "")) == "invalid_params"
 
 
+def test_symbols_resolve_rejects_an_oversized_expression(service: Any, session_id: str) -> None:
+    # The symbols.resolve schema caps expression at 512 chars and it is the
+    # chokepoint dynamic.trace_api_arguments resolves through; the agent
+    # transport skips that check, so an unbounded string would be forwarded
+    # whole to the worker.
+    assert _code(service.symbols_resolve(session_id, "a" * 513)) == "invalid_params"
+
+
+def test_symbols_resolve_takes_an_expression_at_the_limit(service: Any, session_id: str) -> None:
+    # 512 chars is valid and, with no debugger attached, reaches the delegate
+    # rather than being rejected -- proving the bound is inclusive.
+    assert _code(service.symbols_resolve(session_id, "a" * 512)) == "backend_unavailable"
+
+
 def test_modules_dump_rejects_a_non_positive_size(service: Any, session_id: str) -> None:
     assert _code(service.modules_dump(session_id, 0x140000000, size=0)) == "invalid_params"
 

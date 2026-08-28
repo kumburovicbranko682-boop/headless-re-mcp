@@ -388,12 +388,18 @@ class DynamicInspectMixin:
         *,
         timeout: float = 30.0,
     ) -> Result[JsonObject]:
-        if not isinstance(expression, str) or not expression:
+        # The symbols.resolve schema caps expression at 512 chars, and it is the
+        # single chokepoint dynamic.trace_api_arguments also resolves through --
+        # that tool declares no bound of its own. The agent transport hands the
+        # handler raw model arguments, so without this an arbitrarily long string
+        # would be forwarded whole to worker.request; 512 chars is ample for any
+        # real symbol expression.
+        if not isinstance(expression, str) or not 1 <= len(expression) <= 512:
             return Result[JsonObject](
                 ok=False,
                 error=RpcError(
                     code="invalid_params",
-                    message="expression must be a non-empty string",
+                    message="expression must be a non-empty string up to 512 characters",
                 ),
             )
         return self._dynamic_request(
