@@ -162,6 +162,13 @@ class SessionRegistry:
                 metadata["pe"]["imports"] = imports
                 metadata["pe"]["delay_imports"] = delay_imports
                 metadata["pe"]["exports"] = exports
+                # The import-table fingerprint threat intel pivots on
+                # (pefile/VirusTotal/YARA's imphash). Absent rather than
+                # wrong when there is nothing to hash or an ordinal only
+                # pefile's bundled tables could name.
+                imphash = _pe_imphash(imports)
+                if imphash is not None:
+                    metadata["pe"]["imphash"] = imphash
                 # Exports whose implementation lives in another DLL -- the PE
                 # pair to a Mach-O reexport. Empty is a real answer (an EXE,
                 # or a DLL that implements everything it exports).
@@ -5093,6 +5100,49 @@ def _pe_capability_surface(
     delay = _pe_delay_imports(raw, magic, dir_count, dir_off, sections, image_base)
     exports, forwarders = _pe_exports(raw, dir_count, dir_off, sections)
     return imports, delay, exports, forwarders
+
+
+# The imphash convention (pefile's get_imphash, the fingerprint VirusTotal
+# and YARA's pe.imphash use): MD5 over "lib.func" pairs in import-table
+# order, names lowercased, the .dll/.ocx/.sys extension dropped from the
+# library. Ordinal imports hash as "ordN" -- except that pefile names
+# ordinals from bundled lookup tables for these three libraries; a hash we
+# computed without those tables would silently disagree with the whole
+# ecosystem, so a PE importing from them by ordinal carries no imphash at
+# all rather than a wrong one.
+_PE_IMPHASH_EXTS = ("dll", "ocx", "sys")
+_PE_IMPHASH_ORD_TABLE_DLLS = {"ws2_32.dll", "wsock32.dll", "oleaut32.dll"}
+
+
+def _pe_imphash(imports: list[dict[str, Any]]) -> str | None:
+    """The import-table fingerprint, or None when it cannot match the convention.
+
+    Computed from the already-parsed import surface: linkers emit the import
+    table in an order that tracks the source's link line rather than the
+    binary's compilation date or padding, so two builds of one family hash
+    alike -- which is exactly why threat intel pivots on it. No imports (or
+    an ordinal import this reader cannot name the way pefile's tables do)
+    yields None: absence, never a hash the rest of the world disagrees with.
+    """
+    parts: list[str] = []
+    for entry in imports:
+        dll = str(entry.get("dll", "")).lower()
+        if not dll:
+            continue
+        libname, dot, ext = dll.rpartition(".")
+        if not dot or ext not in _PE_IMPHASH_EXTS:
+            libname = dll
+        for func in entry["functions"]:
+            if func.startswith("#"):
+                if dll in _PE_IMPHASH_ORD_TABLE_DLLS:
+                    return None
+                name = f"ord{func[1:]}"
+            else:
+                name = func.lower()
+            parts.append(f"{libname}.{name}")
+    if not parts:
+        return None
+    return hashlib.md5(",".join(parts).encode("utf-8")).hexdigest()  # noqa: S324
 
 
 def _pe_import_thunks(

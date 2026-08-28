@@ -31,6 +31,7 @@ from headless_re_mcp.core.session import (
     _pe_debug_fingerprint,
     _pe_hardening_facts,
     _pe_high_entropy_sections,
+    _pe_imphash,
     _pe_load_config_facts,
     _pe_manifest_facts,
     _pe_overlay,
@@ -696,6 +697,74 @@ def _pe_with_imports_exports(
 
 # A DOS/PE-header-sized nested image: MZ padded past the sniffer's 0x40 floor.
 _NESTED_PE = b"MZ" + b"\x90" * 62 + b"stage-two body"
+
+
+class TestPeImphash:
+    """_pe_imphash computes the pefile-convention import fingerprint.
+
+    MD5 over "lib.func" pairs in table order, lowercased, the .dll/.ocx/.sys
+    extension dropped, plain ordinals as ordN -- and None (absence, never a
+    hash the rest of the world disagrees with) when there is nothing to hash
+    or an ordinal only pefile's bundled name tables could resolve.
+    """
+
+    def test_hashes_names_in_table_order_lowercased(self) -> None:
+        imports = [
+            {"dll": "KERNEL32.dll", "functions": ["VirtualAlloc", "Sleep"]},
+            {"dll": "ADVAPI32.DLL", "functions": ["RegOpenKeyExW"]},
+        ]
+        expected = hashlib.md5(  # noqa: S324
+            b"kernel32.virtualalloc,kernel32.sleep,advapi32.regopenkeyexw"
+        ).hexdigest()
+        assert _pe_imphash(imports) == expected
+
+    def test_only_the_known_extensions_are_dropped(self) -> None:
+        # .ocx and .sys strip like .dll; an unlisted extension (or a dotless
+        # name) stays, matching pefile's rsplit-and-check.
+        imports = [
+            {"dll": "driver.SYS", "functions": ["Init"]},
+            {"dll": "control.ocx", "functions": ["Load"]},
+            {"dll": "api-ms-win-core-com-l1-1-0", "functions": ["CoCreateInstance"]},
+            {"dll": "odd.bin", "functions": ["Go"]},
+        ]
+        expected = hashlib.md5(  # noqa: S324
+            b"driver.init,control.load,"
+            b"api-ms-win-core-com-l1-1-0.cocreateinstance,odd.bin.go"
+        ).hexdigest()
+        assert _pe_imphash(imports) == expected
+
+    def test_plain_ordinals_hash_as_ordn(self) -> None:
+        imports = [{"dll": "custom.dll", "functions": ["#7", "Named"]}]
+        expected = hashlib.md5(b"custom.ord7,custom.named").hexdigest()  # noqa: S324
+        assert _pe_imphash(imports) == expected
+
+    def test_a_table_named_ordinal_yields_no_hash(self) -> None:
+        # pefile resolves ws2_32/wsock32/oleaut32 ordinals through bundled
+        # tables this reader does not carry: hashing ordN instead would
+        # silently disagree with the whole ecosystem, so the fact is absent.
+        for dll in ("ws2_32.dll", "WSOCK32.dll", "oleaut32.dll"):
+            imports = [{"dll": dll, "functions": ["#23"]}]
+            assert _pe_imphash(imports) is None, dll
+        # By-name imports from the same libraries are still hashable.
+        by_name = [{"dll": "ws2_32.dll", "functions": ["connect"]}]
+        assert _pe_imphash(by_name) == hashlib.md5(b"ws2_32.connect").hexdigest()  # noqa: S324
+
+    def test_no_imports_yields_no_hash(self) -> None:
+        assert _pe_imphash([]) is None
+        assert _pe_imphash([{"dll": "", "functions": ["Orphan"]}]) is None
+
+    def test_session_over_a_pe_carries_the_imphash(self, tmp_path: Path) -> None:
+        path = tmp_path / "fingerprinted.exe"
+        path.write_bytes(
+            _pe_with_imports_exports([("KERNEL32.dll", ["VirtualAlloc", 7])], [])
+        )
+        session = SessionRegistry().create(str(path))
+        expected = hashlib.md5(b"kernel32.virtualalloc,kernel32.ord7").hexdigest()  # noqa: S324
+        assert session.metadata["pe"]["imphash"] == expected
+        # And a PE with no import directory carries no imphash key at all.
+        bare = tmp_path / "bare.exe"
+        bare.write_bytes(_native_pe())
+        assert "imphash" not in SessionRegistry().create(str(bare)).metadata["pe"]
 
 
 class TestPeCapabilitySurface:

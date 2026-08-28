@@ -18,6 +18,7 @@ pefile ships in the project's ``pe`` extra, so this needs no system tool. skip
 
 from __future__ import annotations
 
+import hashlib
 import struct
 from pathlib import Path
 
@@ -422,3 +423,74 @@ def test_forwarded_exports_agree_with_pefile(tmp_path: Path, magic: int) -> None
     assert reader_exports == expected_exports
     # And the plain export is on nobody's forwarder list.
     assert "LocalRealFn" not in {item["name"] for item in reader_fwd}
+
+
+def _session_imphash(path: Path) -> str | None:
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(path))
+        assert created.ok, created.error
+        return created.data["session"]["metadata"]["pe"].get("imphash")
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("magic", [0x20B, 0x10B], ids=["pe32+", "pe32"])
+def test_imphash_agrees_with_pefile(tmp_path: Path, magic: int) -> None:
+    """The import-table fingerprint against pefile's own get_imphash.
+
+    imphash is the convention threat intel pivots on (VirusTotal, YARA's
+    pe.imphash), and pefile's implementation *is* that convention -- so the
+    session's hash must equal it byte for byte on a table mixing mixed-case
+    DLL names, a mixed-case function, and a plain-DLL ordinal (which the
+    convention hashes as ordN). Both magics, since the thunk width and
+    ordinal flag differ.
+    """
+    pefile_mod = _pefile()
+    if pefile_mod is None:
+        pytest.skip("pefile not installed — PE imphash gate not run (skip != pass)")
+
+    data = _pe_with_imports_exports(
+        [
+            ("KERNEL32.dll", ["VirtualAlloc", "Sleep"]),
+            ("ADVAPI32.dll", ["RegOpenKeyExW"]),
+            ("custom.dll", [7, "Named"]),
+        ],
+        [],
+        magic=magic,
+    )
+    binary = tmp_path / f"fingerprint_{magic:x}.exe"
+    binary.write_bytes(data)
+
+    pe = pefile_mod.PE(data=data)  # type: ignore[attr-defined]
+    expected = pe.get_imphash()
+    assert expected, "pefile computed no imphash from the planted table"
+    assert _session_imphash(binary) == expected
+
+
+@pytest.mark.integration
+def test_a_table_named_ordinal_withholds_the_imphash(tmp_path: Path) -> None:
+    """An ordinal only pefile's bundled tables can name yields no session hash.
+
+    pefile resolves a ws2_32 ordinal to its real function name through a
+    lookup table this reader does not carry; hashing ordN instead would
+    produce a value the rest of the ecosystem disagrees with. The referee
+    proves the divergence is real -- pefile's hash over the resolved name
+    differs from a hash over ordN -- and the session answers with absence.
+    """
+    pefile_mod = _pefile()
+    if pefile_mod is None:
+        pytest.skip("pefile not installed — PE imphash gate not run (skip != pass)")
+
+    data = _pe_with_imports_exports([("ws2_32.dll", [23, "connect"])], [])
+    binary = tmp_path / "socket_ordinal.exe"
+    binary.write_bytes(data)
+
+    pe = pefile_mod.PE(data=data)  # type: ignore[attr-defined]
+    resolved = pe.get_imphash()
+    naive = hashlib.md5(b"ws2_32.ord23,ws2_32.connect").hexdigest()  # noqa: S324
+    # pefile really names ordinal 23 from its table (it is not ord23), so a
+    # naive hash would disagree with the convention -- absence is correct.
+    assert resolved != naive
+    assert _session_imphash(binary) is None
