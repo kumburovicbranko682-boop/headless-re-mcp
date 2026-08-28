@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（六个测试假设可选包未安装,装上 android/proxy extras 即反转失败）
+
+- CI 只装 `test,dev,web`,所以这些用例一直"碰巧"绿:一旦按 README 装
+  `.[android]` 或 `.[proxy]` 再跑套件,断言全部反转(availability 变 True、
+  `_require` 不再抛、真 DumpMaster 被拉起导致 timeout)。改为用
+  `monkeypatch.setitem(sys.modules, "<pkg>", None)` 显式模拟缺席,两种环境下
+  语义一致:
+  - `test_apk_client_parse_layer.py`:`test_available_is_false_when_androguard_is_absent`、
+    `test_require_reports_capability_unavailable_without_androguard`;
+  - `test_apk_client_paths.py`:`test_without_androguard_the_client_is_unavailable`;
+  - `test_proxy_client_paths.py`:`test_backend_check_available_reports_and_caches`、
+    `test_instance_start_reports_a_thread_that_fails_to_launch_mitmproxy`;
+  - `test_proxy_client_guard_paths.py`:`test_instance_run_records_an_import_failure`
+    (原先还硬断言 `"mitmproxy" not in sys.modules`)。
+  四个文件 147 例在"装了真包"与"未装"两种环境下均过。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

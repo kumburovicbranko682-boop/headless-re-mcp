@@ -411,8 +411,11 @@ def test_instance_start_refuses_an_unbindable_port(monkeypatch: pytest.MonkeyPat
 def test_instance_start_reports_a_thread_that_fails_to_launch_mitmproxy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # mitmproxy is absent, so the real _run raises ImportError, sets _error, and
+    # Blank out mitmproxy so the real _run raises ImportError, sets _error, and
     # start() surfaces it as backend_error -- exercising _run's except/finally.
+    # (With the proxy extra installed a bare "absent" assumption would instead
+    # boot a real DumpMaster and time out.)
+    monkeypatch.setitem(sys.modules, "mitmproxy", None)
     monkeypatch.setattr(proxy_client, "_port_accepts", lambda host, port, timeout=0.25: False)
     monkeypatch.setattr(proxy_client, "_port_bindable", lambda host, port: True)
     inst = _ProxyInstance("127.0.0.1", 8080)
@@ -604,7 +607,12 @@ def test_instance_stop_drains_while_the_proxy_thread_is_alive() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_backend_check_available_reports_and_caches() -> None:
+def test_backend_check_available_reports_and_caches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Simulate absence explicitly instead of assuming mitmproxy is not
+    # installed: with the proxy extra present the bare assumption inverts.
+    monkeypatch.setitem(sys.modules, "mitmproxy", None)
     backend = ProxyBackend()
     with pytest.raises(ProxyError) as exc:
         backend.start("s")  # mitmproxy absent -> capability_unavailable
