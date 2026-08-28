@@ -141,3 +141,26 @@ def test_web_open_refuses_a_file_url_before_reserving_the_slot(
         backend.open("s", "file:///etc/passwd")
     assert excinfo.value.code == "invalid_params"
     assert "s" not in backend._sessions
+
+
+def test_web_open_rejects_a_non_web_url_before_the_capability_gate() -> None:
+    """A bad url reads as invalid_params even where Playwright is absent.
+
+    The sibling above stubs ``_check_available`` to a no-op, so it proves the
+    scheme check precedes the *slot reservation* -- but with the gate stubbed
+    out it cannot see the *capability gate*'s order at all, and its docstring's
+    claim that the guard "holds even where Playwright is not installed" went
+    untested (and was in fact false: ``open`` used to run ``_check_available``
+    first). This forces the gate live but unavailable (``_available = False``,
+    as on a host with no Playwright) and asserts the non-web url still fails as
+    invalid_params, not capability_unavailable. An agent routes on code, and
+    "fix the url" is a different fix from "install the backend"; navigate,
+    proxy.start, frida.spawn and jadx.decompile all reject caller input before
+    their capability gate, and open now matches them.
+    """
+    backend = WebBackend()
+    backend._available = False  # host without Playwright; the gate is live, not stubbed
+    with pytest.raises(WebError) as excinfo:
+        backend.open("s", "file:///etc/passwd")
+    assert excinfo.value.code == "invalid_params"
+    assert "s" not in backend._sessions

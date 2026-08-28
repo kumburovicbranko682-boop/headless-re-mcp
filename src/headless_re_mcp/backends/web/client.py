@@ -485,11 +485,19 @@ class WebBackend:
     def open(
         self, session_id: str, url: str, *, headless: bool = True, timeout: float = 30.0
     ) -> JsonObject:
-        self._check_available()
+        # Validate caller input before the capability gate, the same order
+        # navigate uses and that proxy.start / frida.spawn / jadx.decompile /
+        # apk.methods settled on: a non-http (or over-long) url is the caller's
+        # mistake and must read as invalid_params, not be masked as
+        # capability_unavailable on a host where playwright happens to be
+        # absent -- an agent routes on code, and "fix the url" and "install the
+        # backend" are different fixes. Both helpers are pure, so running them
+        # ahead of the import probe is free.
         # An empty target opens a blank page and never reaches goto; anything
         # else must be http(s) before a browser (and its driver) is spent on it.
         target = _require_http_url(url) if (url or "").strip() else ""
         timeout = _bound_nav_timeout(timeout)
+        self._check_available()
 
         with self._lock:
             if session_id in self._sessions:
