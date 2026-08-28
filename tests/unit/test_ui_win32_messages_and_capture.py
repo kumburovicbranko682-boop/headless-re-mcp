@@ -636,6 +636,29 @@ def test_close_refuses_unknown_methods_and_broken_rects(
     assert broken.value.code == "backend_error"
 
 
+@pytest.mark.parametrize("method", [5, 1.5, [1], {"a": 1}, b"nc_close", True, False])
+def test_close_refuses_a_non_string_method_before_any_message(
+    monkeypatch: pytest.MonkeyPatch,
+    method: Any,
+) -> None:
+    # A truthy non-string used to reach (method or ...).strip() and raise a raw
+    # AttributeError the UI boundary filed as an internal_error; it must be the
+    # invalid_params caller fault it is, and no window message may be sent.
+    user32 = _FakeUser32(_table())
+    _pin(monkeypatch, user32)
+    with pytest.raises(UiPidBoundaryError) as refused:
+        uw.close_hwnd(5, ALLOWED, method=method)
+    assert refused.value.code == "invalid_params"
+    assert refused.value.details["got"] == type(method).__name__
+    assert user32.sent == [] and user32.posted == []
+
+
+def test_close_defaults_a_blank_method_to_nc_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    user32 = _FakeUser32(_table())
+    _pin(monkeypatch, user32)
+    assert uw.close_hwnd(5, ALLOWED, method="")["backend"] == "win32_nc_close_sendmessage"
+
+
 def test_a_cloaked_window_is_revealed_without_activation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

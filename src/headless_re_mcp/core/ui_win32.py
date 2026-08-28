@@ -457,6 +457,19 @@ def close_hwnd(
     messages; that is an app limitation, not a foreground requirement.
     """
     require_allowed_hwnd(hwnd, allowed_pids)
+    # method is typed str at the ui.window.close tool boundary, but the agent and
+    # OpenAI-bridge transports bind it from model output with no pydantic
+    # coercion. The old (method or "nc_close").strip() returned the raw value for
+    # a truthy non-string (an int, list or dict), so .strip() raised an
+    # AttributeError the UI boundary filed as an internal_error incident. Reject a
+    # non-string as the invalid_params caller fault it is, while None and a blank
+    # string still fall back to the nc_close default.
+    if method is not None and not isinstance(method, str):
+        raise UiPidBoundaryError(
+            "invalid_params",
+            "close method must be nc_close|syscommand|wm_close",
+            got=type(method).__name__,
+        )
     key = (method or "nc_close").strip().casefold()
     if key not in {"nc_close", "syscommand", "wm_close", "close"}:
         raise UiPidBoundaryError(
