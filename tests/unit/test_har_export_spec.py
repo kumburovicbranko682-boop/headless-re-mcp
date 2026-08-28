@@ -57,8 +57,18 @@ _REQUIRED_RESPONSE = {
 _REQUIRED_TIMINGS = {"send", "wait", "receive"}
 
 
+def _is_number(value: Any) -> bool:
+    # bool is an int subclass, but the spec's numeric members are never booleans;
+    # excluding it makes a stray True/False for a size or time count a failure.
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _assert_valid_har(text: str) -> dict[str, Any]:
-    doc = json.loads(text)
+    doc: dict[str, Any] = json.loads(text)
     log = doc["log"]
     assert log["version"] == "1.2"
     assert log["creator"]["name"] == "headless-re-mcp"
@@ -66,12 +76,38 @@ def _assert_valid_har(text: str) -> dict[str, Any]:
     assert isinstance(log["entries"], list)
     for entry in log["entries"]:
         assert _REQUIRED_ENTRY.issubset(entry), f"entry missing members: {entry}"
-        assert _REQUIRED_REQUEST.issubset(entry["request"])
-        assert _REQUIRED_RESPONSE.issubset(entry["response"])
-        assert {"size", "mimeType"}.issubset(entry["response"]["content"])
+        request = entry["request"]
+        response = entry["response"]
+        content = response["content"]
+        assert _REQUIRED_REQUEST.issubset(request)
+        assert _REQUIRED_RESPONSE.issubset(response)
+        assert {"size", "mimeType"}.issubset(content)
         assert _REQUIRED_TIMINGS.issubset(entry["timings"])
+        # Presence is not validity: the 1.2 spec also fixes each member's TYPE,
+        # and har-validator / Chrome DevTools reject the log on a mismatch. A
+        # regression that turned headers into an object, or a size/time into a
+        # string, would keep every issubset() above green while breaking the
+        # interop this file exists to protect -- so pin the types too.
+        assert _is_number(entry["time"]) and entry["time"] >= 0, entry["time"]
+        for member in ("method", "url", "httpVersion"):
+            assert isinstance(request[member], str), (member, request[member])
+        for member in ("cookies", "headers", "queryString"):
+            assert isinstance(request[member], list), (member, request[member])
+        assert _is_int(request["headersSize"]) and _is_int(request["bodySize"])
+        assert _is_int(response["status"]), response["status"]
+        for member in ("statusText", "httpVersion", "redirectURL"):
+            assert isinstance(response[member], str), (member, response[member])
+        for member in ("cookies", "headers"):
+            assert isinstance(response[member], list), (member, response[member])
+        assert _is_int(response["headersSize"]) and _is_int(response["bodySize"])
+        assert isinstance(content, dict)
+        assert _is_int(content["size"]) and isinstance(content["mimeType"], str)
+        assert isinstance(entry["cache"], dict), entry["cache"]
+        assert isinstance(entry["timings"], dict)
+        for phase in _REQUIRED_TIMINGS:
+            assert _is_number(entry["timings"][phase]), (phase, entry["timings"][phase])
         # Each queryString member must carry the spec's name/value pair.
-        for param in entry["request"]["queryString"]:
+        for param in request["queryString"]:
             assert {"name", "value"}.issubset(param), f"malformed queryString: {param}"
         # startedDateTime must be a real ISO 8601 instant, not a placeholder.
         datetime.fromisoformat(entry["startedDateTime"])
@@ -93,6 +129,40 @@ def test_har_entry_is_spec_complete_and_carries_the_summary_fields() -> None:
     assert entry["response"]["content"]["mimeType"] == "application/json"
     # Chrome's own extension key, so the browser capture keeps the resource hint.
     assert entry["_resourceType"] == "XHR"
+
+
+def test_har_entry_members_have_the_spec_mandated_types() -> None:
+    """Spec-validity is about types, not just presence.
+
+    ``_assert_valid_har`` now enforces this across every export test; pin the
+    contract here directly so the reason is legible: HAR 1.2 requires
+    ``time``/sizes to be numbers, ``headers``/``cookies``/``queryString`` to be
+    arrays, ``cache``/``timings`` to be objects, and the string members to be
+    strings. A viewer rejects the whole log on any mismatch, so a refactor that
+    (say) emitted ``headers`` as an object or ``time`` as ``"0"`` must fail.
+    """
+    entry = har_entry(
+        method="GET",
+        url="https://example.com/1?a=1",
+        status=200,
+        mime_type="text/html",
+        response_body_size=42,
+    )
+    assert _is_number(entry["time"]) and entry["time"] >= 0
+    assert isinstance(entry["request"]["headers"], list)
+    assert isinstance(entry["request"]["cookies"], list)
+    assert isinstance(entry["request"]["queryString"], list)
+    assert isinstance(entry["response"]["headers"], list)
+    assert isinstance(entry["cache"], dict)
+    assert isinstance(entry["timings"], dict)
+    assert all(_is_number(entry["timings"][phase]) for phase in _REQUIRED_TIMINGS)
+    assert _is_int(entry["response"]["status"])
+    assert _is_int(entry["response"]["content"]["size"])
+    assert _is_int(entry["response"]["bodySize"])
+    assert isinstance(entry["response"]["content"]["mimeType"], str)
+    # A full round-trip through the shared validator, which now checks all of the
+    # above on every entry of both exporters.
+    _assert_valid_har(json.dumps(build_har([entry])))
 
 
 def test_har_entry_tolerates_missing_status_and_url() -> None:
