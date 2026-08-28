@@ -83,7 +83,13 @@ def test_available_is_true_when_androguard_imports(monkeypatch: pytest.MonkeyPat
 
 
 def test_available_is_false_when_androguard_is_absent() -> None:
-    # androguard is not installed in this environment; no fake is set up here.
+    # No fake is set up here: this exercises the real import-failure path, which
+    # only exists when androguard is genuinely absent. When the optional [android]
+    # extra happens to be installed, skip rather than fail -- matching the adb
+    # degradation test's skip-when-present guard so the suite is deterministic in
+    # both configurations instead of hard-failing on a present optional backend.
+    if ApkClient().available:
+        pytest.skip("androguard installed — import-failure path not exercised (skip != pass)")
     assert ApkClient().available is False
 
 
@@ -91,7 +97,11 @@ def test_available_is_false_when_androguard_is_absent() -> None:
 
 
 def test_require_reports_capability_unavailable_without_androguard(tmp_path: Path) -> None:
-    client = ApkClient()  # available False
+    client = ApkClient()  # available False when the optional [android] extra is absent
+    if client.available:
+        pytest.skip(
+            "androguard installed — capability_unavailable path needs it absent (skip != pass)"
+        )
     with pytest.raises(ApkError) as caught:
         client.open(_apk_file(tmp_path))
     assert caught.value.code == "capability_unavailable"

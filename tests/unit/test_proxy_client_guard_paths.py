@@ -15,6 +15,7 @@ module injected exactly where the real one would be imported.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import sys
 import threading
@@ -455,7 +456,15 @@ def test_instance_run_falls_back_when_the_constructor_signature_differs(
 
 
 def test_instance_run_records_an_import_failure() -> None:
-    """With mitmproxy absent, the run thread records the import error."""
+    """With mitmproxy absent, the run thread records the import error.
+
+    When the optional [proxy] extra is installed, _run imports mitmproxy fine and
+    starts a real DumpMaster whose event loop outlives the 5s join -- so skip
+    rather than hang/fail, matching the adb degradation test's skip-when-present
+    guard and keeping the suite deterministic whether or not mitmproxy is present.
+    """
+    if importlib.util.find_spec("mitmproxy") is not None:
+        pytest.skip("mitmproxy installed — import-failure path not exercised (skip != pass)")
     assert "mitmproxy" not in sys.modules
     inst = _free_instance()
     _run_in_thread(inst)
