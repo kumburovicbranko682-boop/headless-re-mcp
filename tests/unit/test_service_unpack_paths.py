@@ -44,6 +44,19 @@ def _plant(service: AnalysisService, session_id: str, *, cancelled: bool) -> Non
     service._store_unpack_session(state)
 
 
+def _plant_phase(
+    service: AnalysisService, session_id: str, phase: UnpackPhase
+) -> None:
+    state = create_unpack_session(session_id, route="unpack")
+    if phase in {UnpackPhase.RUNNING, UnpackPhase.OEP_CANDIDATE}:
+        state = transition(state, UnpackPhase.RUNNING, event="running", message="under way")
+    if phase == UnpackPhase.OEP_CANDIDATE:
+        state = transition(
+            state, UnpackPhase.OEP_CANDIDATE, event="scored", message="candidates"
+        )
+    service._store_unpack_session(state)
+
+
 # --- stub coupling (standalone dump analysis) --------------------------------
 
 
@@ -183,3 +196,78 @@ def test_score_oep_appends_timeline_for_a_non_running_session(tmp_path: Path) ->
 
     assert result.ok and result.data is not None
     assert result.data["unpack"]["phase"] == UnpackPhase.DETECTED.value
+
+
+# --- confirm_oep arms --------------------------------------------------------
+
+
+def test_confirm_oep_rejects_a_non_boolean_auto_dump(tmp_path: Path) -> None:
+    service, _worker, session_id = _open_session(tmp_path)
+
+    result = service.unpack_confirm_oep(session_id, oep_rva=0x1000, auto_dump="yes")  # type: ignore[arg-type]
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
+
+
+def test_confirm_oep_fails_a_timed_out_session(tmp_path: Path) -> None:
+    service, _worker, session_id = _open_session(tmp_path)
+    state = create_unpack_session(session_id, route="unpack")
+    state = transition(state, UnpackPhase.RUNNING, event="running", message="under way")
+    state = dataclasses.replace(
+        state, deadline_at=datetime.now(UTC) - timedelta(seconds=1)
+    )
+    service._store_unpack_session(state)
+
+    result = service.unpack_confirm_oep(session_id, oep_rva=0x1000)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "unpack_timeout"
+
+
+def test_confirm_oep_refuses_a_phase_before_running(tmp_path: Path) -> None:
+    service, _worker, session_id = _open_session(tmp_path)
+    _plant_phase(service, session_id, UnpackPhase.DETECTED)
+
+    result = service.unpack_confirm_oep(session_id, oep_rva=0x1000)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_phase"
+
+
+def test_confirm_oep_records_confirmation_in_oep_candidate_phase(tmp_path: Path) -> None:
+    service, worker, session_id = _open_session(tmp_path)
+    _plant_phase(service, session_id, UnpackPhase.OEP_CANDIDATE)
+
+    result = service.unpack_confirm_oep(
+        session_id, oep_rva=0x1000, module_base=worker.module_base
+    )
+
+    assert result.ok and result.data is not None
+    assert result.data["role"] == "confirmed"
+    assert result.data["auto_dump"] is False
+    assert result.data["confirmed_oep_rva"] == 0x1000
+
+
+def test_confirm_oep_running_with_auto_dump_advances_to_dumped(tmp_path: Path) -> None:
+    service, worker, session_id = _open_session(tmp_path)
+    _plant_phase(service, session_id, UnpackPhase.RUNNING)
+
+    result = service.unpack_confirm_oep(
+        session_id, oep_rva=0x1000, module_base=worker.module_base, auto_dump=True
+    )
+
+    assert result.ok and result.data is not None
+    assert result.data["auto_dump"] is True
+    assert result.data["dump"] is not None
+    assert result.data["unpack"]["phase"] == UnpackPhase.DUMPED.value
+
+
+def test_confirm_oep_auto_dump_requires_a_module_base(tmp_path: Path) -> None:
+    service, _worker, session_id = _open_session(tmp_path)
+    _plant_phase(service, session_id, UnpackPhase.RUNNING)
+
+    result = service.unpack_confirm_oep(session_id, oep_rva=0x1000, auto_dump=True)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
