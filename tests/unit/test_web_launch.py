@@ -309,6 +309,28 @@ def test_run_web_banner_names_the_fallback_port(
     assert "监控台已启动" in out
 
 
+def test_run_web_banner_on_the_preferred_port_skips_the_fallback_line(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A clean bind to the requested port prints the banner without a fallback note."""
+    import uvicorn
+
+    import headless_re_mcp.web.launch_util as launch_util
+    from headless_re_mcp.web import app as web_app
+
+    monkeypatch.setattr(
+        launch_util, "choose_bind_port", lambda *a, **k: (8765, "preferred")
+    )
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    code = web_app.run_web(_local_settings(tmp_path), port=8765, quiet_banner=False)
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "监控台已启动" in out
+    assert "自动改用" not in out
+
+
 def test_a_failure_before_the_service_exists_still_releases_the_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
