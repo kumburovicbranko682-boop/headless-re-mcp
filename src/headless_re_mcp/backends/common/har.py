@@ -164,12 +164,32 @@ def serialize_har(entries: list[JsonObject], *, max_bytes: int) -> SerializedHar
     """
     kept = list(entries)
     truncated = False
-    text = json.dumps(build_har(kept), ensure_ascii=False)
-    encoded = text.encode("utf-8")
+    text, encoded = _rendered(kept)
     while kept and len(encoded) > max_bytes:
         drop = max(1, len(kept) // 8)
         del kept[:drop]
         truncated = True
-        text = json.dumps(build_har(kept), ensure_ascii=False)
-        encoded = text.encode("utf-8")
+        text, encoded = _rendered(kept)
     return SerializedHar(text=text, entry_count=len(kept), truncated=truncated, size=len(encoded))
+
+
+def _rendered(entries: list[JsonObject]) -> tuple[str, bytes]:
+    """The HAR log as text and the UTF-8 bytes the callers will write.
+
+    mitmproxy decodes raw wire bytes with surrogateescape, so a request line
+    holding non-UTF-8 bytes -- routine in malware C2 traffic -- reaches an
+    entry's url as lone surrogates: the capture rings' _bounded_metadata only
+    measures with a replace encode and returns the original text when it fits.
+    json.dumps passes a surrogate through, so the strict encode here raised a
+    raw UnicodeEncodeError and har.export died as a codec incident over
+    traffic the proxy itself handled fine; both callers' final write_text
+    would have raised the same way. Same replace policy as the transport's
+    byte decode: lossy but alive, and the replacement lands inside a JSON
+    string literal, so the file stays spec-valid HAR.
+    """
+    text = json.dumps(build_har(entries), ensure_ascii=False)
+    try:
+        return text, text.encode("utf-8")
+    except UnicodeEncodeError:
+        repaired = text.encode("utf-8", "replace").decode("utf-8")
+        return repaired, repaired.encode("utf-8")

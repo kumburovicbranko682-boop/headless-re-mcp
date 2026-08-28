@@ -104,6 +104,38 @@ def test_har_entry_tolerates_missing_status_and_url() -> None:
     assert "_resourceType" not in entry
 
 
+def test_a_lone_surrogate_in_a_hostile_url_does_not_kill_the_export(
+    tmp_path: Path,
+) -> None:
+    """mitmproxy decodes raw wire bytes with surrogateescape, so a request line
+    holding non-UTF-8 bytes -- routine in malware C2 traffic -- reaches
+    har_entry as lone surrogates (U+DC80..U+DCFF): _bounded_metadata's replace
+    encode is only a length measure and returns the original text when it
+    fits. serialize_har's strict encode then raised a raw UnicodeEncodeError,
+    so har.export died as a codec incident over traffic the proxy itself
+    handled fine; the callers' write_text would have raised the same way.
+    """
+    hostile = "http://evil.example/\udc80\udcff?q=\ud800"
+    entries = [
+        har_entry(
+            method="GET",
+            url=hostile,
+            status=200,
+            mime_type="text/ht\udc80ml",
+        )
+    ]
+
+    serialized = serialize_har(entries, max_bytes=1 << 20)
+
+    assert "\udc80" not in serialized.text and "\ud800" not in serialized.text
+    assert serialized.size == len(serialized.text.encode("utf-8"))
+    log = _assert_valid_har(serialized.text)
+    url = log["log"]["entries"][0]["request"]["url"]
+    assert "evil.example" in url, "the rest of the URL must survive the repair"
+    # Both exporters end with exactly this write.
+    (tmp_path / "export.har").write_text(serialized.text, encoding="utf-8")
+
+
 def test_har_entry_parses_the_query_string_from_the_url() -> None:
     """A HAR viewer reads request params from queryString, not just the URL.
 

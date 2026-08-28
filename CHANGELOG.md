@@ -56,6 +56,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   制品路径为内部构造,均不动。回归测试覆盖 insert/update 两分支与三类写入的
   往返读取。
 
+### 修复（HAR 导出对敌意 URL 中孤立代理项的加固）
+
+- `har.export`(web 与 proxy 共用)不再被一条敌意 URL 炸成编码器事故。mitmproxy
+  对原始线上字节用 `surrogateescape` 解码,请求行里的非 UTF-8 字节(恶意 C2
+  流量的常态)到达 HAR 条目时即为孤立代理项(U+DC80..U+DCFF);捕获环的
+  `_bounded_metadata` 只用 replace 编码**测长**,长度合规时原样返回文本,代理项
+  照单通过。`serialize_har` 的严格 `encode("utf-8")` 遇之抛原生
+  `UnicodeEncodeError`,两个调用方随后的 `write_text` 也会同样炸——代理本身
+  明明正常处理了该流量。现渲染时按传输层同一 replace 策略修复(有损但存活),
+  替换落在 JSON 字符串字面量内,导出文件仍是规范合法的 HAR 1.2。回归测试:
+  URL/MIME 含代理项的条目可序列化、可通过规范校验、可写盘,尺寸字段与实际
+  字节一致。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
