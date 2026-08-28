@@ -298,8 +298,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   web 抓包在响应到达时把 `remote_ip`/`remote_port` 挂到请求环上，这两项因体量小且信号强，破例保留在精简的 `web.network.list`
   行内（不像响应头那样被剔除），`web.network.get` 亦随之带出；缓存命中与 `data:` 响应从不建连，字段自然缺席而非伪造。
   `proxy.flow.get` 也对称地从 `server_conn` 给出 `remote_ip`/`remote_port`，与 `web.network.get` 保持一致；未建连的流
-  （DNS/握手失败）不带这两项。`proxy.flows` 的摘要行也在 `response()` 采集时挂上 `remote_ip`/`remote_port`，于是列流量时
+  （DNS/握手失败）不带这两项。  `proxy.flows` 的摘要行也在 `response()` 采集时挂上 `remote_ip`/`remote_port`，于是列流量时
   就能一眼看到每条命中的上游服务器（与 `web.network.list` 对称），不必逐条 `flow.get`；未建连的流同样缺席这两项。
+- **`device.pull` 的体积上限是「先整份拉下来再检查」，stat 失败或设备谎报大小时形同虚设**。早先加的 stat 预检只有在
+  stat 成功且设备如实上报时才拦得住；一旦 stat 抛错（部分 ROM/路径不支持）或设备把大小报小，`adbutils.sync.pull` 会把
+  整份——可能有好几 GB——的文件先写进产物目录，等 pull 结束后的尺寸检查再删，传输途中就能把宿主磁盘写满。改为用
+  `sync.iter_content` 分块流式拉取，边写边累计字节数，一旦跨过捕获上限就**在写入越界分块之前**停手、删掉半成品、报
+  `too_large`，于是落盘量恒不超过上限，与 stat 是否可用无关。传输中途出错也删掉半成品，避免留下一份会被当成完整 pull 的
+  截断文件；没有 `iter_content` 的旧 adbutils 回退到原「整份+后检」路径。
 - **HAR 导出的 `request.bodySize`/`response.bodySize` 恒为 `-1`，请求/响应体大小丢失**。这两个字段按 HAR 规范就是消息体的
   字节数，而发送方自己声明的 `Content-Length` 正是该值——它取自请求头而非我们保留的（可能已被截断的）体副本，因此即使内联体
   被裁剪也不会少报。web 与 proxy 两侧现在都已把头传给 `har_entry`，于是新增 `content_length` 助手从 Content-Length 还原

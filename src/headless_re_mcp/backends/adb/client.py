@@ -15,6 +15,7 @@ import shutil
 import stat
 import threading
 import zipfile
+from contextlib import suppress
 from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
@@ -658,6 +659,18 @@ class AdbBackend:
                         size=size,
                         cap=cap,
                     )
+        # Stream the file with a running byte cap instead of pulling it whole and
+        # checking the size afterwards. The stat pre-check only fires when stat
+        # succeeds and the device reports honestly; without a bound on the write
+        # itself, a stat failure (or an under-reporting device) lets adbutils
+        # write the entire -- possibly multi-GB -- file into the artifact dir
+        # before the post-pull check could delete it, filling the local disk
+        # mid-transfer. iter_content yields it in chunks so the write stops the
+        # moment it crosses the cap.
+        streamer = getattr(sync, "iter_content", None) if sync is not None else None
+        if streamer is not None:
+            pulled = self._stream_pull(streamer, remote_path, local_path, cap=cap)
+            return {"remote": remote_path, "local": str(local_path), "size": pulled}
         try:
             _call(dev.sync.pull, remote_path, str(local_path), timeout=_ADB_TRANSFER_TIMEOUT_S)
         except AdbError:
@@ -681,6 +694,46 @@ class AdbBackend:
                 cap=cap,
             )
         return {"remote": remote_path, "local": str(local_path), "size": pulled}
+
+    def _stream_pull(
+        self, streamer: Any, remote_path: str, local_path: Path, *, cap: int
+    ) -> int:
+        """Copy a remote file to disk chunk by chunk, refusing once it passes cap.
+
+        The crossing chunk is never written, so at most ``cap`` bytes ever land
+        on disk; a file that overruns is deleted and reported as too_large. Any
+        transport error deletes the partial file rather than leaving a truncated
+        artifact that would read as a complete pull.
+        """
+        written = 0
+        try:
+            with open(local_path, "wb") as handle:
+                for chunk in streamer(remote_path):
+                    if not chunk:
+                        continue
+                    if written + len(chunk) > cap:
+                        raise AdbError(
+                            "too_large",
+                            "remote file exceeds pull cap",
+                            remote=remote_path,
+                            size=written + len(chunk),
+                            cap=cap,
+                        )
+                    handle.write(chunk)
+                    written += len(chunk)
+        except AdbError:
+            with suppress(OSError):
+                local_path.unlink()
+            raise
+        except Exception as exc:  # noqa: BLE001
+            with suppress(OSError):
+                local_path.unlink()
+            if _is_timeout(exc):
+                raise AdbError(
+                    "timeout", f"adb timed out pulling {remote_path}", remote=remote_path
+                ) from exc
+            raise AdbError("backend_error", f"pull failed: {exc}", remote=remote_path) from exc
+        return written
 
     def push(self, serial: str, local_path: str, remote_path: str) -> JsonObject:
         dev = self._device(serial)

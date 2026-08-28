@@ -4268,6 +4268,62 @@ class TestDevicePullRefusesTreesAndHugeFiles:
             backend.pull("emulator-5554", "/sdcard/huge.bin", tmp_path / "huge.bin")
         assert caught.value.code == "too_large"
 
+    def test_a_stream_that_overruns_is_bounded_and_the_partial_is_deleted(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """The core gap: when stat fails (or the device under-reports), the
+        write itself must stop at the cap instead of landing a huge file first.
+
+        Measured: cap 8, iter_content yields 4-byte chunks past it -> too_large,
+        and the partial file is not left on disk.
+        """
+        from headless_re_mcp.backends.adb import client as mod
+
+        monkeypatch.setattr(mod, "UNREGISTERED_CAPTURE_MAX_BYTES", 8)
+
+        class Sync:
+            def stat(self, remote: str, timeout: float | None = None) -> Any:
+                raise RuntimeError("stat unavailable")
+
+            def iter_content(self, remote: str) -> Any:
+                for _ in range(100):
+                    yield b"AAAA"
+
+        class Dev:
+            sync = Sync()
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        out = tmp_path / "huge.bin"
+        with pytest.raises(mod.AdbError) as caught:
+            backend.pull("emulator-5554", "/sdcard/huge.bin", out)
+        assert caught.value.code == "too_large"
+        assert not out.exists()
+
+    def test_a_streamed_pull_writes_the_file_and_returns_its_size(
+        self, tmp_path: Any
+    ) -> None:
+        """A within-cap file streams to disk and its byte count is reported."""
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Sync:
+            def stat(self, remote: str, timeout: float | None = None) -> Any:
+                raise RuntimeError("no stat here")
+
+            def iter_content(self, remote: str) -> Any:
+                yield b"hello "
+                yield b"world"
+
+        class Dev:
+            sync = Sync()
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        out = tmp_path / "f.bin"
+        result = backend.pull("emulator-5554", "/sdcard/f.bin", out)
+        assert result["size"] == 11
+        assert out.read_bytes() == b"hello world"
+
     def test_a_local_file_over_the_capture_cap_is_not_pushed(
         self, tmp_path: Any, monkeypatch: Any
     ) -> None:
