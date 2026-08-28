@@ -159,10 +159,18 @@ class SessionRegistry:
                 # static EXE with no imports, a non-DLL with no exports).
                 # Delay imports are the lazy channel a scan of the regular
                 # table misses: those DLLs bind on first call, not at load.
-                imports, delay_imports, exports, forwarded = _pe_capability_surface(path)
+                imports, delay_imports, exports, forwarded, export_name = (
+                    _pe_capability_surface(path)
+                )
                 metadata["pe"]["imports"] = imports
                 metadata["pe"]["delay_imports"] = delay_imports
                 metadata["pe"]["exports"] = exports
+                # The DLL name the linker baked into the export directory --
+                # the PE soname/install_name: renaming the file cannot touch
+                # it, so a filename mismatch is the masquerade tell. Present
+                # only when the directory declares one.
+                if export_name is not None:
+                    metadata["pe"]["export_name"] = export_name
                 # The import-table fingerprint threat intel pivots on
                 # (pefile/VirusTotal/YARA's imphash). Absent rather than
                 # wrong when there is nothing to hash or an ordinal only
@@ -6609,8 +6617,14 @@ def _pe_read_cstr(raw: bytes, off: int | None, cap: int) -> str:
 
 def _pe_capability_surface(
     path: Path,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str], list[dict[str, str]]]:
-    """``(imports, delay_imports, exports, forwarded_exports)`` off the PE.
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[str],
+    list[dict[str, str]],
+    str | None,
+]:
+    """``(imports, delay_imports, exports, forwarded_exports, export_name)``.
 
     The native PE capability surface -- the pair to an ELF/Mach-O's imported and
     exported symbols, and the strongest triage signal after arch: which native
@@ -6623,6 +6637,9 @@ def _pe_capability_surface(
     the regular import table understates what the binary can reach.
     ``forwarded_exports`` names the exports whose implementation lives in
     another DLL (``{"name", "forward"}``) -- the PE pair to a Mach-O reexport.
+    ``export_name`` is the self-declared DLL name off the directory's Name
+    field -- the PE pair to an ELF soname / Mach-O install_name, and the
+    masquerade tell when it disagrees with the filename.
 
     Bounded and fail-closed: the whole read is capped, the descriptor walks, the
     per-DLL thunk walk and all reported lists are bounded, and any structural
@@ -6630,19 +6647,19 @@ def _pe_capability_surface(
     """
     try:
         if path.stat().st_size > _PE_MAX_IMPORT_FILE:
-            return [], [], [], []
+            return [], [], [], [], None
         with path.open("rb") as stream:
             raw = stream.read(_PE_MAX_IMPORT_FILE)
     except OSError:
-        return [], [], [], []
+        return [], [], [], [], None
     view = _pe_header_view(raw)
     if view is None:
-        return [], [], [], []
+        return [], [], [], [], None
     magic, dir_count, dir_off, sections, image_base = view
     imports = _pe_imports(raw, magic, dir_count, dir_off, sections)
     delay = _pe_delay_imports(raw, magic, dir_count, dir_off, sections, image_base)
-    exports, forwarders = _pe_exports(raw, dir_count, dir_off, sections)
-    return imports, delay, exports, forwarders
+    exports, forwarders, export_name = _pe_exports(raw, dir_count, dir_off, sections)
+    return imports, delay, exports, forwarders, export_name
 
 
 # The imphash convention (pefile's get_imphash, the fingerprint VirusTotal
@@ -6819,8 +6836,8 @@ def _pe_exports(
     dir_count: int,
     dir_off: int,
     sections: list[tuple[int, int, int, int]],
-) -> tuple[list[str], list[dict[str, str]]]:
-    """``(names, forwarders)`` off the export directory (index 0).
+) -> tuple[list[str], list[dict[str, str]], str | None]:
+    """``(names, forwarders, export_name)`` off the export directory (index 0).
 
     ``names`` is the sorted export-name table. ``forwarders`` are the subset
     whose export-address-table entry points back inside the export directory's
@@ -6830,19 +6847,32 @@ def _pe_exports(
     an api-ms-win-* set DLL and much of kernel32 (forwarded to ntdll /
     kernelbase). Each forwarder reads as ``{"name", "forward"}`` where name is
     the export's own name, or ``#ordinal`` when it is exported by ordinal only.
+
+    ``export_name`` is the directory's Name field: the DLL name the linker
+    baked in -- the PE pair to an ELF DT_SONAME and a Mach-O LC_ID_DYLIB.
+    Renaming the file on disk does not touch it, so a mismatch between the
+    filename and this string is the classic masquerade tell. None when the
+    directory declares no name or points it at nothing readable.
     """
     if dir_count <= _PE_EXPORT_DIR:
-        return [], []
+        return [], [], None
     entry = dir_off + _PE_EXPORT_DIR * 8
     if entry + 8 > len(raw):
-        return [], []
+        return [], [], None
     exp_rva = int.from_bytes(raw[entry : entry + 4], "little")
     dir_size = int.from_bytes(raw[entry + 4 : entry + 8], "little")
     if exp_rva == 0:
-        return [], []
+        return [], [], None
     exp_off = _pe_rva_to_offset(sections, exp_rva)
     if exp_off is None or exp_off + 40 > len(raw):
-        return [], []
+        return [], [], None
+    name_rva = int.from_bytes(raw[exp_off + 12 : exp_off + 16], "little")
+    export_name: str | None = None
+    if name_rva:
+        export_name = _pe_read_cstr(
+            raw, _pe_rva_to_offset(sections, name_rva), _PE_MAX_SYMBOL_NAME
+        )
+        export_name = export_name or None
     ordinal_base = int.from_bytes(raw[exp_off + 16 : exp_off + 20], "little")
     num_funcs = int.from_bytes(raw[exp_off + 20 : exp_off + 24], "little")
     num_names = int.from_bytes(raw[exp_off + 24 : exp_off + 28], "little")
@@ -6887,7 +6917,7 @@ def _pe_exports(
                 label = index_to_name.get(i, f"#{ordinal_base + i}")
                 forwarders.append({"name": label, "forward": target})
     forwarders.sort(key=lambda item: item["name"])
-    return sorted(exports), forwarders
+    return sorted(exports), forwarders, export_name
 
 
 def _pe_hardening_facts(path: Path) -> dict[str, Any]:

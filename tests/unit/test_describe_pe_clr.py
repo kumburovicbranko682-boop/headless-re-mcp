@@ -833,7 +833,7 @@ class TestPeCapabilitySurface:
                 [],
             )
         )
-        imports, delay, exports, _fwd = _pe_capability_surface(path)
+        imports, delay, exports, _fwd, _name = _pe_capability_surface(path)
         assert exports == []
         assert delay == []
         assert imports == [
@@ -844,13 +844,13 @@ class TestPeCapabilitySurface:
     def test_ordinal_only_imports_read_as_hash_n(self, tmp_path: Path) -> None:
         path = tmp_path / "ordinal.exe"
         path.write_bytes(_pe_with_imports_exports([("WS2_32.dll", [115, 116])], []))
-        imports, _, _, _ = _pe_capability_surface(path)
+        imports, _, _, _, _name = _pe_capability_surface(path)
         assert imports == [{"dll": "WS2_32.dll", "functions": ["#115", "#116"]}]
 
     def test_exports_come_back_name_sorted(self, tmp_path: Path) -> None:
         path = tmp_path / "exports.dll"
         path.write_bytes(_pe_with_imports_exports([], ["ZetaFunc", "AlphaFunc", "MidFunc"]))
-        _, _, exports, _ = _pe_capability_surface(path)
+        _, _, exports, _, _name = _pe_capability_surface(path)
         assert exports == ["AlphaFunc", "MidFunc", "ZetaFunc"]
 
     def test_a_pe32_import_table_reads_at_the_narrow_thunk_width(self, tmp_path: Path) -> None:
@@ -860,24 +860,24 @@ class TestPeCapabilitySurface:
         path.write_bytes(
             _pe_with_imports_exports([("msvcrt.dll", ["printf"])], [], magic=0x10B)
         )
-        imports, _, _, _ = _pe_capability_surface(path)
+        imports, _, _, _, _name = _pe_capability_surface(path)
         assert imports == [{"dll": "msvcrt.dll", "functions": ["printf"]}]
 
     def test_a_pe_without_either_directory_reads_empty(self, tmp_path: Path) -> None:
         path = tmp_path / "bare.exe"
         path.write_bytes(_native_pe())
-        assert _pe_capability_surface(path) == ([], [], [], [])
+        assert _pe_capability_surface(path) == ([], [], [], [], None)
 
     def test_a_non_pe_reads_empty(self, tmp_path: Path) -> None:
         path = tmp_path / "nope.bin"
         path.write_bytes(b"not a pe at all")
-        assert _pe_capability_surface(path) == ([], [], [], [])
+        assert _pe_capability_surface(path) == ([], [], [], [], None)
 
     def test_the_import_list_is_bounded(self, tmp_path: Path) -> None:
         many = [(f"lib{i:03d}.dll", ["Fn"]) for i in range(300)]
         path = tmp_path / "many.exe"
         path.write_bytes(_pe_with_imports_exports(many, []))
-        imports, _, _, _ = _pe_capability_surface(path)
+        imports, _, _, _, _name = _pe_capability_surface(path)
         assert len(imports) == 256  # _PE_MAX_IMPORT_DLLS
 
     def test_session_over_a_pe_carries_the_capability_surface(self, tmp_path: Path) -> None:
@@ -914,7 +914,7 @@ class TestPeForwardedExports:
                 forwarders={"HeapAlloc": "NTDLL.RtlAllocateHeap"},
             )
         )
-        _, _, exports, forwarded = _pe_capability_surface(path)
+        _, _, exports, forwarded, _name = _pe_capability_surface(path)
         # The forwarded name still lists as an export...
         assert exports == ["HeapAlloc", "LocalPlainFn"]
         # ...but only it is named as a forward, and to the right target; the
@@ -934,7 +934,7 @@ class TestPeForwardedExports:
                 },
             )
         )
-        _, _, _, forwarded = _pe_capability_surface(path)
+        _, _, _, forwarded, _name = _pe_capability_surface(path)
         assert forwarded == [
             {"name": "Alpha", "forward": "provider.AImpl"},
             {"name": "Mid", "forward": "provider.MImpl"},
@@ -944,7 +944,7 @@ class TestPeForwardedExports:
     def test_a_dll_with_no_forwarders_reads_empty(self, tmp_path: Path) -> None:
         path = tmp_path / "plain.dll"
         path.write_bytes(_pe_with_imports_exports([], ["RealFn", "OtherFn"]))
-        _, _, exports, forwarded = _pe_capability_surface(path)
+        _, _, exports, forwarded, _name = _pe_capability_surface(path)
         assert exports == ["OtherFn", "RealFn"]
         assert forwarded == []
 
@@ -959,6 +959,58 @@ class TestPeForwardedExports:
         assert session.metadata["pe"]["forwarded_exports"] == [
             {"name": "EncryptMessage", "forward": "SSPICLI.EncryptMessage"}
         ]
+
+    def test_the_export_directory_names_the_dll_itself(self, tmp_path: Path) -> None:
+        # The Name field is the linker's baked-in DLL name -- the PE soname /
+        # install_name. The builder stamps "self.dll"; the file on disk is
+        # named something else entirely, and the fact must not follow it.
+        path = tmp_path / "renamed_on_disk.dll"
+        path.write_bytes(_pe_with_imports_exports([], ["Fn"]))
+        _, _, _, _, export_name = _pe_capability_surface(path)
+        assert export_name == "self.dll"
+
+    def test_no_export_directory_means_no_self_name(self, tmp_path: Path) -> None:
+        # An import-only executable declares no export directory at all: the
+        # name is absent, not invented from zeroed header bytes.
+        path = tmp_path / "importer.exe"
+        path.write_bytes(_pe_with_imports_exports([("KERNEL32.dll", ["Sleep"])], []))
+        _, _, _, _, export_name = _pe_capability_surface(path)
+        assert export_name is None
+
+    def test_a_zero_or_dangling_name_rva_reads_none(self, tmp_path: Path) -> None:
+        # Zero means the linker declared no name; an RVA outside every section
+        # points at nothing readable. Both stay None rather than guessing.
+        base = _pe_with_imports_exports([], ["Fn"])
+        # Locate the directory's Name field: the 4-byte little-endian RVA of
+        # the "self.dll" string appears exactly once, at directory offset +12.
+        # The section's file offset comes off the section table itself.
+        e_lfanew = int.from_bytes(base[0x3C:0x40], "little")
+        opt_size = int.from_bytes(base[e_lfanew + 20 : e_lfanew + 22], "little")
+        sect_row = e_lfanew + 24 + opt_size
+        sect_file_off = int.from_bytes(base[sect_row + 20 : sect_row + 24], "little")
+        string_off = base.find(b"self.dll\x00")
+        assert string_off != -1
+        self_rva = 0x1000 + (string_off - sect_file_off)
+        name_field = base.find(self_rva.to_bytes(4, "little"), sect_file_off)
+        assert name_field != -1
+        for label, name_rva in (("zero", 0), ("dangling", 0x00FF_0000)):
+            patched = bytearray(base)
+            struct.pack_into("<I", patched, name_field, name_rva)
+            path = tmp_path / f"{label}.dll"
+            path.write_bytes(bytes(patched))
+            _, _, exports, _, export_name = _pe_capability_surface(path)
+            assert export_name is None, label
+            assert exports == ["Fn"], label  # the rest of the directory still reads
+
+    def test_session_over_a_dll_carries_the_self_declared_name(self, tmp_path: Path) -> None:
+        path = tmp_path / "masquerade.dll"
+        path.write_bytes(_pe_with_imports_exports([], ["Fn"]))
+        session = SessionRegistry().create(str(path))
+        assert session.metadata["pe"]["export_name"] == "self.dll"
+        # And a PE with no export directory carries no key at all.
+        bare = tmp_path / "bare.exe"
+        bare.write_bytes(_native_pe())
+        assert "export_name" not in SessionRegistry().create(str(bare)).metadata["pe"]
 
 
 class TestPeDelayImports:
@@ -981,7 +1033,7 @@ class TestPeDelayImports:
                 delay=[("WINHTTP.dll", ["WinHttpOpen", "WinHttpConnect"])],
             )
         )
-        imports, delay, _, _ = _pe_capability_surface(path)
+        imports, delay, _, _, _name = _pe_capability_surface(path)
         # The lazy DLL lives only in the delay table; neither list leaks into
         # the other.
         assert imports == [{"dll": "KERNEL32.dll", "functions": ["ExitProcess"]}]
@@ -992,7 +1044,7 @@ class TestPeDelayImports:
     def test_ordinal_delay_imports_read_as_hash_n(self, tmp_path: Path) -> None:
         path = tmp_path / "lazyord.exe"
         path.write_bytes(_pe_with_imports_exports([], [], delay=[("WS2_32.dll", [115])]))
-        _, delay, _, _ = _pe_capability_surface(path)
+        _, delay, _, _, _name = _pe_capability_surface(path)
         assert delay == [{"dll": "WS2_32.dll", "functions": ["#115"]}]
 
     def test_va_based_descriptors_rebase_off_image_base(self, tmp_path: Path) -> None:
@@ -1010,7 +1062,7 @@ class TestPeDelayImports:
                 magic=0x10B,
             )
         )
-        _, delay, _, _ = _pe_capability_surface(path)
+        _, delay, _, _, _name = _pe_capability_surface(path)
         assert delay == [{"dll": "OLD32.dll", "functions": ["LegacyFn"]}]
 
     def test_a_pe32_delay_table_reads_at_the_narrow_thunk_width(self, tmp_path: Path) -> None:
@@ -1018,7 +1070,7 @@ class TestPeDelayImports:
         path.write_bytes(
             _pe_with_imports_exports([], [], delay=[("msvcrt.dll", ["printf"])], magic=0x10B)
         )
-        _, delay, _, _ = _pe_capability_surface(path)
+        _, delay, _, _, _name = _pe_capability_surface(path)
         assert delay == [{"dll": "msvcrt.dll", "functions": ["printf"]}]
 
     def test_session_over_a_pe_carries_the_delay_imports(self, tmp_path: Path) -> None:

@@ -251,6 +251,16 @@ def _pefile_forwarders(pefile_mod: object, data: bytes) -> list[dict[str, str]]:
     return out
 
 
+def _pefile_export_name(pefile_mod: object, data: bytes) -> str | None:
+    # pefile resolves the export directory's Name RVA through its own string
+    # reader -- the self-declared DLL name the reader must reproduce.
+    pe = pefile_mod.PE(data=data)  # type: ignore[attr-defined]
+    if not hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
+        return None
+    name = pe.DIRECTORY_ENTRY_EXPORT.name
+    return name.decode() if name else None
+
+
 def _pefile_delay_imports(pefile_mod: object, data: bytes) -> list[tuple[str, list[str]]]:
     pe = pefile_mod.PE(data=data)  # type: ignore[attr-defined]
     if not hasattr(pe, "DIRECTORY_ENTRY_DELAY_IMPORT"):
@@ -271,6 +281,16 @@ def _session_surface(path: Path) -> tuple[list[dict], list[dict], list[str], lis
         assert created.ok, created.error
         pe = created.data["session"]["metadata"]["pe"]
         return pe["imports"], pe["delay_imports"], pe["exports"], pe["forwarded_exports"]
+    finally:
+        service.close_all()
+
+
+def _session_export_name(path: Path) -> str | None:
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(path))
+        assert created.ok, created.error
+        return created.data["session"]["metadata"]["pe"].get("export_name")
     finally:
         service.close_all()
 
@@ -321,6 +341,37 @@ def test_capability_surface_agrees_with_pefile(tmp_path: Path, magic: int) -> No
     assert reader_fwd == []
     assert _pefile_delay_imports(pefile_mod, data) == []
     assert _pefile_forwarders(pefile_mod, data) == []
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("magic", [0x20B, 0x10B], ids=["pe32+", "pe32"])
+def test_the_self_declared_dll_name_agrees_with_pefile(tmp_path: Path, magic: int) -> None:
+    """The export directory's Name field: the PE soname, read name for name.
+
+    The linker bakes the DLL's own name into the export directory; renaming
+    the file on disk cannot touch it, which is exactly why triage wants it --
+    a filename/export-name mismatch is the classic masquerade tell. The
+    builder stamps "self.dll" and the file is written under a different name;
+    pefile resolves the Name RVA through its own string reader, and reader
+    and referee must agree -- and both must stay silent for a PE with no
+    export directory rather than inventing a name from zeroed bytes.
+    """
+    pefile_mod = _pefile()
+    if pefile_mod is None:
+        pytest.skip("pefile not installed — PE capability-surface gate not run (skip != pass)")
+
+    data = _pe_with_imports_exports([], ["OneExport"], magic=magic)
+    binary = tmp_path / f"totally_innocent_{magic:x}.dll"  # not what it claims
+    binary.write_bytes(data)
+    expected = _pefile_export_name(pefile_mod, data)
+    assert expected == "self.dll"  # the referee really saw the baked-in name
+    assert _session_export_name(binary) == expected
+
+    importer = _pe_with_imports_exports([("KERNEL32.dll", ["Sleep"])], [], magic=magic)
+    plain = tmp_path / f"importer_{magic:x}.exe"
+    plain.write_bytes(importer)
+    assert _pefile_export_name(pefile_mod, importer) is None
+    assert _session_export_name(plain) is None
 
 
 @pytest.mark.integration
