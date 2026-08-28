@@ -489,6 +489,11 @@ _MACHO_FAT_MAGIC = b"\xca\xfe\xba\xbe"
 # Real universal binaries carry a handful of slices; the cap also disambiguates
 # Java .class files (whose 0xCAFEBABE is followed by a version >= 45).
 _NATIVE_MAX_FAT_ARCHS = 20
+# Each universal slice is a complete thin Mach-O the whole thin reader runs
+# over in memory; a slice declaring more than this cap is skipped, and only
+# the first few slices are described in full (real universals carry 2-3).
+_MACHO_MAX_SLICE_BYTES = 64 * 1024 * 1024
+_MACHO_MAX_DESCRIBED_SLICES = 8
 _NATIVE_HEADER_BYTES = 4096
 _ELF_MAX_PHNUM = 1024
 _ELF_MAX_SHNUM = 4096
@@ -6180,7 +6185,7 @@ def describe_native(path: Path) -> dict[str, Any]:
                 if magic in _MACHO_THIN_MAGICS:
                     facts = _macho_thin_facts(head, magic, stream)
                 elif magic == _MACHO_FAT_MAGIC:
-                    facts = _macho_fat_facts(head)
+                    facts = _macho_fat_facts(head, stream)
     except OSError:
         return {}
     if not facts:
@@ -8367,7 +8372,7 @@ def _macho_entry(entryoff: int | None, segments: list[tuple[int, int, int]]) -> 
     return None
 
 
-def _macho_fat_facts(head: bytes) -> dict[str, Any]:
+def _macho_fat_facts(head: bytes, stream: BinaryIO) -> dict[str, Any]:
     # A fat header is defined big-endian: magic, slice count, then fat_arch rows
     # of (cputype, cpusubtype, offset, size, align) = 20 bytes each. Validate the
     # same way the classifier does so a Java .class (which shares 0xCAFEBABE)
@@ -8380,16 +8385,49 @@ def _macho_fat_facts(head: bytes) -> dict[str, Any]:
     if int.from_bytes(head[8:12], "big") not in _MACHO_CPU:
         return {}
     arches: list[str] = []
+    described: list[dict[str, Any]] = []
     pos = 8
     for _ in range(slices):
-        if pos + 8 > len(head):
+        if pos + 20 > len(head):
             break
         cputype = int.from_bytes(head[pos : pos + 4], "big")
-        arches.append(_MACHO_CPU.get(cputype, f"cpu_{cputype}"))
+        offset = int.from_bytes(head[pos + 8 : pos + 12], "big")
+        size = int.from_bytes(head[pos + 12 : pos + 16], "big")
         pos += 20
-    return {
+        arches.append(_MACHO_CPU.get(cputype, f"cpu_{cputype}"))
+        # Every slice is a complete thin Mach-O at (offset, size), so the
+        # whole thin reader -- hardening posture, dylibs, signature identity,
+        # export trie, all of it -- runs per slice over an in-memory view.
+        # macOS ships x86_64+arm64 universal binaries as the norm, and the
+        # slices can genuinely differ (per-arch pointer auth, separate code
+        # signatures), which one merged view would paper over. A slice that
+        # is unreadable, mis-declared or over the size cap contributes no
+        # entry rather than a guess.
+        if len(described) >= _MACHO_MAX_DESCRIBED_SLICES:
+            continue
+        if offset <= 0 or size < 28 or size > _MACHO_MAX_SLICE_BYTES:
+            continue
+        try:
+            stream.seek(offset)
+            data = stream.read(size)
+        except OSError:
+            continue
+        if len(data) < 28:
+            continue
+        slice_magic = data[:4]
+        if slice_magic not in _MACHO_THIN_MAGICS:
+            continue
+        slice_facts = _macho_thin_facts(
+            data[:_NATIVE_HEADER_BYTES], slice_magic, io.BytesIO(data)
+        )
+        if slice_facts:
+            described.append(slice_facts)
+    facts: dict[str, Any] = {
         "format": "macho-universal",
         "endianness": "big",
         "slice_count": slices,
         "architectures": arches,
     }
+    if described:
+        facts["slices"] = described
+    return facts

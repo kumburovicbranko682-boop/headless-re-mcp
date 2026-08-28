@@ -2,6 +2,11 @@
 
 Two triage themes the other native gates cannot cover from system binaries:
 
+- Universal (fat) Mach-O slices -- macOS ships x86_64+arm64 containers as the
+  norm, and each slice is a complete thin Mach-O whose facts can differ, so
+  the session describes every slice in full. llvm-lipo builds the container
+  (and page-aligns the slices to nonzero offsets), then referees the arch
+  census while llvm-objdump's per-arch decode referees a slice's dylibs.
 - Text relocations (ELF DT_TEXTREL/DF_TEXTREL) -- the dynamic W^X violation:
   the loader remaps code writable to relocate it. Stock -fPIC output never
   carries the marker, so the positive case builds a real non-PIC shared
@@ -1189,10 +1194,10 @@ def _macho_with_dylib_classes(plain: str, weak: str, fronted: str) -> bytes:
 _LLVM_DYLIB_NAME_RE = re.compile(r"^\s*name (\S+) \(offset \d+\)$")
 
 
-def _llvm_dylib_classes(objdump: str, binary: Path) -> dict[str, list[str]]:
+def _llvm_dylib_classes(objdump: str, binary: Path, *extra: str) -> dict[str, list[str]]:
     """``{command kind: [names]}`` as llvm-objdump decodes the load commands."""
     result = subprocess.run(
-        [objdump, "--macho", "--all-headers", str(binary)],
+        [objdump, "--macho", "--all-headers", *extra, str(binary)],
         capture_output=True,
         text=True,
         timeout=60,
@@ -1259,6 +1264,91 @@ def test_macho_dylib_classes_agree_with_llvm_objdump(tmp_path: Path) -> None:
             assert fixture_facts["reexported_dylibs"] == []
     finally:
         for session_id in sessions:
+            service.close_session(session_id)
+
+
+def _universal_thin(cputype: int, cpusubtype: int, flags: int, commands: bytes = b"") -> bytes:
+    """One MH_EXECUTE slice for lipo: a mach_header_64 plus its load commands."""
+    ncmds = 1 if commands else 0
+    header = struct.pack(
+        "<IIIIIIII", 0xFEEDFACF, cputype, cpusubtype, 2, ncmds, len(commands), flags, 0
+    )
+    return header + commands
+
+
+@pytest.mark.integration
+def test_universal_binary_slices_agree_with_llvm_lipo_and_objdump(tmp_path: Path) -> None:
+    """Per-slice facts of a real lipo-built universal binary against LLVM.
+
+    macOS ships x86_64+arm64 universal binaries as the norm, and each slice
+    is a complete thin Mach-O whose facts can genuinely differ -- so the
+    session must describe every slice in full, not just list architectures.
+    The universal container here is assembled by llvm-lipo itself (which
+    page-aligns the slices to nonzero offsets and rejects malformed thin
+    input, doubling as the well-formedness check), llvm-lipo -archs referees
+    the arch census, and llvm-objdump's per-arch load-command decode referees
+    that the x86-64 slice's dylib list was read from the right offset.
+    """
+    lipo = shutil.which("llvm-lipo") or shutil.which("llvm-lipo-18")
+    if lipo is None:
+        pytest.skip("llvm-lipo not installed — universal-binary gate not run (skip != pass)")
+    objdump = shutil.which("llvm-objdump")
+    if objdump is None:
+        pytest.skip("llvm-objdump not installed — universal-binary gate not run (skip != pass)")
+
+    # Two deliberately different slices: a dynamic PIE x86-64 executable with
+    # one dependency, and a static arm64 image with none.
+    dylib = "/usr/lib/libSystem.B.dylib"
+    x86 = tmp_path / "thin_x86.macho"
+    x86.write_bytes(
+        _universal_thin(
+            0x01000007,  # CPU_TYPE_X86_64
+            3,  # CPU_SUBTYPE_X86_64_ALL
+            0x00200000 | 0x4,  # MH_PIE | MH_DYLDLINK
+            _macho_dylib_command(0x0C, dylib),
+        )
+    )
+    arm = tmp_path / "thin_arm.macho"
+    arm.write_bytes(_universal_thin(0x0100000C, 0, 0))  # CPU_TYPE_ARM64, static
+    universal = tmp_path / "universal.macho"
+    result = subprocess.run(
+        [lipo, "-create", str(x86), str(arm), "-output", str(universal)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+
+    # Referee 1: lipo's own arch census of the container it just built.
+    archs = subprocess.run(
+        [lipo, "-archs", str(universal)], capture_output=True, text=True, timeout=60
+    )
+    assert archs.returncode == 0, archs.stderr
+    assert archs.stdout.split() == ["x86_64", "arm64"]
+
+    # Referee 2: LLVM's per-arch decode of the x86-64 slice's load commands,
+    # which can only agree if the reader pulled the slice from lipo's real
+    # (page-aligned, nonzero) offset rather than the start of the file.
+    truth = _llvm_dylib_classes(objdump, universal, "--arch=x86_64")
+    assert truth["LC_LOAD_DYLIB"] == [dylib]
+
+    service = AnalysisService()
+    session_id: str | None = None
+    try:
+        session_id, native = _session_native(service, universal)
+        assert native["format"] == "macho-universal"
+        assert native["slice_count"] == 2
+        assert native["architectures"] == ["x86-64", "arm64"]
+        first, second = native["slices"]
+        assert first["arch"] == "x86-64"
+        assert first["pie"] is True
+        assert first["linking"] == "dynamic"
+        assert first["dylibs"] == truth["LC_LOAD_DYLIB"]
+        assert second["arch"] == "arm64"
+        assert second["pie"] is False
+        assert second["linking"] == "static"
+    finally:
+        if session_id is not None:
             service.close_session(session_id)
 
 

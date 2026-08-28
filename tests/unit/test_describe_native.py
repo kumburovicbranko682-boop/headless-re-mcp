@@ -336,6 +336,30 @@ def _macho_fat(*cputypes: int) -> bytes:
     return header
 
 
+def _macho_fat_with_slices(slices: list[tuple[int, bytes]]) -> bytes:
+    """A universal binary whose fat_arch rows point at real thin payloads.
+
+    Each entry is (cputype, thin Mach-O bytes); the big-endian fat_arch rows
+    carry genuine offsets and sizes, with slices laid out back to back after
+    the header the way lipo emits them.
+    """
+    header = bytearray(b"\xca\xfe\xba\xbe" + len(slices).to_bytes(4, "big"))
+    offset = 8 + 20 * len(slices)
+    body = bytearray()
+    for cputype, blob in slices:
+        header += cputype.to_bytes(4, "big") + b"\x00" * 4
+        header += offset.to_bytes(4, "big") + len(blob).to_bytes(4, "big")
+        header += b"\x00" * 4  # align
+        body += blob
+        offset += len(blob)
+    return bytes(header) + bytes(body)
+
+
+def _retyped_macho(blob: bytes, cputype: int) -> bytes:
+    """The same thin Mach-O with its little-endian cputype field rewritten."""
+    return blob[:4] + cputype.to_bytes(4, "little") + blob[8:]
+
+
 def _java_class() -> bytes:
     # 0xCAFEBABE then minor=0, major=52 (Java 8), then a constant-pool count.
     return b"\xca\xfe\xba\xbe" + (0).to_bytes(2, "big") + (52).to_bytes(2, "big") + b"\x00" * 8
@@ -2452,6 +2476,68 @@ def test_macho_universal_lists_slices(tmp_path: Path) -> None:
     assert facts["format"] == "macho-universal"
     assert facts["slice_count"] == 2
     assert facts["architectures"] == ["x86-64", "arm64"]
+
+
+def test_macho_universal_describes_each_slice_in_full(tmp_path: Path) -> None:
+    # Every slice is a complete thin Mach-O, so the whole thin reader must
+    # run per slice: the x86-64 slice here is a dynamic PIE executable with a
+    # dylib, the arm64 one a plain static image -- facts one merged view (or
+    # an arch list alone) could not carry.
+    dylib = "/usr/lib/libSystem.B.dylib"
+    x86 = _macho64_full(
+        filetype=2,  # MH_EXECUTE
+        flags=0x00200000 | 0x4,  # MH_PIE | MH_DYLDLINK
+        load_cmds=_lc_load_dylib(dylib),
+        ncmds=1,
+    )
+    arm = _retyped_macho(_macho64_full(filetype=6, flags=0), cputype=0x0100000C)  # MH_DYLIB
+    fat = _macho_fat_with_slices([(0x01000007, x86), (0x0100000C, arm)])
+    path = _write(tmp_path, "universal.bin", fat)
+    facts = describe_native(path)["native"]
+    assert facts["format"] == "macho-universal"
+    assert facts["architectures"] == ["x86-64", "arm64"]
+    first, second = facts["slices"]
+    assert first["arch"] == "x86-64"
+    assert first["type"] == "execute"
+    assert first["pie"] is True
+    assert first["dylibs"] == [dylib]
+    assert second["arch"] == "arm64"
+    assert second["type"] == "dylib"
+    assert second["pie"] is False
+
+
+def test_macho_universal_skips_a_slice_it_cannot_read(tmp_path: Path) -> None:
+    # A fat_arch row pointing past the file (or at bytes that are not a thin
+    # Mach-O) contributes no slice entry; the arch census still names it.
+    good = _macho64_full(filetype=2, flags=0)
+    raw = bytearray(_macho_fat_with_slices([(0x01000007, good), (0x0100000C, good)]))
+    # Corrupt the second row's offset to point far past the end of the file.
+    second_row = 8 + 20
+    raw[second_row + 8 : second_row + 12] = (0x00FF_0000).to_bytes(4, "big")
+    facts = describe_native(_write(tmp_path, "cut.bin", bytes(raw)))["native"]
+    assert facts["architectures"] == ["x86-64", "arm64"]
+    assert len(facts["slices"]) == 1
+    assert facts["slices"][0]["arch"] == "x86-64"
+
+
+def test_macho_universal_without_readable_slices_keeps_the_census(tmp_path: Path) -> None:
+    # The legacy shape: all-zero offsets and sizes (the classifier fixture).
+    # No slice can be described, so the key is absent -- not an empty list
+    # pretending the file was empty.
+    path = _write(tmp_path, "hollow.bin", _macho_fat(0x01000007, 0x0100000C))
+    facts = describe_native(path)["native"]
+    assert facts["slice_count"] == 2
+    assert "slices" not in facts
+
+
+def test_session_over_a_universal_binary_carries_the_slices(tmp_path: Path) -> None:
+    x86 = _macho64_full(filetype=2, flags=0x00200000)
+    path = _write(tmp_path, "fat.bin", _macho_fat_with_slices([(0x01000007, x86)]))
+    session = SessionRegistry().create(str(path))
+    native = session.metadata["native"]
+    assert native["format"] == "macho-universal"
+    assert native["slices"][0]["arch"] == "x86-64"
+    assert native["slices"][0]["pie"] is True
 
 
 def test_java_class_is_not_mistaken_for_a_universal_binary(tmp_path: Path) -> None:
