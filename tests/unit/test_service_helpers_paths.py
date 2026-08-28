@@ -8,6 +8,7 @@ functions with no direct coverage. They are exercised here in isolation.
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -201,7 +202,7 @@ def test_die_artifact_cleans_up_a_temp_file_on_replace_failure(
     def boom(src: Any, dst: Any) -> None:
         raise OSError("replace failed")
 
-    monkeypatch.setattr(service_mod.os, "replace", boom)
+    monkeypatch.setattr(os, "replace", boom)
 
     with pytest.raises(OSError, match="replace failed"):
         service_mod._write_die_artifact(tmp_path, "sess", _die_result(tmp_path))
@@ -239,7 +240,7 @@ def test_exeinfope_artifact_cleans_up_a_temp_file_on_replace_failure(
     def boom(src: Any, dst: Any) -> None:
         raise OSError("replace failed")
 
-    monkeypatch.setattr(service_mod.os, "replace", boom)
+    monkeypatch.setattr(os, "replace", boom)
 
     with pytest.raises(OSError, match="replace failed"):
         service_mod._write_exeinfope_artifact(tmp_path, "sess", _exeinfope_result(tmp_path))
