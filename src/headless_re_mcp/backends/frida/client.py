@@ -513,35 +513,25 @@ class FridaClient:
                 template=template,
                 allowed=sorted(_HOOK_TEMPLATES),
             )
-        deadline = _bound_timeout(timeout)
-        sessions: list[Any] = []
 
-        def work() -> JsonObject:
-            session = _invoke(self._frida.attach, pid, timeout=deadline)
-            sessions.append(session)
-            try:
-                script = session.create_script(source)
-                script.load()
-                return {
-                    "pid": pid,
-                    "template": template,
-                    "loaded": True,
-                    "device": "local",
-                    **_PROBE_DISCLOSURE,
-                }
-            finally:
-                with contextlib.suppress(Exception):
-                    session.detach()
+        def use(_script: Any) -> JsonObject:
+            # Attaching, compiling+loading the template and detaching *is* the
+            # probe (the hook never persists -- see _PROBE_DISCLOSURE), which is
+            # exactly what _run_local_script does. This body used to inline its
+            # own attach/deadline/detach and, on a non-timeout fault, bare-raise
+            # -- leaking a raw frida error that the service mapped to
+            # internal_error rather than the backend_error its siblings report.
+            # Routing through _run_local_script gives it the same backend_error /
+            # timeout taxonomy as the read probes and the device hook path.
+            return {
+                "pid": pid,
+                "template": template,
+                "loaded": True,
+                "device": "local",
+                **_PROBE_DISCLOSURE,
+            }
 
-        try:
-            return _run_deadline(work, timeout=deadline, on_timeout=lambda: _detach_all(sessions))
-        except FridaError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            if _is_timeout(exc):
-                _detach_all(sessions)
-                raise _timeout_error(deadline) from exc
-            raise
+        return self._run_local_script(pid, source, use, timeout=timeout)
 
     def _attach_local(self, pid: int, *, timeout: float = _PROBE_TIMEOUT_S) -> Any:
         deadline = _bound_timeout(timeout)

@@ -258,6 +258,69 @@ class TestHookTemplateSaysWhatItActuallyLeavesBehind:
         assert payload["persisted"] is False
         assert fake.session.script.destroyed is True
 
+    def test_local_hook_maps_an_attach_failure_to_backend_error(self) -> None:
+        """A non-timeout attach fault on the LOCAL path is a backend_error, not a leak.
+
+        hook_template used to inline its own attach/deadline handling and, on a
+        non-timeout fault, ``raise`` the bare frida exception -- which the service
+        layer's ``except BaseException`` turns into internal_error, telling an
+        agent the hook tool itself is broken rather than "the target refused the
+        attach". The device path (hook_template_device) and the read probes
+        (exports / memory.read via _run_local_script) already map such faults to
+        backend_error with the pid; this pins that the local path now does too.
+        """
+
+        class _FailingFrida:
+            def attach(self, pid: int) -> object:
+                raise RuntimeError("no such process")
+
+        client = FridaClient()
+        client._frida = _FailingFrida()
+        client._available = True
+        with pytest.raises(FridaError) as caught:
+            client.hook_template(4242, "noop", allowed_pid=4242)
+        assert caught.value.code == "backend_error"
+        assert caught.value.details.get("pid") == 4242
+        assert "attach failed" in caught.value.message
+
+    def test_local_hook_maps_a_script_load_fault_to_backend_error(self) -> None:
+        """Attach can succeed and the template still fail to compile/load.
+
+        That fault escapes past the inner attach guard to _run_local_script's
+        outer handler, which maps it to backend_error and still detaches -- a
+        failed load must not leave the session (and any partial script) resident.
+        """
+
+        class _BadScript:
+            def load(self) -> None:
+                raise RuntimeError("script failed to compile")
+
+        class _BadSession:
+            def __init__(self) -> None:
+                self.detached = False
+
+            def create_script(self, source: str) -> _BadScript:
+                assert source
+                return _BadScript()
+
+            def detach(self) -> None:
+                self.detached = True
+
+        session = _BadSession()
+
+        class _LoadFaultFrida:
+            def attach(self, pid: int) -> _BadSession:
+                return session
+
+        client = FridaClient()
+        client._frida = _LoadFaultFrida()
+        client._available = True
+        with pytest.raises(FridaError) as caught:
+            client.hook_template(4242, "noop", allowed_pid=4242)
+        assert caught.value.code == "backend_error"
+        assert "frida script failed" in caught.value.message
+        assert session.detached is True
+
 
 class _FakeCall:
     def __init__(self, index: int) -> None:
