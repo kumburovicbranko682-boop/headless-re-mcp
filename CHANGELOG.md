@@ -308,6 +308,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `_SIGNED_OPERANDS`(两种宽度的分支 + `ldc.i4`),元数据 token(`call`/`ldstr` 等)仍按
   无符号。新增直测:对长分支、常量、短分支与 token 混合的 IL 断言各自解出正确符号。
 
+### 修复（`dotnet.enumerate` 元数据表行宽算错,游标在高位表上错位）
+
+- `_table_row_size` 按 ECMA-335 II.22 给每张元数据表算行宽,再由 `_table_start`
+  逐表累加定位;一张表宽算错一个字节,排在它后面的每张表起点都随之偏移,枚举高位表
+  (resources / 嵌套类 / 泛型约束)时便走进行的中段。六张表的列布局此前算错:
+  InterfaceImpl(0x09) 的 Interface 列本是 TypeDefOrRef 编码索引却当成 MethodDef
+  简单索引;MethodSemantics(0x18) 的 Method 列本是 MethodDef 简单索引却当成
+  MethodDefOrRef 编码索引;AssemblyRef(0x23) 误抄了 Assembly 的布局(多出一个前导
+  4 字节 HashAlgId、又少了尾部 HashValue blob);File(0x26) 的尾列本是 HashValue
+  blob 却当成 Implementation 编码索引;NestedClass(0x29) 的 EnclosingClass 列本是
+  TypeDef 简单索引却当成 Implementation 编码索引;MethodSpec(0x2B) 与
+  GenericParamConstraint(0x2C) 两张表的列布局整个对调,各自套用了对方的列。现按规范
+  逐列改正。新增直测:对每张表构造能让错误宽度与正确宽度算出不同字节数的
+  row_count / 堆宽,断言行宽等于规范值(旧算法在同一输入下给出不同数,故这些断言只在
+  修复后成立)。
+
 ### 修复（frida.memory.read 在 frida 17 上因用了被删的全局 API 而失效）
 
 - **`frida.memory.read` 的注入脚本用 `Memory.readByteArray(ptr(address), size)` 读内存。**

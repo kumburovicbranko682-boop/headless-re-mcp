@@ -7,7 +7,13 @@ from pathlib import Path
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.dotnet.metadata_enum import CAPABILITY, _disassemble_il, enumerate_metadata
+from headless_re_mcp.dotnet.metadata_enum import (
+    CAPABILITY,
+    _disassemble_il,
+    _MetaCtx,
+    _table_row_size,
+    enumerate_metadata,
+)
 
 
 def _write_minimal_clr(path: Path) -> None:
@@ -113,3 +119,82 @@ def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:
     assert xrefs.ok
     assert xrefs.data is not None
     assert xrefs.data["kind"] == "xrefs"
+
+
+def _row_size_ctx(
+    row_counts: dict[int, int],
+    *,
+    string_index_size: int = 2,
+    blob_index_size: int = 2,
+    guid_index_size: int = 2,
+) -> _MetaCtx:
+    """A ``_MetaCtx`` carrying only the fields ``_table_row_size`` reads.
+
+    Row widths depend solely on the per-table row counts and the three heap
+    index sizes; the rest of the context (mapped bytes, layout, offsets) is
+    irrelevant to the sizing arithmetic under test.
+    """
+    return _MetaCtx(
+        path=Path("in-memory.dll"),
+        pe_data=b"",
+        layout=None,
+        meta=b"",
+        stream_map={},
+        tables=b"",
+        strings=b"",
+        heap_sizes=0,
+        string_index_size=string_index_size,
+        blob_index_size=blob_index_size,
+        guid_index_size=guid_index_size,
+        row_counts=dict(row_counts),
+        table_data_offset=0,
+    )
+
+
+def test_table_row_sizes_follow_ecma335_column_layouts() -> None:
+    """Six metadata tables were sized with the wrong ECMA-335 columns.
+
+    A single wrong row width desynchronises ``_table_start`` for every table
+    that sorts after it, so enumeration of the higher-id tables (resources,
+    nested classes, generic constraints) walked into the middle of rows. Each
+    scenario below is tuned so the previously shipped (wrong) formula produces a
+    *different* byte count than the spec-correct one, i.e. these assertions fail
+    against the old code and pass against the fix.
+    """
+    # InterfaceImpl (0x09): Class(TypeDef index) + Interface(TypeDefOrRef coded).
+    # 16384 TypeDef rows push the TypeDefOrRef coded index to 4 bytes while the
+    # simple TypeDef index stays 2. The old code sized the second column as a
+    # MethodDef index (2 bytes here), giving 4 instead of 6.
+    assert _table_row_size(_row_size_ctx({0x02: 16384}), 0x09) == 2 + 4
+
+    # MethodSemantics (0x18): Semantics(2) + Method(MethodDef index) +
+    # Association(HasSemantics coded). 32768 MemberRef rows widen a
+    # MethodDefOrRef coded index to 4 bytes; the spec's plain MethodDef index is
+    # unaffected and stays 2. The old code used MethodDefOrRef, giving 8 not 6.
+    assert _table_row_size(_row_size_ctx({0x0A: 32768}), 0x18) == 2 + 2 + 2
+
+    # AssemblyRef (0x23): Major/Minor/Build/Rev(2 each) + Flags(4) +
+    # PublicKeyOrToken(blob) + Name(str) + Culture(str) + HashValue(blob). The
+    # old code borrowed Assembly's layout: a leading 4-byte HashAlgId and no
+    # trailing HashValue blob, giving 22 bytes instead of 20 with small heaps.
+    assert _table_row_size(_row_size_ctx({}), 0x23) == 2 + 2 + 2 + 2 + 4 + 2 + 2 + 2 + 2
+
+    # File (0x26): Flags(4) + Name(str) + HashValue(blob). 16384 AssemblyRef
+    # rows widen the Implementation coded index to 4 bytes; File carries a blob
+    # index there, not Implementation. The old code produced 10, not 8.
+    assert _table_row_size(_row_size_ctx({0x23: 16384}), 0x26) == 4 + 2 + 2
+
+    # NestedClass (0x29): NestedClass(TypeDef index) + EnclosingClass(TypeDef
+    # index). Same 4-byte Implementation coded index as above reveals the bug:
+    # the old code sized the second column as Implementation, giving 6 not 4.
+    assert _table_row_size(_row_size_ctx({0x23: 16384}), 0x29) == 2 + 2
+
+    # MethodSpec (0x2B) and GenericParamConstraint (0x2C) had their column
+    # layouts transposed. With 32768 MemberRef rows the MethodDefOrRef coded
+    # index is 4 bytes, so the two tables must differ: MethodSpec is
+    # MethodDefOrRef(4) + Instantiation blob(2) = 6, while
+    # GenericParamConstraint is Owner GenericParam index(2) + Constraint
+    # TypeDefOrRef(2) = 4. The old code reported these swapped.
+    swapped_ctx = _row_size_ctx({0x0A: 32768})
+    assert _table_row_size(swapped_ctx, 0x2B) == 4 + 2
+    assert _table_row_size(swapped_ctx, 0x2C) == 2 + 2
