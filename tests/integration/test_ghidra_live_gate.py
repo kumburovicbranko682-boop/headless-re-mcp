@@ -3,10 +3,13 @@
 Ghidra is cross-platform (a JVM tool), so unlike the x64dbg/WinDbg gates this
 one is meant to run on Linux CI too. It is the first thing that ever executes
 ``analyzeHeadless`` in this project's tests -- everything else only asserted
-that a *missing* Ghidra degrades cleanly, which is exactly how two real bugs
-(the launcher picked the Windows ``.bat`` on POSIX, and the export script read
-an undefined ``ARGS``) survived: analysis succeeded and only the export failed,
-invisible until something ran it end to end.
+that a *missing* Ghidra degrades cleanly, which is exactly how three real bugs
+survived: the launcher picked the Windows ``.bat`` on POSIX; the export script
+read an undefined ``ARGS``; and the export postScript was Jython, which Ghidra
+12 no longer bundles by default, so on current Ghidra analysis succeeded while
+the postScript silently never ran. Each was invisible until something ran the
+line end to end, which is what this gate does -- across both Ghidra major lines
+in CI.
 
 Skip != pass: the gate skips with a reason when Ghidra or a C compiler is
 absent, and runs for real when both are present. CI installs Ghidra so the skip
@@ -22,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.backends.ghidra.client import GhidraClient
+from headless_re_mcp.backends.ghidra.client import _SCRIPT_DIR, GhidraClient
 from headless_re_mcp.config import Settings
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -103,8 +106,21 @@ def test_ghidra_headless_recovers_functions_symbols_and_decompiles(tmp_path: Pat
 
     project = tmp_path / "ghidra-project"
 
+    # Ghidra compiles the Java postScript before it can run. It must write the
+    # .class to its own user OSGi cache, never back into the package's scripts
+    # directory: a pip install into a system/read-only site-packages would fail
+    # to compile (breaking the whole line), and even a writable one should not
+    # be polluted with build artifacts. Capture the pre-run contents so a
+    # future Ghidra that regresses to compiling in place is caught here.
+    scripts_before = {p.name for p in _SCRIPT_DIR.iterdir()}
+
     functions = client.functions(binary, project, limit=256, timeout=600.0)
     assert functions.get("count", 0) >= 1
+
+    leaked = sorted(p.name for p in _SCRIPT_DIR.iterdir() if p.name not in scripts_before)
+    assert not leaked, (
+        f"Ghidra compiled into the package scripts dir (read-only installs break): {leaked}"
+    )
     names = {item["name"] for item in functions["items"]}
     entries = {item["name"]: item["entry"] for item in functions["items"]}
 
