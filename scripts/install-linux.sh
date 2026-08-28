@@ -57,4 +57,39 @@ if [[ "${HEADLESS_RE_INSTALL_BACKENDS:-0}" == "1" ]]; then
   fi
 fi
 
+# Opt-in Ghidra provisioning: the one portable backend apt cannot supply.
+# Fetches the exact pinned release Linux CI proves the ghidra.* tools against,
+# then installs PyGhidra from the wheels that release vendors (Ghidra >= 11.3
+# dropped Jython, so headless export scripts only run through PyGhidra, and
+# --no-index keeps the two matched). Its own switch rather than part of
+# HEADLESS_RE_INSTALL_BACKENDS because it downloads ~400 MB from upstream.
+# Best-effort like everything above: on failure doctor shows ghidra missing.
+# Running analyzeHeadless additionally needs a JDK 21+ on PATH.
+if [[ "${HEADLESS_RE_INSTALL_GHIDRA:-0}" == "1" ]]; then
+  ghidra_version="12.1.3"
+  ghidra_date="20260817"
+  ghidra_root="${HEADLESS_RE_GHIDRA_ROOT:-${HOME}/ghidra}"
+  ghidra_home="${ghidra_root}/ghidra_${ghidra_version}_PUBLIC"
+  ghidra_zip="$(mktemp --suffix=.zip)"
+  if [[ -d "${ghidra_home}" ]] || {
+      curl -fsSL -o "${ghidra_zip}" \
+        "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${ghidra_version}_build/ghidra_${ghidra_version}_PUBLIC_${ghidra_date}.zip" \
+        && unzip -oq "${ghidra_zip}" -d "${ghidra_root}"; }; then
+    rm -f "${ghidra_zip}"
+    "${python_bin}" -m pip install --no-index \
+      -f "${ghidra_home}/Ghidra/Features/PyGhidra/pypkg/dist" pyghidra || {
+      echo "WARN: PyGhidra install failed; ghidra.* stays unavailable until it succeeds:" >&2
+      echo "      ${python_bin} -m pip install --no-index -f '${ghidra_home}/Ghidra/Features/PyGhidra/pypkg/dist' pyghidra" >&2
+    }
+    export HEADLESS_RE_GHIDRA_HOME="${ghidra_home}"
+    echo "Ghidra installed under ${ghidra_home}."
+    echo "Persist HEADLESS_RE_GHIDRA_HOME=${ghidra_home} for future sessions."
+  else
+    rm -f "${ghidra_zip}"
+    echo "WARN: Ghidra download failed; doctor will show ghidra as missing." >&2
+    echo "      Fetch ghidra_${ghidra_version}_PUBLIC_${ghidra_date}.zip from the upstream" >&2
+    echo "      releases yourself and set HEADLESS_RE_GHIDRA_HOME to the unpacked root." >&2
+  fi
+fi
+
 "${python_bin}" -m headless_re_mcp doctor

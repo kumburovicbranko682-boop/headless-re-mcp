@@ -81,10 +81,13 @@ fi
 
 
 def _installer_harness(tmp_path: Path) -> tuple[dict[str, str], dict[str, Path]]:
-    """Fake python/sudo/apt-get so installer runs capture side effects only."""
+    """Fake python/sudo/apt-get/curl/unzip so installer runs capture side effects only."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake_python = bin_dir / "python"
+    # The editable install is the pip call with -e; every other pip invocation
+    # (PyGhidra) is appended to its own log so neither capture clobbers the
+    # other.
     fake_python.write_text(
         """#!/usr/bin/env bash
 set -euo pipefail
@@ -95,7 +98,11 @@ if [[ "${1-}" == "-c" ]]; then
   exit 0
 fi
 if [[ "${1-}" == "-m" && "${2-}" == "pip" ]]; then
-  printf '%s' "${5-}" > "${CAPTURE_REQUIREMENT}"
+  if [[ "${4-}" == "-e" ]]; then
+    printf '%s' "${5-}" > "${CAPTURE_REQUIREMENT}"
+  else
+    printf '%s\\n' "$*" >> "${CAPTURE_PIP_OTHER}"
+  fi
 fi
 if [[ "${1-}" == "-m" && "${2-}" == "playwright" ]]; then
   printf '%s' "$*" > "${CAPTURE_PLAYWRIGHT}"
@@ -113,11 +120,29 @@ fi
         encoding="utf-8",
     )
     fake_apt.chmod(0o755)
+    fake_curl = bin_dir / "curl"
+    fake_curl.write_text(
+        """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${CAPTURE_CURL}"
+exit "${FAKE_CURL_FAIL:-0}"
+""",
+        encoding="utf-8",
+    )
+    fake_curl.chmod(0o755)
+    fake_unzip = bin_dir / "unzip"
+    fake_unzip.write_text(
+        '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "${CAPTURE_UNZIP}"\n',
+        encoding="utf-8",
+    )
+    fake_unzip.chmod(0o755)
 
     captures = {
         "requirement": tmp_path / "requirement.txt",
         "playwright": tmp_path / "playwright.txt",
         "apt": tmp_path / "apt.txt",
+        "pip_other": tmp_path / "pip_other.txt",
+        "curl": tmp_path / "curl.txt",
+        "unzip": tmp_path / "unzip.txt",
     }
     env = os.environ.copy()
     env["PYTHON"] = str(fake_python)
@@ -125,9 +150,18 @@ fi
     env["CAPTURE_REQUIREMENT"] = str(captures["requirement"])
     env["CAPTURE_PLAYWRIGHT"] = str(captures["playwright"])
     env["CAPTURE_APT"] = str(captures["apt"])
+    env["CAPTURE_PIP_OTHER"] = str(captures["pip_other"])
+    env["CAPTURE_CURL"] = str(captures["curl"])
+    env["CAPTURE_UNZIP"] = str(captures["unzip"])
+    # Point the Ghidra unpack root into the sandbox so an opt-in run neither
+    # finds a real ~/ghidra (skipping the download this harness observes) nor
+    # writes outside tmp_path.
+    env["HEADLESS_RE_GHIDRA_ROOT"] = str(tmp_path / "ghidra-root")
     env.pop("HEADLESS_RE_EXTRAS", None)
     env.pop("HEADLESS_RE_INSTALL_BACKENDS", None)
+    env.pop("HEADLESS_RE_INSTALL_GHIDRA", None)
     env.pop("FAKE_PLAYWRIGHT_MISSING", None)
+    env.pop("FAKE_CURL_FAIL", None)
     return env, captures
 
 
@@ -197,6 +231,73 @@ def test_linux_installer_backend_provisioning_is_opt_in_and_mirrors_ci(
         for package in line.split("apt-get install -y", 1)[1].split()
     }
     assert packages <= ci_packages, "installer provisions a package CI never proves"
+
+
+def _ci_ghidra_pin(repo_root: Path) -> tuple[str, str]:
+    """The (version, date) of the Ghidra release the CI workflow installs."""
+    ci_text = (repo_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    version = re.search(r"GHIDRA_VERSION=(\S+)", ci_text)
+    date = re.search(r"GHIDRA_DATE=(\S+)", ci_text)
+    assert version and date, "ci.yml no longer pins a Ghidra release"
+    return version.group(1), date.group(1)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux installer contract")
+def test_linux_installer_ghidra_provisioning_is_opt_in_and_pins_the_ci_release(
+    tmp_path: Path,
+) -> None:
+    """The Ghidra the installer fetches is the exact release CI proves.
+
+    Ghidra is the one portable backend apt cannot supply, so the installer
+    fetches an upstream release -- but an installer pin that drifts from the
+    CI pin hands users a Ghidra no gate ever ran against, which is how the
+    r2 5.x/6.x key drift shipped. This drives the real script against a fake
+    curl/unzip/pip and asserts three things: nothing is fetched without the
+    switch, the download URL names CI's exact version+date, and PyGhidra is
+    installed --no-index from the wheels that same release vendors.
+    """
+    env, captures = _installer_harness(tmp_path)
+
+    _run_installer(tmp_path, env)
+    assert not captures["curl"].exists(), "Ghidra provisioning must stay opt-in"
+
+    env["HEADLESS_RE_INSTALL_GHIDRA"] = "1"
+    _run_installer(tmp_path, env)
+
+    repo_root = Path(__file__).resolve().parents[2]
+    version, date = _ci_ghidra_pin(repo_root)
+    (curl_line,) = captures["curl"].read_text(encoding="utf-8").splitlines()
+    expected_url = (
+        "https://github.com/NationalSecurityAgency/ghidra/releases/download/"
+        f"Ghidra_{version}_build/ghidra_{version}_PUBLIC_{date}.zip"
+    )
+    assert expected_url in curl_line, curl_line
+
+    ghidra_home = tmp_path / "ghidra-root" / f"ghidra_{version}_PUBLIC"
+    (unzip_line,) = captures["unzip"].read_text(encoding="utf-8").splitlines()
+    assert f"-d {tmp_path / 'ghidra-root'}" in unzip_line, unzip_line
+
+    (pip_line,) = captures["pip_other"].read_text(encoding="utf-8").splitlines()
+    assert "--no-index" in pip_line and pip_line.endswith("pyghidra"), pip_line
+    assert str(ghidra_home / "Ghidra" / "Features" / "PyGhidra" / "pypkg" / "dist") in pip_line
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux installer contract")
+def test_linux_installer_ghidra_download_failure_is_best_effort(
+    tmp_path: Path,
+) -> None:
+    """A failed Ghidra fetch warns and moves on; it must not abort the install
+    (set -e) or claim PyGhidra against a home that does not exist."""
+    env, captures = _installer_harness(tmp_path)
+    env["HEADLESS_RE_INSTALL_GHIDRA"] = "1"
+    env["FAKE_CURL_FAIL"] = "22"
+
+    _run_installer(tmp_path, env)
+
+    assert captures["curl"].exists(), "the fetch was attempted"
+    assert not captures["pip_other"].exists(), (
+        "PyGhidra must not be installed when the Ghidra download failed"
+    )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Linux platform defaults")
