@@ -19,6 +19,7 @@ from headless_re_mcp.unpack.session import (
     UnpackPhase,
     cancel_unpack_session,
     create_unpack_session,
+    transition,
 )
 from tests.unit.test_dynamic_service import FakeDynamicWorker
 from tests.unit.test_m4_unpack_service import _service, _write_pe
@@ -138,3 +139,47 @@ def test_cancel_pauses_an_open_debuggee_and_retains_artifacts(tmp_path: Path) ->
     assert result.data["debuggee_paused_attempted"] is True
     assert result.data["artifacts_retained"] is True
     assert result.data["unpack"]["phase"] == UnpackPhase.CANCELLED.value
+
+
+# --- score_oep auto-collection from runtime snapshots ------------------------
+
+
+def test_score_oep_auto_collects_when_no_session_is_tracked(tmp_path: Path) -> None:
+    service, worker, session_id = _open_session(tmp_path)
+
+    result = service.unpack_score_oep(
+        session_id, module_base=worker.module_base, module_size=worker.module_size
+    )
+
+    assert result.ok and result.data is not None
+    assert result.data["auto_collected"] is True
+    assert result.data["authoritative"] is False
+    assert result.data["unpack"] is None
+
+
+def test_score_oep_advances_a_running_session_to_oep_candidate(tmp_path: Path) -> None:
+    service, worker, session_id = _open_session(tmp_path)
+    state = create_unpack_session(session_id, route="unpack")
+    state = transition(
+        state, UnpackPhase.RUNNING, event="running", message="under way"
+    )
+    service._store_unpack_session(state)
+
+    result = service.unpack_score_oep(
+        session_id, module_base=worker.module_base, module_size=worker.module_size
+    )
+
+    assert result.ok and result.data is not None
+    assert result.data["unpack"]["phase"] == UnpackPhase.OEP_CANDIDATE.value
+
+
+def test_score_oep_appends_timeline_for_a_non_running_session(tmp_path: Path) -> None:
+    service, worker, session_id = _open_session(tmp_path)
+    _plant(service, session_id, cancelled=False)  # stays in DETECTED
+
+    result = service.unpack_score_oep(
+        session_id, module_base=worker.module_base, module_size=worker.module_size
+    )
+
+    assert result.ok and result.data is not None
+    assert result.data["unpack"]["phase"] == UnpackPhase.DETECTED.value
