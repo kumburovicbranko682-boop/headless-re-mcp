@@ -32,7 +32,11 @@ from headless_re_mcp.backends.proxy.client import ProxyError
 from headless_re_mcp.backends.r2.client import R2Error
 from headless_re_mcp.backends.web.client import WebError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
-from headless_re_mcp.core.results import _failure
+from headless_re_mcp.core.results import (
+    RETRYABLE_BACKEND_CODES,
+    _failure,
+    rpc_from_backend_error,
+)
 
 # Every non-PE backend's typed error class. The list is the contract: a new
 # backend that grows its own error type belongs here so its mapping is pinned.
@@ -72,7 +76,7 @@ def test_a_backend_error_without_details_carries_an_empty_mapping(
 
 def _canonical_wrap(exc: Any) -> XdbgRpcError:
     """The exact mapping every service ``_as_rpc`` performs."""
-    return XdbgRpcError(exc.code, exc.message, details=dict(exc.details))
+    return rpc_from_backend_error(exc)
 
 
 @pytest.mark.parametrize("error_cls", _BACKEND_ERRORS, ids=lambda c: c.__name__)
@@ -161,3 +165,82 @@ def test_service_frida_and_proxy_as_rpc_also_accept_adb_errors() -> None:
         rpc = as_rpc(adb)
         assert rpc.code == "device_offline"
         assert rpc.details == {"serial": "emulator-5554"}
+
+
+# --- the retryable dimension of the same contract -------------------------
+#
+# ``retryable`` is a first-class part of the envelope the README and CHANGELOG
+# tell unattended callers to branch on ("storage faults retry, invalid_request
+# does not"), and every timeout elsewhere in ``_failure`` (BoundedCancelled,
+# TimedOut, DieScanError/ExeinfopeScanError timeouts, TimeoutError) is marked
+# retryable. The non-PE ``_as_rpc`` helpers used to drop the flag, so a device,
+# browser or CLI-tool ``timeout`` -- the canonical transient fault -- reached the
+# caller as ``retryable=False`` and an unattended agent following that guidance
+# would refuse to retry it. These pin the flag so it cannot silently regress.
+
+# Codes each backend can raise that must never read as retryable: retrying them
+# replays a request that is wrong for the same reason every time.
+_PERMANENT_CODES = [
+    "capability_unavailable",
+    "invalid_params",
+    "invalid_state",
+    "not_found",
+    "permission_denied",
+    "too_large",
+    "backend_error",
+]
+
+
+def test_the_retryable_code_set_is_exactly_timeout() -> None:
+    # timeout is the only transient condition these clients name. If a future
+    # code joins the set, this assertion forces a deliberate decision here
+    # rather than a quiet widening of what unattended callers will replay.
+    assert frozenset({"timeout"}) == RETRYABLE_BACKEND_CODES
+
+
+@pytest.mark.parametrize("error_cls", _BACKEND_ERRORS, ids=lambda c: c.__name__)
+def test_a_backend_timeout_is_retryable_through_the_whole_envelope(
+    error_cls: type[Exception],
+) -> None:
+    exc = error_cls("timeout", "tool did not respond in time")
+    result = _failure(_canonical_wrap(exc))
+    assert result.error is not None
+    assert result.error.code == "timeout"
+    assert result.error.retryable is True
+
+
+@pytest.mark.parametrize("error_cls", _BACKEND_ERRORS, ids=lambda c: c.__name__)
+@pytest.mark.parametrize("code", _PERMANENT_CODES)
+def test_a_permanent_backend_code_is_not_retryable(
+    error_cls: type[Exception], code: str
+) -> None:
+    exc = error_cls(code, "this will not get better on a retry")
+    result = _failure(_canonical_wrap(exc))
+    assert result.error is not None
+    assert result.error.code == code
+    assert result.error.retryable is False
+
+
+@pytest.mark.parametrize(
+    ("name", "as_rpc", "error_cls"),
+    _service_as_rpc_helpers(),
+    ids=lambda v: v if isinstance(v, str) else "",
+)
+def test_each_service_as_rpc_derives_retryable_from_the_code(
+    name: str, as_rpc: Any, error_cls: type[Exception]
+) -> None:
+    # Delegation check: every helper must route through the shared derivation,
+    # so a timeout is retryable and anything else is not, on every track.
+    assert as_rpc(error_cls("timeout", "slow")).retryable is True
+    assert as_rpc(error_cls("backend_error", "broken")).retryable is False
+
+
+def test_rpc_from_backend_error_covers_the_r2_and_ghidra_inline_path() -> None:
+    """service_ext (r2/Ghidra) has no ``_as_rpc`` -- it calls the shared helper
+    inline at every catch site. Pinning the helper pins that path too.
+    """
+    assert rpc_from_backend_error(R2Error("timeout", "r2 stalled")).retryable is True
+    assert (
+        rpc_from_backend_error(GhidraError("backend_error", "export unreadable")).retryable
+        is False
+    )

@@ -19,7 +19,7 @@ from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, _dir_size
 from headless_re_mcp.core.models import Result, SessionState, TargetKind
-from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.results import _failure, _success, rpc_from_backend_error
 from headless_re_mcp.core.service_ext import _record_backend, _timeline_append
 from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry
 
@@ -49,7 +49,7 @@ def _refuse_oversized_tree(path: Path, *, kind: str, error_type: type) -> None:
 
 
 def _as_rpc(exc: ApkError | JadxError | ApktoolError) -> XdbgRpcError:
-    return XdbgRpcError(exc.code, exc.message, details=dict(exc.details))
+    return rpc_from_backend_error(exc)
 
 
 class ApkAnalysisMixin:

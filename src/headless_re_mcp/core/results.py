@@ -24,6 +24,38 @@ from headless_re_mcp.unpack.upx import UpxScanError
 
 JsonObject = dict[str, Any]
 
+# Non-PE backend error codes (raised by the AdbError/FridaError/WebError/
+# ProxyError/ApkError/JadxError/ApktoolError/JsReError/R2Error/GhidraError
+# clients and carried through into an XdbgRpcError) that name a *transient*
+# condition a retry can clear. Only ``timeout`` qualifies: a device, browser or
+# CLI tool that outran its deadline is usually busy, not broken. Everything else
+# these clients raise is permanent for the same request -- capability_unavailable
+# (tool absent), invalid_params/invalid_state/not_found/permission_denied/
+# too_large (the request itself is wrong), and backend_error, which is a
+# catch-all that is at least as often a parse/format failure as a hiccup, so it
+# stays non-retryable rather than inviting a futile replay. Keeping the set here,
+# next to the rest of the envelope taxonomy, means every backend's ``_as_rpc``
+# maps ``timeout`` to ``retryable`` the same way the BoundedCancelled/TimedOut,
+# DieScanError and TimeoutError branches in ``_failure`` already do.
+RETRYABLE_BACKEND_CODES = frozenset({"timeout"})
+
+
+def rpc_from_backend_error(exc: Any) -> XdbgRpcError:
+    """Lift a non-PE backend error into the canonical ``XdbgRpcError``.
+
+    The clients all expose ``code`` / ``message`` / ``details``; the only thing
+    the per-service ``_as_rpc`` wrappers used to drop was ``retryable``, which
+    left every backend ``timeout`` reported as permanent even though the rest of
+    the taxonomy marks timeouts retryable. Deriving the flag from the code in one
+    place keeps that honest and self-consistent across all backends.
+    """
+    return XdbgRpcError(
+        exc.code,
+        exc.message,
+        details=dict(exc.details),
+        retryable=exc.code in RETRYABLE_BACKEND_CODES,
+    )
+
 
 def _success(data: JsonObject, **meta: object) -> Result[JsonObject]:
     return Result[JsonObject](ok=True, data=data, meta=dict(meta))
