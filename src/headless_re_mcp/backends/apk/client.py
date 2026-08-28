@@ -56,6 +56,37 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     return items, has_more
 
 
+# API 28 (Android 9) flipped the platform default for usesCleartextTraffic from
+# allowed to denied. Below this, an app that says nothing still permits HTTP.
+_CLEARTEXT_DEFAULT_DENIED_SDK = 28
+
+
+def _cleartext_posture(apk: Any) -> tuple[bool, bool]:
+    """(effective ``usesCleartextTraffic`` flag, whether a Network Security Config is set).
+
+    The ``<application android:usesCleartextTraffic>`` flag is used verbatim when
+    present; absent, it defaults to allowed below targetSdk 28 and denied at 28+.
+    A referenced Network Security Config overrides the flag per-domain on API
+    24+, so whether one is declared is reported alongside, not folded in.
+    """
+    try:
+        value = apk.get_attribute_value("application", "usesCleartextTraffic")
+    except Exception:  # noqa: BLE001 - manifest shapes vary by androguard/apk
+        value = None
+    try:
+        nsc = apk.get_attribute_value("application", "networkSecurityConfig")
+    except Exception:  # noqa: BLE001 - as above
+        nsc = None
+    has_nsc = nsc is not None and str(nsc).strip() != ""
+    if value is not None and str(value).strip() != "":
+        return str(value).strip().lower() == "true", has_nsc
+    try:
+        target = int(apk.get_effective_target_sdk_version())
+    except Exception:  # noqa: BLE001 - a malformed or absent uses-sdk
+        target = 0
+    return target < _CLEARTEXT_DEFAULT_DENIED_SDK, has_nsc
+
+
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     """Clamp a page window at the source, not only at the tool schema.
 
@@ -202,6 +233,7 @@ class ApkClient:
                 opened=False,
                 package=None,
             )
+        cleartext, has_nsc = _cleartext_posture(apk)
         return {
             "opened": True,
             "package": package,
@@ -211,6 +243,12 @@ class ApkClient:
             "target_sdk": apk.get_target_sdk_version(),
             "main_activity": apk.get_main_activity(),
             "permission_count": len(apk.get_permissions()),
+            # Whether the app permits plaintext HTTP -- the effective
+            # <application usesCleartextTraffic> flag (explicit, else the
+            # version default) -- and whether a Network Security Config is
+            # declared, which overrides that flag per-domain on API 24+.
+            "uses_cleartext_traffic": cleartext,
+            "network_security_config": has_nsc,
             "native_abis": sorted(
                 {
                     name.split("/")[1]

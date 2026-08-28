@@ -53,6 +53,37 @@ class _FakeApk:
     def get_files(self) -> list[str]:
         return ["lib/arm64-v8a/libx.so"]
 
+    # Manifest-attribute reads used by the cleartext posture. Defaults model an
+    # app that declares neither flag.
+    _attrs: dict[str, str] = {}
+    _effective_target = 33
+
+    def get_attribute_value(self, tag: str, attribute: str) -> str | None:
+        if tag != "application":
+            return None
+        return self._attrs.get(attribute)
+
+    def get_effective_target_sdk_version(self) -> int:
+        return self._effective_target
+
+
+class _ClearApk(_FakeApk):
+    """A fake that declares usesCleartextTraffic=true."""
+
+    _attrs = {"usesCleartextTraffic": "true"}
+
+
+class _OldApk(_FakeApk):
+    """A fake with an old targetSdk and no cleartext flag (version default)."""
+
+    _effective_target = 25
+
+
+class _NscApk(_FakeApk):
+    """A fake that references a Network Security Config."""
+
+    _attrs = {"networkSecurityConfig": "@7F020000"}
+
 
 def test_apk_open_names_version_name_and_native_abis_not_version() -> None:
     """The catalog said version and ABIs; the parser has no such fields.
@@ -76,3 +107,35 @@ def test_apk_open_names_version_name_and_native_abis_not_version() -> None:
     assert "Answers with package" in doc
     assert "version_name" in doc
     assert "native_abis" in doc
+
+
+def test_apk_open_reports_cleartext_traffic_and_nsc() -> None:
+    """uses_cleartext_traffic is the effective usesCleartextTraffic flag and
+    network_security_config says whether an NSC is declared."""
+    client = ApkClient()
+    client._available = True
+
+    # targetSdk 33, neither flag declared -> denied by the version default.
+    client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign]
+    payload = client.open(Path("dummy.apk"))
+    assert payload["uses_cleartext_traffic"] is False
+    assert payload["network_security_config"] is False
+
+    # An explicit usesCleartextTraffic="true" wins over the version default.
+    client._apk = lambda _path: _ClearApk()  # type: ignore[method-assign]
+    assert client.open(Path("dummy.apk"))["uses_cleartext_traffic"] is True
+
+    # Old targetSdk (< 28) with no flag defaults to allowed.
+    client._apk = lambda _path: _OldApk()  # type: ignore[method-assign]
+    assert client.open(Path("dummy.apk"))["uses_cleartext_traffic"] is True
+
+    # A declared Network Security Config is surfaced; the flag stays at the
+    # version default (the NSC governs the real per-domain policy).
+    client._apk = lambda _path: _NscApk()  # type: ignore[method-assign]
+    nsc_payload = client.open(Path("dummy.apk"))
+    assert nsc_payload["network_security_config"] is True
+    assert nsc_payload["uses_cleartext_traffic"] is False
+
+    doc = _tool_docstring("apk.open")
+    assert "uses_cleartext_traffic" in doc
+    assert "network_security_config" in doc

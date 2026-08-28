@@ -26,9 +26,14 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Parse an APK session's identity.
 
         Answers with package, version_name, version_code, min_sdk, target_sdk,
-        native_abis, main_activity, permission_count and opened. There is no
-        version, sdk or abis field. A zip with no readable package name is a
-        backend error, not an opened package.
+        native_abis, main_activity, permission_count, uses_cleartext_traffic,
+        network_security_config and opened. uses_cleartext_traffic is the
+        effective <application usesCleartextTraffic> flag (explicit, else the
+        version default: allowed below targetSdk 28, denied at 28+);
+        network_security_config says whether an NSC is declared, which
+        overrides that flag per-domain on API 24+. There is no version, sdk or
+        abis field. A zip with no readable package name is a backend error, not
+        an opened package.
         """
         return _dump(analysis.apk_open(session_id))
 

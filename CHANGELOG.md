@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（apk.open 标注明文流量（cleartext）与网络安全配置两项关键网络安全态）
+
+- `apk.open` 现返回 `uses_cleartext_traffic` 与 `network_security_config`：Android 安全评估里
+  MASVS-NETWORK 首先要确认的一项——应用是否允许明文 HTTP。`uses_cleartext_traffic` 给出
+  `<application android:usesCleartextTraffic>` 的**有效值**：清单显式写了就照用，没写则按平台默认
+  折算——targetSdk < 28 默认允许、>= 28（Android 9 起）默认禁止，因此「缺省」反映的是平台真实行为
+  而非未知；取值走 androguard 的 `get_effective_target_sdk_version()` 判定默认。`network_security_config`
+  则标注清单是否声明了网络安全配置（`android:networkSecurityConfig`）——它在 API 24+ 会按域覆盖上面那个
+  标志，故单列出来、不并入布尔，以免把「有 NSC 精细放行」误读成整体允许或禁止。此前这两项只能自己去
+  `apk.manifest` 的原始 XML 里抠。已用 aapt 现打的四个 APK 在真 androguard 4.1.4 上核验：targetSdk 30
+  未声明→禁止、targetSdk 27 未声明→允许、显式 `usesCleartextTraffic="true"`→允许、带
+  `networkSecurityConfig`（真实资源引用）→ NSC 置真且标志回落到版本默认。单测另以假 APK 钉住版本默认、
+  显式值、旧 targetSdk 与 NSC 存在四种情形。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
