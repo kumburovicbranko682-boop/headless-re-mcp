@@ -1497,6 +1497,125 @@ def test_macho_pie_executable_lists_its_dylibs(tmp_path: Path) -> None:
     assert facts["dylibs"] == [dylib]
 
 
+def _uleb(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        low = value & 0x7F
+        value >>= 7
+        out.append(low | 0x80 if value else low)
+        if not value:
+            return bytes(out)
+
+
+def _export_trie(names: list[str]) -> bytes:
+    """A flat dyld exports trie: one root, one full-name edge per export.
+
+    Each child is a terminal node (terminal size 2: flags 0, address 0, then
+    zero children). Offsets are resolved to a fixed point so the ULEB widths
+    stay consistent with the layout they describe.
+    """
+    terminal = bytes([2, 0, 0, 0])
+    offsets = [0] * len(names)
+    while True:
+        blob = bytearray([0, len(names)])  # root: not terminal, N children
+        for name, off in zip(names, offsets, strict=True):
+            blob += name.encode() + b"\x00" + _uleb(off)
+        resolved = []
+        pos = len(blob)
+        for _ in names:
+            resolved.append(pos)
+            pos += len(terminal)
+        if resolved == offsets:
+            return bytes(blob) + terminal * len(names)
+        offsets = resolved
+
+
+def _lc_dyld_info(export_off: int, export_size: int) -> bytes:
+    # dyld_info_command: five (off, size) pairs; only the export pair matters.
+    cmd = bytearray(48)
+    cmd[0:4] = (0x80000022).to_bytes(4, "little")  # LC_DYLD_INFO_ONLY
+    cmd[4:8] = (48).to_bytes(4, "little")
+    cmd[40:44] = export_off.to_bytes(4, "little")
+    cmd[44:48] = export_size.to_bytes(4, "little")
+    return bytes(cmd)
+
+
+def _lc_exports_trie(dataoff: int, datasize: int) -> bytes:
+    # linkedit_data_command: the chained-fixups era home of the same trie.
+    cmd = bytearray(16)
+    cmd[0:4] = (0x80000033).to_bytes(4, "little")
+    cmd[4:8] = (16).to_bytes(4, "little")
+    cmd[8:12] = dataoff.to_bytes(4, "little")
+    cmd[12:16] = datasize.to_bytes(4, "little")
+    return bytes(cmd)
+
+
+def _macho_with_trie(trie: bytes, *, via_dyld_info: bool = True) -> bytes:
+    load = (
+        _lc_dyld_info(32 + 48, len(trie)) if via_dyld_info else _lc_exports_trie(32 + 16, len(trie))
+    )
+    return _macho64_full(filetype=2, flags=0, load_cmds=load, ncmds=1) + trie
+
+
+class TestMachoDyldExports:
+    """describe_native reads the dyld exports trie -- the loader's export list.
+
+    The trie is what dyld actually binds against and it survives strip, where
+    LC_SYMTAB's externals may not: for a stripped modern dylib it is the only
+    export surface left in the file. llvm-objdump --exports-trie decodes the
+    same structure in the gate. Present only when the image carries a trie
+    with entries; reported beside the symtab facts, not merged into them.
+    """
+
+    def test_a_dyld_info_trie_names_the_exports(self, tmp_path: Path) -> None:
+        data = _macho_with_trie(_export_trie(["_launch", "_teardown"]))
+        facts = describe_native(_write(tmp_path, "info.dylib", data))["native"]
+        assert facts["dyld_exports"] == ["_launch", "_teardown"]
+        # No LC_SYMTAB at all -- the stripped-dylib shape this fact exists
+        # for: the symtab surface is silent, the trie still answers.
+        assert "exported_symbols" not in facts
+
+    def test_an_lc_exports_trie_command_reads_the_same(self, tmp_path: Path) -> None:
+        data = _macho_with_trie(_export_trie(["_main"]), via_dyld_info=False)
+        facts = describe_native(_write(tmp_path, "fixups.dylib", data))["native"]
+        assert facts["dyld_exports"] == ["_main"]
+
+    def test_shared_prefixes_accumulate_across_edges(self, tmp_path: Path) -> None:
+        # Hand-built two-level trie: root --"_get"--> mid --"A"/"B"--> leaves.
+        # A reader emitting edge substrings instead of accumulated paths would
+        # report "A"/"B"; one stopping at the first terminal would miss both.
+        trie = bytes(
+            [0, 1, *b"_get", 0, 8]  # root at 0: one edge "_get" -> node 8
+            + [0, 2, ord("A"), 0, 16, ord("B"), 0, 20]  # mid: "A"->16, "B"->20
+            + [2, 0, 0, 0]  # terminal A
+            + [2, 0, 0, 0]  # terminal B
+        )
+        data = _macho_with_trie(trie)
+        facts = describe_native(_write(tmp_path, "prefix.dylib", data))["native"]
+        assert facts["dyld_exports"] == ["_getA", "_getB"]
+
+    def test_a_cyclic_child_offset_cannot_loop_the_walk(self, tmp_path: Path) -> None:
+        # A hostile child pointing back at the root: each node is visited
+        # once, no terminal is ever reached, and the fact stays absent.
+        trie = bytes([0, 1, ord("x"), 0, 0])
+        data = _macho_with_trie(trie)
+        facts = describe_native(_write(tmp_path, "cycle.dylib", data))["native"]
+        assert "dyld_exports" not in facts
+
+    def test_a_zero_sized_export_pair_reads_no_trie(self, tmp_path: Path) -> None:
+        data = _macho64_full(filetype=2, flags=0, load_cmds=_lc_dyld_info(0x2000, 0), ncmds=1)
+        facts = describe_native(_write(tmp_path, "notrie.dylib", data))["native"]
+        assert "dyld_exports" not in facts
+
+    def test_the_committed_fixture_has_no_trie(self, tmp_path: Path) -> None:
+        # The fixture predates chained fixups and carries no LC_DYLD_INFO;
+        # absence here keeps the fact honest on real non-trie images.
+        if not _MACHO_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_MACHO_FIXTURE}")
+        facts = describe_native(_MACHO_FIXTURE)["native"]
+        assert "dyld_exports" not in facts
+
+
 class TestMachoDylibClasses:
     """describe_native names the weak and reexported dylibs apart.
 

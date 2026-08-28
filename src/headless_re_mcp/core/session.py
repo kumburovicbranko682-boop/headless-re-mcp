@@ -848,6 +848,18 @@ _VM_PROT_EXECUTE = 0x4
 # signing identifier, the team id and the ad-hoc flag, and its digest is what
 # Apple's tooling pins (the cdhash). All CS structures are big-endian.
 _LC_CODE_SIGNATURE = 0x1D
+# The dyld exports trie -- the loader's authoritative export list, located by
+# LC_DYLD_INFO(_ONLY)'s export_off/export_size pair or by the standalone
+# LC_DYLD_EXPORTS_TRIE (chained-fixups era). This is what dyld actually binds
+# against; it survives strip, where LC_SYMTAB's external symbols may not, so
+# for a stripped modern dylib it is the only export surface left in the file.
+# llvm-objdump --macho --exports-trie decodes the same structure.
+_LC_DYLD_INFO = 0x22
+_LC_DYLD_INFO_ONLY = 0x80000022
+_LC_DYLD_EXPORTS_TRIE = 0x80000033
+_MACHO_MAX_TRIE_SIZE = 4 * 1024 * 1024
+_MACHO_MAX_TRIE_NODES = 8192
+_MACHO_MAX_TRIE_NAME = 512
 _CS_SUPERBLOB_MAGIC = 0xFADE0CC0
 _CS_CODEDIRECTORY_MAGIC = 0xFADE0C02
 _CS_SLOT_CODEDIRECTORY = 0
@@ -7371,6 +7383,17 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
             ]
             facts["fortify_source"] = bool(fortified)
             facts["fortified_functions"] = fortified
+        # The dyld exports trie -- the loader's authoritative export list,
+        # which survives strip when LC_SYMTAB's externals do not: for a
+        # stripped modern dylib this is the only export surface left in the
+        # file. Reported beside the symtab-derived exported_symbols because
+        # they answer different questions (what dyld binds vs what nm shows);
+        # present only when the image carries a trie with entries.
+        trie = lc["exports_trie"]
+        if trie is not None:
+            dyld_exports = _macho_exports_trie(stream, trie[0], trie[1])
+            if dyld_exports:
+                facts["dyld_exports"] = dyld_exports
         # Whether the local symbols strip removes are gone -- the Mach-O pair
         # to the ELF stripped fact; omitted when there is no symbol table to
         # measure, present as True/False otherwise.
@@ -7598,6 +7621,59 @@ def _macho_symbol_surface(
     return sorted(exports), sorted(imports)
 
 
+def _macho_exports_trie(stream: BinaryIO, dataoff: int, datasize: int) -> list[str]:
+    """Exported names out of the dyld exports trie, sorted; empty when unwalkable.
+
+    The trie is dyld's authoritative export list -- the structure the loader
+    actually binds against, and the one that survives ``strip`` when
+    LC_SYMTAB's externals do not. Each node is a terminal-info ULEB128 size
+    (nonzero marks the accumulated edge string as one export) followed by a
+    one-byte child count and, per child, a NUL-terminated edge substring plus
+    the child node's ULEB128 offset from the trie start.
+
+    Bounded and fail-closed: the trie read is capped, the walk visits each
+    node offset once (a cyclic offset cannot loop), node and name counts are
+    capped, and any malformed ULEB or runaway offset just ends that branch --
+    what parsed cleanly is still reported.
+    """
+    if dataoff <= 0 or not 0 < datasize <= _MACHO_MAX_TRIE_SIZE:
+        return []
+    try:
+        stream.seek(dataoff)
+        trie = stream.read(datasize)
+    except OSError:
+        return []
+    names: list[str] = []
+    stack: list[tuple[int, str]] = [(0, "")]
+    seen: set[int] = set()
+    while stack and len(names) < _MACHO_MAX_EXPORTS and len(seen) < _MACHO_MAX_TRIE_NODES:
+        node, prefix = stack.pop()
+        if node in seen or node >= len(trie):
+            continue
+        seen.add(node)
+        term_size, pos, ok = _read_leb_u32(trie, node)
+        if not ok or pos + term_size > len(trie):
+            continue
+        if term_size and prefix:
+            names.append(prefix)
+        children_at = pos + term_size
+        if children_at >= len(trie):
+            continue
+        count = trie[children_at]
+        edge_pos = children_at + 1
+        for _ in range(count):
+            end = trie.find(b"\x00", edge_pos)
+            if end < 0:
+                break
+            edge = trie[edge_pos:end].decode("utf-8", errors="replace")
+            child_off, edge_pos, ok = _read_leb_u32(trie, end + 1)
+            if not ok:
+                break
+            stack.append((child_off, (prefix + edge)[:_MACHO_MAX_TRIE_NAME]))
+    names.sort()
+    return names
+
+
 def _macho_stripped(
     stream: BinaryIO, symtab: tuple[int, int, int, int] | None, bits: int, order: str
 ) -> bool | None:
@@ -7710,6 +7786,8 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
     image carries none),
     ``code_signature`` (LC_CODE_SIGNATURE's (dataoff, datasize) locating the
     embedded signature SuperBlob, or None when unsigned),
+    ``exports_trie`` (the dyld exports trie's (dataoff, datasize), off
+    LC_DYLD_INFO's export pair or LC_DYLD_EXPORTS_TRIE, or None),
     ``rpaths`` (the LC_RPATH search paths, the DT_RPATH/DT_RUNPATH analogue),
     ``platform``/``min_os``/``sdk`` (LC_BUILD_VERSION, or the older
     LC_VERSION_MIN_* whose command kind names the platform) and
@@ -7733,6 +7811,9 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
         "symtab": None,
         "encryption": None,
         "code_signature": None,
+        # (dataoff, datasize) of the dyld exports trie, from LC_DYLD_INFO's
+        # export pair or LC_DYLD_EXPORTS_TRIE; None when the image has none.
+        "exports_trie": None,
         "rpaths": [],
         "platform": None,
         "min_os": None,
@@ -7856,6 +7937,23 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
                 int.from_bytes(cmds[pos + 8 : pos + 12], order),  # type: ignore[arg-type]
                 int.from_bytes(cmds[pos + 12 : pos + 16], order),  # type: ignore[arg-type]
             )
+        elif (
+            cmd in (_LC_DYLD_INFO, _LC_DYLD_INFO_ONLY)
+            and result["exports_trie"] is None
+            and cmdsize >= 48
+        ):
+            # dyld_info_command: five (off, size) pairs after cmd/cmdsize;
+            # export_off/export_size are the last, at +40/+44.
+            trie_off = int.from_bytes(cmds[pos + 40 : pos + 44], order)  # type: ignore[arg-type]
+            trie_size = int.from_bytes(cmds[pos + 44 : pos + 48], order)  # type: ignore[arg-type]
+            if trie_off and trie_size:
+                result["exports_trie"] = (trie_off, trie_size)
+        elif cmd == _LC_DYLD_EXPORTS_TRIE and result["exports_trie"] is None and cmdsize >= 16:
+            # linkedit_data_command, the chained-fixups era home of the trie.
+            trie_off = int.from_bytes(cmds[pos + 8 : pos + 12], order)  # type: ignore[arg-type]
+            trie_size = int.from_bytes(cmds[pos + 12 : pos + 16], order)  # type: ignore[arg-type]
+            if trie_off and trie_size:
+                result["exports_trie"] = (trie_off, trie_size)
         elif cmd == _LC_SEGMENT_64 and cmdsize >= 56:
             # segname(16) then vmaddr/vmsize/fileoff/filesize as u64s.
             segments.append(

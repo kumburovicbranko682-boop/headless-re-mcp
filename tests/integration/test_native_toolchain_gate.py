@@ -81,6 +81,12 @@ Two triage themes the other native gates cannot cover from system binaries:
   --add-gnu-debuglink) so the record's producer is the real one, then
   referees the name through readelf's raw section dump and the checksum
   through zlib's independent CRC32 of the debug file's actual bytes.
+- The dyld exports trie (LC_DYLD_INFO's export pair / LC_DYLD_EXPORTS_TRIE)
+  -- the loader's authoritative export list, the surface that survives strip
+  when LC_SYMTAB's externals do not. The trie's ULEB offsets, edge-string
+  accumulation and terminal detection are all ours, so llvm-objdump
+  --exports-trie (LLVM's own decoder of the same structure) referees the
+  name set on a shared-prefix trie a naive reader would misread.
 
 skip != pass when a tool is missing; gcc/readelf ship with the CI runner and
 llvm is installed on the Linux lane.
@@ -1656,6 +1662,138 @@ def test_elf_debuglink_agrees_with_objcopy_and_zlib(tmp_path: Path) -> None:
         session_id, plain_facts = _session_native(service, plain)
         sessions.append(session_id)
         assert "debug_link" not in plain_facts
+    finally:
+        for session_id in sessions:
+            service.close_session(session_id)
+
+
+def _trie_uleb(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        low = value & 0x7F
+        value >>= 7
+        out.append(low | 0x80 if value else low)
+        if not value:
+            return bytes(out)
+
+
+def _macho_with_exports_trie(groups: dict[str, list[str]]) -> bytes:
+    """A 64-bit Mach-O whose LC_DYLD_INFO_ONLY names a two-level exports trie.
+
+    ``groups`` maps a shared prefix to its suffixes: the root fans out one
+    edge per prefix into a mid node, whose edges end in terminal nodes -- the
+    shape a real linker emits for symbols sharing a stem, and the one a
+    reader that fails to accumulate edge strings misreads. Built here
+    independently of the unit builder (which lays out a flat, one-level
+    trie). Offsets are resolved to a fixed point so ULEB widths match.
+    """
+    prefixes = sorted(groups)
+    terminal = bytes([2, 0, 0, 0])
+    mid_offsets = {prefix: 0 for prefix in prefixes}
+    leaf_offsets: dict[tuple[str, str], int] = {
+        (prefix, suffix): 0 for prefix in prefixes for suffix in groups[prefix]
+    }
+    while True:
+        blob = bytearray([0, len(prefixes)])
+        for prefix in prefixes:
+            blob += prefix.encode() + b"\x00" + _trie_uleb(mid_offsets[prefix])
+        new_mid: dict[str, int] = {}
+        for prefix in prefixes:
+            new_mid[prefix] = len(blob)
+            blob += bytes([0, len(groups[prefix])])
+            for suffix in groups[prefix]:
+                blob += suffix.encode() + b"\x00" + _trie_uleb(leaf_offsets[(prefix, suffix)])
+        new_leaf: dict[tuple[str, str], int] = {}
+        pos = len(blob)
+        for prefix in prefixes:
+            for suffix in groups[prefix]:
+                new_leaf[(prefix, suffix)] = pos
+                pos += len(terminal)
+        if new_mid == mid_offsets and new_leaf == leaf_offsets:
+            trie = bytes(blob) + terminal * len(leaf_offsets)
+            break
+        mid_offsets, leaf_offsets = new_mid, new_leaf
+
+    cmd = bytearray(48)
+    cmd[0:4] = (0x80000022).to_bytes(4, "little")  # LC_DYLD_INFO_ONLY
+    cmd[4:8] = (48).to_bytes(4, "little")
+    cmd[40:44] = (32 + 48).to_bytes(4, "little")  # export_off: right after cmds
+    cmd[44:48] = len(trie).to_bytes(4, "little")
+    header = (
+        b"\xcf\xfa\xed\xfe"
+        + (0x01000007).to_bytes(4, "little")
+        + (0).to_bytes(4, "little")
+        # MH_EXECUTE: LLVM's strict decoder demands an LC_ID_DYLIB from a
+        # dylib filetype, which this single-command probe deliberately lacks.
+        + (2).to_bytes(4, "little")
+        + (1).to_bytes(4, "little")
+        + (48).to_bytes(4, "little")
+        + (0).to_bytes(4, "little")
+        + (0).to_bytes(4, "little")
+    )
+    return header + bytes(cmd) + trie
+
+
+# llvm-objdump --exports-trie prints one "0xADDR  _name" row per export.
+_LLVM_EXPORT_ROW_RE = re.compile(r"^0x[0-9a-fA-F]+\s+(\S+)\s*$", re.MULTILINE)
+
+
+@pytest.mark.integration
+def test_macho_dyld_exports_agree_with_llvm_objdump(tmp_path: Path) -> None:
+    """The dyld exports-trie fact vs LLVM's decoder of the same structure.
+
+    The trie is the loader's authoritative export list -- what survives strip
+    when LC_SYMTAB's externals do not. The probe's symbols share stems
+    (_probe_open/_probe_close, _teardown), so a reader emitting edge
+    substrings instead of accumulated paths, or stopping at the first
+    terminal, cannot match LLVM's name set.
+    """
+    objdump = shutil.which("llvm-objdump")
+    if objdump is None:
+        pytest.skip("llvm-objdump not installed — exports-trie gate not run (skip != pass)")
+
+    probe = tmp_path / "trie.macho"
+    probe.write_bytes(
+        _macho_with_exports_trie({"_probe_": ["open", "close"], "_tear": ["down"]})
+    )
+
+    # Independent ground truth: LLVM walks the same ULEB offsets and edge
+    # strings with its own decoder; the set must be the one we planted, so
+    # the comparison below cannot pass vacuously.
+    result = subprocess.run(
+        [objdump, "--macho", "--exports-trie", str(probe)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    llvm_names = sorted(_LLVM_EXPORT_ROW_RE.findall(result.stdout))
+    assert llvm_names == ["_probe_close", "_probe_open", "_teardown"]
+
+    service = AnalysisService()
+    sessions: list[str] = []
+    try:
+        session_id, facts = _session_native(service, probe)
+        sessions.append(session_id)
+        assert facts["dyld_exports"] == llvm_names
+        # The stripped-dylib shape this fact exists for: no LC_SYMTAB, so the
+        # symtab-derived surface is silent while the trie still answers.
+        assert "exported_symbols" not in facts
+
+        # Negative agreement on the committed fixture: no trie command in
+        # LLVM's decode, no dyld_exports fact from the reader.
+        if _MACHO_FIXTURE.is_file():
+            fixture_dump = subprocess.run(
+                [objdump, "--macho", "--exports-trie", str(_MACHO_FIXTURE)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            assert fixture_dump.returncode == 0, fixture_dump.stderr
+            assert not _LLVM_EXPORT_ROW_RE.findall(fixture_dump.stdout)
+            session_id, fixture_facts = _session_native(service, _MACHO_FIXTURE)
+            sessions.append(session_id)
+            assert "dyld_exports" not in fixture_facts
     finally:
         for session_id in sessions:
             service.close_session(session_id)
