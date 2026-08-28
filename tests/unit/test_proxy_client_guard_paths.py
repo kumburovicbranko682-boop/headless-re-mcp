@@ -573,7 +573,9 @@ def _backend_get_returning(monkeypatch: pytest.MonkeyPatch, inst: Any) -> ProxyB
 
 def test_flows_reports_zero_dropped_for_an_empty_capture(monkeypatch: pytest.MonkeyPatch) -> None:
     """An empty flow ring reports no drops rather than a negative sentinel."""
-    inst = SimpleNamespace(recorder=SimpleNamespace(snapshot=lambda: []))
+    inst = SimpleNamespace(
+        recorder=SimpleNamespace(snapshot=lambda: [], dropped=lambda: 0)
+    )
     payload = _backend_get_returning(monkeypatch, inst).flows("s")
     assert payload == {
         "flows": [],

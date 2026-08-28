@@ -317,6 +317,12 @@ class _FlowRecorder:
         self._raw: OrderedDict[str, Any] = OrderedDict()
         self._raw_sizes: dict[str, int] = {}
         self._retained_bytes = 0
+        # Exact count of rows the ring has evicted, so the "dropped" diagnostic
+        # does not have to be inferred from seq. seq counts _record calls, which
+        # over-counts distinct flows once a flow.id is re-recorded (mitmproxy
+        # fires response then error on a client abort), so a seq-minus-retained
+        # estimate would report phantom drops for a ring that lost nothing.
+        self._dropped = 0
         self._lock = threading.RLock()
 
     def _omit_retained(self, flow_id: str) -> None:
@@ -391,6 +397,7 @@ class _FlowRecorder:
             while len(self._raw) > self._capacity:
                 evicted_id, _ = self._raw.popitem(last=False)
                 self._retained_bytes -= self._raw_sizes.pop(evicted_id, 0)
+                self._dropped += 1
             entry: JsonObject = {
                 "id": flow_id,
                 "seq": self._seq,
@@ -442,6 +449,10 @@ class _FlowRecorder:
     def count(self) -> int:
         with self._lock:
             return len(self.flows)
+
+    def dropped(self) -> int:
+        with self._lock:
+            return self._dropped
 
     def retained_bytes(self) -> int:
         with self._lock:
@@ -651,16 +662,13 @@ class ProxyBackend:
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = items[start : start + cap]
-        dropped = 0
-        if items:
-            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
         return {
             "flows": window,
             "count": len(window),
             "total": len(items),
             "offset": start,
             "has_more": start + len(window) < len(items),
-            "dropped": dropped,
+            "dropped": inst.recorder.dropped(),
         }
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:

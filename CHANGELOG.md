@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（proxy.flows 的 dropped 由 seq 推算，重记同一 flow.id 时会报出并不存在的丢弃数）
+
+- 紧接上一条 recorder 重记修复：`flows()` 里的 `dropped`（"抓包环已淘汰多少条"）此前是用最新摘要的
+  `seq` 减去当前保留条数推算的。`seq` 按 `_record` 调用次数递增，而一条 flow 被重记（mitmproxy 在客户端
+  响应中途中断时对同一 `flow.id` 先后触发 response、error）会让 `seq` 多涨却不新增保留条目——于是这个估算
+  会对一个其实什么都没淘汰的环报出虚假的丢弃数。现在 `_FlowRecorder` 在淘汰循环里精确累加 `_dropped`，
+  新增 `dropped()` 存取器，`flows()` 直接用它，与重记完全无关。新增回归测试：容量 3 的环先收 3 条不同 flow
+  （dropped 0），再对其中一条先 response 后 error 重记（dropped 仍为 0），随后第 4 条不同 flow 淘汰最旧的一条
+  （dropped 恰为 1）。原有"12 条、容量 5、dropped 7"的端点测试仍经由新路径通过。
+
 ### 修复（proxy 抓包 recorder 重复记录同一 flow.id 时摘要环与 raw 存储可能失去同步）
 
 - `_FlowRecorder` 用两个容器保存流量：摘要环 `flows`（`deque(maxlen)`）与整流对象 `_raw`（`OrderedDict`），

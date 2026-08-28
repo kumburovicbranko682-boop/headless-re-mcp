@@ -166,6 +166,32 @@ def test_response_then_error_on_one_flow_does_not_double_or_desync() -> None:
         assert recorder.raw(flow_id) is not None
 
 
+def test_dropped_counts_evictions_not_re_records() -> None:
+    """A re-recorded flow.id must not be counted as a dropped row.
+
+    ``dropped`` used to be inferred in ``flows()`` as the newest summary's seq
+    minus the retained count. seq counts ``_record`` calls, so a flow recorded
+    twice (mitmproxy's response-then-error on a client abort) bumped seq without
+    adding a distinct retained row -- the estimate then reported a phantom drop
+    for a ring that lost nothing. The recorder now counts evictions exactly. Here
+    a capacity-3 ring takes three distinct flows (nothing evicted) and then
+    re-records one of them: dropped must stay 0. A fourth distinct flow then
+    evicts the oldest, so dropped becomes exactly 1.
+    """
+    recorder = _FlowRecorder(capacity=3)
+    for flow_id in ("a", "b", "c"):
+        recorder.response(_ok_flow(flow_id))
+    assert recorder.dropped() == 0
+
+    aborted = _aborted_flow("b")
+    recorder.response(aborted)
+    recorder.error(aborted)
+    assert recorder.dropped() == 0, "a re-record was counted as a dropped row"
+
+    recorder.response(_ok_flow("d"))
+    assert recorder.dropped() == 1
+
+
 def test_docstring_names_the_error_fields() -> None:
     doc = _tool_docstring("proxy.flows")
     assert "error" in doc
