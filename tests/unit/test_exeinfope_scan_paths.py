@@ -202,8 +202,12 @@ class TestLogFlagAndArgv:
     def test_a_plain_path_is_unquoted(self, tmp_path: Path) -> None:
         assert _log_flag(tmp_path / "out.log") == f"/log:{tmp_path / 'out.log'}"
 
-    def test_a_spaced_path_is_quoted(self) -> None:
-        assert _log_flag(Path("/tmp/with space/out.log")) == '/log:"/tmp/with space/out.log"'
+    def test_a_spaced_path_is_quoted(self, tmp_path: Path) -> None:
+        # Built from tmp_path so str() is platform-native: a hardcoded
+        # "/tmp/..." literal renders with backslashes on Windows and the
+        # forward-slash expectation would never match there.
+        spaced = tmp_path / "with space" / "out.log"
+        assert _log_flag(spaced) == f'/log:"{spaced}"'
 
     def test_argv_is_the_fixed_whitelist(self, tmp_path: Path) -> None:
         argv = _build_argv(tmp_path / "e.exe", tmp_path / "s.bin", tmp_path / "o.log")
