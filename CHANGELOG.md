@@ -91,6 +91,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（隔离步骤 required 语义在调度器两头都接反）
+
+- `IsolationRunner.rotate` 的契约是:步骤**必需**(`isolation_required=True`,默认)且失败
+  时抛 `IsolationError`;只有操作员显式选择尽力而为(`required=False`)时才**返回**
+  `ok=False`。调度器只写了 `if not outcome.get("ok")` 的设计化处理,于是两头都接反:默认
+  配置下失败走 `tick()` 的 BaseException 兜底,给一次设计好的拒绝铸事故号(设计化分支永不
+  可达);`required=False` 时失败却被判任务致命——该配置形同虚设,无论怎么配,轮转失败都
+  杀任务。现调度器捕获 `IsolationError` 以自己的口径记任务失败(`isolation step failed:
+  <detail>`,不带事故号);返回的 `ok=False`(即尽力而为)不再拦截任务,runner 已记
+  `isolation_failed` 告警,继续分析正是操作员选择的取舍。原调度器测试的假 runner 返回
+  `ok=False` 期望任务失败——假件形状与真实组件契约背离正是死分支的来源,已改为按真实契约
+  抛异常;新增尽力而为路径的回归测试,两条测试未修复时均挂。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

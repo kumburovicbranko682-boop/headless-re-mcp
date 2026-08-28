@@ -15,6 +15,7 @@ from headless_re_mcp.agent.models import (
 )
 from headless_re_mcp.agent.scheduler import MissionScheduler
 from headless_re_mcp.agent.store import AgentStore
+from headless_re_mcp.core.isolation import IsolationError
 
 JsonObject = dict[str, Any]
 
@@ -232,22 +233,21 @@ async def test_isolation_runs_once_per_mission_and_blocks_a_dirty_machine(tmp_pa
     """The sample boundary is the mission, not the run.
 
     Runs within one mission share a target, so rolling the machine back between
-    them would destroy the state the next run needs. A failed rotation stops the
-    mission outright, because continuing would analyse a new sample on a machine
-    the previous one touched.
+    them would destroy the state the next run needs. A failed *required*
+    rotation raises IsolationError -- that is the real runner's contract; it
+    only returns ok=False when the operator chose best-effort -- and stops the
+    mission outright with the scheduler's own designed message, not an
+    incident-labelled internal error.
     """
     calls: list[str] = []
 
     class Isolation:
-        def __init__(self, ok: bool) -> None:
-            self.ok = ok
-
         def rotate(self, *, reason: str) -> dict[str, Any]:
             calls.append(reason)
-            return {"ok": self.ok, "performed": True, "detail": None if self.ok else "snapshot missing"}
+            return {"ok": True, "performed": True, "detail": None}
 
     scheduler, store, runner = _scheduler(tmp_path, ["keep going", f"{MISSION_COMPLETE_MARKER} ok"])
-    scheduler.isolation = Isolation(ok=True)
+    scheduler.isolation = Isolation()
     thread = store.create_thread()
     mission = store.create_mission(thread.id, "two runs", max_runs=4)
 
@@ -258,8 +258,15 @@ async def test_isolation_runs_once_per_mission_and_blocks_a_dirty_machine(tmp_pa
     assert len(runner.started) == 2
     assert calls == [f"mission:{mission.id}"], "rotation belongs between samples, not between runs"
 
+    class RequiredIsolationFails:
+        def rotate(self, *, reason: str) -> dict[str, Any]:
+            raise IsolationError(
+                "isolation step failed and is required: snapshot missing",
+                detail={"ok": False, "performed": True, "detail": "snapshot missing"},
+            )
+
     blocked_scheduler, blocked_store, blocked_runner = _scheduler(tmp_path / "second", ["never"])
-    blocked_scheduler.isolation = Isolation(ok=False)
+    blocked_scheduler.isolation = RequiredIsolationFails()
     blocked_thread = blocked_store.create_thread()
     blocked = blocked_store.create_mission(blocked_thread.id, "dirty machine")
 
@@ -268,7 +275,39 @@ async def test_isolation_runs_once_per_mission_and_blocks_a_dirty_machine(tmp_pa
     assert blocked_runner.started == [], "no run may start on a machine that was not rotated"
     final = blocked_store.get_mission(blocked.id)
     assert final.status is MissionStatus.FAILED
-    assert "isolation step failed" in str(final.error)
+    assert "isolation step failed: snapshot missing" in str(final.error)
+    assert "incident" not in str(final.error), (
+        "a required rotation that failed is this mechanism's designed refusal, "
+        "not an internal error"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_best_effort_isolation_failure_does_not_kill_the_mission(
+    tmp_path: Path,
+) -> None:
+    """required=False exists so a deployment can continue past a failed rotation.
+
+    The runner only *returns* ok=False in that configuration (a required
+    failure raises IsolationError), yet the scheduler failed the mission on
+    it -- making the setting dead: either way a failed rotation killed the
+    mission. The runner has already recorded the isolation_failed alert;
+    continuing is exactly the trade the operator asked for.
+    """
+
+    class BestEffortFails:
+        def rotate(self, *, reason: str) -> dict[str, Any]:
+            return {"ok": False, "performed": True, "detail": "snapshot missing"}
+
+    scheduler, store, runner = _scheduler(tmp_path, [f"{MISSION_COMPLETE_MARKER} done"])
+    scheduler.isolation = BestEffortFails()
+    thread = store.create_thread()
+    mission = store.create_mission(thread.id, "best effort")
+
+    await scheduler.tick()
+
+    assert runner.started, "the run must start; the operator chose best-effort"
+    assert store.get_mission(mission.id).status is MissionStatus.COMPLETED
 
 
 @pytest.mark.asyncio
