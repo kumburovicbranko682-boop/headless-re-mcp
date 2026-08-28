@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **330（212 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **331（213 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -368,6 +368,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
   `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
   `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
+
+### 新增（凭据扫描扩展到 Android）
+
+- 新增 `apk.secrets`:把硬编码凭据扫描带到安卓侧——`apk.strings` 列出全部 DEX 字符串常量、`apk.urls` 蒸出
+  其中的网络指标,这个把每个常量对着凭据表逐一分类,是移动审计里的头号发现之一(应用常把
+  AWS/Google/Firebase 密钥直接烤进 DEX)。凭据表与脱敏逻辑抽到 `backends/common/secrets.py`,与 `js.secrets`
+  共用一份:新增一个厂商模式,两条线一起受益。识别种类在 `js.secrets` 基础上加了 Firebase database URL。
+  命中的密钥同样脱敏(留能认出厂商的前缀与长度,中段打码),相同密钥去重;DEX 字符串池没有行号,故每条 finding
+  的 lines 恒为空。回 findings(分页,severity 高优先再按 kind 排序)、`count`/`total`/`offset`/`has_more`、
+  kinds 计数、total_findings 与 scan_capped(DEX 字符串池命中 5000 条采集上限,可能还有更多)。词法扫描:
+  运行时拼出的密钥、只存在 resources.arsc 里的密钥不在射程内,测试/示例密钥照样命中。非 APK 会话回
+  target_mismatch。同时把 `js.secrets` 改为复用共享分类器 `classify_secrets`,`js_static` 只负责 JS 分词取值。
 
 ### 新增（JavaScript 静态提取）
 

@@ -338,6 +338,44 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_urls(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.secrets")
+    def apk_secrets(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Find hard-coded credentials in the DEX string constants (pure Python).
+
+        apk.strings lists every constant and apk.urls distils the network ones;
+        this classifies each constant against a high-precision table of provider
+        credentials -- the embedded-key triage that is one of the top findings in
+        a mobile audit, since apps routinely ship AWS/Google/Firebase keys baked
+        into the DEX. It shares its table and redaction with js.secrets: every
+        pattern has a distinctive fixed prefix or structure (not "a long random
+        string"), so false positives stay low, and each match is redacted in the
+        output -- the provider-naming prefix and length kept, the middle masked --
+        so a transcript never carries the live value. Kinds detected: AWS access
+        key, Google API key and OAuth token, Firebase database URL, GitHub
+        token/PAT, GitLab token, Slack token and webhook, Stripe
+        secret/test/publishable keys, Twilio SID/key, SendGrid key, npm token,
+        JWT and PEM private keys.
+
+        Answers with findings (paged, sorted high severity first then kind),
+        count, total, offset, has_more, a kinds tally (distinct findings per
+        kind), total_findings (occurrences) and scan_capped (the DEX string pool
+        hit its 5000-constant collection cap, so more may exist). Each finding
+        carries kind, severity (high for a live/private credential, medium for a
+        publishable/test/JWT one), preview (the redacted value), length (of the
+        real secret) and count (occurrences); the DEX string pool has no line
+        numbers, so the lines list is always empty. A clean app returns an empty
+        findings list, not an error. This is a lexical scan over string
+        constants: it will not catch a secret assembled at runtime, a key held
+        only in resources.arsc, or a test/example key is still matched.
+
+        A session that is not an APK is refused target_mismatch.
+        """
+        return _dump(analysis.apk_secrets(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.uses_features")
     def apk_uses_features(session_id: str) -> dict[str, Any]:
         """Report the hardware/software features and libraries the app declares.

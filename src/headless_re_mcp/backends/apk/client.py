@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
+from headless_re_mcp.backends.common.secrets import classify_secrets
+
 JsonObject = dict[str, Any]
 
 # DEX analysis of a large app can take seconds and tens of MB; keep only a few
@@ -1426,6 +1428,28 @@ class ApkClient:
             "ip_count": len(ip_list),
             "scan_capped": scan_capped,
         }
+
+    def secrets(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        """Classify DEX string constants against known credential patterns.
+
+        apk.strings lists every constant; this classifies each against the
+        shared credential table (AWS/Google/GitHub/Slack/Stripe keys, Firebase
+        URLs, JWTs, PEM private keys, ...) -- the hard-coded-key triage that is
+        one of the top findings in a mobile audit. Matches are deduped and
+        redacted; the string pool has no line numbers, so each finding's lines
+        list stays empty.
+        """
+        parsed = self._parsed(path)
+        values: list[tuple[str, int | None]] = []
+        scan_capped = False
+        for item in parsed.analysis.get_strings():
+            if len(values) >= _MAX_STRINGS_COLLECT:
+                scan_capped = True
+                break
+            values.append((str(item.get_value())[:_MAX_STRING_LEN], None))
+        return classify_secrets(
+            values, offset=offset, limit=limit, scan_capped=scan_capped
+        )
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)

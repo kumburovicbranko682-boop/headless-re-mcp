@@ -37,6 +37,8 @@ from collections import Counter, OrderedDict
 from typing import Any
 from urllib.parse import urlsplit
 
+from headless_re_mcp.backends.common.secrets import classify_secrets
+
 JsonObject = dict[str, Any]
 
 # String-literal collection caps: a minified bundle carries tens of thousands
@@ -127,46 +129,9 @@ _API_SINKS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     ("node_exec", "spawn", re.compile(r"\.\s*spawn(?:Sync)?\s*\(")),
 )
 
-# js.secrets caps: bound the distinct-finding set, sample lines per finding and
-# the page. The literal scan itself is bounded by _MAX_JS_STRINGS_COLLECT.
-_MAX_SECRETS_COLLECT = 5000
-_MAX_SECRET_SAMPLE_LINES = 5
-_MAX_SECRETS_PAGE = 2000
-# Shortest literal worth classifying: every pattern below is longer than this.
+# Shortest literal worth classifying for secrets: every credential pattern in
+# backends.common.secrets is longer than this, so shorter literals can be skipped.
 _MIN_SECRET_LITERAL_LEN = 8
-
-# High-precision credential patterns, matched against decoded string-literal
-# values (not raw code), so the false-positive rate stays low: each has a
-# distinctive fixed prefix or structure rather than "a long random string".
-# (kind, severity, pattern). Severity is high for a live/private credential,
-# medium for a publishable or test one.
-_SECRET_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
-    ("aws_access_key_id", "high", re.compile(r"\b(?:AKIA|ASIA|AGPA|AROA|AIDA)[0-9A-Z]{16}\b")),
-    ("google_api_key", "high", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
-    ("google_oauth_token", "high", re.compile(r"\bya29\.[0-9A-Za-z_\-]{20,}")),
-    ("github_token", "high", re.compile(r"\bgh[pousr]_[0-9A-Za-z]{36,}\b")),
-    ("github_pat", "high", re.compile(r"\bgithub_pat_[0-9A-Za-z_]{22,}\b")),
-    ("gitlab_token", "high", re.compile(r"\bglpat-[0-9A-Za-z_\-]{20,}\b")),
-    ("slack_token", "high", re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b")),
-    ("slack_webhook", "high", re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9/_-]+")),
-    ("stripe_secret_key", "high", re.compile(r"\b[sr]k_live_[0-9A-Za-z]{16,}\b")),
-    ("stripe_test_key", "medium", re.compile(r"\b[sr]k_test_[0-9A-Za-z]{16,}\b")),
-    ("stripe_publishable_key", "medium", re.compile(r"\bpk_(?:live|test)_[0-9A-Za-z]{16,}\b")),
-    ("twilio_account_sid", "medium", re.compile(r"\bAC[0-9a-fA-F]{32}\b")),
-    ("twilio_api_key", "high", re.compile(r"\bSK[0-9a-fA-F]{32}\b")),
-    ("sendgrid_api_key", "high", re.compile(r"\bSG\.[0-9A-Za-z_\-]{22}\.[0-9A-Za-z_\-]{43}\b")),
-    ("npm_token", "high", re.compile(r"\bnpm_[0-9A-Za-z]{36}\b")),
-    (
-        "jwt",
-        "medium",
-        re.compile(r"\beyJ[0-9A-Za-z_\-]{6,}\.eyJ[0-9A-Za-z_\-]{6,}\.[0-9A-Za-z_\-]{6,}"),
-    ),
-    (
-        "private_key",
-        "high",
-        re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"),
-    ),
-)
 
 # A ``/`` right after one of these keywords begins a regex, not a division.
 _REGEX_PRECEDING_KEYWORDS = frozenset(
@@ -715,75 +680,20 @@ def extract_js_api_usage(text: str) -> JsonObject:
     }
 
 
-def _redact_secret(secret: str) -> str:
-    """Mask the middle of a matched credential, keeping enough to identify it.
-
-    Full secrets must never be echoed into a transcript, but the prefix (which
-    is what names the provider) and length are what a triage needs.
-    """
-    length = len(secret)
-    if length <= 8:
-        head = secret[:2]
-        return f"{head}{'*' * max(1, length - 2)} (len {length})"
-    return f"{secret[:4]}{'*' * 4}{secret[-2:]} (len {length})"
-
-
 def extract_js_secrets(
     text: str, *, offset: int = 0, limit: int = 200
 ) -> JsonObject:
     """Classify string literals against known credential patterns (pure Python).
 
     Scans the decoded value of every string literal (not raw code, so a name in
-    a comment does not count) against a high-precision table of provider
-    credentials, deduping identical secrets and redacting them in the output.
+    a comment does not count) against the shared credential table, deduping
+    identical secrets and redacting them in the output. The classification is
+    the shared ``classify_secrets``; this only supplies the JS-tokenized values.
     """
     literals, scan_capped = _scan_string_literals(
         text, min_length=_MIN_SECRET_LITERAL_LEN
     )
-    # key (kind, secret) -> {kind, severity, preview, length, count, lines}
-    found: OrderedDict[tuple[str, str], JsonObject] = OrderedDict()
-    kinds: Counter[str] = Counter()
-    for lit in literals:
-        value = str(lit["value"])
-        line = int(lit["line"])
-        for kind, severity, pattern in _SECRET_PATTERNS:
-            for match in pattern.finditer(value):
-                secret = match.group(0)
-                key = (kind, secret)
-                row = found.get(key)
-                if row is None:
-                    if len(found) >= _MAX_SECRETS_COLLECT:
-                        scan_capped = True
-                        continue
-                    row = {
-                        "kind": kind,
-                        "severity": severity,
-                        "preview": _redact_secret(secret),
-                        "length": len(secret),
-                        "count": 0,
-                        "lines": [],
-                    }
-                    found[key] = row
-                    kinds[kind] += 1
-                row["count"] = int(row["count"]) + 1
-                lines_list: list[int] = row["lines"]
-                if line not in lines_list and len(lines_list) < _MAX_SECRET_SAMPLE_LINES:
-                    lines_list.append(line)
-
-    severity_rank = {"high": 0, "medium": 1, "low": 2}
-    rows = sorted(
-        found.values(),
-        key=lambda r: (severity_rank.get(str(r["severity"]), 3), str(r["kind"]), str(r["preview"])),
+    items = ((str(lit["value"]), int(lit["line"])) for lit in literals)
+    return classify_secrets(
+        items, offset=offset, limit=limit, scan_capped=scan_capped
     )
-    start, cap = _clamp_page(offset, limit, max_limit=_MAX_SECRETS_PAGE)
-    window = rows[start : start + cap]
-    return {
-        "findings": window,
-        "count": len(window),
-        "total": len(rows),
-        "offset": start,
-        "has_more": start + len(window) < len(rows),
-        "kinds": dict(kinds),
-        "total_findings": sum(int(r["count"]) for r in rows),
-        "scan_capped": scan_capped,
-    }

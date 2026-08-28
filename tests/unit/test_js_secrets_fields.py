@@ -124,9 +124,9 @@ def test_pages_the_findings() -> None:
 
 
 def test_scan_capped(monkeypatch: pytest.MonkeyPatch) -> None:
-    import headless_re_mcp.backends.jsre.js_static as js_static
+    import headless_re_mcp.backends.common.secrets as secrets_mod
 
-    monkeypatch.setattr(js_static, "_MAX_SECRETS_COLLECT", 2)
+    monkeypatch.setattr(secrets_mod, "_MAX_SECRETS_COLLECT", 2)
     src = "".join(f"const k{i}='sk_live_{i:022d}ABCDEF';" for i in range(5))
     payload = extract_js_secrets(src)
     assert payload["total"] == 2
