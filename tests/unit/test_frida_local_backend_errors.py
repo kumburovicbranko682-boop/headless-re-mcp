@@ -119,6 +119,51 @@ def test_local_rpc_timeout_keeps_the_timeout_code() -> None:
     assert caught.value.code == "timeout"
 
 
+class _AttachRaisingFrida:
+    """attach itself fails, before any session exists."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    def attach(self, pid: int) -> Any:
+        del pid
+        raise self._exc
+
+
+def test_local_attach_failure_is_backend_error_naming_the_pid() -> None:
+    """A failed local attach is classified like the device attach path.
+
+    _attach_local backs modules/exports/memory.read; the existing tests fail the
+    RPC after attach succeeds, so the arm where frida.attach itself raises -- a
+    local pid that exited between authorization and attach, or a process that
+    refuses injection -- was never exercised. It must be backend_error carrying
+    the pid, not the raw exception _failure would mint as an internal_error
+    incident. No session was opened, so there is nothing to detach.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _AttachRaisingFrida(RuntimeError("unable to attach: process not found"))
+
+    with pytest.raises(FridaError) as caught:
+        client.modules(1, allowed_pid=1)
+
+    assert caught.value.code == "backend_error"
+    assert "attach failed" in caught.value.message
+    assert caught.value.details["pid"] == 1
+
+
+def test_local_attach_timeout_keeps_the_timeout_code() -> None:
+    """A local attach that outruns the deadline stays a timeout, not backend_error."""
+    client = FridaClient()
+    client._available = True
+    client._frida = _AttachRaisingFrida(RuntimeError("the request timed out"))
+
+    with pytest.raises(FridaError) as caught:
+        client.memory_read(1, 0x1000, 16, allowed_pid=1)
+
+    assert caught.value.code == "timeout"
+
+
 def test_every_op_reports_capability_unavailable_when_frida_is_absent() -> None:
     """A missing frida module must degrade, not crash, on every entry point.
 
