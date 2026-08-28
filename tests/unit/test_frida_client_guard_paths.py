@@ -208,6 +208,27 @@ def test_client_marks_itself_available_when_frida_imports(
     assert client._frida is fake
 
 
+def test_client_marks_itself_unavailable_when_frida_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """__init__ degrades to unavailable when ``import frida`` fails.
+
+    The partner of the test above: every other unavailable test sets
+    ``_available = False`` by hand, so the ``except`` arm of ``__init__`` that
+    actually establishes that state on a bare install was never run. A None entry
+    in ``sys.modules`` is the import system's negative cache, so ``import frida``
+    raises ImportError regardless of whether the ``android`` extra is installed
+    -- pinning the construction-time degradation contract hermetically rather
+    than relying on the environment simply lacking frida.
+    """
+    monkeypatch.setitem(sys.modules, "frida", None)
+
+    client = FridaClient()
+
+    assert client.available is False
+    assert client._frida is None
+
+
 # ----------------------------------------------------------------------
 # attach (local) and its authorization guards.
 # ----------------------------------------------------------------------

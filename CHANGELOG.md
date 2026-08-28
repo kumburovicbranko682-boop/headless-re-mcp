@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（补齐 frida 后端"模块缺席"构造分支的密闭覆盖）
+
+- 满配环境（装齐 CLI 工具 + `android`/`browser`/`proxy` Python extras）下做覆盖率扫描，发现
+  `FridaClient.__init__` 的 `except`（`import frida` 失败 → `_available=False`）分支从未被执行：
+  frida 装着时它天然不走,而所有"不可用"用例都是构造后手动 `client._available = False`,绕过了 `__init__`。
+  于是 androguard/mitmproxy 都有的"构造期降级"密闭用例,唯独 frida 缺一个。
+- 补上与既有"frida 存在则 available"用例对称的伙伴:用 `monkeypatch.setitem(sys.modules, "frida", None)`
+  让 `import frida` 抛 ImportError（装不装 frida 都成立）,断言 `available is False` 且 `_frida is None`。
+  已 mutation 验证载荷性（把 except 分支改成 `_available=True` 该用例即失败）,并确认覆盖了 client.py:342-344。
+
 ### 修复（单测密闭性：3 个"mitmproxy 缺席"用例不再依赖环境里真的没装 mitmproxy）
 
 - 在装齐全部可选后端（`android`+`browser`+`proxy` extras）跑全量单测时暴露出 3 个非密闭用例：
