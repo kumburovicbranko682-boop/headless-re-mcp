@@ -698,8 +698,14 @@ def _disassemble_il(il: bytes, *, max_insns: int) -> tuple[list[JsonObject], boo
             continue
         info = _OPCODES.get(op)
         if info is None:
+            # An opcode outside the modelled subset may carry an operand this
+            # decoder does not skip, so the byte after it -- and everything
+            # past that -- can be read as an opcode it is not. Alignment can no
+            # longer be trusted, so the decode is partial even though a
+            # mnemonic was emitted for this one byte.
             rebuilt.append({"ip": start, "mnemonic": f"op_{op:02x}", "operand": None})
             i += 1
+            partial = True
             continue
         name, imm = info
         i += 1
