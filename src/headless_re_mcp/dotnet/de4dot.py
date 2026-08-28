@@ -95,6 +95,24 @@ class De4dotResult:
         }
 
 
+def _require_positive_number(value: float, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise De4dotError(
+            De4dotErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive number",
+            details={name: value},
+        )
+
+
+def _require_positive_int(value: int, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise De4dotError(
+            De4dotErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive integer",
+            details={name: value},
+        )
+
+
 def run_de4dot(
     executable: Path,
     input_path: Path,
@@ -106,6 +124,9 @@ def run_de4dot(
     max_output_size: int = DEFAULT_MAX_OUTPUT_SIZE,
 ) -> De4dotResult:
     """Run ``de4dot -f <input> -o <output>`` with hard bounds."""
+    _require_positive_number(timeout, "timeout")
+    _require_positive_int(max_file_size, "max_file_size")
+    _require_positive_int(max_output_size, "max_output_size")
     exe = Path(executable).expanduser()
     # resolve() without strict=True so a missing input surfaces as the structured
     # INPUT_NOT_FOUND error below instead of a raw FileNotFoundError from resolve().

@@ -97,6 +97,24 @@ class NetReactorSlayerResult:
         }
 
 
+def _require_positive_number(value: float, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise NetReactorSlayerError(
+            NetReactorSlayerErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive number",
+            details={name: value},
+        )
+
+
+def _require_positive_int(value: int, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise NetReactorSlayerError(
+            NetReactorSlayerErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive integer",
+            details={name: value},
+        )
+
+
 def run_net_reactor_slayer(
     executable: Path,
     input_path: Path,
@@ -108,6 +126,9 @@ def run_net_reactor_slayer(
     max_output_size: int = DEFAULT_MAX_OUTPUT_SIZE,
 ) -> NetReactorSlayerResult:
     """Run NETReactorSlayer on a work copy; publish ``*_Slayed`` to output_path."""
+    _require_positive_number(timeout, "timeout")
+    _require_positive_int(max_file_size, "max_file_size")
+    _require_positive_int(max_output_size, "max_output_size")
     exe = Path(executable).expanduser()
     # resolve() without strict=True so a missing input surfaces as the structured
     # INPUT_NOT_FOUND error below instead of a raw FileNotFoundError from resolve().
