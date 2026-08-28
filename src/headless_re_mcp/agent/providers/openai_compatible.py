@@ -48,13 +48,13 @@ def _plain_text(value: Any) -> str:
 def _hidden_texts(delta: dict[str, Any]) -> list[str]:
     """Thinking / reasoning text. Empty first chunks are ignored, like Harness."""
     texts: list[str] = []
+    # ``_plain_text`` already reads a str, a list of parts, or a
+    # ``{"text"/"content"/"summary": ...}`` object, so the loop covers a
+    # dict-valued ``reasoning`` too. A second, explicit dict branch used to sit
+    # here and appended the same text again, so a provider that streams
+    # ``reasoning`` as an object had every thinking chunk emitted twice.
     for key in _HIDDEN_DELTA_KEYS:
         piece = _plain_text(delta.get(key))
-        if piece:
-            texts.append(piece)
-    reasoning = delta.get("reasoning")
-    if isinstance(reasoning, dict):
-        piece = _plain_text(reasoning)
         if piece:
             texts.append(piece)
     extra = delta.get("extra_content")

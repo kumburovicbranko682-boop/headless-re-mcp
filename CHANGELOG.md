@@ -101,6 +101,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（对象形态的 reasoning 增量在思考流里被输出两次）
+
+- `agent/providers/openai_compatible.py` 的 `_hidden_texts` 会把 provider 的思考文本
+  重复一遍。它先用 `_HIDDEN_DELTA_KEYS`（含 `reasoning`）逐个跑 `_plain_text`——后者本就
+  能从字符串、分片列表或 `{"text"/"content"/"summary": ...}` 对象里取文本；紧接着又有一段
+  显式的“若 `reasoning` 是 dict 就再取一次”的分支，对同一份文本二次入列。于是把 `reasoning`
+  以对象形态流式下发的兼容 provider，每个思考块都被当作两条 `reasoning_delta` 事件送给调用方，
+  监控台的思考流因此重复显示。删掉那段冗余分支即可——循环已覆盖 dict 情形；字符串、
+  `reasoning_content`、列表 content、`extra_content.google.thought` 等既有路径不受影响。新增
+  `tests/unit/test_agent_provider.py` 直接单测 `_hidden_texts` 的 `content`/`text`/`summary`
+  三种对象形态各只取一次、字符串与混合形态不变，并加一条经 `stream_chat` 的端到端用例断言
+  对象形态 reasoning 只产生一条 `reasoning_delta`（改前会得到两条）。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
