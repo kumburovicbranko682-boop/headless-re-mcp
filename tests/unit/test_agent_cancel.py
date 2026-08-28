@@ -54,6 +54,26 @@ class FakeProvider:
         return ["fake"]
 
 
+class _CancelOnEventStore(AgentStore):
+    """Requests cancellation the instant a chosen run event is recorded.
+
+    This models a user who cancels at an exact point in the tool lifecycle --
+    as the call is proposed, or as the approval prompt appears -- without any
+    real timing. It lets a direct _handle_tool_call call land the cancel in the
+    narrow window each re-check guards, deterministically.
+    """
+
+    def __init__(self, path: Path, *, cancel_on: str) -> None:
+        super().__init__(path)
+        self._cancel_on = cancel_on
+
+    def append_event(self, run_id: str, event_type: str, data: JsonObject) -> Any:
+        event = super().append_event(run_id, event_type, data)
+        if event_type == self._cancel_on:
+            super().request_cancel(run_id)
+        return event
+
+
 async def _wait_status(store: AgentStore, run_id: str, wanted: set[RunStatus]) -> RunStatus:
     for _ in range(400):
         run = store.get_run(run_id)
@@ -150,6 +170,67 @@ async def test_cancel_stops_a_hanging_tool_and_blocks_further_handlers(tmp_path:
         assert invoked == ["hang"]
     finally:
         release.set()
+
+
+@pytest.mark.asyncio
+async def test_an_auto_approved_read_only_tool_still_aborts_on_a_cancel(tmp_path: Path) -> None:
+    """A read-only tool auto-approves, so it skips the approval wait entirely.
+
+    The re-check right before execution is the only thing that stops it once a
+    cancel has landed; without it a cancelled run would still run one more tool.
+    """
+    store = _CancelOnEventStore(tmp_path / "auto.db", cancel_on="tool.proposed")
+    thread = store.create_thread()
+    run = store.create_run(thread.id, provider_profile="default", model=None, deadline_seconds=60)
+    store.transition(run.id, RunStatus.STREAMING)
+
+    invoked: list[str] = []
+
+    def readonly() -> JsonObject:
+        invoked.append("ran")
+        return {"ok": True}
+
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_spec("test.read", readonly)]),
+        _configs(tmp_path),
+        provider_factory=lambda _: FakeProvider([]),
+        autonomy=AutonomyPolicy(),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner._handle_tool_call(run.id, "c1", "test.read", {})
+
+    assert invoked == []
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_while_awaiting_approval_aborts_before_the_tool_runs(tmp_path: Path) -> None:
+    """A write waits for a human; a cancel arriving at the prompt must break the
+    wait and abort, not sit until the approval timeout or run the tool."""
+    store = _CancelOnEventStore(tmp_path / "await.db", cancel_on="approval.required")
+    thread = store.create_thread()
+    run = store.create_run(thread.id, provider_profile="default", model=None, deadline_seconds=60)
+    store.transition(run.id, RunStatus.STREAMING)
+
+    invoked: list[str] = []
+
+    def writer() -> JsonObject:
+        invoked.append("ran")
+        return {"ok": True}
+
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_spec("test.write", writer, effect=ToolEffect.STATE_CHANGE)]),
+        _configs(tmp_path),
+        provider_factory=lambda _: FakeProvider([]),
+        autonomy=AutonomyPolicy(),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner._handle_tool_call(run.id, "w1", "test.write", {})
+
+    assert invoked == []
 
 
 @pytest.mark.asyncio
