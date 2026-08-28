@@ -101,6 +101,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（persona 标题以下划线开头导致导入直接崩）
+
+- `agent/personas.py` 的 `_slug` 用 `re.sub(r"[^a-zA-Z0-9_-]+", "-", ...)` 归一标题后只
+  `strip("-")`,下划线被保留;而 `_PERSONA_ID_RE`(及 `_body_path` 据此拼的文件名)要求首字符
+  为字母数字。于是标题 `_notes`(或经 `import_path` 导入的 `_readme.md` 这类文件)得到
+  `_notes-<hex>`,首字符 `_` 过不了 id 校验,`_body_path` 抛异常,整个 `import_markdown` /
+  `import_path` 以 `persona_id_invalid` 失败——一个合法的用户标题/文件名直接崩掉导入。现改为
+  `strip("-_")`,slug 首字符恒为字母数字(全下划线的 stem 回退为 `persona`),`_notes`→
+  `notes-<hex>`、`_readme.md`→`readme-<hex>`,普通标题 slug 形状不变。新增回归测试覆盖
+  下划线开头标题、下划线开头文件名与纯下划线 stem 三种情形。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

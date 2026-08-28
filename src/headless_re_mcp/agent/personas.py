@@ -44,7 +44,12 @@ SEAGULL_SEED_PATHS = (
 
 
 def _slug(title: str, body: str) -> str:
-    stem = re.sub(r"[^a-zA-Z0-9_-]+", "-", Path(title).stem).strip("-").lower()[:40]
+    # Strip leading/trailing "_" as well as "-": _PERSONA_ID_RE (and the file
+    # name that _body_path builds from the id) require an alnum first char, but
+    # the sub above keeps underscores, so a title like "_notes" -- or a file
+    # named "_readme.md" imported via import_path -- produced "_notes-<hex>",
+    # which fails the id check and made the whole import raise persona_id_invalid.
+    stem = re.sub(r"[^a-zA-Z0-9_-]+", "-", Path(title).stem).strip("-_").lower()[:40]
     digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:8]
     return f"{stem or 'persona'}-{digest}"
 
