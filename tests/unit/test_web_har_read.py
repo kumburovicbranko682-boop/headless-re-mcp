@@ -91,6 +91,59 @@ def test_a_serialized_har_reads_back_into_the_network_list_shape() -> None:
     assert summaries[1]["status"] == 500
 
 
+def test_reads_a_richer_external_har_and_projects_only_the_summary() -> None:
+    """A HAR from Chrome DevTools / Firefox carries request and response headers,
+    bodies, cache and timings this reader does not surface. It must still list
+    the summary fields and ignore the rest -- the "reads any spec HAR" half of
+    the contract, beyond our own exporter's output."""
+    doc = {
+        "log": {
+            "version": "1.2",
+            "creator": {"name": "WebInspector", "version": "537.36"},
+            "entries": [
+                {
+                    "startedDateTime": "2026-08-28T06:00:00.000Z",
+                    "time": 42.5,
+                    "request": {
+                        "method": "GET",
+                        "url": "https://ext.test/app.css?v=2",
+                        "httpVersion": "http/2.0",
+                        "headers": [{"name": "accept", "value": "text/css"}],
+                        "queryString": [{"name": "v", "value": "2"}],
+                        "cookies": [],
+                        "headersSize": 120,
+                        "bodySize": 0,
+                    },
+                    "response": {
+                        "status": 304,
+                        "statusText": "Not Modified",
+                        "httpVersion": "http/2.0",
+                        "headers": [{"name": "content-type", "value": "text/css"}],
+                        "cookies": [],
+                        "content": {"size": 0, "mimeType": "text/css", "text": "body{}"},
+                        "redirectURL": "",
+                        "headersSize": 88,
+                        "bodySize": 0,
+                    },
+                    "cache": {},
+                    "timings": {"send": 0, "wait": 40, "receive": 2.5},
+                    "_resourceType": "stylesheet",
+                }
+            ],
+        }
+    }
+    assert read_har_entries(json.dumps(doc)) == [
+        {
+            "url": "https://ext.test/app.css?v=2",
+            "method": "GET",
+            "status": 304,
+            "mime_type": "text/css",
+            "started_date_time": "2026-08-28T06:00:00.000Z",
+            "resource_type": "stylesheet",
+        }
+    ]
+
+
 def test_non_json_is_a_har_read_error() -> None:
     with pytest.raises(HarReadError):
         read_har_entries("<html>not json</html>")

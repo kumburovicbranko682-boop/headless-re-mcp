@@ -332,3 +332,60 @@ def test_proxy_export_har_refuses_when_even_an_empty_har_exceeds_the_cap(
     with pytest.raises(ProxyError) as info:
         backend.export_har("s", tmp_path / "capture.har")
     assert info.value.code == "too_large"
+
+
+# The export tests above open the loop -- a producer writes a HAR. web.har.read
+# closes it. Centralising HAR in common/har.py is only worth it if what either
+# exporter writes reads back through the one reader with the same summary
+# fields, so pin the full round trip for both producers here, next to the
+# exports themselves.
+
+
+def test_web_har_export_reads_back_through_web_har_read(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _WebHandle(3))
+    out = tmp_path / "capture.har"
+    backend.har_export("s", out)
+
+    page = backend.read_har(str(out), offset=0, limit=100)
+    assert page["total"] == 3
+    assert page["count"] == 3
+    by_url = {entry["url"]: entry for entry in page["entries"]}
+    assert set(by_url) == {
+        "https://example.com/0",
+        "https://example.com/1",
+        "https://example.com/2",
+    }
+    assert by_url["https://example.com/0"]["method"] == "GET"
+    assert by_url["https://example.com/0"]["status"] == 200
+    assert by_url["https://example.com/0"]["mime_type"] == "text/html"
+    # The browser's resource-type hint survives the export -> read round trip.
+    assert by_url["https://example.com/0"]["resource_type"] == "Document"
+    assert by_url["https://example.com/1"]["resource_type"] == "Script"
+
+
+def test_proxy_har_export_reads_back_through_web_har_read(tmp_path: Path) -> None:
+    """Cross-producer: a proxy-exported HAR reads through the same reader.
+
+    This is the symmetry that justifies the shared module -- either exporter's
+    output is readable by the one reader. mitmproxy has no Chrome resource type,
+    so proxy entries carry no ``_resourceType`` and the reader omits
+    ``resource_type`` for them, which is exactly why that key is optional rather
+    than always present.
+    """
+    backend = _proxy_backend_with_flows(4)
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+
+    page = WebBackend().read_har(str(out), offset=0, limit=100)
+    assert page["total"] == 4
+    assert page["count"] == 4
+    for entry in page["entries"]:
+        assert entry["method"] == "GET"
+        assert entry["status"] == 200
+        assert entry["mime_type"] == "text/plain"
+        assert entry["url"].startswith("http://x/")
+        # The proxy sets no resource type, so the reader leaves the key off.
+        assert "resource_type" not in entry
