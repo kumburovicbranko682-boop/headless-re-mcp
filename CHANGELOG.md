@@ -127,6 +127,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`memory.protection` 的 rights 暴露为枚举，与原生 allowlist 对齐）
+
+- `memory.protection` 的 `rights` 过去标注为裸 `str | None`，schema 里只是一个不带
+  任何取值提示的字符串。但原生 `IsAllowedPageRights` 只认八个 x64dbg 页保护名及其
+  guard-page 的 `G` 变体（`Execute`/`ReadWrite`/`ExecuteReadWrite`…），其余一律以
+  “rights string is not in the allowlist”回绝。于是 agent 只能猜——像 `rw`/`rwx`
+  这种对断点类型（bp_type）本就合法的写法会先通过 Python 校验，跑到暂停的被调试进程
+  那边才被原生拒掉，白白往返一次；这也与 `bp_type` 已把各自 allowlist 镜像进 pattern
+  的做法不一致。现把 `rights` 收窄为一个 `Literal`，schema 直接给出这 16 个精确名字的
+  枚举，非法值在边界就被拒；查询路径（不传 rights）仍走 `None`。新增回归测试断言该枚举
+  与原生 `IsAllowedPageRights` 集合逐一相等，防止两边日后漂移。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
