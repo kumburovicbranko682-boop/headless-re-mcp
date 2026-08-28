@@ -315,6 +315,28 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_urls(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.uses_features")
+    def apk_uses_features(session_id: str) -> dict[str, Any]:
+        """Report the hardware/software features and libraries the app declares.
+
+        The capability profile a reviewer reads before the code: <uses-feature>
+        says what the app expects the device to have (camera, telephony, GPS,
+        fingerprint, a GL ES level), and <uses-library>/<uses-native-library>
+        name the platform and vendor libraries it links against.
+
+        Answers with features, feature_count, feature_total; libraries,
+        library_count, library_total; and has_more (either list hit its cap).
+        Each feature carries name, required and gl_es_version (the android:
+        glEsVersion literal, or null). Each library carries name, required and
+        native (true for <uses-native-library>). required is the android:required
+        attribute, defaulting to true when absent -- required=false marks a
+        capability the app can run without, the pattern an app uses to broaden
+        its install base while still using a sensitive feature when present.
+
+        A session that is not an APK is refused target_mismatch.
+        """
+        return _dump(analysis.apk_uses_features(session_id))
+
     @tools.tool(name="apk.xrefs")
     def apk_xrefs(
         session_id: str,

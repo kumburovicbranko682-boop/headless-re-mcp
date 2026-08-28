@@ -70,6 +70,13 @@ _MAX_SUB_RESOURCES = 500
 _MAX_LINK_ORIGINS = 200
 # web.frames cap: an ad-heavy page can nest hundreds of iframes; bound the list.
 _MAX_FRAMES = 200
+# web.dom.query caps: a broad selector can match thousands of nodes; bound the
+# element list, the attributes per element, and each captured value/text/html.
+_MAX_DOM_QUERY = 100
+_MAX_DOM_ATTRS = 50
+_MAX_DOM_ATTR_CHARS = 1024
+_MAX_DOM_TEXT = 2048
+_MAX_DOM_HTML = 512
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -561,6 +568,70 @@ def _fold_frames(rows: list[JsonObject], main_url: str) -> JsonObject:
         "total": len(rows),
         "truncated": truncated,
         "cross_origin_count": cross_origin,
+    }
+
+
+_DOM_QUERY_SCRIPT = """(cfg) => {
+  let nodes;
+  try {
+    nodes = document.querySelectorAll(cfg.selector);
+  } catch (e) {
+    return { error: String((e && e.message) || e) };
+  }
+  const total = nodes.length;
+  const out = [];
+  for (let i = 0; i < total && out.length < cfg.maxElements; i++) {
+    const el = nodes[i];
+    const attrs = {};
+    const names = el.getAttributeNames ? el.getAttributeNames() : [];
+    for (let a = 0; a < names.length && a < cfg.maxAttrs; a++) {
+      attrs[names[a]] = String(el.getAttribute(names[a]) || '').slice(0, cfg.maxAttrChars);
+    }
+    out.push({
+      tag: String(el.tagName || '').toLowerCase(),
+      text: String(el.textContent || '').trim().slice(0, cfg.maxText),
+      attributes: attrs,
+      attr_count: names.length,
+      html: String(el.outerHTML || '').slice(0, cfg.maxHtml)
+    });
+  }
+  return { total: total, elements: out };
+}"""
+
+
+def _fold_dom_query(raw: object, selector: str) -> JsonObject:
+    """Fold a page-side querySelectorAll dump into a bounded element list."""
+    data = raw if isinstance(raw, dict) else {}
+    elements: list[JsonObject] = []
+    truncated = False
+    for item in data.get("elements") or []:
+        if not isinstance(item, dict):
+            continue
+        if len(elements) >= _MAX_DOM_QUERY:
+            truncated = True
+            break
+        attrs: JsonObject = {}
+        attrs_in = item.get("attributes")
+        if isinstance(attrs_in, dict):
+            for key, value in list(attrs_in.items())[:_MAX_DOM_ATTRS]:
+                attrs[str(key)[:256]] = _bounded_metadata(value, _MAX_DOM_ATTR_CHARS)[0]
+        elements.append(
+            {
+                "tag": _bounded_metadata(item.get("tag"), 64)[0],
+                "text": _bounded_metadata(item.get("text"), _MAX_DOM_TEXT)[0],
+                "attributes": attrs,
+                "attr_count": int(item.get("attr_count") or len(attrs)),
+                "html": _bounded_metadata(item.get("html"), _MAX_DOM_HTML)[0],
+            }
+        )
+    total = data.get("total")
+    total_int = int(total) if isinstance(total, int) else len(elements)
+    return {
+        "selector": selector,
+        "elements": elements,
+        "count": len(elements),
+        "total": total_int,
+        "truncated": truncated or total_int > len(elements),
     }
 
 
@@ -1550,6 +1621,31 @@ class WebBackend:
                 )
             main_url = _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0]
             return _fold_frames(rows, main_url)
+
+        return self._runner(handle).call(work)
+
+    def dom_query(self, session_id: str, selector: str, *, limit: int = 50) -> JsonObject:
+        handle = self._get(session_id)
+        sel = str(selector or "").strip()
+        if not sel:
+            raise WebError("invalid_params", "selector is required")
+
+        def work() -> JsonObject:
+            cfg = {
+                "selector": sel,
+                "maxElements": max(1, min(int(limit), _MAX_DOM_QUERY)),
+                "maxAttrs": _MAX_DOM_ATTRS,
+                "maxAttrChars": _MAX_DOM_ATTR_CHARS,
+                "maxText": _MAX_DOM_TEXT,
+                "maxHtml": _MAX_DOM_HTML,
+            }
+            try:
+                raw = handle.page.evaluate(_DOM_QUERY_SCRIPT, cfg)
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"dom query failed: {exc}") from exc
+            if isinstance(raw, dict) and raw.get("error"):
+                raise WebError("invalid_params", f"invalid selector: {raw['error']}")
+            return _fold_dom_query(raw, sel)
 
         return self._runner(handle).call(work)
 

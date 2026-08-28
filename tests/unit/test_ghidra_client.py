@@ -533,6 +533,34 @@ def test_ghidra_exports_passes_the_exports_mode_to_the_post_script(
     assert listed["export_path"]
 
 
+def test_ghidra_memory_map_passes_the_memory_map_mode_to_the_post_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = (
+        '{"mode": "memory_map", "items": ['
+        '{"name": ".text", "start": "00401000", "end": "00402fff", "size": 8192,'
+        ' "permissions": "r-x", "read": true, "write": false, "execute": true,'
+        ' "initialized": true, "overlay": false},'
+        '{"name": ".bss", "start": "00404000", "end": "004043ff", "size": 1024,'
+        ' "permissions": "rw-", "read": true, "write": true, "execute": false,'
+        ' "initialized": false, "overlay": false}'
+        '], "count": 2, "has_more": false}'
+    )
+    calls = _capture_mode_run(monkeypatch, payload)
+    client = _client(tmp_path)
+
+    listed = client.memory_map(_binary(tmp_path), tmp_path / "project")
+
+    assert "memory_map" in calls[0]
+    text = listed["items"][0]
+    assert text["name"] == ".text"
+    assert text["permissions"] == "r-x"
+    assert text["execute"] is True
+    bss = listed["items"][1]
+    assert bss["initialized"] is False
+    assert bss["write"] is True
+
+
 def test_ghidra_imports_and_strings_descriptions_name_their_fields() -> None:
     imports = _tool_docstring("ghidra.imports")
     assert "library" in imports
@@ -548,3 +576,8 @@ def test_ghidra_imports_and_strings_descriptions_name_their_fields() -> None:
     assert "is_function" in exports
     assert "address" in exports
     assert "has_more" in exports
+
+    memory_map = _tool_docstring("ghidra.memory_map")
+    assert "permissions" in memory_map
+    assert "initialized" in memory_map
+    assert "has_more" in memory_map

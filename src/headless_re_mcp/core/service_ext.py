@@ -457,6 +457,11 @@ class ExtAnalysisMixin(UiDriveMixin):
     ) -> Result[JsonObject]:
         return _ghidra_export(self, session_id, "exports", limit=limit, timeout=timeout)
 
+    def ghidra_memory_map(
+        self, session_id: str, limit: int = 256, timeout: float = 180.0
+    ) -> Result[JsonObject]:
+        return _ghidra_export(self, session_id, "memory_map", limit=limit, timeout=timeout)
+
     def ghidra_strings(
         self, session_id: str, limit: int = 256, timeout: float = 180.0
     ) -> Result[JsonObject]:
@@ -1177,6 +1182,8 @@ def _ghidra_export(
             data = client.imports(session.require_binary(), project, limit=limit, timeout=timeout)
         elif mode == "exports":
             data = client.exports(session.require_binary(), project, limit=limit, timeout=timeout)
+        elif mode == "memory_map":
+            data = client.memory_map(session.require_binary(), project, limit=limit, timeout=timeout)
         elif mode == "strings":
             data = client.strings(session.require_binary(), project, limit=limit, timeout=timeout)
         elif mode == "xrefs":

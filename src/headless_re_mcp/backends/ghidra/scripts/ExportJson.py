@@ -134,6 +134,35 @@ elif mode == "exports":
             }
         )
     payload["items"] = items
+elif mode == "memory_map":
+    items = []
+    memory = program.getMemory()
+    for block in memory.getBlocks():
+        if len(items) >= limit:
+            payload["has_more"] = True
+            break
+        try:
+            perms = ""
+            perms += "r" if block.isRead() else "-"
+            perms += "w" if block.isWrite() else "-"
+            perms += "x" if block.isExecute() else "-"
+            items.append(
+                {
+                    "name": block.getName(),
+                    "start": str(block.getStart()),
+                    "end": str(block.getEnd()),
+                    "size": int(block.getSize()),
+                    "permissions": perms,
+                    "read": bool(block.isRead()),
+                    "write": bool(block.isWrite()),
+                    "execute": bool(block.isExecute()),
+                    "initialized": bool(block.isInitialized()),
+                    "overlay": bool(block.isOverlay()),
+                }
+            )
+        except Exception:
+            continue
+    payload["items"] = items
 elif mode == "strings":
     items = []
     for data in listing.getDefinedData(True):

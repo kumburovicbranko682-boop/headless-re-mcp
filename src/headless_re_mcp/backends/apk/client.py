@@ -47,6 +47,8 @@ _MAX_INTENT_ITEMS = 100
 _MAX_METHOD_OVERLOADS = 200
 _MAX_CLASS_FIELDS = 500
 _MAX_INTERFACES = 100
+_MAX_USES_FEATURES = 300
+_MAX_USES_LIBRARIES = 300
 # apk.urls caps: a big app carries thousands of string constants; bound the
 # distinct-URL set, the per-host and IP roll-ups, and each captured URL length.
 _MAX_URLS_COLLECT = 5000
@@ -466,6 +468,85 @@ class ApkClient:
             "meta_data": items,
             "count": len(items),
             "total": total,
+            "has_more": has_more,
+        }
+
+    def uses_features(self, path: Path) -> JsonObject:
+        """Report the hardware/software features and libraries the app declares.
+
+        The capability profile a reviewer reads before the code: <uses-feature>
+        says what the app expects the device to have (camera, telephony, GPS,
+        fingerprint, GL ES level), and <uses-library>/<uses-native-library> name
+        the platform and vendor libraries it links against. required=false marks
+        a feature the app can run without (it degrades rather than refuses to
+        install), which is exactly how an app broadens its install base while
+        still using a sensitive capability when present.
+        """
+        apk = self._apk(path)
+        root = apk.get_android_manifest_xml()
+        empty = {
+            "features": [],
+            "feature_count": 0,
+            "feature_total": 0,
+            "libraries": [],
+            "library_count": 0,
+            "library_total": 0,
+            "has_more": False,
+        }
+        if root is None:
+            return empty
+
+        def _attr(element: Any, name: str) -> str | None:
+            value = element.get(_ANDROID_NS + name)
+            if value is None or str(value) == "":
+                return None
+            return str(value)[:_MAX_META_VALUE_CHARS]
+
+        def _required(element: Any) -> bool:
+            raw = _attr(element, "required")
+            if raw is None:
+                return True  # the platform default when android:required is absent
+            return raw.strip().lower() == "true"
+
+        features: list[JsonObject] = []
+        feature_total = 0
+        has_more = False
+        for element in root.iter("uses-feature"):
+            feature_total += 1
+            if len(features) >= _MAX_USES_FEATURES:
+                has_more = True
+                continue
+            features.append(
+                {
+                    "name": _attr(element, "name"),
+                    "required": _required(element),
+                    "gl_es_version": _attr(element, "glEsVersion"),
+                }
+            )
+
+        libraries: list[JsonObject] = []
+        library_total = 0
+        for tag, native in (("uses-library", False), ("uses-native-library", True)):
+            for element in root.iter(tag):
+                library_total += 1
+                if len(libraries) >= _MAX_USES_LIBRARIES:
+                    has_more = True
+                    continue
+                libraries.append(
+                    {
+                        "name": _attr(element, "name"),
+                        "required": _required(element),
+                        "native": native,
+                    }
+                )
+
+        return {
+            "features": features,
+            "feature_count": len(features),
+            "feature_total": feature_total,
+            "libraries": libraries,
+            "library_count": len(libraries),
+            "library_total": library_total,
             "has_more": has_more,
         }
 

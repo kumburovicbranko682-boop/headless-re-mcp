@@ -1434,3 +1434,117 @@ def list_wasm_names(data: bytes, *, offset: int = 0, limit: int = 100) -> JsonOb
     result["local_function_count"] = len(locals_out)
     result["locals_truncated"] = locals_truncated
     return result
+
+
+_MAX_TABLES_COLLECT = 5000
+_MAX_TABLES_PAGE = 2000
+
+
+def _parse_table_imports(payload: bytes) -> list[JsonObject]:
+    """Extract imported tables (they precede defined ones in the index space)."""
+    out: list[JsonObject] = []
+    count, pos = _uleb(payload, 0)
+    for _ in range(count):
+        module, pos = _name(payload, pos)
+        field, pos = _name(payload, pos)
+        kind, pos = _u8(payload, pos)
+        if kind == 0:  # func: type index
+            _, pos = _uleb(payload, pos)
+        elif kind == 1:  # table: reftype + limits
+            reftype, pos = _u8(payload, pos)
+            limits, pos = _limits(payload, pos)
+            out.append(
+                {
+                    "origin": "imported",
+                    "module": module,
+                    "name": field,
+                    "element_type": _valtype(reftype),
+                    "limits": limits,
+                }
+            )
+        elif kind == 2:  # memory: limits
+            _, pos = _limits(payload, pos)
+        elif kind == 3:  # global: valtype + mutability
+            _, pos = _u8(payload, pos)
+            _, pos = _u8(payload, pos)
+        else:
+            break
+    return out
+
+
+def _parse_tables(payload: bytes) -> tuple[list[JsonObject], bool]:
+    """Decode the table section (id 4): a vector of (reftype, limits) records."""
+    count, pos = _uleb(payload, 0)
+    out: list[JsonObject] = []
+    capped = False
+    for _ in range(count):
+        if len(out) >= _MAX_TABLES_COLLECT:
+            capped = True
+            break
+        reftype, pos = _u8(payload, pos)
+        limits, pos = _limits(payload, pos)
+        out.append(
+            {
+                "origin": "defined",
+                "module": None,
+                "name": None,
+                "element_type": _valtype(reftype),
+                "limits": limits,
+            }
+        )
+    return out, capped
+
+
+def list_wasm_tables(data: bytes, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """List a module's tables (section 4) with their reftype and limits.
+
+    Tables are the one section type the other listers do not cover on its own:
+    summary reports memory and start, globals/functions/exports/imports/elements/
+    data each have a tool, but the table definitions -- the indirect-call
+    dispatch tables that wasm.elements populates -- were only visible as import
+    rows. This walks the whole table index space (imported tables first, then
+    defined), giving each its element_type (funcref/externref) and limits. Never
+    raises: an unmodellable table section sets resolved false while imported
+    tables still list.
+    """
+    result: JsonObject = {
+        "tables": [],
+        "count": 0,
+        "total": 0,
+        "offset": max(0, int(offset)),
+        "has_more": False,
+        "imported_count": 0,
+        "defined_count": 0,
+        "resolved": True,
+        "scan_capped": False,
+    }
+    sections, _ = _collect_sections(data)
+    imported: list[JsonObject] = []
+    if 2 in sections:
+        try:
+            imported = _parse_table_imports(sections[2])
+        except (_WasmTruncated, _WasmMalformed):
+            imported = []
+    defined: list[JsonObject] = []
+    capped = False
+    if 4 in sections:
+        try:
+            defined, capped = _parse_tables(sections[4])
+        except (_WasmTruncated, _WasmMalformed):
+            result["resolved"] = False
+            defined = []
+    all_tables = imported + defined
+    for index, row in enumerate(all_tables):
+        row["index"] = index
+    result["imported_count"] = len(imported)
+    result["defined_count"] = len(defined)
+    result["total"] = len(all_tables)
+    result["scan_capped"] = capped
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_TABLES_PAGE))
+    window = all_tables[start : start + cap]
+    result["tables"] = window
+    result["count"] = len(window)
+    result["offset"] = start
+    result["has_more"] = start + len(window) < len(all_tables)
+    return result

@@ -101,6 +101,26 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.ghidra_exports(session_id, limit=limit, timeout=timeout))
 
+    @tools.tool(name="ghidra.memory_map")
+    def ghidra_memory_map(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
+    ) -> dict[str, Any]:
+        """The binary's memory block layout as Ghidra loaded it.
+
+        The segment map: where each region lands, how big it is, and its
+        permissions -- the fast way to spot a writable-and-executable block, an
+        uninitialized .bss, or an overlay a packer added. Answers with items,
+        each carrying name, start, end, size, permissions (an rwx string),
+        read/write/execute (booleans), initialized (false for .bss-style blocks
+        with no file bytes) and overlay, plus count and has_more so a page that
+        filled the limit is not read as the whole map. A failed export is an
+        error, not a binary with no memory. Minutes on a large binary; requires
+        HEADLESS_RE_GHIDRA_HOME.
+        """
+        return _dump(analysis.ghidra_memory_map(session_id, limit=limit, timeout=timeout))
+
     @tools.tool(name="ghidra.strings")
     def ghidra_strings(
         session_id: str,

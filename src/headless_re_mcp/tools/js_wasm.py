@@ -347,4 +347,32 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_names(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.tables")
+    def wasm_tables(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 100,
+    ) -> dict[str, Any]:
+        """List a .wasm module's tables (section 4) with reftype and limits.
+
+        The one section type without its own lister: summary reports memory and
+        the start function, and functions/globals/exports/imports/elements/data
+        each have a tool, but the table definitions -- the indirect-call dispatch
+        tables that wasm.elements fills in -- were only visible as import rows.
+        This walks the whole table index space, imported tables first then
+        defined. Pure Python, no wabt.
+
+        Answers with tables (paged), count, total, offset, has_more,
+        imported_count, defined_count, resolved (false when the table section
+        will not parse, though imported tables still list) and scan_capped. Each
+        table carries index (its position in the table index space), origin
+        (imported/defined), element_type (funcref/externref), limits ({initial,
+        maximum, shared}) and, for imported tables, module and name (null on
+        defined tables).
+
+        A file that is not a WebAssembly module is refused as invalid_params and
+        one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_tables(path, offset=offset, limit=limit))
+
     return tools.bindings

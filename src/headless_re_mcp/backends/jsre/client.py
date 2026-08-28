@@ -28,6 +28,7 @@ from headless_re_mcp.backends.jsre.wasm_summary import (
     list_wasm_globals,
     list_wasm_imports,
     list_wasm_names,
+    list_wasm_tables,
     summarize_wasm,
 )
 
@@ -453,6 +454,23 @@ class WasmClient:
                 "backend_error", f"input unreadable: {exc}", path=str(resolved)
             ) from exc
         return list_wasm_names(raw, offset=offset, limit=limit)
+
+    def tables(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """List table definitions (reftype + limits), imported first (no wabt)."""
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        if not _looks_like_wasm(resolved):
+            raise JsReError(
+                "invalid_params",
+                "not a WebAssembly module: missing the \\0asm magic",
+                path=str(resolved),
+            )
+        try:
+            raw = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        return list_wasm_tables(raw, offset=offset, limit=limit)
 
 
 def _discover_webcrack() -> Path | None:

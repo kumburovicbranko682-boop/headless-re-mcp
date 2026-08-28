@@ -300,6 +300,26 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_frames(session_id))
 
+    @tools.tool(name="web.dom.query")
+    def web_dom_query(
+        session_id: str,
+        selector: str,
+        limit: Annotated[int, Field(ge=1, le=100)] = 50,
+    ) -> dict[str, Any]:
+        """Query the live DOM by CSS selector and return the matching elements.
+
+        Targeted extraction where web.dom.snapshot dumps the whole page: pass a
+        CSS selector (this runs document.querySelectorAll, not arbitrary JS) to
+        pull just the nodes you want -- a login form's inputs, every script tag,
+        the elements carrying a data-* attribute, a specific class. Answers with
+        selector, elements (bounded), count, total (all matches on the page) and
+        truncated (more matched than were returned). Each element carries tag,
+        text (its trimmed textContent), attributes (a bounded name->value map),
+        attr_count and html (a bounded outerHTML preview). An invalid selector is
+        refused as invalid_params.
+        """
+        return _dump(analysis.web_dom_query(session_id, selector, limit=limit))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.
