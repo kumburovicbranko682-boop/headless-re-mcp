@@ -924,6 +924,13 @@ class WebBackend:
         handle = self._get(session_id)
         with handle.lock:
             values = list(handle.scripts.values())
+            # Read the eviction count in the same lock hold as the snapshot, like
+            # console() and network_list(): the Debugger.scriptParsed handler runs
+            # on the CDP thread and bumps scripts_dropped as it evicts, so reading
+            # it after the lock is released (and after the filter/page below) would
+            # count evictions that landed past this snapshot and report a dropped
+            # that no longer matches the rows returned.
+            dropped = handle.scripts_dropped
         if wasm_only:
             values = [s for s in values if str(s.get("language")).lower() == "webassembly"]
         start = max(0, int(offset))
@@ -935,7 +942,7 @@ class WebBackend:
             "total": len(values),
             "offset": start,
             "has_more": start + len(window) < len(values),
-            "dropped": handle.scripts_dropped,
+            "dropped": dropped,
         }
 
     def script_source(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
