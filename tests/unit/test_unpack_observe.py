@@ -6,8 +6,13 @@ import pytest
 
 from headless_re_mcp.unpack.observe import (
     collect_oep_observations,
+    find_region_at,
+    index_regions_by_base,
     is_executable_protect,
     is_writable_protect,
+    region_base,
+    region_protect,
+    region_size,
     stub_rva_ranges_from_sections,
 )
 from headless_re_mcp.unpack.oep import score_oep_candidates
@@ -201,3 +206,85 @@ def test_collect_rejects_invalid_module_bounds() -> None:
         collect_oep_observations(module_base=0, module_size=0x1000)
     with pytest.raises(ValueError):
         collect_oep_observations(module_base=MODULE_BASE, module_size=0)
+
+
+@pytest.mark.parametrize(
+    "bad_region",
+    [7, "region", ["base", 0x1000], (0x1000, 0x100), None, 3.5, b"bytes"],
+)
+def test_region_accessors_tolerate_non_mapping(bad_region: object) -> None:
+    # unpack.score_oep forwards previous_regions straight from client input on
+    # the pydantic-free agent transport, so a non-Mapping element must read as an
+    # unreadable region rather than crashing .get() with an AttributeError.
+    assert region_base(bad_region) is None  # type: ignore[arg-type]
+    assert region_size(bad_region) is None  # type: ignore[arg-type]
+    assert region_protect(bad_region) is None  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "regions",
+    [
+        [1, 2, 3],
+        ["a", "b"],
+        [[0x1000, 0x100]],
+        [None],
+        [(0x1000, 0x100)],
+    ],
+)
+def test_index_and_find_skip_non_mapping_regions(regions: list[object]) -> None:
+    assert index_regions_by_base(regions) == {}  # type: ignore[arg-type]
+    assert find_region_at(regions, 0x1000) is None  # type: ignore[arg-type]
+
+
+def test_index_regions_keeps_valid_and_drops_non_mapping() -> None:
+    good = _region(MODULE_BASE, 0x1000, _PAGE_EXECUTE_READ, protect_name="execute_read")
+    indexed = index_regions_by_base([good, 5, "x", None, [1, 2]])  # type: ignore[list-item]
+    assert indexed == {MODULE_BASE: good}
+
+
+@pytest.mark.parametrize(
+    "previous_regions",
+    [
+        [1, 2, 3],
+        ["a", "b"],
+        [[0x1000, 0x100]],
+        [None],
+    ],
+)
+def test_collect_tolerates_non_mapping_previous_regions(
+    previous_regions: list[object],
+) -> None:
+    # A malformed previous_regions must not crash the diff: with no valid prior
+    # snapshot, a newly executable current region is still reported as new.
+    current = [
+        _region(MODULE_BASE, MODULE_SIZE, _PAGE_EXECUTE_READ, protect_name="execute_read")
+    ]
+    observations = collect_oep_observations(
+        module_base=MODULE_BASE,
+        module_size=MODULE_SIZE,
+        regions=current,
+        previous_regions=previous_regions,  # type: ignore[arg-type]
+    )
+    assert any(item["kind"] == "new_executable_region" for item in observations)
+
+
+def test_collect_keeps_valid_previous_region_amid_non_mapping() -> None:
+    # The one well-formed prior region still drives a write->execute observation
+    # even when the client mixes in non-Mapping junk.
+    previous = [
+        7,
+        _region(MODULE_BASE, MODULE_SIZE, _PAGE_READWRITE, protect_name="readwrite"),
+        "junk",
+    ]
+    current = [
+        _region(MODULE_BASE, MODULE_SIZE, _PAGE_EXECUTE_READ, protect_name="execute_read")
+    ]
+    observations = collect_oep_observations(
+        module_base=MODULE_BASE,
+        module_size=MODULE_SIZE,
+        regions=current,
+        previous_regions=previous,  # type: ignore[list-item]
+        entry_point_rva=0x1000,
+    )
+    kinds = {item["kind"] for item in observations}
+    assert "write_to_execute" in kinds

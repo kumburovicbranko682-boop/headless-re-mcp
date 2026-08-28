@@ -851,6 +851,39 @@ def test_score_oep_auto_collects_from_the_runtime(tmp_path: Path) -> None:
     assert "note" in result.data
 
 
+@pytest.mark.parametrize(
+    "previous_regions",
+    [
+        [1, 2, 3],
+        ["region-a", "region-b"],
+        [[0x1000, 0x100]],
+        [None],
+        [{"base": _MODULE_BASE, "size": _MODULE_SIZE}, 7, "junk"],
+    ],
+)
+def test_score_oep_tolerates_non_dict_previous_regions(
+    tmp_path: Path, previous_regions: list[Any]
+) -> None:
+    # previous_regions is schema-typed as an array of region objects, but the
+    # agent transport binds it from model output with no pydantic coercion. A
+    # non-Mapping element used to crash region_base()'s .get() with an
+    # AttributeError the service filed as an internal_error incident; now the
+    # region diff skips it and auto-collection still succeeds.
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    result = service.unpack_score_oep(
+        session_id,
+        module_base=_MODULE_BASE,
+        module_size=_MODULE_SIZE,
+        previous_regions=previous_regions,
+    )
+    assert result.ok and result.data is not None
+    assert result.data["auto_collected"] is True
+
+
 def test_score_oep_reports_a_missing_dynamic_backend(tmp_path: Path) -> None:
     service = _service(tmp_path)
     binary = tmp_path / "sample.exe"

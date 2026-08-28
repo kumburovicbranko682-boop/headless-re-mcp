@@ -85,6 +85,14 @@ def is_writable_protect(protect: int) -> bool:
 
 
 def region_base(region: RegionLike) -> int | None:
+    # regions from memory.regions are dicts, but unpack.score_oep forwards
+    # previous_regions straight from client input on the pydantic-free agent
+    # transport, and every region accessor funnels through here. A non-Mapping
+    # entry (int, str, list, None) hit .get() with an AttributeError that the
+    # service filed as an internal_error incident; treat it as an unreadable
+    # region the way a missing base already is, so the pipeline skips it.
+    if not isinstance(region, Mapping):
+        return None
     value = region.get("base")
     if type(value) is int and value >= 0:
         return value
@@ -92,6 +100,8 @@ def region_base(region: RegionLike) -> int | None:
 
 
 def region_size(region: RegionLike) -> int | None:
+    if not isinstance(region, Mapping):
+        return None
     value = region.get("size")
     if type(value) is int and value > 0:
         return value
@@ -99,6 +109,8 @@ def region_size(region: RegionLike) -> int | None:
 
 
 def region_protect(region: RegionLike) -> int | None:
+    if not isinstance(region, Mapping):
+        return None
     value = region.get("protect")
     if type(value) is int and value >= 0:
         return value
