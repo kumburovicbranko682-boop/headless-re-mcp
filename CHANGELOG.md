@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **309（191 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **310（192 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -663,6 +663,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `top_mime_types`(排序后各取前 `top` 条,默认 10,上限 50)及其背后的 `host_count` /
   `mime_type_count`。host 由每条 url 解析,`mime_type` 剥掉 `; charset=...` 只留裸媒体类型;
   聚合逻辑抽成纯函数 `summarize_requests`,不依赖运行中的浏览器,可独立单测。
+- 新增 `web.network.failed`:列出浏览器报告为失败/被拦的请求——`web.network.list` 埋着、`web.network.stats`
+  只计数的那一刀分诊:从未完成的请求。CDP 对某请求发 `Network.loadingFailed` 时它落到这里——DNS/TLS 错误、
+  连接重置、CORS 或混合内容拦截、被扩展杀掉的广告/追踪器,或用户中止的导航。直接读失败项,是不翻完整段日志就
+  发现被拦的 C2 信标或被内容拦截的外泄尝试的办法。为此在事件接线里加了 `Network.loadingFailed` 处理器,把请求
+  条目标记 `failed` 并补上 `error_text`/`canceled`/`blocked_reason`。回 `requests`(每条带 url、method、
+  resourceType、status——通常为空因无响应到达、`error_text`(CDP errorText,如 net::ERR_NAME_NOT_RESOLVED)、
+  `canceled`(是中止而非报错时为 true)与 CDP 给出时的 `blocked_reason`,如 mixed-content 或 CSP 违规)、`count`、
+  `total`、`offset`、`has_more` 与 `dropped`(环已淘汰的行)。仍在途的请求不算失败、不出现在这;要看全集用
+  `web.network.list`。
 
 ### 新增（抓包 Cookie 清点）
 

@@ -103,6 +103,33 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_network_stats(session_id, top=top))
 
+    @tools.tool(name="web.network.failed")
+    def web_network_failed(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List the requests the browser reported as failed or blocked.
+
+        The triage cut of the capture that web.network.list buries and
+        web.network.stats only counts: requests that never completed. A row
+        lands here when CDP fires Network.loadingFailed for it -- a DNS or TLS
+        error, a connection reset, a CORS or mixed-content block, an ad/tracker
+        killed by an extension, or a navigation the user aborted. Reading the
+        failures directly is how you spot a blocked C2 beacon or a
+        content-blocked exfil attempt without scrolling the whole log.
+
+        Answers with requests (each an entry carrying url, method, resourceType,
+        status -- usually null since no response arrived -- error_text (the CDP
+        errorText, e.g. net::ERR_NAME_NOT_RESOLVED), canceled (true when it was
+        aborted rather than errored) and blocked_reason when CDP gave one, e.g.
+        mixed-content or a CSP violation), count, total, offset, has_more and
+        dropped (rows the capture ring already evicted). A request still in
+        flight is not failed and does not appear here; use web.network.list for
+        the full set.
+        """
+        return _dump(analysis.web_network_failed(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="web.network.get")
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:
         """Fetch one request's response body (large or binary bodies spill).

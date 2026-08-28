@@ -1104,6 +1104,24 @@ class WebBackend:
                     if mime_truncated:
                         entry["metadata_truncated"] = True
 
+        def on_failed(params: JsonObject) -> None:
+            error_text, error_truncated = _bounded_metadata(
+                params.get("errorText"), _MAX_METADATA_BYTES
+            )
+            blocked, blocked_truncated = _bounded_metadata(
+                params.get("blockedReason"), _MAX_METADATA_BYTES
+            )
+            with handle.lock:
+                entry = handle.requests.get(str(params.get("requestId")))
+                if entry is not None:
+                    entry["failed"] = True
+                    entry["error_text"] = error_text
+                    entry["canceled"] = bool(params.get("canceled"))
+                    if blocked:
+                        entry["blocked_reason"] = blocked
+                    if error_truncated or blocked_truncated:
+                        entry["metadata_truncated"] = True
+
         def on_script(params: JsonObject) -> None:
             url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
             language, language_truncated = _bounded_metadata(
@@ -1140,6 +1158,7 @@ class WebBackend:
 
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
+        cdp.on("Network.loadingFailed", on_failed)
         cdp.on("Debugger.scriptParsed", on_script)
         # Over CDP like the rest, not page.on("console"). The high-level event
         # hands over a ConsoleMessage whose args are remote JSHandle wrappers,
@@ -1223,6 +1242,25 @@ class WebBackend:
             items = list(handle.requests.values())
             dropped = handle.requests_dropped
         return summarize_requests(items, dropped=dropped, top=top)
+
+    def network_failed(
+        self, session_id: str, *, offset: int = 0, limit: int = 100
+    ) -> JsonObject:
+        handle = self._get(session_id)
+        with handle.lock:
+            failed = [row for row in handle.requests.values() if row.get("failed")]
+            dropped = handle.requests_dropped
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = failed[start : start + cap]
+        return {
+            "requests": window,
+            "count": len(window),
+            "total": len(failed),
+            "offset": start,
+            "has_more": start + len(window) < len(failed),
+            "dropped": dropped,
+        }
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
