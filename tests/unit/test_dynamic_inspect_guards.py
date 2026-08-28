@@ -113,6 +113,27 @@ def test_threads_context_write_rejects_a_non_positive_tid(service: Any, session_
     assert _code(service.threads_context_write(session_id, 0, "rax", 1)) == "invalid_params"
 
 
+@pytest.mark.parametrize("name", [123, ["rax"], {"r": "ax"}, b"rax", None, True, 1.0])
+def test_threads_context_write_rejects_a_non_string_name(
+    service: Any, session_id: str, name: Any
+) -> None:
+    assert _code(service.threads_context_write(session_id, 1, name, 1)) == "invalid_params"
+
+
+@pytest.mark.parametrize("name", ["", "r" * 17])
+def test_threads_context_write_rejects_an_out_of_range_name(
+    service: Any, session_id: str, name: str
+) -> None:
+    assert _code(service.threads_context_write(session_id, 1, name, 1)) == "invalid_params"
+
+
+@pytest.mark.parametrize("value", [True, False, 1.0, "1", [1], {"v": 1}, None, -1])
+def test_threads_context_write_rejects_a_non_integer_or_negative_value(
+    service: Any, session_id: str, value: Any
+) -> None:
+    assert _code(service.threads_context_write(session_id, 1, "rax", value)) == "invalid_params"
+
+
 def test_stack_read_rejects_an_out_of_range_count(service: Any, session_id: str) -> None:
     assert _code(service.stack_read(session_id, count=0)) == "invalid_params"
 

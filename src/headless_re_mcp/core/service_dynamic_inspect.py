@@ -278,6 +278,31 @@ class DynamicInspectMixin:
                 ok=False,
                 error=RpcError(code="invalid_params", message="tid must be a positive integer"),
             )
+        # name/value are schema-typed (threads.context.write: name a 1..16 char
+        # string, value a non-negative int), but the agent and OpenAI-bridge
+        # transports invoke the handler straight from model arguments with no
+        # pydantic coercion. tid above and the sibling reads/writes already refuse
+        # a bad shape at this boundary; name/value were left forwarding raw, so a
+        # non-string name or non-int value reached the worker -- and value=True
+        # serialised as JSON true into a register poke worth 1. Refuse the shapes
+        # the schema forbids the same way, before dispatch. ``type(value) is int``
+        # (not isinstance) so a bool, which is an int subclass, is rejected too.
+        if not isinstance(name, str) or not 1 <= len(name) <= 16:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="name must be a register string of 1 to 16 chars",
+                ),
+            )
+        if type(value) is not int or value < 0:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="value must be a non-negative integer",
+                ),
+            )
         return self._dynamic_request(
             session_id,
             "threads.context.write",
