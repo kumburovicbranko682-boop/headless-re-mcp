@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（proxy 补真流量捕获 gate：一条真实请求穿过 flows/flow_get/export_har/replay）
+
+- 缺口：proxy 唯一的 live gate（`test_proxy_lifecycle_gate.py`）只验生命周期——start 即监听、
+  stop 即放端口、占用端口拒绝启动——却从没让**一条 HTTP 请求**真正穿过捕获。整条数据通路
+  （`_FlowRecorder` addon 吃真 mitmproxy flow 对象、`flows` 摘要、`flow_get` 取体、
+  `export_har`、`replay` 走 `replay.client` 命令）只有手造假 flow 的单测，假对象编码的是
+  *假定的* mitmproxy 属性形状（`request.pretty_url`、`response.raw_content`、`flow.id`）；
+  真 API 一漂移，单测照绿、活捕获颗粒无收——与 webcrack `-f` 缺陷躲在 deobfuscate 绿灯
+  后面发货是同形缺口。
+- 补法：新增 `test_proxy_capture_gate.py`，全程回环、纯 HTTP、零外网：本机起 `http.server`
+  作 origin，经 mitmproxy 代理 GET 一次，带截止时间轮询 `flows`（记录发生在 mitmproxy 事件
+  循环上，可晚于客户端拿到响应），断言摘要（method/url/status/response_size）、`flow_get`
+  取回的响应体逐字节等于 origin 真身、HAR 导出恰含这一条目；第二例验 `replay`：对首条 flow
+  重放后环里出现同 URL 的第二条 200 flow——重放命令名、参数形状、跨线程 loop 交接全部对着
+  真 master 验证。mitmproxy 缺席时按 skip != pass 惯例显式跳过。
+- 实测（真 mitmproxy 12.2.3）：两例连续五轮全过（每轮约 1.5s）。变异验证：把
+  `_FlowRecorder.response` 钩子改为不记录后，gate 在轮询截止处失败——证明它抓得住"捕获
+  静默记不到东西"这类回归。仅加测试、不改源码。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
