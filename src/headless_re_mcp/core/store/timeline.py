@@ -197,6 +197,18 @@ def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> J
     for a diagnostic log should not get an internal error because the log was
     being trimmed as it asked.
     """
+    # offset/limit are schema-typed as integers at the MCP tool boundary, but the
+    # agent and OpenAI-bridge transports bind them straight from model output with
+    # no pydantic coercion. The clamps below and the range() walks in _page assume
+    # int input: a str/None hits ``'>' not supported between ...`` in max()/min(),
+    # a float reaches range(1.5) and raises "cannot be interpreted as an integer",
+    # and every one of those surfaced as a logged internal_error incident up in
+    # timeline_list rather than the invalid_argument a caller error deserves.
+    # ``type is not int`` also rejects bool, which is never a real page coordinate.
+    if type(offset) is not int:
+        raise ValueError("offset must be an integer")
+    if type(limit) is not int:
+        raise ValueError("limit must be an integer")
     limit = max(1, min(limit, 256))
     offset = max(0, offset)
     empty: JsonObject = {

@@ -200,6 +200,43 @@ def test_a_traversing_session_id_is_refused_end_to_end(tmp_path: Path) -> None:
         service.close_all()
 
 
+@pytest.mark.parametrize(
+    ("offset", "limit"),
+    [("1", 10), (0, "10"), (1.5, 10), (0, 1.5), (None, 10), (0, None), (0, True)],
+)
+def test_non_integer_page_arguments_are_refused_end_to_end(
+    tmp_path: Path, offset: object, limit: object
+) -> None:
+    """session.timeline forwards offset/limit unchanged to the file-backed reader.
+
+    The MCP tool schema types them as integers, but the agent transport binds
+    raw model output, so a str/float/None/bool used to reach the reader's
+    clamps and range() walks and surface as an internal_error incident. The
+    service must answer invalid_request instead.
+    """
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.service import AnalysisService
+
+    root = tmp_path / "artifacts"
+    settings = Settings(
+        ida_home=None,
+        x64dbg_source=None,
+        x64dbg_headless_x64=None,
+        x64dbg_headless_x86=None,
+        artifact_root=root,
+    )
+    service = AnalysisService(settings)
+    try:
+        result = service.timeline_list(
+            "deadbeef" * 4, offset=cast(Any, offset), limit=cast(Any, limit)
+        )
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+    finally:
+        service.close_all()
+
+
 def test_closed_session_cleanup_skips_a_traversing_id(tmp_path: Path) -> None:
     """Cleanup unlinks the timeline of a closed session; a bad id must be skipped.
 

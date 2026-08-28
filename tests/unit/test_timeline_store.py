@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -139,6 +140,50 @@ def test_a_torn_final_line_does_not_corrupt_the_next_append(tmp_path: Path) -> N
     # The reader already skips what will not parse.
     listed = store.list_session_timeline(path)
     assert [item["event"] for item in listed["events"]] == ["e0000", "e0001"]
+
+
+@pytest.mark.parametrize(
+    ("offset", "limit"),
+    [
+        ("1", 2),  # str hit '>' not supported between instances of 'str' in max()
+        (0, "2"),  # str hit '<' not supported in min()
+        (1.5, 2),  # float reached range(1.5): cannot be interpreted as an integer
+        (0, 1.5),
+        (None, 2),
+        (0, None),
+        (0, True),  # bool is never a real page coordinate
+        (False, 2),
+    ],
+)
+def test_reading_rejects_non_integer_page_arguments(
+    tmp_path: Path, offset: object, limit: object
+) -> None:
+    """offset/limit are schema-typed ints, but the agent transport binds raw.
+
+    The clamps and the range() walks assume int input, so a str/float/None/bool
+    used to escape list_session_timeline as a raw TypeError that timeline.list
+    filed as internal_error rather than the invalid_argument a bad page earns.
+    """
+    path = tmp_path / "timeline.jsonl"
+    _append(path, 0)
+
+    with pytest.raises(ValueError, match="must be an integer"):
+        store.list_session_timeline(
+            path, offset=cast(Any, offset), limit=cast(Any, limit)
+        )
+
+
+def test_reading_still_clamps_valid_integer_page_arguments(tmp_path: Path) -> None:
+    """The type guard must not disturb the lenient clamp for real ints."""
+    path = tmp_path / "timeline.jsonl"
+    for index in range(3):
+        _append(path, index)
+
+    # A negative offset clamps to the first page; an oversized limit clamps to 256.
+    listed = store.list_session_timeline(path, offset=-5, limit=9999)
+    assert listed["offset"] == 0
+    assert listed["limit"] == 256
+    assert [item["event"] for item in listed["events"]] == ["e0000", "e0001", "e0002"]
 
 
 def test_an_oversized_external_timeline_is_rejected_after_a_bounded_read(
