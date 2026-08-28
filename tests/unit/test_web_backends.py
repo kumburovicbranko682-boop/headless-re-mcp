@@ -255,8 +255,17 @@ class _TrackingWebBackend:
         self.opens: list[str] = []
 
     def open(
-        self, session_id: str, url: str, *, headless: bool = True, timeout: float = 30.0
+        self,
+        session_id: str,
+        url: str,
+        *,
+        headless: bool = True,
+        timeout: float = 30.0,
+        proxy: str | None = None,
     ) -> dict:  # type: ignore[type-arg]
+        # proxy is part of the real backend signature; omitting it made
+        # service.web_open raise TypeError at the call site, short-circuiting
+        # the mid-launch reclaim this fake exists to exercise.
         self.opens.append(session_id)
         self.live.add(session_id)
         return {
@@ -351,13 +360,19 @@ class TestClosedSessionCannotSpawnBackends:
                 *,
                 headless: bool = True,
                 timeout: float = 30.0,
+                proxy: str | None = None,
             ) -> dict:  # type: ignore[type-arg]
                 service.close_session(session_id)
-                return original_open(session_id, url, headless=headless, timeout=timeout)
+                return original_open(
+                    session_id, url, headless=headless, timeout=timeout, proxy=proxy
+                )
 
             web.open = open_and_close  # type: ignore[method-assign]
             result = service.web_open(session_id)
             assert result.ok is False
+            # The launch actually ran (proving we reached the post-open recheck,
+            # not a TypeError at the call site) and the browser was reclaimed.
+            assert web.opens == [session_id]
             assert web.live == set()
         finally:
             service.close_all()
