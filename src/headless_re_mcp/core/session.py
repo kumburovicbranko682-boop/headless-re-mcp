@@ -1220,6 +1220,11 @@ _DEX_MAX_MAP_ITEMS = 64
 # method_ids rows are indexed by 16-bit operands in Dalvik instructions, so a
 # single DEX holds at most 65536; a header claiming more is walked no further.
 _DEX_MAX_METHOD_IDS = 65_536
+# ACC_NATIVE in an encoded_method's access_flags: the method has no bytecode
+# body -- its implementation is a JNI function in a bundled .so. This is the
+# DEX side of the native bridge, the Android pair to a .NET P/Invoke import
+# and to a native undefined symbol: where managed code crosses into C/C++.
+_DEX_ACC_NATIVE = 0x0100
 
 # A bundled native library (lib/<abi>/*.so) is the app's JNI boundary: the same
 # tool-free ELF reader a native session uses runs over each member's bytes, so
@@ -1534,6 +1539,8 @@ def _apk_dex_facts(path: Path) -> dict[str, Any]:
     class_names: set[str] = set()
     external_classes: set[str] = set()
     external_method_count = 0
+    native_methods: set[str] = set()
+    native_method_count = 0
     signatures: list[dict[str, str]] = []
     map_counts: dict[str, int] = {}
     found = False
@@ -1583,6 +1590,12 @@ def _apk_dex_facts(path: Path) -> dict[str, Any]:
                         if len(external_classes) >= _DEX_MAX_TOTAL_NAMES:
                             break
                         external_classes.add(ename)
+                    nat_names, nat_count = _dex_native_methods(data, facts)
+                    native_method_count += nat_count
+                    for nname in nat_names:
+                        if len(native_methods) >= _DEX_MAX_TOTAL_NAMES:
+                            break
+                        native_methods.add(nname)
     except (OSError, zipfile.BadZipFile):
         return {}
     if not found:
@@ -1595,6 +1608,12 @@ def _apk_dex_facts(path: Path) -> dict[str, Any]:
         "classes": sorted(class_names),
         "external_classes": sorted(external_classes),
         "external_method_count": external_method_count,
+        # Java methods declared ``native`` -- the DEX side of the JNI bridge,
+        # the Android pair to a .NET P/Invoke import: which managed methods
+        # cross into the bundled .so libraries (whose export side the
+        # native-lib facts already read). Empty is a real "pure-Java" answer.
+        "native_methods": sorted(native_methods),
+        "native_method_count": native_method_count,
         "signatures": signatures,
         # The DEX structural census (map_list), summed across members -- the
         # Dalvik analogue of a WASM section table.
@@ -1792,6 +1811,120 @@ def _dex_external_method_refs(data: bytes, header: dict[str, Any]) -> tuple[set[
             count += 1
             names.add(_dex_descriptor_to_name(descriptor))
     return names, count
+
+
+def _dex_string_at(data: bytes, header: dict[str, Any], string_idx: int) -> str | None:
+    """The string_ids[string_idx] MUTF-8 value, or None when out of range."""
+    if string_idx >= header["string_count"]:
+        return None
+    s = header["string_ids_off"] + string_idx * 4
+    if s + 4 > len(data):
+        return None
+    return _dex_read_mutf8(data, int.from_bytes(data[s : s + 4], "little"))
+
+
+def _dex_type_name(data: bytes, header: dict[str, Any], type_idx: int) -> str | None:
+    """The type_ids[type_idx] descriptor rendered dotted, or None."""
+    if type_idx >= header["type_count"]:
+        return None
+    t = header["type_ids_off"] + type_idx * 4
+    if t + 4 > len(data):
+        return None
+    descriptor = _dex_string_at(data, header, int.from_bytes(data[t : t + 4], "little"))
+    return _dex_descriptor_to_name(descriptor) if descriptor is not None else None
+
+
+def _dex_method_fqn(data: bytes, header: dict[str, Any], method_idx: int) -> str | None:
+    """``method_idx`` -> ``com.example.Foo.bar`` through the method_id table.
+
+    A method_id_item is (class_idx u16, proto_idx u16, name_idx u32): the
+    owning class resolves through the type and string tables the way a class
+    name does, the method name straight out of the string table. Any
+    out-of-range index yields None rather than a partial or invented name.
+    """
+    if method_idx >= header["method_count"]:
+        return None
+    row = header["method_ids_off"] + method_idx * 8
+    if row + 8 > len(data):
+        return None
+    owner = _dex_type_name(data, header, int.from_bytes(data[row : row + 2], "little"))
+    method_name = _dex_string_at(data, header, int.from_bytes(data[row + 4 : row + 8], "little"))
+    if owner is None or method_name is None:
+        return None
+    return f"{owner}.{method_name}"
+
+
+def _dex_native_methods(data: bytes, header: dict[str, Any]) -> tuple[set[str], int]:
+    """Java methods declared ``native`` -- the DEX side of the JNI bridge.
+
+    A ``native`` method carries no bytecode body; its implementation is a
+    JNI function in a bundled ``.so`` (the export side the APK native-lib
+    facts already read as ``Java_*`` symbols and ``JNI_OnLoad``). This is the
+    Android pair to a .NET P/Invoke declaration and to a native undefined
+    import: the point where managed code crosses into C/C++, and a first
+    place triage looks for functionality hidden below the bytecode. Walks
+    each class's class_data_item -- four uleb128 counts, then the field and
+    method lists, each encoded_method carrying its own access_flags -- and
+    resolves every ACC_NATIVE method to ``<class>.<name>``. Bounds-checked
+    and capped at every step, so a corrupt or hostile table yields fewer rows
+    rather than raising; returns the (bounded) name set and the full count.
+    """
+    names: set[str] = set()
+    total = 0
+    for i in range(min(header["class_count"], _DEX_MAX_NAMES)):
+        cd = header["class_defs_off"] + i * 32
+        if cd + 32 > len(data):
+            break
+        class_data_off = int.from_bytes(data[cd + 24 : cd + 28], "little")
+        if not 0 < class_data_off < len(data):
+            continue  # 0 means no class_data (a marker/interface-only class)
+        pos = class_data_off
+        counts: list[int] = []
+        ok = True
+        for _ in range(4):  # static/instance field, direct/virtual method sizes
+            value, pos, ok = _read_leb_u32(data, pos)
+            if not ok:
+                break
+            counts.append(value)
+        if not ok:
+            continue
+        static_fields, instance_fields, direct_methods, virtual_methods = counts
+        # encoded_field is two ulebs (idx_diff, access_flags); skip both lists
+        # to reach the methods, which is all this reader cares about.
+        skipped = True
+        for _ in range(min(static_fields + instance_fields, _DEX_MAX_METHOD_IDS)):
+            _, pos, ok = _read_leb_u32(data, pos)
+            if ok:
+                _, pos, ok = _read_leb_u32(data, pos)
+            if not ok:
+                skipped = False
+                break
+        if not skipped:
+            continue
+        # Each method list numbers its rows by a cumulative idx_diff from 0;
+        # direct and virtual are separate lists that each restart at 0.
+        for method_list_size in (direct_methods, virtual_methods):
+            method_idx = 0
+            for _ in range(min(method_list_size, _DEX_MAX_METHOD_IDS)):
+                idx_diff, pos, ok = _read_leb_u32(data, pos)
+                if not ok:
+                    break
+                access, pos, ok = _read_leb_u32(data, pos)
+                if not ok:
+                    break
+                _, pos, ok = _read_leb_u32(data, pos)  # code_off (0 for native)
+                if not ok:
+                    break
+                method_idx += idx_diff
+                if access & _DEX_ACC_NATIVE:
+                    total += 1
+                    if len(names) < _DEX_MAX_TOTAL_NAMES:
+                        fqn = _dex_method_fqn(data, header, method_idx)
+                        if fqn is not None:
+                            names.add(fqn)
+            if not ok:
+                break
+    return names, total
 
 
 def _dex_read_mutf8(data: bytes, offset: int) -> str | None:

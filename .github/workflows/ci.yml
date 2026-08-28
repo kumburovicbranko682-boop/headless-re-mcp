@@ -177,6 +177,11 @@ jobs:
       GHIDRA_VERSION: "12.1.3"
       GHIDRA_RELEASE: "Ghidra_12.1.3_build"
       GHIDRA_ASSET: "ghidra_12.1.3_PUBLIC_20260817.zip"
+      # r8.jar carries d8, the standalone Java->DEX compiler (one jar, not the
+      # whole Android SDK). The DEX native-method gate compiles a real class
+      # with native methods and d8s it, so the JNI-bridge fact is cross-checked
+      # against a genuine compiler's class_data_item, not a hand-built one.
+      R8_VERSION: "8.9.35"
     steps:
       - uses: actions/checkout@v7
 
@@ -263,6 +268,18 @@ jobs:
         # COFF-symbol gate reads against llvm-readobj, before and after the
         # bundled mingw strip removes them.
         run: sudo apt-get update && sudo apt-get install -y apksigner mono-utils mono-mcs llvm unzip osslsigncode gcc-mingw-w64-x86-64
+
+      - name: Install d8 (r8.jar) for the DEX native-method gate
+        # d8 ships inside r8.jar on Google's Maven -- a single ~18 MB jar, not
+        # the multi-GB Android SDK. The DEX native-method gate compiles a Java
+        # class declaring native methods with the JDK's javac, dexes it with
+        # `java -cp r8.jar com.android.tools.r8.D8`, and cross-checks the
+        # tool-free ACC_NATIVE walk against androguard's independent decode of
+        # that real compiler's class_data_item.
+        run: |
+          curl -fsSL -o /tmp/r8.jar \
+            "https://maven.google.com/com/android/tools/r8/${R8_VERSION}/r8-${R8_VERSION}.jar"
+          echo "HEADLESS_RE_D8_JAR=/tmp/r8.jar" >> "$GITHUB_ENV"
 
       - name: Install rcodesign for the Mach-O code-signature gate
         # apple-codesign is an independent, production Apple code-signing

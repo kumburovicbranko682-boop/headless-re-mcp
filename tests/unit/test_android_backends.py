@@ -1143,6 +1143,81 @@ def _dex_with_tables(
     return bytes(header) + body
 
 
+def _uleb(value: int) -> bytes:
+    """Unsigned LEB128, the encoding class_data_item uses throughout."""
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _dex_with_methods(
+    strings: list[str],
+    type_string_idx: list[int],
+    method_rows: list[tuple[int, int, int]],
+    classes: list[tuple[int, list[tuple[int, int]], list[tuple[int, int]]]],
+) -> bytes:
+    """A DEX carrying real class_data_item method lists with access flags.
+
+    Extends the id-table builder with the piece the native-method walk needs:
+    each class is ``(type_idx, direct, virtual)`` where a method list is
+    ``[(method_idx_diff, access_flags), ...]`` -- the encoded_method shape,
+    idx_diff cumulative from 0 within each list. A class with no methods gets
+    a zero class_data_off (no class_data). code_off is written 0 (as a native
+    or abstract method carries).
+    """
+    header_size = 0x70
+    string_ids_off = header_size
+    type_ids_off = string_ids_off + len(strings) * 4
+    method_ids_off = type_ids_off + len(type_string_idx) * 4
+    class_defs_off = method_ids_off + len(method_rows) * 8
+    data_off = class_defs_off + len(classes) * 32
+
+    data = bytearray()
+    class_data_offs: list[int] = []
+    for _type_idx, direct, virtual in classes:
+        if direct or virtual:
+            class_data_offs.append(data_off + len(data))
+            block = _uleb(0) + _uleb(0) + _uleb(len(direct)) + _uleb(len(virtual))
+            for diff, access in direct + virtual:
+                block += _uleb(diff) + _uleb(access) + _uleb(0)
+            data += block
+        else:
+            class_data_offs.append(0)
+    string_data_offs: list[int] = []
+    for text in strings:
+        string_data_offs.append(data_off + len(data))
+        data += bytes([len(text)]) + text.encode("utf-8") + b"\x00"
+
+    body = (
+        b"".join(struct.pack("<I", off) for off in string_data_offs)
+        + b"".join(struct.pack("<I", idx) for idx in type_string_idx)
+        + b"".join(struct.pack("<HHI", c, p, n) for c, p, n in method_rows)
+        + b"".join(
+            struct.pack("<I", type_idx) + bytes(20) + struct.pack("<I", cdo) + bytes(4)
+            for (type_idx, _d, _v), cdo in zip(classes, class_data_offs, strict=True)
+        )
+        + bytes(data)
+    )
+    header = bytearray(header_size)
+    header[0:8] = b"dex\n035\x00"
+    struct.pack_into("<I", header, 40, 0x12345678)
+    struct.pack_into("<I", header, 56, len(strings))
+    struct.pack_into("<I", header, 60, string_ids_off)
+    struct.pack_into("<I", header, 64, len(type_string_idx))
+    struct.pack_into("<I", header, 68, type_ids_off)
+    struct.pack_into("<I", header, 88, len(method_rows))
+    struct.pack_into("<I", header, 92, method_ids_off)
+    struct.pack_into("<I", header, 96, len(classes))
+    struct.pack_into("<I", header, 100, class_defs_off)
+    return bytes(header) + body
+
+
 def _apk_with_dex(tmp_path: Path, dex: bytes) -> dict:
     """Wrap one DEX in a throwaway APK and return its dex facts."""
     path = tmp_path / "synthetic.apk"
@@ -1540,6 +1615,135 @@ class TestDexMapCensus:
         dex = describe_apk(path)["apk"]["dex"]
         assert dex["debug_info_items"] == 7
         assert dex["map_counts"]["code_item"] == 5
+
+
+# ACC flags an encoded_method can carry; only ACC_NATIVE marks the JNI bridge.
+_ACC_PUBLIC = 0x1
+_ACC_STATIC = 0x8
+_ACC_NATIVE = 0x100
+
+
+class TestDexNativeMethods:
+    """describe_apk reports Java methods declared ``native`` -- the JNI bridge.
+
+    A ``native`` method has no bytecode body; its implementation is a JNI
+    function in a bundled ``.so``. It is the DEX side of the native crossing,
+    the Android pair to a .NET P/Invoke import and to a native undefined
+    symbol: where managed code drops into C/C++. The reader walks each
+    class's class_data_item, reads each encoded_method's access_flags, and
+    names every ACC_NATIVE method ``<class>.<name>``.
+    """
+
+    def test_a_native_method_is_named_and_a_regular_one_is_not(self, tmp_path: Path) -> None:
+        # Class com.example.Native: a native direct method and a plain virtual
+        # one. Only the native method is the bridge; the regular one is body.
+        dex = _apk_with_dex(
+            tmp_path,
+            _dex_with_methods(
+                strings=["Lcom/example/Native;", "Ljava/lang/Object;", "doNative", "regular"],
+                type_string_idx=[0, 1],
+                method_rows=[(0, 0, 2), (0, 0, 3)],
+                classes=[
+                    (
+                        0,
+                        [(0, _ACC_PUBLIC | _ACC_STATIC | _ACC_NATIVE)],  # method 0: native
+                        [(1, _ACC_PUBLIC)],  # method 1: regular
+                    )
+                ],
+            ),
+        )
+        assert dex["native_methods"] == ["com.example.Native.doNative"]
+        assert dex["native_method_count"] == 1
+
+    def test_cumulative_idx_diff_resolves_each_native_method(self, tmp_path: Path) -> None:
+        # Two native methods, one in each list; the second direct method's
+        # idx_diff is relative to the first, so a reader that forgot to sum
+        # would misname it. Both lists restart the running index at 0.
+        dex = _apk_with_dex(
+            tmp_path,
+            _dex_with_methods(
+                strings=[
+                    "Lcom/example/Jni;",
+                    "Ljava/lang/Object;",
+                    "first",
+                    "second",
+                    "third",
+                ],
+                type_string_idx=[0, 1],
+                method_rows=[(0, 0, 2), (0, 0, 3), (0, 0, 4)],
+                classes=[
+                    (
+                        0,
+                        [(0, _ACC_NATIVE), (2, _ACC_NATIVE)],  # methods 0 and 2 (0 + 2)
+                        [(1, _ACC_NATIVE)],  # method 1 (list restarts at 0)
+                    )
+                ],
+            ),
+        )
+        assert dex["native_methods"] == [
+            "com.example.Jni.first",
+            "com.example.Jni.second",
+            "com.example.Jni.third",
+        ]
+        assert dex["native_method_count"] == 3
+
+    def test_a_pure_java_dex_reports_no_native_methods(self, tmp_path: Path) -> None:
+        dex = _apk_with_dex(
+            tmp_path,
+            _dex_with_methods(
+                strings=["Lcom/example/Pure;", "Ljava/lang/Object;", "run"],
+                type_string_idx=[0, 1],
+                method_rows=[(0, 0, 2)],
+                classes=[(0, [(0, _ACC_PUBLIC)], [])],
+            ),
+        )
+        assert dex["native_methods"] == []
+        assert dex["native_method_count"] == 0
+
+    def test_a_class_without_class_data_is_skipped(self, tmp_path: Path) -> None:
+        # An interface/marker class carries a zero class_data_off; the walk
+        # skips it rather than reading method lists at offset 0.
+        dex = _apk_with_dex(
+            tmp_path,
+            _dex_with_methods(
+                strings=["Lcom/example/Marker;", "Ljava/lang/Object;"],
+                type_string_idx=[0, 1],
+                method_rows=[],
+                classes=[(0, [], [])],
+            ),
+        )
+        assert dex["native_methods"] == []
+        assert dex["native_method_count"] == 0
+
+    def test_a_truncated_class_data_yields_fewer_rows_not_a_raise(self, tmp_path: Path) -> None:
+        # Chop the member mid class_data: the walk stops at the first short
+        # read, keeping whatever parsed, and never raises.
+        full = _dex_with_methods(
+            strings=["Lcom/example/Jni;", "Ljava/lang/Object;", "a", "b"],
+            type_string_idx=[0, 1],
+            method_rows=[(0, 0, 2), (0, 0, 3)],
+            classes=[(0, [(0, _ACC_NATIVE), (1, _ACC_NATIVE)], [])],
+        )
+        dex = _apk_with_dex(tmp_path, full[:-1])
+        # It must not raise; the count is bounded by what survived truncation.
+        assert dex["native_method_count"] <= 2
+
+    def test_native_methods_dedupe_and_sum_across_multidex(self, tmp_path: Path) -> None:
+        path = tmp_path / "multidex.apk"
+        member = _dex_with_methods(
+            strings=["Lcom/example/Jni;", "Ljava/lang/Object;", "shared"],
+            type_string_idx=[0, 1],
+            method_rows=[(0, 0, 2)],
+            classes=[(0, [(0, _ACC_NATIVE)], [])],
+        )
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("classes.dex", member)
+            archive.writestr("classes2.dex", member)
+        dex = describe_apk(path)["apk"]["dex"]
+        # The count sums both members; the name set dedupes the shared method.
+        assert dex["native_method_count"] == 2
+        assert dex["native_methods"] == ["com.example.Jni.shared"]
 
 
 def _so_with_exports(names: list[str], *, machine: int = 62) -> bytes:
