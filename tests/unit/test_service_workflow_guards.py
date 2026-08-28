@@ -223,6 +223,35 @@ def test_module_refresh_rejects_blank_empty_or_duplicate_keys(keys: list[str]) -
     assert not host.calls
 
 
+@pytest.mark.parametrize(
+    "keys",
+    [
+        5,  # non-iterable: raised a raw TypeError out of the service method
+        1.5,
+        True,
+        "abc",  # iterable, but was silently read as the keys ["a", "b", "c"]
+        {"a": 1},  # iterable, but was silently read as its dict keys
+        [5],  # non-string entry: raised AttributeError at key.strip()
+        [None],
+        ["a", 5],
+    ],
+)
+def test_module_refresh_refuses_a_wrong_shaped_keys_as_invalid_request(keys: object) -> None:
+    """A keys value that is not a list of strings is the caller's fault.
+
+    The normalizing comprehension runs before _workflow_request's envelope, so a
+    non-iterable or a non-string entry used to raise a raw TypeError or
+    AttributeError out of the service method, and a str/dict was silently
+    iterated as its characters/keys instead of being refused.
+    """
+    host = _Double()
+    result = host.workflow_module_refresh("sess", keys=cast(Any, keys))
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+    assert not host.calls
+
+
 def test_module_refresh_of_every_key_runs_the_transition(
     engine: dict[str, list[Any]],
 ) -> None:

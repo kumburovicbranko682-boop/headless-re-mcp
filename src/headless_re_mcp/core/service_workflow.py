@@ -348,6 +348,22 @@ class WorkflowAnalysisMixin:
         validated = _workflow_timeout(timeout)
         if isinstance(validated, ValueError):
             return _failure(validated, session_id=session_id)
+        # keys is schema-typed as an array of strings, but the agent and
+        # OpenAI-bridge transports bind it straight from model output with no
+        # pydantic coercion, and the comprehension below runs before
+        # _workflow_request's envelope. A non-iterable keys (int, float, bool)
+        # raised a raw TypeError out of the service method, a non-string entry
+        # raised AttributeError at key.strip(), and a str/dict was silently
+        # iterated as its characters/keys -- "abc" became ["a", "b", "c"].
+        # Refuse the wrong shape as the invalid_request caller fault it is.
+        if keys is not None and (
+            not isinstance(keys, (list, tuple))
+            or any(not isinstance(key, str) for key in keys)
+        ):
+            return _failure(
+                ValueError("module refresh keys must be a list of strings"),
+                session_id=session_id,
+            )
         normalized_keys = None if keys is None else [key.strip() for key in keys]
         if normalized_keys is not None and (
             not normalized_keys
