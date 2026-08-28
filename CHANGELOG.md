@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **300（183 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **301（184 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -657,6 +657,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `allow_backup`、`test_only`、`has_code`、`large_heap`、`uses_cleartext_traffic`、
   `uses_cleartext_traffic_declared`、`network_security_config`、`backup_agent`、`full_backup_content`、
   `data_extraction_rules`、`shared_user_id` 与 `install_location`;清单 XML 解析失败时 `truncated` 为真。
+- **`apk.network_security_config`**：`apk.security_flags` 只指向、本工具把策略本体拉出来——顺着
+  networkSecurityConfig 引用经资源表解析出 res/xml 文件、解码其编译后的 AXML,把真正决定 TLS 的策略蒸出来,
+  正是判断可拦截性要看的部分。关键信号:`cleartext_permitted_domains`(显式放行明文 HTTP 的域名)、
+  `trusts_user_ca`(base 或 domain 信任锚信任用户证书库为真——用户装个 CA 即可拦截流量,经典 MITM 触发点;
+  debug-overrides 只对可调试包生效故排除)、`has_pinning`(是否存在证书固定 pin-set)。资源级解析、
+  **不需要 DEX 分析**。输出 `configured`(清单是否声明)、`reference`(原始 @id)、`resource_path`(解析出的文件)、
+  `xml_available`(是否读到并解码)、`base_config`(cleartext_permitted 与 trust_anchors)、`domain_configs`
+  (每条含 domains/cleartext_permitted/trust_anchors/pin_set)、`debug_overrides`、`cleartext_permitted_domains`、
+  `trusts_user_ca`、`has_pinning`、`domain_config_count` 与 `package`;策略被裁(domain-config 上限 1000、
+  单条的 domain/pin 列表上限 256)时置 `scan_capped`,配置 XML 解析失败时 `truncated` 为真。未声明时
+  `configured` 为假、策略字段为空——缺省即平台默认(targetSdk<28 放行明文),需与 `apk.security_flags` 合看。
 - **改包**：`apk.decode/repack/sign`，apktool 解包回编 + apksigner 重签，缺省用 Android
   debug keystore；签名失败时 stderr 里的口令会被抹掉再进错误信封。
 - **设备**：`device.*` 15 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、

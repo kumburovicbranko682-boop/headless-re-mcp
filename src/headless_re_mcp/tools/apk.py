@@ -245,6 +245,34 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_security_flags(session_id))
 
+    @tools.tool(name="apk.network_security_config")
+    def apk_network_security_config(session_id: str) -> dict[str, Any]:
+        """Pull and distill the app's network security config (the policy itself).
+
+        The payload apk.security_flags only points at: where that reports whether
+        a networkSecurityConfig is declared, this resolves the reference through
+        the resource table, reads the backing res/xml file, decodes its compiled
+        AXML and distills the TLS policy a review needs to judge interception
+        exposure. Key signals: cleartext_permitted_domains (hosts explicitly
+        opened to plaintext HTTP), trusts_user_ca (true when a base or domain
+        trust-anchor trusts the user certificate store -- the setting that lets a
+        user-installed CA intercept traffic, the classic MITM enabler; debug-
+        overrides are excluded because they only apply to debuggable builds), and
+        has_pinning (whether any certificate pin-set is present). Resource-level,
+        so it needs no DEX analysis. Answers with configured (a config is
+        declared), reference (the raw @id), resource_path (the resolved file),
+        xml_available (it was read and decoded), base_config (cleartext_permitted
+        and trust_anchors), domain_configs (each with domains, cleartext_permitted,
+        trust_anchors and pin_set), debug_overrides, cleartext_permitted_domains,
+        trusts_user_ca, has_pinning, domain_config_count and package; scan_capped
+        is true when the policy was clipped (domain-configs at 1000, a config's
+        domain/pin lists at 256) and truncated when the config XML could not be
+        parsed. When configured is false the policy fields are empty -- absence
+        means the platform default (cleartext allowed below a target SDK of 28)
+        applies, so pair this with apk.security_flags.
+        """
+        return _dump(analysis.apk_network_security_config(session_id))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,

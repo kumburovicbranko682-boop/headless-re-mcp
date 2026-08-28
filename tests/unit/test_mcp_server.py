@@ -265,6 +265,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "apk.deep_links",
         "apk.permission_details",
         "apk.security_flags",
+        "apk.network_security_config",
         "apk.classes",
         "apk.methods",
         "apk.strings",

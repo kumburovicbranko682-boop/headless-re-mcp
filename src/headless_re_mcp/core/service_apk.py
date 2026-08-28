@@ -121,6 +121,9 @@ class ApkAnalysisMixin:
     def apk_security_flags(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "security_flags")
 
+    def apk_network_security_config(self, session_id: str) -> Result[JsonObject]:
+        return self._apk_call(session_id, "network_security_config")
+
     def apk_exported_components(
         self, session_id: str, offset: int = 0, limit: int = 100
     ) -> Result[JsonObject]:

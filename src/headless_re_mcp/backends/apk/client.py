@@ -75,6 +75,13 @@ _USES_PERMISSION_TAGS = ("uses-permission", "uses-permission-sdk-23", "uses-perm
 # android:usesCleartextTraffic defaulted to true until Android 9 (API 28) flipped
 # it to false, so security_flags resolves an unset attribute against this line.
 _CLEARTEXT_DEFAULT_FALSE_SDK = 28
+# network_security_config bounds: a real policy has a handful of domain-configs,
+# but a hostile or generated one could nest thousands, so cap the collection and
+# each config's domain/pin lists (reusing the per-filter ceiling).
+_MAX_NSC_DOMAIN_CONFIGS = 1000
+# Compiled AXML resource files open with the RES_XML_TYPE chunk header (0x0003),
+# so a file that does not start with these two bytes is treated as plain XML.
+_AXML_MAGIC = b"\x03\x00"
 # The low nibble of an android:protectionLevel flags int is the base level; the
 # upper bits are modifiers (privileged, appop, ...). Declared permissions store
 # the raw AXML int, so this maps the base to the same word get_details_permissions
@@ -841,6 +848,86 @@ class ApkClient:
             "truncated": truncated,
         }
 
+    def network_security_config(self, path: Path) -> JsonObject:
+        """Pull and distill the app's network security config (the policy itself).
+
+        The payload apk.security_flags only points at: where that reports whether
+        a networkSecurityConfig is declared, this resolves the reference through
+        the resource table, reads the backing res/xml file, decodes its compiled
+        AXML and distills the policy that actually governs TLS -- the part a
+        review needs to judge interception exposure. It surfaces cleartext_
+        permitted_domains (the hosts explicitly opened to plaintext), trusts_user_
+        ca (true when a base or domain trust-anchor trusts the user certificate
+        store -- the setting that makes traffic interceptable with a user-
+        installed CA, the classic MITM enabler; debug-overrides are excluded since
+        they only apply to debuggable builds) and has_pinning (whether any
+        pin-set is present). Manifest/resource-level, so it needs no DEX analysis.
+        Answers with configured (the manifest declares one), reference (the raw
+        @id), resource_path (the resolved file), xml_available (the file was read
+        and decoded), base_config (cleartext_permitted plus trust_anchors),
+        domain_configs (each with its domains, cleartext_permitted, trust_anchors
+        and pin_set), debug_overrides, cleartext_permitted_domains, trusts_user_ca,
+        has_pinning, domain_config_count and package; scan_capped is true when the
+        policy was clipped (domain-configs at 1000, a config's domain/pin lists at
+        256) and truncated when the config XML could not be parsed. When no config
+        is declared, configured is false and the policy fields are empty -- absence
+        means the platform default (cleartext allowed below a target SDK of 28)
+        governs, so read this together with apk.security_flags.
+        """
+        apk = self._apk(path)
+        package = apk.get_package() or ""
+        try:
+            xml_bytes = apk.get_android_manifest_axml().get_xml()
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
+        try:
+            root: Any = ET.fromstring(xml_bytes)
+        except ET.ParseError:
+            root = None
+        application = root.find("application") if root is not None else None
+        reference = (
+            _str_or_none(_android_attr(application, "networkSecurityConfig"))
+            if application is not None
+            else None
+        )
+
+        if reference is None:
+            return {
+                "package": package,
+                "configured": False,
+                "reference": None,
+                "resource_path": None,
+                "xml_available": False,
+                **_empty_nsc_policy(),
+                "scan_capped": False,
+                "truncated": False,
+            }
+
+        resource_path, xml_text = _load_network_security_config(apk, reference)
+        if xml_text is None:
+            return {
+                "package": package,
+                "configured": True,
+                "reference": reference,
+                "resource_path": resource_path,
+                "xml_available": False,
+                **_empty_nsc_policy(),
+                "scan_capped": False,
+                "truncated": False,
+            }
+
+        policy, scan_capped, truncated = _parse_network_security_config(xml_text)
+        return {
+            "package": package,
+            "configured": True,
+            "reference": reference,
+            "resource_path": resource_path,
+            "xml_available": True,
+            **policy,
+            "scan_capped": scan_capped,
+            "truncated": truncated,
+        }
+
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
         names: list[str] = []
@@ -1316,6 +1403,241 @@ def _deep_link_rows(intent_filter: Any) -> tuple[list[JsonObject], bool]:
                     }
                 )
     return rows, False
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    """Tri-state boolean: True/False for an explicit value, None when unset.
+
+    A network-security-config attribute left unset inherits a default the parser
+    cannot know without the target SDK, so None is reported rather than guessing.
+    """
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text == "true":
+        return True
+    if text == "false":
+        return False
+    try:
+        return int(text, 0) != 0
+    except ValueError:
+        return None
+
+
+def _nsc_reference_to_id(reference: str | None) -> int | None:
+    """Parse a manifest resource reference (@[pkg:]7F0F0000) to its numeric id.
+
+    androguard renders a resolved reference as an 8-hex-digit id, optionally
+    package-qualified (@android:01080000). A named reference (@xml/name) has no
+    numeric id and returns None so the caller falls back to the path convention.
+    """
+    if not reference:
+        return None
+    text = reference.strip()
+    if not text.startswith("@"):
+        return None
+    text = text[1:]
+    if ":" in text:
+        text = text.split(":", 1)[1]
+    if "/" in text:
+        return None
+    try:
+        return int(text, 16)
+    except ValueError:
+        return None
+
+
+def _nsc_named_ref_path(reference: str | None) -> str | None:
+    """Map a named reference (@[pkg:]xml/name) to its conventional res path."""
+    if not reference:
+        return None
+    text = reference.strip()
+    if not text.startswith("@") or "/" not in text:
+        return None
+    body = text[1:]
+    if ":" in body:
+        body = body.split(":", 1)[1]
+    rtype, _, rname = body.partition("/")
+    if not rtype or not rname:
+        return None
+    return f"res/{rtype}/{rname}.xml"
+
+
+def _decode_axml_or_text(raw: bytes | None) -> str | None:
+    """Decode a resource file: compiled AXML via androguard, else UTF-8 text."""
+    if not raw:
+        return None
+    if raw[:2] == _AXML_MAGIC:
+        try:
+            from androguard.core.axml import AXMLPrinter
+
+            decoded: bytes = AXMLPrinter(raw).get_xml()
+            return decoded.decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 - a malformed chunk should degrade, not raise
+            return None
+    return raw.decode("utf-8", "replace")
+
+
+def _load_network_security_config(apk: Any, reference: str) -> tuple[str | None, str | None]:
+    """Resolve a networkSecurityConfig reference to its file path and decoded XML.
+
+    Numeric references resolve through the ARSC table to the backing res path;
+    named ones fall back to the res/<type>/<name>.xml convention. Returns
+    (resource_path, xml_text); either may be None when the reference cannot be
+    resolved or the file cannot be read/decoded -- a graceful gap, not an error.
+    """
+    resource_path: str | None = None
+    rid = _nsc_reference_to_id(reference)
+    if rid is not None:
+        try:
+            resources = apk.get_android_resources()
+        except Exception:  # noqa: BLE001
+            resources = None
+        if resources is not None:
+            try:
+                for _config, value in resources.get_resolved_res_configs(rid):
+                    if isinstance(value, str) and value.startswith("res/"):
+                        resource_path = value
+                        break
+            except Exception:  # noqa: BLE001 - ARSC resolution varies by build
+                resource_path = None
+    if resource_path is None:
+        named = _nsc_named_ref_path(reference)
+        if named is not None:
+            try:
+                files = set(apk.get_files() or [])
+            except Exception:  # noqa: BLE001
+                files = set()
+            if named in files:
+                resource_path = named
+    if resource_path is None:
+        return None, None
+    try:
+        raw = apk.get_file(resource_path)
+    except Exception:  # noqa: BLE001 - FileNotPresent and friends
+        return resource_path, None
+    return resource_path, _decode_axml_or_text(raw)
+
+
+def _nsc_trust_anchors(element: Any) -> list[JsonObject]:
+    """Collect a <trust-anchors>'s <certificates> as {src, override_pins} rows."""
+    anchors: list[JsonObject] = []
+    trust = element.find("trust-anchors")
+    if trust is None:
+        return anchors
+    for cert in trust.findall("certificates"):
+        if len(anchors) >= _MAX_FILTER_ITEMS:
+            break
+        anchors.append(
+            {
+                "src": _str_or_none(cert.get("src")),
+                "override_pins": _manifest_bool(cert.get("overridePins"), False),
+            }
+        )
+    return anchors
+
+
+def _empty_nsc_policy() -> JsonObject:
+    return {
+        "base_config": None,
+        "domain_configs": [],
+        "debug_overrides": None,
+        "cleartext_permitted_domains": [],
+        "trusts_user_ca": False,
+        "has_pinning": False,
+        "domain_config_count": 0,
+    }
+
+
+def _parse_network_security_config(xml_text: str) -> tuple[JsonObject, bool, bool]:
+    """Distill a network-security-config XML into a structured policy.
+
+    Returns (policy, scan_capped, truncated). Domain-configs are flattened (each
+    reports its own <domain> children, so a nested config is its own row);
+    trusts_user_ca aggregates the base and domain trust anchors -- not the
+    debug-overrides, which only apply to debuggable builds and normally trust the
+    user store -- and cleartext_permitted_domains lists the domains a config
+    explicitly opens to plaintext.
+    """
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return _empty_nsc_policy(), False, True
+
+    scan_capped = False
+    trusts_user = False
+    has_pins = False
+    cleartext_domains: list[str] = []
+
+    base_config: JsonObject | None = None
+    base_el = root.find("base-config")
+    if base_el is not None:
+        base_anchors = _nsc_trust_anchors(base_el)
+        trusts_user = trusts_user or any(a["src"] == "user" for a in base_anchors)
+        base_config = {
+            "cleartext_permitted": _bool_or_none(base_el.get("cleartextTrafficPermitted")),
+            "trust_anchors": base_anchors,
+        }
+
+    domain_configs: list[JsonObject] = []
+    for dc in root.iter("domain-config"):
+        if len(domain_configs) >= _MAX_NSC_DOMAIN_CONFIGS:
+            scan_capped = True
+            break
+        domains: list[JsonObject] = []
+        for dom in dc.findall("domain"):
+            if len(domains) >= _MAX_FILTER_ITEMS:
+                scan_capped = True
+                break
+            name = (dom.text or "").strip()
+            domains.append(
+                {
+                    "name": name,
+                    "include_subdomains": _manifest_bool(dom.get("includeSubdomains"), False),
+                }
+            )
+        anchors = _nsc_trust_anchors(dc)
+        trusts_user = trusts_user or any(a["src"] == "user" for a in anchors)
+        cleartext = _bool_or_none(dc.get("cleartextTrafficPermitted"))
+        if cleartext is True:
+            cleartext_domains.extend(d["name"] for d in domains if d["name"])
+        pin_set: JsonObject | None = None
+        pins_el = dc.find("pin-set")
+        if pins_el is not None:
+            has_pins = True
+            pins: list[JsonObject] = []
+            for pin in pins_el.findall("pin"):
+                if len(pins) >= _MAX_FILTER_ITEMS:
+                    scan_capped = True
+                    break
+                pins.append(
+                    {"digest": _str_or_none(pin.get("digest")), "value": (pin.text or "").strip()}
+                )
+            pin_set = {"expiration": _str_or_none(pins_el.get("expiration")), "pins": pins}
+        domain_configs.append(
+            {
+                "domains": domains,
+                "cleartext_permitted": cleartext,
+                "trust_anchors": anchors,
+                "pin_set": pin_set,
+            }
+        )
+
+    debug_overrides: JsonObject | None = None
+    debug_el = root.find("debug-overrides")
+    if debug_el is not None:
+        debug_overrides = {"trust_anchors": _nsc_trust_anchors(debug_el)}
+
+    policy = {
+        "base_config": base_config,
+        "domain_configs": domain_configs,
+        "debug_overrides": debug_overrides,
+        "cleartext_permitted_domains": _ordered_distinct(cleartext_domains),
+        "trusts_user_ca": trusts_user,
+        "has_pinning": has_pins,
+        "domain_config_count": len(domain_configs),
+    }
+    return policy, scan_capped, False
 
 
 def _dotted_to_smali(name: str) -> str:
