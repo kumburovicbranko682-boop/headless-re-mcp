@@ -455,6 +455,15 @@ def test_validate_trace_result_defaults_missing_stop_reason() -> None:
     assert result["stop_reason"] == "none"
 
 
+def test_validate_trace_result_normalizes_a_non_string_stop_reason() -> None:
+    # A non-string stop_reason is normalised to "none", not rejected: the same
+    # lenient contract _validate_trace_status applies. This is the case a
+    # removed, unreachable isinstance guard once pretended to catch.
+    result = _valid_trace_result("/tmp/t.bin", stop_reason=1234)
+    XdbgClient._validate_trace_result(result)
+    assert result["stop_reason"] == "none"
+
+
 # --------------------------------------------------------------------------- #
 # window / debuggee / log bookkeeping
 # --------------------------------------------------------------------------- #

@@ -960,10 +960,13 @@ class XdbgClient:
                 result[key] = 0
             if type(result.get(key)) is not int or int(result[key]) < 0:
                 raise XdbgRpcError("rpc_protocol_error", f"x64dbg returned an invalid {key}")
+        # stop_reason is normalised, not rejected: a missing, empty, or
+        # non-string value becomes "none", the same lenient contract
+        # _validate_trace_status in service_trace applies. This assignment
+        # always leaves a non-empty string here, so any later isinstance guard
+        # would be unreachable.
         if not isinstance(result.get("stop_reason"), str) or not result["stop_reason"]:
             result["stop_reason"] = "none"
-        if not isinstance(result.get("stop_reason"), str):
-            raise XdbgRpcError("rpc_protocol_error", "x64dbg returned no trace stop reason")
 
     def modules_dump(
         self,
