@@ -384,6 +384,23 @@ def test_xrefs_requires_a_method_name(tmp_path: Path) -> None:
     assert caught.value.code == "invalid_params"
 
 
+@pytest.mark.parametrize("bad_name", [["decrypt"], 5, None, {"name": "decrypt"}])
+def test_xrefs_rejects_a_non_string_method_name(tmp_path: Path, bad_name: object) -> None:
+    """A non-string method_name is a clean invalid_params, not an AttributeError.
+
+    The agent and OpenAI-bridge transports bypass the schema, so a list/int/null
+    reached ``method_name.strip()`` and raised AttributeError -- an internal_error
+    incident -- rather than the invalid_params a blank name already earns.
+    """
+    class Analysis:
+        def get_methods(self) -> list[Any]:
+            return []
+
+    with pytest.raises(ApkError) as caught:
+        _client_with_parsed(Analysis()).xrefs(tmp_path / "app.apk", bad_name)  # type: ignore[arg-type]
+    assert caught.value.code == "invalid_params"
+
+
 def test_xrefs_skips_external_and_mismatched_methods(tmp_path: Path) -> None:
     class Call:
         class_name = "Lcom/caller;"
