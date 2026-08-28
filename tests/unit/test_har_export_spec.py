@@ -24,7 +24,12 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from headless_re_mcp.backends.common.har import build_har, har_entry, serialize_har
+from headless_re_mcp.backends.common.har import (
+    build_har,
+    har_entry,
+    iso_from_epoch,
+    serialize_har,
+)
 from headless_re_mcp.backends.proxy import client as proxy_client
 from headless_re_mcp.backends.proxy.client import ProxyBackend, ProxyError, _FlowRecorder
 from headless_re_mcp.backends.web import client as web_client
@@ -176,6 +181,71 @@ def test_har_entry_reports_a_known_response_body_size() -> None:
     unknown = har_entry(method="GET", url="https://x/1", status=200, mime_type="")
     assert unknown["response"]["content"]["size"] == -1
     assert unknown["response"]["bodySize"] == -1
+
+
+def test_iso_from_epoch_converts_a_real_time_and_rejects_junk() -> None:
+    """A real epoch becomes an ISO instant; unknown or unparseable stays None.
+
+    startedDateTime is mandatory, so har_entry falls back to the export instant
+    when this returns None -- but a capture that knows the real time (the proxy's
+    request.timestamp_start) must surface it so a viewer's waterfall shows the
+    true request order. Pin the round-trip and that junk does not become a bad
+    timestamp that would then read as a real (wrong) time.
+    """
+    from datetime import UTC, datetime
+
+    iso = iso_from_epoch(1_700_000_000.5)
+    assert iso is not None
+    assert datetime.fromisoformat(iso) == datetime.fromtimestamp(1_700_000_000.5, tz=UTC)
+    assert iso_from_epoch(None) is None
+    assert iso_from_epoch(float("nan")) is None
+
+
+def test_proxy_export_har_uses_the_captured_request_time(tmp_path: Path) -> None:
+    """A flow's real start time must reach the HAR, not the single export instant.
+
+    mitmproxy stamps request.timestamp_start; the recorder keeps it and the
+    export passes it as startedDateTime so a HAR viewer orders the waterfall by
+    when each request actually began. Without it every entry carried the one
+    export time, reading as if the whole capture happened at a single instant.
+    The captured epoch also surfaces on proxy.flows as started_at.
+    """
+    from datetime import UTC, datetime
+
+    recorder = _FlowRecorder()
+    epoch = 1_700_000_000.0
+    for index in range(3):
+        request = SimpleNamespace(
+            method="GET",
+            pretty_url=f"http://x/{index}",
+            host="x",
+            timestamp_start=epoch + index,
+        )
+        response = SimpleNamespace(
+            status_code=200, headers={"content-type": "text/plain"}
+        )
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)  # type: ignore[assignment]
+
+    flows = backend.flows("s", offset=0, limit=10)
+    by_url = {row["url"]: row for row in flows["flows"]}
+    assert by_url["http://x/0"]["started_at"] == epoch
+    assert by_url["http://x/2"]["started_at"] == epoch + 2
+
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    stamps = {
+        entry["request"]["url"]: entry["startedDateTime"]
+        for entry in doc["log"]["entries"]
+    }
+    assert stamps["http://x/0"] == datetime.fromtimestamp(epoch, tz=UTC).isoformat()
+    assert stamps["http://x/2"] == datetime.fromtimestamp(epoch + 2, tz=UTC).isoformat()
+    # Three flows, three distinct ordered timestamps -- not one shared export time.
+    assert len(set(stamps.values())) == 3
 
 
 def test_serialize_har_keeps_the_newest_entries_that_fit_the_cap() -> None:

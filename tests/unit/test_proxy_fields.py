@@ -79,6 +79,9 @@ def test_proxy_flows_puts_the_page_in_flows_with_content_type(
     assert "total" in doc
     assert "body_omitted" in doc
     assert "metadata_truncated" in doc
+    # started_at (the captured request epoch) rides on a flow row when mitmproxy
+    # timestamped it, so the field the export reads must be named here too.
+    assert "started_at" in doc
 
 
 def test_proxy_flows_names_has_more_and_dropped(monkeypatch: Any) -> None:
