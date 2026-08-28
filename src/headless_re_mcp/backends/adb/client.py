@@ -40,7 +40,12 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_MEMINFO = 256
 _MAX_DEVICES = 64
+# /proc/meminfo size lines: "<Name>:  <number> kB". Count-only lines (e.g.
+# HugePages_Total) carry no unit and are intentionally left out so every
+# reported value shares one unit.
+_MEMINFO_RE = re.compile(r"^(\S+):\s+(\d+)\s+kB$")
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
@@ -525,6 +530,47 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def meminfo(self, serial: str) -> JsonObject:
+        """Report memory sizes from /proc/meminfo, in kilobytes.
+
+        The device's memory picture: MemTotal, MemAvailable, SwapTotal and the
+        rest of the kernel's size counters -- enough to gauge the device class
+        and whether heavy instrumentation (a frida agent, a large dump) will
+        fit before an RE session leans on it. /proc/meminfo is world-readable,
+        so no root is needed.
+
+        meminfo maps each field to its value in kilobytes, exactly as the
+        kernel labels it with kB; the handful of unitless count fields (such as
+        HugePages_Total) are left out on purpose so every value shares one unit
+        and no caller has to guess. The map is capped with has_more, and a read
+        that yields no fields -- which a live device never has -- is an error
+        rather than an empty map.
+        """
+        dev = self._device(serial)
+        raw = _device_shell(dev, "cat /proc/meminfo")
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError(
+                "backend_error", "reading /proc/meminfo failed", output=text[:800]
+            )
+        meminfo: dict[str, int] = {}
+        has_more = False
+        for line in text.splitlines():
+            match = _MEMINFO_RE.match(line.strip())
+            if match is None:
+                continue
+            if len(meminfo) >= _MAX_MEMINFO:
+                has_more = True
+                break
+            meminfo[match.group(1)] = int(match.group(2))
+        if not meminfo:
+            raise AdbError(
+                "backend_error",
+                "reading /proc/meminfo returned no fields",
+                output=text[:800],
+            )
+        return {"meminfo": meminfo, "count": len(meminfo), "has_more": has_more}
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a

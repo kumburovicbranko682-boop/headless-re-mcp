@@ -71,6 +71,21 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
+    @tools.tool(name="device.meminfo")
+    def device_meminfo(serial: str) -> dict[str, Any]:
+        """Report memory sizes (/proc/meminfo), in kilobytes.
+
+        The device's memory picture -- MemTotal, MemAvailable, SwapTotal and
+        the rest -- so an RE session can gauge the device class and whether
+        heavy instrumentation will fit. Answers with meminfo (each field mapped
+        to its value in kilobytes, exactly as the kernel labels kB), count, and
+        has_more. Unitless count fields (e.g. HugePages_Total) are left out on
+        purpose so every value shares one unit; /proc/meminfo is world-readable
+        so no root is needed, the map is capped with has_more, and a read
+        yielding no fields is an error rather than an empty map.
+        """
+        return _dump(analysis.device_meminfo(serial))
+
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,
