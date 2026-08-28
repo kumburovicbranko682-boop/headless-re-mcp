@@ -390,6 +390,66 @@ def test_proxy_stats_summarises_a_live_capture(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_proxy_endpoints_maps_a_live_capture(tmp_path: Path) -> None:
+    """proxy.endpoints must fold a real capture into id-normalised routes.
+
+    The unit tests pin the aggregation over a hand-built recorder; this proves it
+    holds over flows mitmproxy actually recorded. Route GETs to /users/1 and
+    /users/2 and a POST to /orders/99 through the running proxy, then assert the
+    two numeric user ids collapse into one /users/{id} route (count 2, method
+    GET) and the order id into /orders/{id} (method POST), while captured still
+    reports the whole ring. skip != pass without mitmproxy.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy endpoints Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    backend.start("endpoints", host="127.0.0.1", port=proxy_port)
+    try:
+        with _origin_site() as origin:
+            handler = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
+            opener = urllib.request.build_opener(handler)
+            for path in ("/users/1", "/users/2"):
+                with opener.open(f"{origin}{path}", timeout=15.0) as response:
+                    response.read()
+            with opener.open(
+                urllib.request.Request(f"{origin}/orders/99", data=b"x=1", method="POST"),
+                timeout=15.0,
+            ) as response:
+                response.read()
+
+            _poll(
+                lambda: backend.flows("endpoints", limit=100),
+                lambda r: r["captured"] >= 3
+                and any(str(f.get("method")) == "POST" for f in r["flows"]),
+            )
+
+            out = backend.endpoints("endpoints")
+            assert out["captured"] >= 3, out
+            assert out["normalized"] is True, out
+            by_path = {e["path"]: e for e in out["endpoints"]}
+            assert "/users/{id}" in by_path, by_path
+            assert by_path["/users/{id}"]["count"] == 2, by_path["/users/{id}"]
+            assert by_path["/users/{id}"]["methods"] == ["GET"], by_path["/users/{id}"]
+            assert "/orders/{id}" in by_path, by_path
+            assert by_path["/orders/{id}"]["methods"] == ["POST"], by_path["/orders/{id}"]
+
+            # The same filter surface as proxy.flows narrows the surface to POST.
+            posts = backend.endpoints("endpoints", method="post")
+            assert posts["total"] == 1, posts
+            assert posts["endpoints"][0]["path"] == "/orders/{id}", posts
+            assert posts["captured"] >= 3, posts
+            assert posts["filter"] == {"method": "POST"}, posts
+
+            # normalize=false keeps the raw ids apart, so the users routes split.
+            raw = backend.endpoints("endpoints", normalize=False)
+            raw_paths = {e["path"] for e in raw["endpoints"]}
+            assert {"/users/1", "/users/2", "/orders/99"} <= raw_paths, raw_paths
+    finally:
+        backend.close_all()
+
+
+@pytest.mark.integration
 def test_proxy_search_finds_content_in_a_live_capture(tmp_path: Path) -> None:
     """proxy.search must find a literal inside flows mitmproxy actually recorded.
 
