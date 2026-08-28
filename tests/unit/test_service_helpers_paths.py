@@ -20,10 +20,11 @@ import pytest
 
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
+from headless_re_mcp.backends.x64dbg.stealth import layout_for_headless
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.addressing import AddressSyncError
 from headless_re_mcp.core.limits import MAX_WORKFLOW_TIMEOUT
-from headless_re_mcp.core.models import BackendKind, Session, SessionState
+from headless_re_mcp.core.models import Architecture, BackendKind, Session, SessionState
 from headless_re_mcp.core.results import _success
 from headless_re_mcp.core.service import (
     AnalysisService,
@@ -44,7 +45,7 @@ from headless_re_mcp.core.session import InvalidStateTransition
 from headless_re_mcp.detection.die import DieScanResult
 from headless_re_mcp.detection.exeinfope import ExeinfopeScanResult
 from headless_re_mcp.detection.models import DetectionSource, ScanMode
-from tests.unit.test_dynamic_service import FakeDynamicWorker, FakeStaticWorker
+from tests.unit.test_dynamic_service import FakeDynamicWorker, FakeStaticWorker, _state
 
 
 def _write_pe(path: Path) -> None:
@@ -679,3 +680,178 @@ def test_session_work_dir_fails_closed_on_unsafe_ids(tmp_path: Path) -> None:
     service = AnalysisService(_settings(tmp_path))
     assert service._session_work_dir("jadx", "") is None
     assert service._session_work_dir("jadx", "a/b") is None
+
+
+# ---------------------------------------------------------------------------
+# dynamic_launch / dynamic_attach
+# ---------------------------------------------------------------------------
+
+
+def test_dynamic_launch_resumes_past_the_system_breakpoint(tmp_path: Path) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = _facade(tmp_path, dynamic_workers=[FakeDynamicWorker()])
+    session_id = _create(service, binary)
+
+    result = service.dynamic_launch(
+        session_id,
+        arguments="--go",
+        working_directory=str(tmp_path),
+        pass_system_breakpoint=True,
+    )
+
+    assert result.ok and result.data is not None
+    assert result.data["pass_system_breakpoint"] is True
+    assert "Resumed once" in result.data["note"]
+
+
+def test_dynamic_attach_rejects_a_dead_pid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = _facade(tmp_path, dynamic_workers=[FakeDynamicWorker()])
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    monkeypatch.setattr("headless_re_mcp.core.service.is_pid_alive", lambda pid: False)
+
+    result = service.dynamic_attach(session_id, 4321)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "not_found"
+
+
+def test_dynamic_attach_annotates_child_window_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = _facade(tmp_path, dynamic_workers=[FakeDynamicWorker()])
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    monkeypatch.setattr("headless_re_mcp.core.service.is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "headless_re_mcp.core.process_tree.probe_child_window_candidates",
+        lambda debuggee, list_windows_fn=None: [{"pid": 9100, "name": "child.exe"}],
+    )
+
+    result = service.dynamic_attach(session_id, 7100)
+
+    assert result.ok and result.data is not None
+    assert result.data["child_windows_hint"] == "windows_on_child_pids"
+    assert result.data["suggested_child_pids"] == [9100]
+
+
+def test_dynamic_attach_pauses_a_running_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class RunningWorker(FakeDynamicWorker):
+        def wait_for_state(self, states: set[str], **kwargs: Any) -> Any:
+            del states, kwargs
+            self.current_state = _state("running")
+            return dict(self.current_state)
+
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = _facade(tmp_path, dynamic_workers=[RunningWorker()])
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    monkeypatch.setattr("headless_re_mcp.core.service.is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "headless_re_mcp.core.process_tree.probe_child_window_candidates",
+        lambda debuggee, list_windows_fn=None: [],
+    )
+
+    result = service.dynamic_attach(session_id, 7100, pause_after_attach=True)
+
+    assert result.ok and result.data is not None
+    assert "state" in result.data
+
+
+# ---------------------------------------------------------------------------
+# dynamic_stealth_set
+# ---------------------------------------------------------------------------
+
+
+def _headless_with_plugin(tmp_path: Path, architecture: Architecture) -> Path:
+    root = tmp_path / f"x64dbg-{architecture.value}"
+    (root / "plugins").mkdir(parents=True)
+    headless = root / "headless.exe"
+    headless.write_bytes(b"MZ")
+    layout = layout_for_headless(headless, architecture)
+    assert layout is not None
+    layout.plugin.write_bytes(b"plugin")
+    layout.hook_library.write_bytes(b"hook")
+    return headless
+
+
+def _stealth_settings(
+    tmp_path: Path,
+    *,
+    x64: bool = True,
+    x86: bool = False,
+) -> Settings:
+    return Settings(
+        ida_home=None,
+        x64dbg_source=None,
+        x64dbg_headless_x64=_headless_with_plugin(tmp_path, Architecture.X64) if x64 else None,
+        x64dbg_headless_x86=_headless_with_plugin(tmp_path, Architecture.X86) if x86 else None,
+        artifact_root=tmp_path / "artifacts",
+        debug_event_background_drain=False,
+        x64dbg_stealth_enabled=True,
+        x64dbg_stealth_profile="vmp",
+    )
+
+
+def test_stealth_set_without_any_layout_reports_plugin_missing(tmp_path: Path) -> None:
+    service = AnalysisService(_settings(tmp_path))
+
+    result = service.dynamic_stealth_set("vmp")
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "plugin_missing"
+
+
+def test_stealth_set_applies_a_profile_to_a_session_architecture(tmp_path: Path) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = AnalysisService(_stealth_settings(tmp_path))
+    session_id = _create(service, binary)
+
+    result = service.dynamic_stealth_set("themida", session_id=session_id)
+
+    assert result.ok and result.data is not None
+    assert result.data["profile"] == "themida"
+    assert result.data["applied"]
+
+
+def test_stealth_set_rejects_armadillo_for_an_x64_session(tmp_path: Path) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = AnalysisService(_stealth_settings(tmp_path))
+    session_id = _create(service, binary)
+
+    result = service.dynamic_stealth_set("armadillo", session_id=session_id)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
+
+
+def test_stealth_set_armadillo_without_session_applies_to_nothing_on_x64(tmp_path: Path) -> None:
+    service = AnalysisService(_stealth_settings(tmp_path, x64=True, x86=False))
+
+    result = service.dynamic_stealth_set("armadillo")
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
+
+
+def test_stealth_set_reports_plugin_missing_for_an_unconfigured_arch(tmp_path: Path) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    # Only x86 is configured, but the PE session is x64, so its layout is absent.
+    service = AnalysisService(_stealth_settings(tmp_path, x64=False, x86=True))
+    session_id = _create(service, binary)
+
+    result = service.dynamic_stealth_set("vmp", session_id=session_id)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "plugin_missing"
