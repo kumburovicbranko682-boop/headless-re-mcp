@@ -137,6 +137,23 @@ def test_navigate_to_event_rejects_a_blank_kind(service: tuple[AnalysisService, 
     assert not result.ok and result.error is not None
 
 
+def test_navigate_to_event_rejects_a_bad_timeout(service: tuple[AnalysisService, str]) -> None:
+    # navigate_to_event forwards straight to _workflow_navigate, whose own
+    # timeout guard is the first thing it checks -- before any backend work.
+    svc, session_id = service
+    assert _err(svc.workflow_navigate_to_event(session_id, "breakpoint.hit", timeout=0)) == (
+        "invalid_request"
+    )
+
+
+def test_navigate_to_event_rejects_an_out_of_range_budget(
+    service: tuple[AnalysisService, str],
+) -> None:
+    svc, session_id = service
+    result = svc.workflow_navigate_to_event(session_id, "breakpoint.hit", event_budget=0)
+    assert _err(result) == "invalid_request"
+
+
 def test_navigate_to_breakpoint_rejects_an_out_of_range_budget(
     service: tuple[AnalysisService, str],
 ) -> None:
