@@ -23,7 +23,12 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.common.har import build_har, har_entry, serialize_har
+from headless_re_mcp.backends.common.har import (
+    _query_string,
+    build_har,
+    har_entry,
+    serialize_har,
+)
 from headless_re_mcp.backends.proxy import client as proxy_client
 from headless_re_mcp.backends.proxy.client import ProxyBackend, ProxyError, _FlowRecorder
 from headless_re_mcp.backends.web import client as web_client
@@ -119,6 +124,14 @@ def test_har_entry_parses_the_query_string_from_the_url() -> None:
     _assert_valid_har(json.dumps(build_har([entry])))
     params = [(p["name"], p["value"]) for p in entry["request"]["queryString"]]
     assert params == [("q", "hello world"), ("tag", "a"), ("tag", "b"), ("flag", "")]
+
+
+def test_query_string_tolerates_an_unparseable_url() -> None:
+    # A malformed URL (urlsplit raises "Invalid IPv6 URL") must yield an empty
+    # queryString, not abort the whole HAR export.
+    assert _query_string("http://[::1") == []
+    entry = har_entry(method="GET", url="http://[::1", status=200, mime_type="text/html")
+    assert entry["request"]["queryString"] == []
 
 
 def test_har_entry_reports_a_known_response_body_size() -> None:
