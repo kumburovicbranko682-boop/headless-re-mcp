@@ -199,7 +199,15 @@ class JsClient:
         limit: int = 100,
     ) -> JsonObject:
         resolved = self._require_input(path)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        # webcrack (>=2) aborts with "output directory already exists" when -o
+        # points at a directory that is already there -- even an empty one. This
+        # code used to pre-create out_dir, so every js.unpack_bundle against a
+        # current webcrack failed with backend_error before a single module was
+        # written. Create only the parent and let webcrack make the leaf itself;
+        # the subprocess-mocked unit tests never ran real webcrack, so they
+        # missed it. On failure webcrack leaves no directory, which the listing
+        # below already treats as "no files".
+        out_dir.parent.mkdir(parents=True, exist_ok=True)
         stdout, stderr, code = _run(
             [str(self.executable), str(resolved), "-o", str(out_dir)],
             timeout=timeout,

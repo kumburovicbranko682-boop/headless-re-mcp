@@ -89,11 +89,12 @@ def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
     from headless_re_mcp.backends.jsre import client as jsre_client
     from headless_re_mcp.backends.jsre.client import JsClient
 
-    def fake_run(
-        cmd: list[str], *, timeout: float, maximum: float = 0.0
-    ) -> tuple[str, str, int]:
+    def fake_run(cmd: list[str], *, timeout: float, maximum: float = 0.0) -> tuple[str, str, int]:
         del timeout, maximum
         out_dir = Path(cmd[cmd.index("-o") + 1])
+        # Real webcrack creates its own -o directory (and refuses a pre-existing
+        # one); the client only makes the parent, so model that here.
+        out_dir.mkdir(parents=True, exist_ok=True)
         if not any(out_dir.iterdir()):
             for index in range(250):
                 (out_dir / f"mod-{index:03d}.js").write_text("x", encoding="utf-8")
@@ -115,6 +116,37 @@ def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
     assert set(page["files"]) & set(tail["files"]) == set()
 
 
+def test_unpack_does_not_precreate_the_output_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """webcrack >=2 aborts on a pre-existing -o dir, so the client must not make it.
+
+    A fake that refuses an existing directory, exactly as real webcrack does,
+    would have caught the regression where the client pre-created out_dir and
+    every unpack failed with "output directory already exists".
+    """
+    from headless_re_mcp.backends.jsre import client as jsre_client
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    def fake_run(cmd: list[str], *, timeout: float, maximum: float = 0.0) -> tuple[str, str, int]:
+        del timeout, maximum
+        out_dir = Path(cmd[cmd.index("-o") + 1])
+        if out_dir.exists():
+            return "", "output directory already exists", 1
+        out_dir.mkdir(parents=True)
+        (out_dir / "index.js").write_text("x", encoding="utf-8")
+        return "", "", 0
+
+    monkeypatch.setattr(jsre_client, "_run", fake_run)
+    bundle = tmp_path / "app.js"
+    bundle.write_text("bundle", encoding="utf-8")
+
+    result = JsClient(executable=Path("/bin/true")).unpack_bundle(bundle, tmp_path / "out")
+
+    assert result["file_count"] == 1
+    assert "index.js" in result["files"]
+
+
 @pytest.mark.parametrize(
     ("files_written", "listing_truncated"),
     [(5, False), (6, True)],
@@ -130,11 +162,12 @@ def test_bounded_unpack_listing_finishes_at_the_last_readable_page(
 
     monkeypatch.setattr(jsre_client, "_MAX_COUNTED_FILES", 5)
 
-    def fake_run(
-        cmd: list[str], *, timeout: float, maximum: float = 0.0
-    ) -> tuple[str, str, int]:
+    def fake_run(cmd: list[str], *, timeout: float, maximum: float = 0.0) -> tuple[str, str, int]:
         del timeout, maximum
         out_dir = Path(cmd[cmd.index("-o") + 1])
+        # Real webcrack creates its own -o directory (and refuses a pre-existing
+        # one); the client only makes the parent, so model that here.
+        out_dir.mkdir(parents=True, exist_ok=True)
         if not any(out_dir.iterdir()):
             for index in range(files_written):
                 (out_dir / f"mod-{index}.js").write_text("x", encoding="utf-8")
