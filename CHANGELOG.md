@@ -59,6 +59,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   即“无事可查”地失败。以把 `service_ext` 某处退回重包裹形态验证非空:守卫精确报出 `('service_ext','FridaError',517)`,
   还原后转绿——这条守卫本可在上一轮就自动逮住那个 `service_ext` 缺口。
 
+### 测试（非 PE 分页读取器“后端夹取”漂移守卫：schema 的上界只在 MCP 通道生效，agent / OpenAI 桥直连后端时靠的是后端自己的 `min`/`max` 夹取，此前这半只零散测过，新增 AST 守卫钉住每个读取器都在后端夹 `limit`、兜 `offset`）
+
+- `test_non_pe_pagination_schema_bounds` 钉的是“对外声明”那半:pydantic schema 声明 `limit` 有 maximum、`offset` 下界为 0。
+  但 schema 只在 MCP 通道跑;agent 与 OpenAI 桥直接调后端 handler、跳过 schema。于是那条通道上真正兜底的是**后端自己**的
+  `max(1, min(int(limit), MAX))` 夹取与 `max(0, int(offset))` 兜底——没有它,一个越过 schema 的 `limit=10**9` 会被读取器当成
+  “全都要”,一个负 `offset` 进到 `items[start:start+cap]` 会按 Python 负索引绕到列表尾部、返回错误的一页。
+- 这条后端兜底其实每个读取器都有,但此前只零散钉过(`test_apk_clamp_page` / `test_device_logcat_bounds` /
+  `test_frida_java_input_bounds` 及各后端 envelope 测试)。一个新读取器完全可能 schema 合规、却漏掉后端夹取,而没有任何测试
+  拦得住。新增 `test_non_pe_backend_clamp_guard.py`,是该 schema 守卫与 `test_non_pe_error_conversion_guard` 的源码扫描同门:
+  AST 扫描每个非 PE 后端 client 的**类方法**(WebBackend / ProxyBackend / AdbBackend / FridaBackend / ApkClient / JsClient
+  这些直接吃调用方 `limit`/`offset` 并据此取数的读取器),凡带 `limit` 的方法必须让它进过 `min(...)`(或共享的 `_clamp_page`
+  助手),凡带 `offset` 的必须进过 `max(...)`(或该助手)。模块级纯切片助手(`_page` / `_cap_names` / `_capped_file_listing`)
+  拿到的 `limit` 是读取器已夹好的页大小、不再夹取,故按“只扫类方法”天然排除,不误伤。
+- 接受的形态就是代码库在用的两种:行内 `min`/`max` 点名该参数,或一次夹好两者的 `_clamp_page` 调用。正向非空:守卫断言扫到
+  `web.network_list` / `proxy.flows` / `apk.classes` / `frida.modules` / `adb.properties` / `jsre.unpack_bundle` 等已知读取器,
+  且其检测器对它们的真实夹取(行内与助手两种)都判为已夹;并离线验证检测器对“信 schema、不夹取”的合成读取器返回 False、对
+  正确夹取返回 True,证明既非“恒真”也非“恒假”。留空的 `_CLAMP_EXEMPT` 允许清单沿用 schema 守卫 `_UNBOUNDED_NUMERIC_OK`
+  的 fail-closed 形态:未来若真有豁免,须显式具名登记。
+
 ### `device.install` 校验现在能读出 UTF-8 字符串池的 APK 包名（此前只解 UTF-16LE，aapt2 默认产出的现代 APK 一律读不出包名，成功安装被降级成 `installed: null`）
 
 - `device.install` 装完后从会话 APK 里读回包名,再用 `pm path` 校验是否真的落到设备上。`_apk_package_name` 走的是“不拉
