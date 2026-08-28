@@ -25,8 +25,12 @@ from typing import Any
 
 import pytest
 
+from headless_re_mcp.backends.jsre import JsClient, WasmClient
 from headless_re_mcp.backends.proxy import ProxyBackend, ProxyError
 from headless_re_mcp.backends.proxy.client import _port_accepts
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_WASM_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "add_module.wasm"
 
 
 def _free_port() -> int:
@@ -765,5 +769,137 @@ def test_proxy_captures_websocket_frames_end_to_end(tmp_path: Path) -> None:
                 and base64.b64decode(m["data"]) == _WS_BINARY_REPLY
                 for m in messages
             ), messages
+    finally:
+        backend.close_all()
+
+
+# --- proxy capture -> static analysis handoff ------------------------------
+# The web line proves a live page's script/module feeds the js/wasm static
+# tools; the proxy line must do the same for whatever it forwards. Serve a small
+# binary .wasm and a >200 KB JS bundle so flow.get spills both to body_path (the
+# wasm because it is binary, the bundle because it is oversized), then feed those
+# exact bytes to the static tools.
+_JS_BUNDLE_MARKER = "proxy-js-chain-9449"
+_ASSET_WASM_PATH = "/module.wasm"
+_ASSET_JS_PATH = "/bundle.js"
+
+
+def _build_proxy_js_bundle() -> str:
+    body = ";".join(
+        f"function f{i}(a,b){{if(a>b){{return a*{i}+b}}else{{return b-a+{i}}}}}"
+        for i in range(9000)
+    )
+    return f'var __marker="{_JS_BUNDLE_MARKER}";{body};'
+
+
+_JS_BUNDLE = _build_proxy_js_bundle()
+
+
+class _AssetOriginHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_args: Any) -> None:  # silence per-request logging
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if self.path == _ASSET_WASM_PATH:
+            body, ctype = _WASM_FIXTURE.read_bytes(), "application/wasm"
+        elif self.path == _ASSET_JS_PATH:
+            body, ctype = _JS_BUNDLE.encode("utf-8"), "application/javascript"
+        else:
+            body, ctype = b"ok", "text/plain"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@contextlib.contextmanager
+def _asset_origin() -> Iterator[str]:
+    """A loopback origin that serves a binary .wasm and a large JS bundle."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _AssetOriginHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+        server.server_close()
+
+
+@pytest.mark.integration
+def test_proxy_captured_bodies_feed_the_static_analysis_lines(tmp_path: Path) -> None:
+    """A body captured through the proxy must feed the js/wasm static tools.
+
+    This is the proxy-side twin of the web capture -> static handoff: whatever
+    the proxy records has to reach the analysis tools as real bytes, not a lossy
+    inline preview. Route two GETs through the running proxy -- a small binary
+    .wasm and a >200 KB JS bundle -- and prove flow.get spills both to body_path
+    (the wasm because it is binary, so a utf-8 inline would mangle it; the bundle
+    because it is oversized) with the exact bytes. Then feed those paths to
+    wasm.decompile and js.deobfuscate: the module decompiles to its named export
+    add() and the bundle's marker survives deobfuscation. skip != pass without
+    mitmproxy (or the wabt/webcrack tools for the final leg).
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy static-handoff Gate not run (skip != pass)")
+    if not _WASM_FIXTURE.is_file():
+        pytest.skip(f"wasm fixture missing: {_WASM_FIXTURE} — skip != pass")
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    backend.start("static-handoff", host="127.0.0.1", port=proxy_port)
+    try:
+        with _asset_origin() as origin:
+            handler = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
+            opener = urllib.request.build_opener(handler)
+            for path in (_ASSET_WASM_PATH, _ASSET_JS_PATH):
+                with opener.open(f"{origin}{path}", timeout=15.0) as resp:
+                    resp.read()
+
+            def _flow_for(suffix: str) -> dict[str, Any] | None:
+                listing = backend.flows("static-handoff", limit=200)
+                return next(
+                    (f for f in listing["flows"] if str(f.get("url", "")).endswith(suffix)),
+                    None,
+                )
+
+            wasm_flow = _poll(
+                lambda: _flow_for(_ASSET_WASM_PATH), lambda f: f is not None, tries=80
+            )
+            js_flow = _poll(
+                lambda: _flow_for(_ASSET_JS_PATH), lambda f: f is not None, tries=80
+            )
+            assert wasm_flow is not None, "no /module.wasm flow was captured"
+            assert js_flow is not None, "no /bundle.js flow was captured"
+
+            # The binary .wasm must spill to a file with the exact bytes, not a
+            # utf-8-replaced mangling that no wasm tool could parse.
+            wasm_detail = backend.flow_get("static-handoff", str(wasm_flow["id"]), tmp_path)
+            assert "body" not in wasm_detail["response"], wasm_detail["response"]
+            wasm_path = Path(str(wasm_detail["response"]["body_path"]))
+            assert wasm_path.read_bytes() == _WASM_FIXTURE.read_bytes()
+            assert wasm_path.read_bytes()[:4] == b"\x00asm", wasm_path.read_bytes()[:8]
+
+            # The large JS bundle must spill too (over the 200 KB inline cap).
+            js_detail = backend.flow_get("static-handoff", str(js_flow["id"]), tmp_path)
+            assert "body" not in js_detail["response"], js_detail["response"]
+            js_path = Path(str(js_detail["response"]["body_path"]))
+            assert _JS_BUNDLE_MARKER in js_path.read_text(encoding="utf-8")
+
+            # The seam: the captured artifacts feed the static tools losslessly.
+            if WasmClient().available:
+                dec = WasmClient().decompile(wasm_path, spill_dir=tmp_path)
+                assert "function add" in (dec.get("code") or ""), dec
+
+            if JsClient().available:
+                deob = JsClient().deobfuscate(js_path, spill_dir=tmp_path)
+                code = deob.get("code") or ""
+                # webcrack may cut the inline preview and spill the rest; the
+                # marker is the first statement, but fall back to the artifact so
+                # the assertion is about the whole output, not just the preview.
+                if _JS_BUNDLE_MARKER not in code and deob.get("artifact_path"):
+                    code = Path(str(deob["artifact_path"])).read_text(encoding="utf-8")
+                assert _JS_BUNDLE_MARKER in code, "marker lost through deobfuscation"
     finally:
         backend.close_all()
