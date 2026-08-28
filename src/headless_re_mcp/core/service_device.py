@@ -22,7 +22,7 @@ from headless_re_mcp.core.limits import (
     prune_capped_dir,
 )
 from headless_re_mcp.core.models import Result, RpcError
-from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.results import _failure, _rpc_from_backend, _success
 
 JsonObject = dict[str, Any]
 
@@ -101,7 +101,7 @@ def refuse_oversized_device_file(
 
 
 def _as_rpc(exc: AdbError) -> XdbgRpcError:
-    return XdbgRpcError(exc.code, exc.message, details=dict(exc.details))
+    return _rpc_from_backend(exc)
 
 
 class DeviceAnalysisMixin:

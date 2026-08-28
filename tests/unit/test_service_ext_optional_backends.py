@@ -420,8 +420,18 @@ def test_ghidra_maps_a_ghidra_error(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(service_ext, "GhidraClient", _RaisingGhidra)
     service, session_id = _service_with_session(tmp_path)
     try:
-        assert service.ghidra_analyze(session_id).error.code == "backend_error"  # type: ignore[union-attr]
-        assert service.ghidra_functions(session_id).error.code == "timeout"  # type: ignore[union-attr]
+        analyzed = service.ghidra_analyze(session_id)
+        assert analyzed.error is not None
+        assert analyzed.error.code == "backend_error"
+        # A backend_error says nothing about transience, so it stays non-retryable.
+        assert analyzed.error.retryable is False
+        listed = service.ghidra_functions(session_id)
+        assert listed.error is not None
+        assert listed.error.code == "timeout"
+        # A ghidra timeout is transient like a native TimedOut, so it must reach
+        # the caller (and the workflow failure record) retryable, not as the old
+        # conversion-default False.
+        assert listed.error.retryable is True
     finally:
         service.close_all()
 

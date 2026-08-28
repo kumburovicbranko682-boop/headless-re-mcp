@@ -23,7 +23,7 @@ from headless_re_mcp.core.limits import (
     prune_capped_dir,
 )
 from headless_re_mcp.core.models import Result
-from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.results import _failure, _rpc_from_backend, _success
 
 JsonObject = dict[str, Any]
 
@@ -61,7 +61,7 @@ def prune_jsre_unpack_dirs(root: Path, *, keep: int = _MAX_JSRE_UNPACK_DIRS) -> 
 
 
 def _as_rpc(exc: JsReError) -> XdbgRpcError:
-    return XdbgRpcError(exc.code, exc.message, details=dict(exc.details))
+    return _rpc_from_backend(exc)
 
 
 class JsReAnalysisMixin:

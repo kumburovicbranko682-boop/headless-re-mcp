@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（后端 timeout 错误被标成不可重试,与原生 TimedOut 的契约不一致)
+
+- 每个后端错误(adb / apk / frida / ghidra / jsre / proxy / radare2 / web)都要经由各条线的 `_as_rpc` 助手或
+  `service_ext` 里的内联转换变成 RPC 信封里的错误对象。可这些转换清一色用 `XdbgRpcError(exc.code, exc.message,
+  details=...)`,没传 `retryable`,于是全都吃了构造器默认的 `retryable=False`——包括 `timeout`。而 `timeout` 恰恰是每个受时限
+  约束的后端都会抛、且 `_failure` 里原生 `TimedOut` / `workflow_timeout` 路径都标成 `retryable=True` 的那个码。结果:一次
+  playwright 导航超时、adb 命令超时、apktool/jadx 子进程超时、webcrack/wabt 子进程超时、ghidra JVM 超时、frida 探针超时,
+  到了调用方(以及读取 `exc.retryable` 的工作流失败记录)手里都是"不可重试",而一模一样的原生超时却是"可重试"。`retryable`
+  是随每个错误信封序列化出去的字段、也被 `_workflow_failure` 消费,所以这是个真实可观测的契约不一致。现在在 `core/results.py`
+  新增单一策略 `_rpc_from_backend(exc)`:从错误码派生 `retryable`(`_RETRYABLE_BACKEND_CODES = {"timeout"}`),`timeout` 可
+  重试,而 `capability_unavailable` / `not_found` / `invalid_params` / `too_large` / `backend_error` 这些与瞬时性无关的码保持
+  不可重试,免得让无人值守的调用方对着一个确定性失败(坏文件、错参数)反复重试。六个 `_as_rpc` 助手(web/proxy/frida/apk/
+  jsre/device)与 `service_ext` 里在范围内的内联转换(frida×5、radare2×4、ghidra×2)统一改走这个助手;PE 线的 windbg 与 UI-drive
+  转换点(以及会重新抛出、需保留原 `retryable` 的两处 `raise XdbgRpcError ... from exc`)不在本次范围、保持原样。新增
+  `tests/unit/test_backend_error_retryable.py`:直接校验策略(仅 timeout 可重试、message/details 照常透传)、并逐一校验六个
+  `_as_rpc` 助手都从码派生 `retryable`;既有的 ghidra 端到端超时测试补断言 `retryable is True`(backend_error 仍为 False)。
+  纯错误元数据修正,不改任何成功路径的返回形状。
+
 ### 修复（ghidra.functions/symbols/xrefs 报 has_more 却无 offset:超过一页的部分永远够不着）
 
 - `ghidra.functions`/`symbols`/`xrefs` 三个便携静态分析读取都返回 `has_more`,却都没有 `offset` 参数,而每次调用又都在

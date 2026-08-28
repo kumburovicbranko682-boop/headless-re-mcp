@@ -24,9 +24,39 @@ from headless_re_mcp.unpack.upx import UpxScanError
 
 JsonObject = dict[str, Any]
 
+# Backend error codes that name a transient condition worth retrying. A timeout
+# is the one code every bounded backend (adb, playwright, frida, apktool/jadx,
+# webcrack/wabt, ghidra, radare2) can raise, and the one the native TimedOut /
+# workflow_timeout paths in _failure already mark retryable. A code that says
+# nothing about transience -- capability_unavailable, not_found, invalid_params,
+# too_large, backend_error -- stays non-retryable so an unattended caller does
+# not re-run a deterministic failure (a corrupt file, a bad argument) on a loop.
+_RETRYABLE_BACKEND_CODES = frozenset({"timeout"})
+
 
 def _success(data: JsonObject, **meta: object) -> Result[JsonObject]:
     return Result[JsonObject](ok=True, data=data, meta=dict(meta))
+
+
+def _rpc_from_backend(exc: Any) -> XdbgRpcError:
+    """Convert a backend error (code/message/details) to the RPC envelope error.
+
+    The per-line ``_as_rpc`` helpers and the ``service_ext`` conversion sites all
+    minted ``XdbgRpcError`` with the constructor default ``retryable=False``, so a
+    frida / adb / apktool / webcrack / ghidra / radare2 / playwright ``timeout``
+    reached the caller (and the workflow failure record, which reads
+    ``exc.retryable``) as non-retryable -- while an identical native ``TimedOut``
+    did not. Deriving ``retryable`` from the code here keeps that one contract
+    consistent across every backend. It is only for errors that carry their own
+    ``code``/``message``/``details``; an already-built ``XdbgRpcError`` being
+    re-raised keeps its own ``retryable`` and must not pass through here.
+    """
+    return XdbgRpcError(
+        exc.code,
+        exc.message,
+        details=dict(exc.details),
+        retryable=exc.code in _RETRYABLE_BACKEND_CODES,
+    )
 
 
 def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
