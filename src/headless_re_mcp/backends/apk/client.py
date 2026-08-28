@@ -49,6 +49,16 @@ _MAX_CLASS_FIELDS = 500
 _MAX_INTERFACES = 100
 _MAX_USES_FEATURES = 300
 _MAX_USES_LIBRARIES = 300
+# apk.providers caps: bound the provider list, each provider's authorities, and
+# its child <path-permission>/<grant-uri-permission> elements.
+_MAX_PROVIDERS = 500
+_MAX_PROVIDER_AUTHORITIES = 100
+_MAX_PATH_PERMISSIONS = 200
+_MAX_GRANT_URIS = 200
+# apk.native_methods caps: an app can declare many JNI stubs; bound the scan and
+# the returned page.
+_MAX_NATIVE_METHODS_COLLECT = 5000
+_MAX_NATIVE_METHODS_PAGE = 2000
 # apk.api_usage caps: a big app has hundreds of thousands of analysis method
 # nodes; bound the scan, the callers counted per API, and the APIs shown per
 # category so a hostile app cannot make the scan unbounded.
@@ -648,6 +658,125 @@ class ApkClient:
             "has_more": has_more,
         }
 
+    def providers(self, path: Path) -> JsonObject:
+        """Report content providers as an attack surface: authorities and guards.
+
+        A content provider is the widest data door an app can leave open, and
+        the facts that decide whether it is safe live in attributes the other
+        component tools do not surface: the authorities that address it, whether
+        it is exported, the read/write permissions guarding it, whether it hands
+        out temporary URI grants (grantUriPermissions plus any
+        <grant-uri-permission> paths), and any <path-permission> children that
+        guard a sub-path differently from the provider as a whole. An exported
+        provider with no permission is the classic leak (arbitrary read/write,
+        SQL-injection or path-traversal into the app's data), so this folds each
+        provider with those fields and flags the unguarded-and-exported ones.
+        """
+        apk = self._apk(path)
+        root = apk.get_android_manifest_xml()
+        empty: JsonObject = {
+            "providers": [],
+            "count": 0,
+            "total": 0,
+            "exported_unguarded": 0,
+            "has_more": False,
+        }
+        if root is None:
+            return empty
+
+        def _attr(element: Any, name: str) -> str | None:
+            value = element.get(_ANDROID_NS + name)
+            if value is None or str(value) == "":
+                return None
+            return str(value)[:_MAX_META_VALUE_CHARS]
+
+        def _bool_attr(element: Any, name: str) -> bool | None:
+            raw = _attr(element, name)
+            if raw is None:
+                return None
+            return raw.strip().lower() == "true"
+
+        def _path_spec(element: Any) -> JsonObject:
+            return {
+                "path": _attr(element, "path"),
+                "path_prefix": _attr(element, "pathPrefix"),
+                "path_pattern": _attr(element, "pathPattern"),
+            }
+
+        target_sdk = _as_int(apk.get_target_sdk_version()) or _as_int(
+            apk.get_min_sdk_version()
+        )
+        # Providers are exported by default only when targetSdk < 17; from 17 on
+        # the default is false. With no SDK to read, do not guess a default.
+        default_exported = target_sdk is not None and target_sdk < 17
+
+        providers: list[JsonObject] = []
+        total = 0
+        exported_unguarded = 0
+        has_more = False
+        for element in root.iter("provider"):
+            total += 1
+            if len(providers) >= _MAX_PROVIDERS:
+                has_more = True
+                continue
+            authorities_raw = _attr(element, "authorities") or ""
+            authorities = [a for a in authorities_raw.split(";") if a][
+                :_MAX_PROVIDER_AUTHORITIES
+            ]
+            explicit = _bool_attr(element, "exported")
+            permission = _attr(element, "permission")
+            read_permission = _attr(element, "readPermission")
+            write_permission = _attr(element, "writePermission")
+            guarded = (
+                permission is not None
+                or read_permission is not None
+                or write_permission is not None
+            )
+            effective = (
+                explicit
+                if explicit is not None
+                else default_exported and bool(authorities)
+            )
+            grant_all = _bool_attr(element, "grantUriPermissions")
+            grant_uris = [
+                _path_spec(child)
+                for child in list(element.iter("grant-uri-permission"))[:_MAX_GRANT_URIS]
+            ]
+            path_permissions = [
+                {
+                    **_path_spec(child),
+                    "permission": _attr(child, "permission"),
+                    "read_permission": _attr(child, "readPermission"),
+                    "write_permission": _attr(child, "writePermission"),
+                }
+                for child in list(element.iter("path-permission"))[:_MAX_PATH_PERMISSIONS]
+            ]
+            if effective and not guarded:
+                exported_unguarded += 1
+            providers.append(
+                {
+                    "name": _attr(element, "name"),
+                    "authorities": authorities,
+                    "exported": explicit,
+                    "effective_exported": effective,
+                    "enabled": _bool_attr(element, "enabled"),
+                    "permission": permission,
+                    "read_permission": read_permission,
+                    "write_permission": write_permission,
+                    "grant_uri_permissions": bool(grant_all) or bool(grant_uris),
+                    "grant_uris": grant_uris,
+                    "path_permissions": path_permissions,
+                    "guarded": guarded,
+                }
+            )
+        return {
+            "providers": providers,
+            "count": len(providers),
+            "total": total,
+            "exported_unguarded": exported_unguarded,
+            "has_more": has_more,
+        }
+
     def intent_filters(self, path: Path) -> JsonObject:
         """Map each component's <intent-filter>: the app's declared entry points.
 
@@ -1125,6 +1254,61 @@ class ApkClient:
         result.update(_decode_class_access(access))
         return result
 
+    def native_methods(
+        self, path: Path, *, offset: int = 0, limit: int = 100
+    ) -> JsonObject:
+        """Enumerate the app's JNI native methods -- the boundary into the .so files.
+
+        A method declared ``native`` has no bytecode: its body lives in a shared
+        library, reached over JNI. apk.method_info decodes that flag for one
+        method at a time; this sweeps the whole DEX and lists every native
+        method with its class, signature and the C symbol JNI would resolve it
+        to, so an analyst who found nothing in the bytecode knows exactly which
+        exports to chase in apk.native_libs. The jni_symbol is the short
+        (non-overloaded) mangling -- for an overloaded native method the real
+        export carries an argument-type suffix this does not add.
+        """
+        parsed = self._parsed(path)
+        rows: list[JsonObject] = []
+        scan_more = False
+        for klass in parsed.analysis.get_classes():
+            if klass.is_external():
+                continue
+            for method in klass.get_methods():
+                access = str(getattr(method, "access", ""))
+                if "native" not in access.split():
+                    continue
+                if len(rows) >= _MAX_NATIVE_METHODS_COLLECT:
+                    scan_more = True
+                    break
+                descriptor = str(getattr(method, "descriptor", ""))
+                proto = _parse_dalvik_proto(descriptor)
+                cls = str(klass.name)
+                name = str(method.name)
+                rows.append(
+                    {
+                        "class": _dalvik_type_human(cls),
+                        "method": name,
+                        "descriptor": descriptor,
+                        "params": proto["params"],
+                        "return_type": proto["return_type"],
+                        "jni_symbol": _jni_short_name(cls, name),
+                    }
+                )
+            if scan_more:
+                break
+        rows.sort(key=lambda r: (str(r["class"]), str(r["method"])))
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_NATIVE_METHODS_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "native_methods": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_more,
+        }
+
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
         parsed = self._parsed(path)
         seen: set[str] = set()
@@ -1393,6 +1577,23 @@ def _dalvik_type_human(descriptor: str) -> str:
     """Render one Dalvik type descriptor as a human type, or echo it on failure."""
     human, _ = _read_dalvik_type(descriptor or "", 0)
     return human if human is not None else (descriptor or "")
+
+
+def _jni_short_name(smali_class: str, method_name: str) -> str:
+    """The C symbol JNI resolves a native method to, in its short (non-overloaded) form.
+
+    JNI mangles ``Ljava/lang/Foo;`` + ``do_it`` to
+    ``Java_java_lang_Foo_do_1it``: package separators become ``_`` and a literal
+    ``_`` becomes ``_1``. The short form (no argument-type suffix) is what a
+    single, non-overloaded native method exports, so it is the string to grep
+    for in the .so.
+    """
+    internal = smali_class
+    if internal.startswith("L") and internal.endswith(";"):
+        internal = internal[1:-1]
+    mangled_class = internal.replace("_", "_1").replace("/", "_")
+    mangled_method = method_name.replace("_", "_1")
+    return f"Java_{mangled_class}_{mangled_method}"
 
 
 def _decode_class_access(access: str) -> JsonObject:

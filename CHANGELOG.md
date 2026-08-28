@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **307（189 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **309（191 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -554,6 +554,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   API,按调用者数排名)、`api_count`、`apis_truncated`。每个 api 行带 `class`(点分)、`method`、
   `callers`。只在分析里出现却从未被调用的 API 略去——算使用的是调用点而非一条引用。会话不是 APK 报
   `target_mismatch`。
+- 新增 `apk.providers`:把内容提供者当作攻击面来报——授权与守卫。内容提供者是应用能敞开的最宽的数据门,
+  而决定它安不安全的事实恰恰是 `apk.components`/`apk.exported_components` 不呈现的:寻址它的 authorities、
+  是否 exported、守它的读/写权限、是否发放临时 URI 授权(grantUriPermissions 及任何 <grant-uri-permission>
+  路径),以及把某子路径守得与整体不同的 <path-permission> 子元素。一个没有权限的 exported 提供者就是经典
+  泄漏(任意读写、SQL 注入或路径穿越进应用数据)。回 `providers`、`count`、`total`、`exported_unguarded`
+  (头条:有多少个实际 exported 却无任何权限)与 `has_more`。每个提供者带 `name`、`authorities`(android:
+  authorities 按 ; 拆)、`exported`(字面 android:exported,缺失为 null)、`effective_exported`(解析值——
+  android:exported 缺失时仅 targetSdk<17 且有 authority 才默认 true)、`enabled`、`permission`、
+  `read_permission`、`write_permission`、`grant_uri_permissions`、`grant_uris`(各带 path/path_prefix/
+  path_pattern)、`path_permissions`(各再带自己的 permission/read_permission/write_permission)与 `guarded`。
+  会话不是 APK 报 `target_mismatch`。
+- 新增 `apk.native_methods`:枚举应用的 JNI native 方法——进入 .so 的边界。声明为 native 的方法没有字节码,
+  其函数体活在共享库里、经 JNI 到达。`apk.method_info` 一次解一个方法的该标志,这个横扫整个 DEX 列出每个
+  native 方法,于是在字节码里一无所获的分析员立刻知道该去 `apk.native_libs` 追哪些导出。回 `native_methods`
+  (分页,按类再按方法排序)、`count`、`total`、`offset`、`has_more` 与 `scan_capped`(横扫触收集上限)。每行带
+  `class`(点分)、`method`、`descriptor`(原始 Dalvik proto)、`params`、`return_type` 与 `jni_symbol`——JNI
+  把该方法解析到的 C 符号,取其短(非重载)修饰形式,即在 .so 里 grep 的字符串;重载 native 方法的真实导出还
+  带一段参数类型后缀,这里不加。会话不是 APK 报 `target_mismatch`。
 
 ### 新增（Android 清单元数据）
 

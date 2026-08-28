@@ -364,6 +364,62 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_api_usage(session_id))
 
+    @tools.tool(name="apk.providers")
+    def apk_providers(session_id: str) -> dict[str, Any]:
+        """Report content providers as an attack surface: authorities and guards.
+
+        A content provider is the widest data door an app can leave open, and
+        the facts that decide whether it is safe are ones apk.components and
+        apk.exported_components do not surface: the authorities that address it,
+        whether it is exported, the read/write permissions guarding it, whether
+        it hands out temporary URI grants, and any <path-permission> children
+        that guard a sub-path differently. An exported provider with no
+        permission is the classic leak (arbitrary read/write, SQL injection or
+        path traversal into the app's data).
+
+        Answers with providers, count, total, exported_unguarded (the headline:
+        how many are effectively exported yet carry no permission) and has_more.
+        Each provider carries name, authorities (the android:authorities list,
+        split on ;), exported (the literal android:exported, or null when
+        absent), effective_exported (the resolved value -- when android:exported
+        is absent the default is true only for targetSdk < 17 and an authority
+        exists), enabled, permission, read_permission, write_permission,
+        grant_uri_permissions (true when android:grantUriPermissions is set or a
+        <grant-uri-permission> exists), grant_uris (each with path/path_prefix/
+        path_pattern), path_permissions (each with those plus its own
+        permission/read_permission/write_permission) and guarded (any permission
+        is set).
+
+        A session that is not an APK is refused target_mismatch.
+        """
+        return _dump(analysis.apk_providers(session_id))
+
+    @tools.tool(name="apk.native_methods")
+    def apk_native_methods(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 100,
+    ) -> dict[str, Any]:
+        """Enumerate the app's JNI native methods -- the boundary into the .so files.
+
+        A method declared native has no bytecode: its body lives in a shared
+        library, reached over JNI. apk.method_info decodes that flag one method
+        at a time; this sweeps the whole DEX and lists every native method, so an
+        analyst who found nothing in the bytecode knows exactly which exports to
+        chase in apk.native_libs.
+
+        Answers with native_methods (paged, sorted by class then method), count,
+        total, offset, has_more and scan_capped (the sweep hit its collection
+        cap). Each row carries class (dotted), method, descriptor (the raw
+        Dalvik proto), params, return_type and jni_symbol -- the C symbol JNI
+        resolves the method to, in its short (non-overloaded) mangling, so it is
+        the string to grep for in the .so. An overloaded native method's real
+        export carries an extra argument-type suffix this does not add.
+
+        A session that is not an APK is refused target_mismatch.
+        """
+        return _dump(analysis.apk_native_methods(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.xrefs")
     def apk_xrefs(
         session_id: str,
