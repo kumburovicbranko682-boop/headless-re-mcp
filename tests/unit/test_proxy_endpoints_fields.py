@@ -151,7 +151,10 @@ def test_normalize_false_keeps_exact_paths(monkeypatch: Any) -> None:
 def test_method_status_and_content_type_rollup(monkeypatch: Any) -> None:
     summaries = [
         _summary("a", seq=1, method="GET", url="http://h/x", status=200, ctype="application/json"),
-        _summary("b", seq=2, method="POST", url="http://h/x", status=404, ctype="text/html; charset=utf-8"),
+        _summary(
+            "b", seq=2, method="POST", url="http://h/x", status=404,
+            ctype="text/html; charset=utf-8",
+        ),
         _summary("c", seq=3, method="GET", url="http://h/x", status=200, ctype="application/json"),
     ]
     (ep,) = _backend(monkeypatch, summaries).endpoints("s")["endpoints"]
