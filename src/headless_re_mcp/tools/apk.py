@@ -337,6 +337,33 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_uses_features(session_id))
 
+    @tools.tool(name="apk.api_usage")
+    def apk_api_usage(session_id: str) -> dict[str, Any]:
+        """Scan the call graph for sensitive-API usage, grouped by threat category.
+
+        The "what does this app actually do" view that follows apk.permissions
+        and apk.urls. Where a permission only says an app *may* send SMS, this
+        walks every external API the code invokes and, when it matches a curated
+        table, counts the real call sites via that method's xref_from. Categories
+        are reflection, dynamic_code (DexClassLoader and friends), process_exec
+        (Runtime.exec/ProcessBuilder), native_load (System.loadLibrary), crypto
+        (javax.crypto and java.security), sms (SmsManager), device_id
+        (TelephonyManager identifiers), location, device_admin, accessibility,
+        clipboard, installed_apps, record_audio and network.
+
+        Answers with categories (only those with at least one real call site,
+        ranked by total call sites), category_count, total_call_sites and
+        scan_capped (the method scan hit its cap, so more may exist). Each
+        category carries category, hits (total call sites), apis (the distinct
+        APIs in it, ranked by callers), api_count and apis_truncated. Each api
+        row carries class (dotted), method and callers. An API present in the
+        analysis but never called is omitted -- a call site, not a mere ref, is
+        what counts as usage.
+
+        A session that is not an APK is refused target_mismatch.
+        """
+        return _dump(analysis.apk_api_usage(session_id))
+
     @tools.tool(name="apk.xrefs")
     def apk_xrefs(
         session_id: str,

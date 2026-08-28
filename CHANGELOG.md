@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **302（184 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **303（185 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -521,6 +521,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `native`(`<uses-native-library>` 为 true)。`required` 是 android:required,缺失默认为 true——
   required=false 标出应用没有它也能跑的能力,正是应用一边扩大安装面、一边在有该特性时才用它的套路。
   会话不是 APK 报 `target_mismatch`。
+- 新增 `apk.api_usage`:扫调用图里的敏感 API 使用,按威胁类别归组——`apk.permissions` 与 `apk.urls`
+  之后那句"这应用到底*做*了什么"。权限只说应用*可能*发短信,这里遍历代码调用的每个外部 API,命中
+  一张精选表就用该方法的 xref_from 数出真实调用点。类别有 reflection、dynamic_code(DexClassLoader
+  一族)、process_exec(Runtime.exec/ProcessBuilder)、native_load(System.loadLibrary)、crypto
+  (javax.crypto 与 java.security)、sms(SmsManager)、device_id(TelephonyManager 标识符)、location、
+  device_admin、accessibility、clipboard、installed_apps、record_audio、network。回 `categories`
+  (只含至少有一个真实调用点的,按调用点总数排名)、`category_count`、`total_call_sites`、`scan_capped`
+  (方法扫描触顶,可能还有更多)。每个 category 带 `category`、`hits`(调用点总数)、`apis`(其中的不同
+  API,按调用者数排名)、`api_count`、`apis_truncated`。每个 api 行带 `class`(点分)、`method`、
+  `callers`。只在分析里出现却从未被调用的 API 略去——算使用的是调用点而非一条引用。会话不是 APK 报
+  `target_mismatch`。
 
 ### 新增（Android 清单元数据）
 

@@ -49,6 +49,12 @@ _MAX_CLASS_FIELDS = 500
 _MAX_INTERFACES = 100
 _MAX_USES_FEATURES = 300
 _MAX_USES_LIBRARIES = 300
+# apk.api_usage caps: a big app has hundreds of thousands of analysis method
+# nodes; bound the scan, the callers counted per API, and the APIs shown per
+# category so a hostile app cannot make the scan unbounded.
+_MAX_API_METHODS_SCAN = 400_000
+_MAX_API_CALLERS = 5000
+_MAX_API_ROWS = 60
 # apk.urls caps: a big app carries thousands of string constants; bound the
 # distinct-URL set, the per-host and IP roll-ups, and each captured URL length.
 _MAX_URLS_COLLECT = 5000
@@ -64,6 +70,98 @@ _IPV4_RE = re.compile(
     r"(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)"
     r"(?![\w.])"
 )
+
+
+_DEX_LOADERS = frozenset(
+    {
+        "Ldalvik/system/DexClassLoader;",
+        "Ldalvik/system/PathClassLoader;",
+        "Ldalvik/system/InMemoryDexClassLoader;",
+        "Ldalvik/system/BaseDexClassLoader;",
+        "Ldalvik/system/DexFile;",
+    }
+)
+
+
+def _classify_api(cls: str, name: str) -> str | None:
+    """Bucket a called API (smali class descriptor + method) into a threat category.
+
+    Pure over the two strings so a fake analysis can drive it in a unit test.
+    Only high-signal APIs that malware triage looks for are matched; anything
+    else returns None and is ignored. Categories are the words a reviewer would
+    grep an app for: reflection, dynamic code loading, process exec, native
+    loads, crypto, SMS, device identifiers, and so on.
+    """
+    if cls.startswith("Ljava/lang/reflect/"):
+        return "reflection"
+    if cls == "Ljava/lang/Class;" and name in {
+        "forName",
+        "getMethod",
+        "getDeclaredMethod",
+        "getMethods",
+        "getDeclaredMethods",
+        "getDeclaredField",
+        "getField",
+    }:
+        return "reflection"
+    if cls in _DEX_LOADERS:
+        return "dynamic_code"
+    if cls == "Ljava/lang/Runtime;" and name == "exec":
+        return "process_exec"
+    if cls == "Ljava/lang/ProcessBuilder;":
+        return "process_exec"
+    if cls in {"Ljava/lang/System;", "Ljava/lang/Runtime;"} and name in {
+        "load",
+        "loadLibrary",
+    }:
+        return "native_load"
+    if cls.startswith("Ljavax/crypto/"):
+        return "crypto"
+    if cls in {
+        "Ljava/security/MessageDigest;",
+        "Ljava/security/KeyStore;",
+        "Ljava/security/Signature;",
+        "Ljava/security/KeyPairGenerator;",
+    }:
+        return "crypto"
+    if cls == "Landroid/telephony/SmsManager;":
+        return "sms"
+    if cls == "Landroid/telephony/TelephonyManager;" and name in {
+        "getDeviceId",
+        "getSubscriberId",
+        "getSimSerialNumber",
+        "getLine1Number",
+        "getImei",
+        "getMeid",
+    }:
+        return "device_id"
+    if cls == "Landroid/location/LocationManager;":
+        return "location"
+    if cls == "Landroid/app/admin/DevicePolicyManager;":
+        return "device_admin"
+    if cls.startswith("Landroid/accessibilityservice/"):
+        return "accessibility"
+    if cls in {
+        "Landroid/content/ClipboardManager;",
+        "Landroid/text/ClipboardManager;",
+    }:
+        return "clipboard"
+    if cls == "Landroid/content/pm/PackageManager;" and name in {
+        "getInstalledApplications",
+        "getInstalledPackages",
+    }:
+        return "installed_apps"
+    if cls in {"Landroid/media/MediaRecorder;", "Landroid/media/AudioRecord;"}:
+        return "record_audio"
+    if cls == "Ljava/net/URL;" and name == "openConnection":
+        return "network"
+    if (
+        cls.startswith("Lokhttp3/")
+        or cls.startswith("Lorg/apache/http/")
+        or cls == "Ljava/net/Socket;"
+    ):
+        return "network"
+    return None
 
 
 def _extract_url_indicators(
@@ -1113,6 +1211,72 @@ class ApkClient:
             # A caller deciding "these are all the callers" has to know whether
             # the enumeration ended or merely stopped.
             "has_more": has_more,
+        }
+
+    def api_usage(self, path: Path) -> JsonObject:
+        """Scan for calls into sensitive platform APIs, grouped by threat category.
+
+        Where apk.permissions and apk.urls read the manifest and string pool,
+        this reads the call graph: for every external API the app invokes it
+        matches the method against a curated table (reflection, dynamic code
+        loading, process exec, native loads, crypto, SMS, device identifiers,
+        ...) and counts the call sites via each method's xref_from. The result
+        is the "what does this app actually *do*" view a malware triage reaches
+        for after the manifest -- a permission only says an app *may* send SMS,
+        a call site into SmsManager.sendTextMessage says it *does*.
+        """
+        parsed = self._parsed(path)
+        # category -> {"hits": int, "apis": {(human_class, method): callers}}
+        cats: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        scanned = 0
+        scan_capped = False
+        for method in parsed.analysis.get_methods():
+            if scanned >= _MAX_API_METHODS_SCAN:
+                scan_capped = True
+                break
+            scanned += 1
+            cls = str(method.class_name)
+            name = str(method.name)
+            category = _classify_api(cls, name)
+            if category is None:
+                continue
+            callers = 0
+            for _ in method.get_xref_from():
+                callers += 1
+                if callers >= _MAX_API_CALLERS:
+                    break
+            # An API node with no caller is dead metadata (androguard still
+            # models the external ref); only a real call site counts as usage.
+            if callers == 0:
+                continue
+            bucket = cats.setdefault(category, {"hits": 0, "apis": {}})
+            bucket["hits"] += callers
+            key = (_dalvik_type_human(cls), name)
+            apis: dict[tuple[str, str], int] = bucket["apis"]
+            apis[key] = apis.get(key, 0) + callers
+
+        categories: list[JsonObject] = []
+        for category, bucket in cats.items():
+            ranked = sorted(bucket["apis"].items(), key=lambda kv: (-kv[1], kv[0]))
+            rows = [
+                {"class": cls_h, "method": mname, "callers": n}
+                for (cls_h, mname), n in ranked[:_MAX_API_ROWS]
+            ]
+            categories.append(
+                {
+                    "category": category,
+                    "hits": bucket["hits"],
+                    "apis": rows,
+                    "api_count": len(rows),
+                    "apis_truncated": len(ranked) > len(rows),
+                }
+            )
+        categories.sort(key=lambda c: (-int(c["hits"]), str(c["category"])))
+        return {
+            "categories": categories,
+            "category_count": len(categories),
+            "total_call_sites": sum(int(c["hits"]) for c in categories),
+            "scan_capped": scan_capped,
         }
 
 
