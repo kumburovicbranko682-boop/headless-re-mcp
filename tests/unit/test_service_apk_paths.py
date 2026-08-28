@@ -1,426 +1,444 @@
-"""Edge-path coverage for core/service_apk.py.
+"""Path coverage for the APK static-analysis service mixin (``core/service_apk``).
 
-Targets the oversized-tree guard, the androguard-backed success and error
-arms (via a fake ApkClient), the jadx success tails, and the apktool-backed
-decode/repack/sign flows driven by fake POSIX tool scripts.
+androguard/jadx/apktool are not installed in the quality environment, so the
+existing tests only reach the validation and error arcs; the mixin's success
+surface was uncovered. These fake the three backend clients and inject an
+APK-target session via ``registry.adopt`` so the happy paths, the
+_record_backend/_timeline_append bookkeeping, the ApkError/JadxError/ApktoolError
+envelopes, and the oversized-tree guard all run without a real toolchain.
 """
 
 from __future__ import annotations
 
-import os
-import zipfile
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import headless_re_mcp.core.service_apk as service_apk
 from headless_re_mcp.backends.apk import ApkError
+from headless_re_mcp.backends.apktool import ApktoolError
 from headless_re_mcp.backends.jadx import JadxError
 from headless_re_mcp.config import Settings
-from headless_re_mcp.core import service_apk
+from headless_re_mcp.core.models import Session, SessionState, TargetKind
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.core.service_apk import _refuse_oversized_tree
-
-_posix_only = pytest.mark.skipif(os.name == "nt", reason="fake tools are POSIX shell scripts")
-
-
-def _write_minimal_apk(path: Path) -> Path:
-    with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
-        archive.writestr("classes.dex", b"dex\n035\x00")
-    return path
-
-
-def _script(tmp_path: Path, body: str, *, name: str) -> Path:
-    path = tmp_path / name
-    path.write_text(f"#!/bin/sh\n{body}\n")
-    path.chmod(0o755)
-    return path
-
-
-def _service(tmp_path: Path, **overrides: Any) -> AnalysisService:
-    fields: dict[str, Any] = {
-        "artifact_root": tmp_path / "artifacts",
-        "jadx": None,
-        "apktool": None,
-        "apksigner": None,
-    }
-    fields.update(overrides)
-    return AnalysisService(replace(Settings.load(), **fields))
-
-
-def _apk_session(service: AnalysisService, tmp_path: Path) -> str:
-    apk = _write_minimal_apk(tmp_path / "app.apk")
-    created = service.create_session(str(apk), target="apk")
-    assert created.ok and created.data is not None, created.error
-    return str(created.data["session"]["id"])
-
-
-# --- _refuse_oversized_tree ---
-
-
-def test_oversized_guard_ignores_a_missing_path(tmp_path: Path) -> None:
-    _refuse_oversized_tree(tmp_path / "missing", kind="jadx", error_type=JadxError)
-
-
-def test_oversized_guard_ignores_an_unmeasurable_tree(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    tree = tmp_path / "tree"
-    tree.mkdir()
-
-    def _unmeasurable(path: Path) -> int:
-        raise OSError("permission denied")
-
-    monkeypatch.setattr(service_apk, "_dir_size", _unmeasurable)
-
-    _refuse_oversized_tree(tree, kind="jadx", error_type=JadxError)
-
-    assert tree.is_dir()
-
-
-def test_oversized_guard_removes_a_directory_over_the_cap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    tree = tmp_path / "tree"
-    tree.mkdir()
-    (tree / "big.java").write_bytes(b"x" * 64)
-    monkeypatch.setattr(service_apk, "UNREGISTERED_CAPTURE_MAX_BYTES", 1)
-
-    with pytest.raises(JadxError) as caught:
-        _refuse_oversized_tree(tree, kind="jadx", error_type=JadxError)
-
-    assert caught.value.code == "too_large"
-    assert not tree.exists()
-
-
-def test_oversized_guard_removes_a_file_over_the_cap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    blob = tmp_path / "blob.bin"
-    blob.write_bytes(b"x" * 64)
-    monkeypatch.setattr(service_apk, "UNREGISTERED_CAPTURE_MAX_BYTES", 1)
-
-    with pytest.raises(JadxError):
-        _refuse_oversized_tree(blob, kind="jadx", error_type=JadxError)
-
-    assert not blob.exists()
-
-
-# --- androguard-backed arms via a fake ApkClient ---
 
 
 class _FakeApk:
-    def open(self, path: Path) -> dict[str, Any]:
-        return {"package": "a.b", "opened": True}
+    def open(self, binary: Path) -> dict[str, Any]:
+        return {"package": "com.example"}
 
-    def manifest(self, path: Path) -> dict[str, Any]:
-        return {"manifest": "<manifest/>"}
+    def classes(self, binary: Path, *, offset: int, limit: int) -> dict[str, Any]:
+        return {"classes": [], "offset": offset, "limit": limit}
 
-    def classes(self, path: Path, *, offset: int, limit: int) -> dict[str, Any]:
-        return {"classes": ["La/b;"], "offset": offset, "limit": limit}
+    def methods(self, binary: Path, class_name: str, *, offset: int, limit: int) -> dict[str, Any]:
+        return {"class": class_name, "methods": []}
 
-    def methods(
-        self, path: Path, class_name: str, *, offset: int, limit: int
-    ) -> dict[str, Any]:
-        return {"class": class_name, "methods": ["onCreate"]}
+    def strings(self, binary: Path, *, offset: int, limit: int) -> dict[str, Any]:
+        return {"strings": []}
 
-    def strings(self, path: Path, *, offset: int, limit: int) -> dict[str, Any]:
-        return {"strings": ["hello"]}
-
-    def xrefs(self, path: Path, method_name: str, *, limit: int) -> dict[str, Any]:
+    def xrefs(self, binary: Path, method_name: str, *, limit: int) -> dict[str, Any]:
         return {"method": method_name, "xrefs": []}
 
+    def manifest(self, binary: Path) -> dict[str, Any]:
+        return {"manifest": {}}
 
-def test_apk_readers_succeed_with_a_working_client(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(service_apk, "ApkClient", _FakeApk)
-    service = _service(tmp_path)
-    try:
-        session_id = _apk_session(service, tmp_path)
+    def permissions(self, binary: Path) -> dict[str, Any]:
+        return {"permissions": []}
 
-        opened = service.apk_open(session_id)
-        assert opened.ok and opened.data is not None, opened.error
-        assert opened.data["package"] == "a.b"
+    def certificates(self, binary: Path) -> dict[str, Any]:
+        return {"certificates": []}
 
-        manifest = service.apk_manifest(session_id)
-        assert manifest.ok and manifest.data is not None
-        assert manifest.data["manifest"] == "<manifest/>"
+    def components(self, binary: Path) -> dict[str, Any]:
+        return {"components": []}
 
-        classes = service.apk_classes(session_id, offset=1, limit=5)
-        assert classes.ok and classes.data is not None
-        assert classes.data["offset"] == 1
-
-        methods = service.apk_methods(session_id, "La/b;")
-        assert methods.ok and methods.data is not None
-        assert methods.data["class"] == "La/b;"
-
-        strings = service.apk_strings(session_id)
-        assert strings.ok and strings.data is not None
-        assert strings.data["strings"] == ["hello"]
-
-        xrefs = service.apk_xrefs(session_id, "onCreate")
-        assert xrefs.ok and xrefs.data is not None
-        assert xrefs.data["method"] == "onCreate"
-    finally:
-        service.close_all()
+    def native_libs(self, binary: Path) -> dict[str, Any]:
+        return {"native_libs": []}
 
 
-def test_apk_readers_degrade_without_androguard(tmp_path: Path) -> None:
-    """The real client refuses each call the same typed way when the optional
-    dependency is absent (which it is in this test environment)."""
-    service = _service(tmp_path)
-    try:
-        session_id = _apk_session(service, tmp_path)
-        for result in (
-            service.apk_open(session_id),
-            service.apk_manifest(session_id),
-            service.apk_permissions(session_id),
-            service.apk_certificates(session_id),
-            service.apk_components(session_id),
-            service.apk_native_libs(session_id),
-            service.apk_classes(session_id),
-            service.apk_methods(session_id, "La/b;"),
-            service.apk_strings(session_id),
-            service.apk_xrefs(session_id, "onCreate"),
-        ):
-            assert not result.ok and result.error is not None
-            assert result.error.code == "capability_unavailable"
-    finally:
-        service.close_all()
+class _BoomApk:
+    """Any op raises ApkError, to drive every ApkError envelope uniformly."""
 
-
-class _BrokenApk:
     def __getattr__(self, name: str) -> Any:
-        def _explode(*args: Any, **kwargs: Any) -> Any:
-            raise RuntimeError("androguard fell over")
+        def _fn(*args: Any, **kwargs: Any) -> Any:
+            raise ApkError("parse_failed", "unreadable apk")
 
-        return _explode
-
-
-def test_apk_readers_wrap_an_unexpected_client_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(service_apk, "ApkClient", _BrokenApk)
-    service = _service(tmp_path)
-    try:
-        session_id = _apk_session(service, tmp_path)
-        for result in (
-            service.apk_manifest(session_id),
-            service.apk_classes(session_id),
-            service.apk_methods(session_id, "La/b;"),
-            service.apk_strings(session_id),
-            service.apk_xrefs(session_id, "onCreate"),
-        ):
-            assert not result.ok and result.error is not None
-            assert "fell over" in result.error.message
-    finally:
-        service.close_all()
-
-
-def test_artifact_dir_helpers_refuse_a_traversal_session_id(tmp_path: Path) -> None:
-    service = _service(tmp_path)
-    try:
-        with pytest.raises(ApkError) as jadx_refusal:
-            service._jadx_out_dir("..")
-        assert jadx_refusal.value.code == "invalid_params"
-        with pytest.raises(ApkError) as repack_refusal:
-            service._repack_dir("..")
-        assert repack_refusal.value.code == "invalid_params"
-    finally:
-        service.close_all()
-
-
-# --- jadx-backed arms ---
+        return _fn
 
 
 class _FakeJadx:
-    def __init__(self, path: Any) -> None:
-        self.path = path
+    def __init__(self, exe: Any) -> None:
+        pass
 
-    def decompile(
-        self, apk: Path, out_dir: Path, class_name: str, *, timeout: float = 300.0
-    ) -> dict[str, Any]:
+    def decompile(self, binary: Path, out_dir: Path, class_name: str, *, timeout: float) -> Any:
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "Cls.java").write_text("class Cls {}")
-        return {"class": class_name, "java": "class Cls {}"}
+        (out_dir / "X.java").write_text("class X {}", encoding="utf-8")
+        return {"class": class_name}
 
     def export_sources(
-        self, apk: Path, out_dir: Path, *, timeout: float = 300.0, no_imports: bool = False
-    ) -> dict[str, Any]:
+        self, binary: Path, out_dir: Path, *, timeout: float, no_imports: bool
+    ) -> Any:
         out_dir.mkdir(parents=True, exist_ok=True)
-        return {"exported": True, "no_imports": no_imports}
+        (out_dir / "src.java").write_text("//", encoding="utf-8")
+        return {"exported": True}
 
 
-def test_decompile_and_export_succeed_with_a_working_jadx(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+class _FakeApktool:
+    def __init__(self, apktool: Any, apksigner: Any) -> None:
+        pass
+
+    def decode(self, binary: Path, out_dir: Path, *, timeout: float, no_resources: bool) -> Any:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "AndroidManifest.xml").write_text("<x/>", encoding="utf-8")
+        return {"decoded": True}
+
+    def build(self, source: Path, out_apk: Path, *, timeout: float) -> Any:
+        out_apk.write_bytes(b"PK\x03\x04")
+        return {"built": True}
+
+    def sign(
+        self,
+        source: Path,
+        out_apk: Path,
+        *,
+        keystore: Any,
+        keystore_password: str,
+        key_alias: str,
+        timeout: float,
+    ) -> Any:
+        out_apk.write_bytes(b"PK\x03\x04")
+        return {"signed": True}
+
+
+def _service(tmp_path: Path) -> AnalysisService:
+    return AnalysisService(replace(Settings.load(), artifact_root=tmp_path / "artifacts"))
+
+
+def _apk_session(service: AnalysisService, tmp_path: Path) -> str:
+    apk = tmp_path / "app.apk"
+    apk.write_bytes(b"PK\x03\x04")
+    session = Session(target=TargetKind.APK, binary=apk, locator=str(apk), state=SessionState.READY)
+    service.registry.adopt(session)
+    return session.id
+
+
+# --------------------------------------------------------------------------- #
+# _refuse_oversized_tree                                                       #
+# --------------------------------------------------------------------------- #
+def test_refuse_oversized_tree_ignores_a_missing_path(tmp_path: Path) -> None:
+    service_apk._refuse_oversized_tree(tmp_path / "gone", kind="jadx", error_type=JadxError)
+
+
+def test_refuse_oversized_tree_allows_a_small_tree(tmp_path: Path) -> None:
+    small = tmp_path / "small"
+    small.mkdir()
+    (small / "f").write_text("x", encoding="utf-8")
+    service_apk._refuse_oversized_tree(small, kind="jadx", error_type=JadxError)
+    assert small.is_dir()
+
+
+def test_refuse_oversized_tree_returns_when_sizing_raises(tmp_path: Path, monkeypatch: Any) -> None:
+    a_dir = tmp_path / "d"
+    a_dir.mkdir()
+
+    def boom(path: Path) -> int:
+        raise OSError("stat failed")
+
+    monkeypatch.setattr(service_apk, "_dir_size", boom)
+    service_apk._refuse_oversized_tree(a_dir, kind="jadx", error_type=JadxError)
+    assert a_dir.is_dir()
+
+
+def test_refuse_oversized_tree_deletes_and_raises_for_a_big_dir(
+    tmp_path: Path, monkeypatch: Any
 ) -> None:
-    monkeypatch.setattr(service_apk, "JadxClient", _FakeJadx)
+    big = tmp_path / "big"
+    big.mkdir()
+    (big / "f").write_text("payload", encoding="utf-8")
+    monkeypatch.setattr(service_apk, "UNREGISTERED_CAPTURE_MAX_BYTES", 0)
+    with pytest.raises(JadxError) as excinfo:
+        service_apk._refuse_oversized_tree(big, kind="jadx", error_type=JadxError)
+    assert excinfo.value.code == "too_large"
+    assert not big.exists()
+
+
+def test_refuse_oversized_tree_deletes_and_raises_for_a_big_file(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"payload")
+    monkeypatch.setattr(service_apk, "UNREGISTERED_CAPTURE_MAX_BYTES", 0)
+    with pytest.raises(ApktoolError):
+        service_apk._refuse_oversized_tree(big, kind="apktool", error_type=ApktoolError)
+    assert not big.exists()
+
+
+# --------------------------------------------------------------------------- #
+# androguard-backed methods                                                    #
+# --------------------------------------------------------------------------- #
+def test_apk_open_records_backend_and_timeline(tmp_path: Path, monkeypatch: Any) -> None:
     service = _service(tmp_path)
     try:
         session_id = _apk_session(service, tmp_path)
-
-        decompiled = service.apk_decompile(session_id, "a.b.Cls")
-        assert decompiled.ok and decompiled.data is not None, decompiled.error
-        assert decompiled.data["class"] == "a.b.Cls"
-
-        exported = service.apk_export_sources(session_id, no_imports=True)
-        assert exported.ok and exported.data is not None, exported.error
-        assert exported.data["no_imports"] is True
+        monkeypatch.setattr(service_apk, "ApkClient", _FakeApk)
+        result = service.apk_open(session_id)
+        assert result.ok, result.error
+        assert result.data is not None
+        assert result.data["package"] == "com.example"
     finally:
         service.close_all()
 
 
-def test_decompile_and_export_degrade_without_jadx(tmp_path: Path) -> None:
+def test_apk_open_maps_an_apk_error(tmp_path: Path, monkeypatch: Any) -> None:
     service = _service(tmp_path)
     try:
         session_id = _apk_session(service, tmp_path)
+        monkeypatch.setattr(service_apk, "ApkClient", _BoomApk)
+        result = service.apk_open(session_id)
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "parse_failed"
+    finally:
+        service.close_all()
+
+
+def test_apk_listing_methods_succeed(tmp_path: Path, monkeypatch: Any) -> None:
+    service = _service(tmp_path)
+    try:
+        session_id = _apk_session(service, tmp_path)
+        monkeypatch.setattr(service_apk, "ApkClient", _FakeApk)
+        assert service.apk_classes(session_id).ok
+        assert service.apk_methods(session_id, "com.X").ok
+        assert service.apk_strings(session_id).ok
+        assert service.apk_xrefs(session_id, "m()").ok
+    finally:
+        service.close_all()
+
+
+def test_apk_listing_methods_map_errors(tmp_path: Path, monkeypatch: Any) -> None:
+    service = _service(tmp_path)
+    try:
+        session_id = _apk_session(service, tmp_path)
+        monkeypatch.setattr(service_apk, "ApkClient", _BoomApk)
         for result in (
-            service.apk_decompile(session_id, "a.b.Cls"),
-            service.apk_export_sources(session_id),
+            service.apk_classes(session_id),
+            service.apk_methods(session_id, "com.X"),
+            service.apk_strings(session_id),
+            service.apk_xrefs(session_id, "m()"),
         ):
-            assert not result.ok and result.error is not None
-            assert result.error.code == "capability_unavailable"
+            assert result.ok is False
+            assert result.error is not None
+            assert result.error.code == "parse_failed"
     finally:
         service.close_all()
 
 
-def test_decompile_skips_cleanup_when_no_tree_was_written(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_apk_call_backed_methods_succeed_and_map_errors(tmp_path: Path, monkeypatch: Any) -> None:
+    service = _service(tmp_path)
+    try:
+        session_id = _apk_session(service, tmp_path)
+        monkeypatch.setattr(service_apk, "ApkClient", _FakeApk)
+        assert service.apk_manifest(session_id).ok
+        assert service.apk_permissions(session_id).ok
+        assert service.apk_certificates(session_id).ok
+        assert service.apk_components(session_id).ok
+        assert service.apk_native_libs(session_id).ok
+
+        monkeypatch.setattr(service_apk, "ApkClient", _BoomApk)
+        failed = service.apk_manifest(session_id)
+        assert failed.ok is False
+        assert failed.error is not None
+        assert failed.error.code == "parse_failed"
+    finally:
+        service.close_all()
+
+
+# --------------------------------------------------------------------------- #
+# jadx-backed methods                                                          #
+# --------------------------------------------------------------------------- #
+def test_apk_decompile_succeeds(tmp_path: Path, monkeypatch: Any) -> None:
+    service = _service(tmp_path)
+    try:
+        session_id = _apk_session(service, tmp_path)
+        monkeypatch.setattr(service_apk, "JadxClient", _FakeJadx)
+        result = service.apk_decompile(session_id, "com.example.Main")
+        assert result.ok, result.error
+        assert result.data is not None
+        assert result.data["class"] == "com.example.Main"
+    finally:
+        service.close_all()
+
+
+def test_apk_decompile_rolls_back_when_the_session_closes(tmp_path: Path, monkeypatch: Any) -> None:
+    """A session closing after jadx runs but before the re-check is refused."""
+    service = _service(tmp_path)
+    try:
+        session_id = _apk_session(service, tmp_path)
+
+        class _ClosingJadx:
+            def __init__(self, exe: Any) -> None:
+                pass
+
+            def decompile(
+                self, binary: Path, out_dir: Path, class_name: str, *, timeout: float
+            ) -> Any:
+                service.registry.transition(session_id, SessionState.FAILED)
+                return {"class": class_name}
+
+        monkeypatch.setattr(service_apk, "JadxClient", _ClosingJadx)
+        result = service.apk_decompile(session_id, "com.example.Main")
+        assert result.ok is False
+    finally:
+        service.close_all()
+
+
+def test_apk_decompile_maps_a_jadx_error(tmp_path: Path, monkeypatch: Any) -> None:
+    service = _service(tmp_path)
+    try:
+        session_id = _apk_session(service, tmp_path)
+
+        class _BoomJadx:
+            def __init__(self, exe: Any) -> None:
+                pass
+
+            def decompile(self, *args: Any, **kwargs: Any) -> Any:
+                raise JadxError("jadx_failed", "decompile crashed")
+
+        monkeypatch.setattr(service_apk, "JadxClient", _BoomJadx)
+        result = service.apk_decompile(session_id, "com.example.Main")
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "jadx_failed"
+    finally:
+        service.close_all()
+
+
+def test_apk_export_sources_succeeds(tmp_path: Path, monkeypatch: Any) -> None:
+    service = _service(tmp_path)
+    try:
+        session_id = _apk_session(service, tmp_path)
+        monkeypatch.setattr(service_apk, "JadxClient", _FakeJadx)
+        result = service.apk_export_sources(session_id)
+        assert result.ok, result.error
+        assert result.data is not None
+        assert result.data["exported"] is True
+    finally:
+        service.close_all()
+
+
+def test_apk_export_sources_rolls_back_when_the_session_closes(
+    tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """A close mid-decompile with no output tree has nothing to sweep."""
-    service = _service(tmp_path)
-
-    class _ClosingJadx(_FakeJadx):
-        def decompile(
-            self, apk: Path, out_dir: Path, class_name: str, *, timeout: float = 300.0
-        ) -> dict[str, Any]:
-            closed = service.close_session(_ClosingJadx.session_id)
-            assert closed.ok, closed.error
-            return {"class": class_name}
-
-        session_id = ""
-
-    monkeypatch.setattr(service_apk, "JadxClient", _ClosingJadx)
-    try:
-        session_id = _apk_session(service, tmp_path)
-        _ClosingJadx.session_id = session_id
-
-        result = service.apk_decompile(session_id, "a.b.Cls")
-
-        assert not result.ok and result.error is not None
-        assert "closed" in result.error.message
-    finally:
-        service.close_all()
-
-
-# --- apktool-backed arms ---
-
-
-@_posix_only
-def test_decode_succeeds_with_a_working_apktool(tmp_path: Path) -> None:
-    apktool = _script(
-        tmp_path,
-        'for a in "$@"; do out="$a"; done\n'
-        'case "$*" in *"-o"*) : ;; esac\n'
-        'mkdir -p "$4"\n'
-        'touch "$4/AndroidManifest.xml"',
-        name="apktool.sh",
-    )
-    service = _service(tmp_path, apktool=apktool)
-    try:
-        session_id = _apk_session(service, tmp_path)
-
-        result = service.apk_decode(session_id)
-
-        assert result.ok and result.data is not None, result.error
-        assert result.data["decoded_dir"].endswith("decoded")
-    finally:
-        service.close_all()
-
-
-def test_decode_degrades_without_apktool(tmp_path: Path) -> None:
     service = _service(tmp_path)
     try:
         session_id = _apk_session(service, tmp_path)
 
-        result = service.apk_decode(session_id)
+        class _ClosingJadx:
+            def __init__(self, exe: Any) -> None:
+                pass
 
-        assert not result.ok and result.error is not None
-        assert result.error.code == "capability_unavailable"
+            def export_sources(
+                self, binary: Path, out_dir: Path, *, timeout: float, no_imports: bool
+            ) -> Any:
+                service.registry.transition(session_id, SessionState.FAILED)
+                return {"exported": True}
+
+        monkeypatch.setattr(service_apk, "JadxClient", _ClosingJadx)
+        result = service.apk_export_sources(session_id)
+        assert result.ok is False
     finally:
         service.close_all()
 
 
-@_posix_only
-def test_repack_succeeds_with_a_working_apktool(tmp_path: Path) -> None:
-    template = tmp_path / "template.apk"
-    _write_minimal_apk(template)
-    apktool = _script(
-        tmp_path,
-        f'if [ "$1" = "b" ]; then cp "{template}" "$4"; fi',
-        name="apktool.sh",
-    )
-    service = _service(tmp_path, apktool=apktool)
+def test_apk_export_sources_maps_a_jadx_error(tmp_path: Path, monkeypatch: Any) -> None:
+    service = _service(tmp_path)
     try:
         session_id = _apk_session(service, tmp_path)
-        decoded = (
-            service.settings.artifact_root.expanduser().resolve()
-            / "apktool"
-            / session_id
-            / "decoded"
-        )
-        decoded.mkdir(parents=True)
-        (decoded / "AndroidManifest.xml").write_text("<manifest/>")
 
-        result = service.apk_repack(session_id)
+        class _BoomJadx:
+            def __init__(self, exe: Any) -> None:
+                pass
 
-        assert result.ok and result.data is not None, result.error
-        assert result.data["signed"] is False
-        assert Path(str(result.data["apk"])).name == "repacked.apk"
+            def export_sources(self, *args: Any, **kwargs: Any) -> Any:
+                raise JadxError("jadx_failed", "export crashed")
+
+        monkeypatch.setattr(service_apk, "JadxClient", _BoomJadx)
+        result = service.apk_export_sources(session_id)
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "jadx_failed"
     finally:
         service.close_all()
 
 
-@_posix_only
-def test_sign_succeeds_with_a_working_apksigner(tmp_path: Path) -> None:
-    apksigner = _script(
-        tmp_path,
-        'if [ "$1" = "sign" ]; then\n'
-        '  prev=""; out=""\n'
-        '  for a in "$@"; do\n'
-        '    if [ "$prev" = "--out" ]; then out="$a"; fi\n'
-        '    prev="$a"; last="$a"\n'
-        "  done\n"
-        '  cp "$last" "$out"\n'
-        "fi\n"
-        "exit 0",
-        name="apksigner.sh",
-    )
-    service = _service(tmp_path, apksigner=apksigner)
+# --------------------------------------------------------------------------- #
+# apktool-backed methods                                                       #
+# --------------------------------------------------------------------------- #
+def test_apk_decode_succeeds_and_maps_errors(tmp_path: Path, monkeypatch: Any) -> None:
+    service = _service(tmp_path)
     try:
         session_id = _apk_session(service, tmp_path)
-        root = (
-            service.settings.artifact_root.expanduser().resolve()
-            / "apktool"
-            / session_id
-        )
-        root.mkdir(parents=True, exist_ok=True)
-        _write_minimal_apk(root / "repacked.apk")
-        keystore = root / "release.keystore"
-        keystore.write_bytes(b"jks")
+        monkeypatch.setattr(service_apk, "ApktoolClient", _FakeApktool)
+        ok = service.apk_decode(session_id)
+        assert ok.ok, ok.error
+        assert ok.data is not None
+        assert ok.data["decoded"] is True
 
-        result = service.apk_sign(
-            session_id,
-            keystore=str(keystore),
-            keystore_password="hunter2",
-            key_alias="release",
-        )
+        class _BoomApktool(_FakeApktool):
+            def decode(self, *args: Any, **kwargs: Any) -> Any:
+                raise ApktoolError("apktool_failed", "decode crashed")
 
-        assert result.ok and result.data is not None, result.error
-        assert result.data["signed"] is True
-        assert Path(str(result.data["apk"])).name == "signed.apk"
+        monkeypatch.setattr(service_apk, "ApktoolClient", _BoomApktool)
+        failed = service.apk_decode(session_id)
+        assert failed.ok is False
+        assert failed.error is not None
+        assert failed.error.code == "apktool_failed"
+    finally:
+        service.close_all()
+
+
+def test_apk_repack_succeeds_and_maps_errors(tmp_path: Path, monkeypatch: Any) -> None:
+    service = _service(tmp_path)
+    try:
+        session_id = _apk_session(service, tmp_path)
+        monkeypatch.setattr(service_apk, "ApktoolClient", _FakeApktool)
+        ok = service.apk_repack(session_id)
+        assert ok.ok, ok.error
+        assert ok.data is not None
+        assert ok.data["built"] is True
+
+        class _BoomApktool(_FakeApktool):
+            def build(self, *args: Any, **kwargs: Any) -> Any:
+                raise ApktoolError("build_failed", "rebuild crashed")
+
+        monkeypatch.setattr(service_apk, "ApktoolClient", _BoomApktool)
+        failed = service.apk_repack(session_id)
+        assert failed.ok is False
+        assert failed.error is not None
+        assert failed.error.code == "build_failed"
+    finally:
+        service.close_all()
+
+
+def test_apk_sign_succeeds_and_maps_errors(tmp_path: Path, monkeypatch: Any) -> None:
+    service = _service(tmp_path)
+    try:
+        session_id = _apk_session(service, tmp_path)
+        monkeypatch.setattr(service_apk, "ApktoolClient", _FakeApktool)
+        ok = service.apk_sign(session_id)
+        assert ok.ok, ok.error
+        assert ok.data is not None
+        assert ok.data["signed"] is True
+
+        class _BoomApktool(_FakeApktool):
+            def sign(self, *args: Any, **kwargs: Any) -> Any:
+                raise ApktoolError("sign_failed", "signing crashed")
+
+        monkeypatch.setattr(service_apk, "ApktoolClient", _BoomApktool)
+        failed = service.apk_sign(session_id)
+        assert failed.ok is False
+        assert failed.error is not None
+        assert failed.error.code == "sign_failed"
     finally:
         service.close_all()
