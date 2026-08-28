@@ -5,6 +5,29 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（r2.xrefs 无视 address 参数：axj 对任何地址都返回全程序 xref 表）
+
+- `r2.xrefs` 承诺"到该地址与从该地址的交叉引用"，实现却跑 `axj @ <address>`——而
+  radare2 的 `axj` 不是地址相关命令：它列出全程序的 xref 表、完全无视 `@` seek。
+  真机复测（r2 5.5.0，/bin/ls）：`axj @ entry0` 与 `axj @ 0x1` 返回**逐字节相同**的
+  820 条列表，即这个必填的 `address` 参数没有任何作用，调用方问"谁引用了 0x401000"
+  得到的是整个二进制的引用清单。改法：一次 r2 进程、一次 `aa`，跑地址相关的一对命令
+  `axtj @ addr`（指向该地址的引用）+ `axfj @ addr`（该地址发出的引用），按位置取两个
+  JSON 数组（两命令空结果也各打印 `[]`，位置即方向；新增 `parse_r2_json_arrays`
+  沿用原有的 banner 跳过策略），axtj 条目补上隐式的 `to=addr`、axfj 补 `from=addr`，
+  自引用在两方向各出现一次则去重，再走统一 enrich 得到 from_address/to_address。
+  白名单同步放行 `axtj/axfj @ <addr>`（注入形式如 `axtj @ 0;!cmd` 仍拒绝），原
+  `axj @ <addr>` 保留给 r2.run 的既有调用方。`run()` 拆出 `_capture()`（进程执行
+  不含 enrich），xrefs 复用之。工具描述里的 "References to and from address"
+  从此为真。修复附带：`tests/unit/test_r2_xrefs_respect_address.py`（4 例 hermetic：
+  双向端点补全、空/截断第二数组的降级、自引用去重、多数组解析跳 banner）、更新两处
+  钉死旧 `axj` 脚本的单测与白名单参数化，及
+  `tests/integration/test_r2_xrefs_live_gate.py`（真机 gate：编译双函数 C 程序，
+  断言每条 xref 都触及所查地址、且 main→callee 的调用在列；缺 r2/编译器则 skip。
+  已验证换回旧 `axj` 实现时该 gate 以"无关 libc stub 引用混入"失败）。r2 系单测
+  55 过，全量单测 5078 过。之前未被发现，是因为既有单测全部 fake r2 进程、只钉住
+  作者以为的 `axj` 契约，而 m11 真机 gate 只跑 aflj，从不跑 xrefs。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -13,7 +14,7 @@ from headless_re_mcp.backends.common.bounded_run import (
     clamp_cli_timeout,
     run_bounded,
 )
-from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
+from headless_re_mcp.backends.r2.mapping import enrich_r2_payload, parse_r2_json_arrays
 
 JsonObject = dict[str, Any]
 _MAX_OUTPUT = 1_000_000
@@ -37,7 +38,10 @@ _ALLOWED = frozenset(
     }
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
-_AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+# axj (list every xref in the program), axtj (xrefs TO the seek) and axfj
+# (xrefs FROM the seek). xrefs() needs the latter two; the bare-axj form stays
+# accepted so r2.run callers that already used it keep working.
+_AX_COMMAND = re.compile(r"ax[tf]?j @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 
 
 class R2Error(RuntimeError):
@@ -54,7 +58,7 @@ def _require_allowed_command(command: str) -> None:
     pdj = _PDJ_COMMAND.fullmatch(command)
     if pdj is not None and int(pdj.group(1)) <= 512:
         return
-    if _AXJ_COMMAND.fullmatch(command) is not None:
+    if _AX_COMMAND.fullmatch(command) is not None:
         return
     raise R2Error("invalid_params", "r2 command not whitelisted", command=command)
 
@@ -107,13 +111,43 @@ class R2Client:
     ) -> JsonObject:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
-        cmd = f"axj @ {address}"
-        data = self.run(binary, ["aa", cmd], timeout=timeout)
-        data = dict(data)
-        data["address"] = address
-        return enrich_r2_payload(data, binary=binary)
+        # ``axj @ addr`` is not address-relative: axj dumps the program's whole
+        # xref table and ignores the seek, so this tool answered every address
+        # with the same list (measured on r2 5.5.0: identical 820 entries for
+        # the entry point and for 0x1). The address-respecting commands are
+        # axtj (refs TO the seek) and axfj (refs FROM the seek); one process,
+        # one ``aa``, both directions -- which is what the tool promises.
+        commands = ["aa", f"axtj @ {address}", f"axfj @ {address}"]
+        captured = self._capture(binary, commands, timeout=timeout)
+        arrays = parse_r2_json_arrays(str(captured.get("raw") or ""))
+        refs_to = arrays[0] if arrays else []
+        refs_from = arrays[1] if len(arrays) > 1 else []
+        merged: list[JsonObject] = []
+        seen: set[tuple[object, object, object]] = set()
+        # axtj entries carry ``from`` and leave the target implicit; axfj
+        # entries the reverse. Fill in the queried address so every item has
+        # both endpoints, and drop the duplicate a self-reference produces
+        # (it appears in both directions once the endpoints are filled).
+        for entries, implicit_endpoint in ((refs_to, "to"), (refs_from, "from")):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                item = dict(entry)
+                item.setdefault(implicit_endpoint, address)
+                key = (item.get("from"), item.get("to"), item.get("type"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(item)
+        payload = dict(captured)
+        payload["raw"] = json.dumps(merged)
+        payload["address"] = address
+        return enrich_r2_payload(payload, binary=binary)
 
     def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
+        return enrich_r2_payload(self._capture(binary, commands, timeout=timeout), binary=binary)
+
+    def _capture(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
         try:
             timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
         except InvalidTimeout as exc:
@@ -176,7 +210,7 @@ class R2Client:
             payload["truncated"] = True
             payload["output_bytes"] = produced
             payload["returned_bytes"] = len(out)
-        return enrich_r2_payload(payload, binary=binary)
+        return payload
 
 
 def _discover() -> Path | None:

@@ -81,11 +81,24 @@ def test_disasm_refuses_addresses_and_counts_outside_the_whitelist(
 def test_xrefs_builds_the_whitelisted_command_and_refuses_bad_addresses(
     tmp_path: Path,
 ) -> None:
-    client, calls = _client_with_fake_run(tmp_path)
+    """xrefs must ask for the address's refs, not the program's whole table.
+
+    ``axj @ addr`` ignores the seek -- it answered every address with the same
+    global xref list -- so the script pins the address-relative pair: axtj
+    (refs to) then axfj (refs from), in one process behind one ``aa``.
+    """
+    client = R2Client(executable=tmp_path / "r2")
+    calls: list[tuple[Any, ...]] = []
+
+    def _fake_capture(binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
+        calls.append((binary, commands, timeout))
+        return {"raw": "[]\n[]\n", "commands": commands}
+
+    client._capture = _fake_capture  # type: ignore[method-assign]
     binary = tmp_path / "sample.bin"
     binary.write_bytes(b"\x90" * 16)
     data = client.xrefs(binary, 4096, timeout=8.0)
-    assert calls == [(binary, ["aa", "axj @ 4096"], 8.0)]
+    assert calls == [(binary, ["aa", "axtj @ 4096", "axfj @ 4096"], 8.0)]
     assert data["address"] == {"va": 4096}
 
     for bad_address in (-5, False):

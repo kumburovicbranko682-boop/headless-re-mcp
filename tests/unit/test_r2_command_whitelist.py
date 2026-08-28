@@ -26,6 +26,9 @@ def _client_and_binary(tmp_path: Path) -> tuple[R2Client, Path]:
         "pdj 1 @ 0|!echo escaped",
         "pdj 1 @ `!echo escaped`",
         "axj @ 0 && !echo escaped",
+        "axtj @ 0;!echo escaped",
+        "axfj @ `!echo escaped`",
+        "axzj @ 0",
         "i anything",
         "pdj 513 @ 0",
     ],
@@ -62,7 +65,10 @@ def test_r2_whitelist_keeps_bounded_disasm_and_xref_forms(
         return Completed(0, b"[]", b"")
 
     monkeypatch.setattr(r2_module, "run_bounded", fake_run)
-    result = client.run(binary, ["pdj 32 @ 4198400", "axj @ 0x401000"])
+    # axtj/axfj are what xrefs() now issues; the bare axj form stays accepted
+    # for r2.run callers that already used it.
+    commands = ["pdj 32 @ 4198400", "axj @ 0x401000", "axtj @ 0x401000", "axfj @ 64"]
+    result = client.run(binary, commands)
 
-    assert result["commands"] == ["pdj 32 @ 4198400", "axj @ 0x401000"]
+    assert result["commands"] == commands
     assert len(launched) == 1

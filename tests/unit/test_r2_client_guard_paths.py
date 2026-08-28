@@ -152,10 +152,16 @@ def test_xrefs_rejects_a_non_int_or_negative_address(tmp_path: Path) -> None:
         assert caught.value.code == "invalid_params"
 
 
-def test_xrefs_builds_the_whitelisted_axj_script_and_echoes_the_address(
+def test_xrefs_builds_the_whitelisted_axtj_axfj_script_and_echoes_the_address(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """One process, one ``aa``, then the two address-relative directions.
+
+    ``axj @ addr`` ignored the seek and dumped the program's whole xref table,
+    so the script must carry axtj (refs to the address) and axfj (refs from
+    it) instead; both must clear the allow-list ``_capture`` enforces.
+    """
     recorded: list[list[str]] = []
     monkeypatch.setattr(r2_client, "run_bounded", _capture(recorded))
     client = R2Client(_stub_executable(tmp_path))
@@ -163,7 +169,7 @@ def test_xrefs_builds_the_whitelisted_axj_script_and_echoes_the_address(
     payload = client.xrefs(_target(tmp_path), 0x20)
 
     assert len(recorded) == 1
-    assert _script_lines(recorded[0]) == ["aa", "axj @ 32", "q"]
+    assert _script_lines(recorded[0]) == ["aa", "axtj @ 32", "axfj @ 32", "q"]
     assert payload["address_va"] == 0x20
     assert payload["parsed"] is True
 

@@ -117,6 +117,36 @@ def parse_r2_json(raw: str) -> Any | None:
     return None
 
 
+def parse_r2_json_arrays(raw: str) -> list[list[Any]]:
+    """Every top-level JSON array in r2 output, in command order.
+
+    ``xrefs`` runs two commands in one r2 process (``axtj`` then ``axfj``) and
+    each prints its own array -- ``[]`` when empty, so position identifies the
+    command that produced it. ``parse_r2_json`` stops at the first value, which
+    would silently drop the second direction. Same banner-skipping strategy:
+    a ``[`` inside an opcode or string fails ``raw_decode`` and the scan moves
+    on; after a successful decode it resumes past the value, so an array inside
+    an earlier array is never double-counted.
+    """
+    text = (raw or "").strip()
+    arrays: list[list[Any]] = []
+    decoder = json.JSONDecoder()
+    index = 0
+    while index < len(text):
+        if text[index] not in "[{":
+            index += 1
+            continue
+        try:
+            value, end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            index += 1
+            continue
+        if isinstance(value, list):
+            arrays.append(value)
+        index = end
+    return arrays
+
+
 def _item_va(entry: JsonObject, keys: tuple[str, ...]) -> int | None:
     for key in keys:
         value = entry.get(key)
