@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.unpack.pe_rebuild import MAX_SECTIONS, PeRebuildError, remap_dump_to_file
+from headless_re_mcp.unpack.pe_rebuild import (
+    MAX_SECTIONS,
+    PeRebuildError,
+    parse_runtime_headers,
+    remap_dump_to_file,
+)
 
 FIXTURE = Path(__file__).resolve().parents[2] / "artifacts" / "fixtures-x64" / "console_fixture.exe"
 
@@ -226,3 +231,72 @@ def test_overlapping_sections_that_multiply_the_dump_are_refused() -> None:
 
     assert "section table" in str(caught.value)
     assert time.perf_counter() - started < 5.0, "and refused before the copies"
+
+
+def _optional_offset(pe_offset: int = 0x40) -> int:
+    return pe_offset + 4 + 20
+
+
+def _truncated_optional_dump(*, optional_size: int, total_len: int, magic: int = 0x20B) -> bytes:
+    """A well-formed prefix whose image ends inside the optional header.
+
+    ``optional_size`` is the *declared* SizeOfOptionalHeader; a hostile dump can
+    make it small enough that the fixed optional-header fields the parser reads
+    (magic, scalars, the data-directory count and array) fall past the end of
+    the image even though the declared header appears to fit.
+    """
+    pe_offset = 0x40
+    image = bytearray(max(total_len, 0x40))
+    image[0:2] = b"MZ"
+    struct.pack_into("<I", image, 0x3C, pe_offset)
+    image[pe_offset : pe_offset + 4] = b"PE\0\0"
+    file_header = pe_offset + 4
+    struct.pack_into("<H", image, file_header + 2, 1)  # NumberOfSections
+    struct.pack_into("<H", image, file_header + 16, optional_size)  # SizeOfOptionalHeader
+    optional = file_header + 20
+    if optional + 2 <= len(image):
+        struct.pack_into("<H", image, optional, magic)
+    return bytes(image[:total_len])
+
+
+@pytest.mark.parametrize(
+    ("label", "optional_size", "total_len"),
+    [
+        ("ends before the magic", 1, _optional_offset() + 1),
+        ("ends right after the magic", 2, _optional_offset() + 2),
+        ("ends in the middle of the scalar fields", 40, _optional_offset() + 40),
+        ("ends before the data-directory count", 0xF0, _optional_offset() + 110),
+    ],
+)
+def test_a_truncated_optional_header_is_named_not_faulted(
+    label: str, optional_size: int, total_len: int
+) -> None:
+    """A dump that ends inside the optional header must raise the structured
+    PeRebuildError, not leak a raw struct.error from an unpack past the buffer.
+    """
+    dump = _truncated_optional_dump(optional_size=optional_size, total_len=total_len)
+
+    with pytest.raises(PeRebuildError, match="optional header is truncated"):
+        parse_runtime_headers(dump)
+
+
+def test_a_data_directory_array_past_the_image_is_refused() -> None:
+    """NumberOfRvaAndSizes is attacker-controlled; a count whose array runs off
+    the end of the image must be refused rather than indexed into.
+    """
+    pe_offset = 0x40
+    optional = _optional_offset(pe_offset)
+    # Enough image to read the count, but not the array it claims.
+    total_len = optional + 112 + 4
+    image = bytearray(total_len)
+    image[0:2] = b"MZ"
+    struct.pack_into("<I", image, 0x3C, pe_offset)
+    image[pe_offset : pe_offset + 4] = b"PE\0\0"
+    file_header = pe_offset + 4
+    struct.pack_into("<H", image, file_header + 2, 1)
+    struct.pack_into("<H", image, file_header + 16, 0xF0)
+    struct.pack_into("<H", image, optional, 0x20B)  # PE32+
+    struct.pack_into("<I", image, optional + 108, 16)  # NumberOfRvaAndSizes
+
+    with pytest.raises(PeRebuildError, match="optional header is truncated"):
+        parse_runtime_headers(bytes(image))
