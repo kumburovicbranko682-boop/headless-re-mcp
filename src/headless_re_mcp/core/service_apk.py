@@ -20,7 +20,11 @@ from headless_re_mcp.config import Settings
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, _dir_size
 from headless_re_mcp.core.models import Result, SessionState, TargetKind
 from headless_re_mcp.core.results import _failure, _success
-from headless_re_mcp.core.service_ext import _record_backend, _timeline_append
+from headless_re_mcp.core.service_ext import (
+    _record_backend,
+    _register_capture,
+    _timeline_append,
+)
 from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry
 
 JsonObject = dict[str, Any]
@@ -78,6 +82,17 @@ class ApkAnalysisMixin:
         root = self.settings.artifact_root.expanduser().resolve()
         return root / "jadx" / session_id
 
+    def _apk_capture_dir(self, session_id: str) -> Path:
+        # Where apk.manifest spills an oversized manifest. Computed, not created:
+        # the common (non-truncated) manifest read must not litter an empty dir,
+        # so the backend mkdirs this only on the rare spill.
+        from headless_re_mcp.core.service import _is_safe_session_segment
+
+        if not _is_safe_session_segment(session_id):
+            raise ApkError("invalid_params", "invalid session id")
+        root = self.settings.artifact_root.expanduser().resolve()
+        return root / "apk" / session_id
+
     def apk_open(self, session_id: str) -> Result[JsonObject]:
         try:
             binary = self._apk_binary(session_id)
@@ -102,7 +117,27 @@ class ApkAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def apk_manifest(self, session_id: str) -> Result[JsonObject]:
-        return self._apk_call(session_id, "manifest")
+        try:
+            binary = self._apk_binary(session_id)
+            data = ApkClient().manifest(binary, spill_dir=self._apk_capture_dir(session_id))
+            # Only the oversized-manifest branch produced a spill file; register
+            # it so artifacts.read can open the full XML and retention can reclaim
+            # it, exactly as web.dom.snapshot does for a spilled DOM.
+            spill = data.get("manifest_xml_path")
+            if isinstance(spill, str):
+                data = _register_capture(
+                    self,
+                    session_id,
+                    Path(spill),
+                    kind="apk_manifest",
+                    source="apk.manifest",
+                    payload=data,
+                )
+            return _success(data, session_id=session_id, backend="apk")
+        except ApkError as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
 
     def apk_permissions(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "permissions")

@@ -39,7 +39,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Return the decoded AndroidManifest.xml for the APK session.
 
         Answers with package and manifest_xml, plus truncated when the XML
-        was cut at the buffer.
+        was cut at the buffer. On truncation the full manifest is also written
+        to a registered artifact and its manifest_xml_path is returned, so the
+        cut tail (often the later activities/services/receivers) is readable via
+        artifacts.read without a full apk.decode.
         """
         return _dump(analysis.apk_manifest(session_id))
 

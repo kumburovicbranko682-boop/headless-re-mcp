@@ -107,6 +107,74 @@ def test_manifest_is_capped_and_labelled_truncated_when_oversized(tmp_path: Path
     assert result["truncated"] is True
 
 
+def _oversized_manifest_apk() -> Any:
+    xml = "<m>" + ("a" * (_MAX_MANIFEST_CHARS + 100)) + "</m>"
+    return xml, SimpleNamespace(
+        get_package=lambda: "com.example.app",
+        get_android_manifest_axml=lambda: SimpleNamespace(get_xml=lambda: xml.encode("utf-8")),
+    )
+
+
+def test_manifest_spills_the_full_xml_when_oversized_and_a_spill_dir_is_given(
+    tmp_path: Path,
+) -> None:
+    """The inline copy is still capped, but the whole manifest is written to the
+    spill dir so the cut tail is recoverable via the returned path."""
+    path = _apk_file(tmp_path)
+    xml, apk = _oversized_manifest_apk()
+    _seed_light(client := _client(), path, apk)
+    spill = tmp_path / "cap"
+    result = client.manifest(path, spill_dir=spill)
+    assert result["truncated"] is True
+    assert len(result["manifest_xml"]) == _MAX_MANIFEST_CHARS
+    spilled = Path(result["manifest_xml_path"])
+    assert spilled.parent == spill
+    # The file holds the entire manifest, not the truncated inline slice.
+    assert spilled.read_text(encoding="utf-8") == xml
+    assert len(xml) > _MAX_MANIFEST_CHARS
+
+
+def test_manifest_does_not_spill_when_it_fits_within_the_cap(tmp_path: Path) -> None:
+    path = _apk_file(tmp_path)
+    xml = "<manifest package='com.example.app'></manifest>"
+    apk = SimpleNamespace(
+        get_package=lambda: "com.example.app",
+        get_android_manifest_axml=lambda: SimpleNamespace(get_xml=lambda: xml.encode("utf-8")),
+    )
+    _seed_light(client := _client(), path, apk)
+    spill = tmp_path / "cap"
+    result = client.manifest(path, spill_dir=spill)
+    assert result["truncated"] is False
+    assert "manifest_xml_path" not in result
+    # A read that never spilled must not litter an (empty) capture dir either.
+    assert not spill.exists()
+
+
+def test_manifest_without_a_spill_dir_keeps_the_inline_only_shape(tmp_path: Path) -> None:
+    """Back-compat: the generic no-spill caller sees exactly the old fields."""
+    path = _apk_file(tmp_path)
+    _, apk = _oversized_manifest_apk()
+    _seed_light(client := _client(), path, apk)
+    result = client.manifest(path)
+    assert result["truncated"] is True
+    assert "manifest_xml_path" not in result
+
+
+def test_manifest_spill_write_failure_degrades_to_no_path(tmp_path: Path) -> None:
+    """A spill write that cannot land (here the spill dir path is a file, so the
+    mkdir raises) costs only the recovery path -- the manifest read still
+    succeeds with its capped inline copy and truncated flag."""
+    path = _apk_file(tmp_path)
+    _, apk = _oversized_manifest_apk()
+    _seed_light(client := _client(), path, apk)
+    blocked = tmp_path / "not-a-dir"
+    blocked.write_text("occupied", encoding="utf-8")
+    result = client.manifest(path, spill_dir=blocked)
+    assert result["truncated"] is True
+    assert len(result["manifest_xml"]) == _MAX_MANIFEST_CHARS
+    assert "manifest_xml_path" not in result
+
+
 def test_manifest_maps_a_decode_failure_to_backend_error(tmp_path: Path) -> None:
     path = _apk_file(tmp_path)
     apk = SimpleNamespace(

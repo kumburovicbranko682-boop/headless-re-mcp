@@ -52,7 +52,7 @@ class _FakeApk:
         self._maybe_fail("open")
         return {"package": "com.example.app", "version_name": "1.0"}
 
-    def manifest(self, binary: Path) -> JsonObject:
+    def manifest(self, binary: Path, *, spill_dir: Path | None = None) -> JsonObject:
         self._maybe_fail("manifest")
         return {"manifest": "<manifest/>"}
 
@@ -253,6 +253,59 @@ def test_apk_open_records_backend_and_timeline(
         assert result.ok is True, result.error
         assert result.data is not None and result.data["package"] == "com.example.app"
         assert len(_timeline(service, session_id, "apk.open")) == 1
+    finally:
+        service.close_all()
+
+
+def test_apk_manifest_registers_a_spilled_oversized_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An oversized manifest the backend spilled comes back with an artifact_id,
+    so artifacts.read can open the full XML and retention can reclaim it."""
+
+    class _SpillingApk:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            pass
+
+        def manifest(self, binary: Path, *, spill_dir: Path | None = None) -> JsonObject:
+            assert spill_dir is not None
+            spill_dir.mkdir(parents=True, exist_ok=True)
+            out = spill_dir / "manifest-full.xml"
+            out.write_text("<manifest/>" * 32, encoding="utf-8")
+            return {
+                "package": "com.example.app",
+                "manifest_xml": "<manifest",
+                "truncated": True,
+                "manifest_xml_path": str(out),
+            }
+
+    service, session_id = _apk_session(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_apk.ApkClient",
+        lambda *a, **k: _SpillingApk(),
+    )
+    try:
+        result = service.apk_manifest(session_id)
+        assert result.ok is True, result.error
+        assert result.data is not None
+        assert result.data["truncated"] is True
+        assert "artifact_id" in result.data
+    finally:
+        service.close_all()
+
+
+def test_apk_manifest_that_fits_carries_no_spill_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The common in-cap manifest (the shared fake returns no path) registers
+    nothing, so no artifact_id or manifest_xml_path leaks into the reply."""
+    service, session_id = _apk_session(tmp_path, monkeypatch)
+    try:
+        result = service.apk_manifest(session_id)
+        assert result.ok is True, result.error
+        assert result.data is not None
+        assert "artifact_id" not in result.data
+        assert "manifest_xml_path" not in result.data
     finally:
         service.close_all()
 

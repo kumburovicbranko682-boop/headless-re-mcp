@@ -34,6 +34,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - `tests/unit/test_web_wait_state_schema.py` 新增一例:把工具 schema 的 `state` pattern 钉到后端 `_WAIT_STATES`\
   允许表(并断言默认值落在表内),两者不再能各改各的——给一处加状态必须同时加到另一处。
 
+### 完整性（apk.manifest 超限时把完整清单溢出到已注册制品，不再只剩 truncated 标志而丢尾）
+
+- `apk.manifest` 过去把解码后的 AndroidManifest.xml 在 200,000 字符处硬截断,只留 `truncated: true`。大型应用\
+  （动辄声明数百个组件）的清单常常超过这个上限,而被切掉的尾部恰是后半段的 activity / service / receiver,\
+  做组件盘点时必需;此前唯一的补救是对整个 APK 跑一遍重量级的 `apk.decode`。现改为:超限时把完整清单写入\
+  会话制品区并注册,回包带 `manifest_xml_path` 与 `artifact_id`,`artifacts.read` 可直接读回全文——与\
+  `web.dom.snapshot` 对超大 DOM 的处理一致。未超限的常见清单不写文件、不建空目录,回包形状保持不变。
+- 落盘尽力而为:清单本已解码在内存,溢出只是换个名字搬到磁盘;写失败(磁盘满/权限)只丢补救路径,\
+  截断的内联副本与 `truncated` 标志照常返回——清单读取不因记账失败而变成失败。
+- `tests/unit/test_apk_manifest_reads_faults.py` 与 `test_apk_service_envelopes.py` 新增覆盖:超限且给\
+  `spill_dir` 时落全文并带 `manifest_xml_path`、未超限不落盘且不建空目录、不给 `spill_dir` 保持旧形状(向后\
+  兼容)、写失败降级为无路径,以及服务层把溢出文件注册成带 `artifact_id` 的制品。
+
 
 
 - `timeline.list` 是无人值守跑完后运维要看的可观测性面，一旦某条时间线 `details` 里进了密钥就是一次持久泄漏。\

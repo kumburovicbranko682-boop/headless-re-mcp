@@ -12,6 +12,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
+from uuid import uuid4
 
 from headless_re_mcp.backends.common.zip_guard import ZipExpansionError, check_zip_expansion
 
@@ -56,6 +57,24 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
         items.append(str(item))
     items.sort()
     return items, has_more
+
+
+def _spill_manifest_xml(xml: str, spill_dir: Path) -> str | None:
+    """Write a full decoded manifest to a scratch file; None on any write error.
+
+    The XML is already resident in memory (androguard decoded it), so this only
+    moves it to disk under a fresh name the caller can register as an artifact.
+    Failures are swallowed to a ``None`` return: the manifest read already
+    succeeded, so a full-disk or permission error should cost the recovery path,
+    never the tool call.
+    """
+    try:
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        out = spill_dir / f"manifest-{uuid4().hex}.xml"
+        out.write_text(xml, encoding="utf-8")
+    except OSError:
+        return None
+    return str(out)
 
 
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
@@ -238,17 +257,31 @@ class ApkClient:
             ),
         }
 
-    def manifest(self, path: Path) -> JsonObject:
+    def manifest(self, path: Path, *, spill_dir: Path | None = None) -> JsonObject:
         apk = self._apk(path)
         try:
             xml = apk.get_android_manifest_axml().get_xml().decode("utf-8", "replace")
         except Exception as exc:  # noqa: BLE001
             raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
-        return {
+        truncated = len(xml) > _MAX_MANIFEST_CHARS
+        result: JsonObject = {
             "package": apk.get_package(),
             "manifest_xml": xml[:_MAX_MANIFEST_CHARS],
-            "truncated": len(xml) > _MAX_MANIFEST_CHARS,
+            "truncated": truncated,
         }
+        # A large app's decoded AndroidManifest routinely tops the inline cap
+        # (Facebook-scale apps declare hundreds of components), and the cut tail
+        # holds the very activities/services/receivers a component inventory
+        # needs. Spill the whole XML to the session artifact area so it is
+        # recoverable without a full apktool decode -- the same recourse
+        # web.dom.snapshot gives an oversized DOM. Best-effort: a failed spill
+        # write must not turn a manifest read that succeeded into a failure, so
+        # the truncated inline copy still stands and only the path is dropped.
+        if truncated and spill_dir is not None:
+            spilled = _spill_manifest_xml(xml, spill_dir)
+            if spilled is not None:
+                result["manifest_xml_path"] = spilled
+        return result
 
     def permissions(self, path: Path) -> JsonObject:
         apk = self._apk(path)
