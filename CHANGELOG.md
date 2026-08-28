@@ -1143,20 +1143,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
-- **web 抓取环在 CDP 处理器里的“驱逐最旧 + 逐条记账”被钉死**：`web.network_list`/`web.scripts`/
-  `web.console` 都向调用方交代一个 `dropped` 数,让无人值守的读取者知道环在它来得及读之前忘掉了
-  什么。但这些读取器交出的计数由 `_wire_events` 注册的事件处理器维护——`on_request` 与 `on_script`
-  自己跑驱逐环(`popitem(last=False)` 加 `*_dropped += 1`),`on_console` 在有界 `deque` 静默丢弃
-  之前把那一行计入。既有套件只钉读取器:夹具直接写 `requests_dropped = 7`,或在插入旁边把驱逐环
-  逐行**复刻**一遍——于是真实处理器可以停止驱逐(无界增长,恰是这些环存在要防的泄漏)、停止计数
-  (静默遗忘:环在丢、`dropped` 读 0)、或反向驱逐**最新**条目(把“窗口保留值得取的最新脚本”倒过来),
-  而无一测试察觉。变异实测:整段删掉 `on_script` 的驱逐环(生产里脚本表将无界膨胀),bounds/fields
-  两套既有 web 套件 179 个用例全绿。新增 6 个用例把上限打小后驱动真实处理器越界:请求环驱逐最旧、
-  每丢一条记一条,且 `network_list` 交出的 `dropped` 来自处理器而非夹具;脚本环同样最旧先走、
-  计数逐条;同一 `scriptId` 重新 parse 是就地更新——既不为它驱逐一条持有的脚本、也不虚报一次
-  drop(`dropped > 0` 对调用方意味着“存在过你再也取不到的数据”,re-parse 不是);console 环在
-  deque 静默驱逐的每一行上计数,且 `console` 读取器交出同一个数。四处变异(删请求环计数、整删
-  脚本驱逐环、`last=False` 反转为 `last=True`、删 console 计数)分别被对应用例逐一逮住,源文件
+- **web 抓取环的 `dropped` 计数“读取器与处理器同源”及 re-parse 不虚报被钉死**：
+  `test_web_client_guard_paths.py` 已钉住处理器侧的核心(每个环在上限处驱逐最旧、逐条计数),
+  但两条叠在这份记账之上的契约仍无人驱动。其一是**读取器同源**:`web.network_list` 与
+  `web.console` 向调用方交代 `dropped`,让无人值守的读取者知道环在它来得及读之前忘掉了什么——
+  而既有每个读取器用例都是夹具直接写 `requests_dropped = 7`,没有任何测试证明读取器交出的数
+  就是真实处理器维护的那一个:计数器被改名、读取时被清零、或压根没接进读取器,两套套件照样全绿。
+  其二是 **re-parse 不是丢失**:页面重新求值一个脚本时 `Debugger.scriptParsed` 会对同一
+  `scriptId` 再次触发,dict 插入是就地替换,环既不得为它驱逐一条持有的脚本、也不得虚报一次
+  drop——`dropped > 0` 对调用方意味着“存在过你再也取不到的数据”,re-parse 不是。新增 3 个
+  用例把上限打小后驱动真实处理器越界,再从公开读取器上读 `dropped`(而非从夹具),并钉住
+  重复 `scriptId` 的就地更新(行数不变、计数为零、URL 是新版)。源文件
   `backends/web/client.py` 未改。
 - **会话层对敌意与降级输入的 fail-closed 契约成套固定**（`core/session.py` 85%→99%）：
   崩溃残留的 SQLite 行——带路径分隔符的 id(遍历企图)、空 locator、未知 state 列、
