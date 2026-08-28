@@ -12,7 +12,17 @@ from typing import Any
 
 import pytest
 import uvicorn
-from playwright.sync_api import Playwright, Response, expect, sync_playwright
+
+try:
+    from playwright.sync_api import Playwright, Response, expect, sync_playwright
+except ModuleNotFoundError:
+    # Every other gate in this suite skips cleanly when its tool is absent;
+    # a bare module-level import instead aborted collection of the whole
+    # integration tree on any environment without the browser extra.
+    pytest.skip(
+        "playwright not installed — browser smoke gate not collected (skip != pass)",
+        allow_module_level=True,
+    )
 
 from headless_re_mcp.agent.providers.base import ProviderEvent, ProviderToolCall
 from headless_re_mcp.config import Settings

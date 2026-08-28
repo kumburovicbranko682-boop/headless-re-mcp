@@ -24,6 +24,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（浏览器 smoke 门的裸 playwright 导入炸掉整个集成套件收集）
+
+- `test_agent_browser_smoke.py` 在模块级 `from playwright.sync_api import …`，没装
+  `browser` extra 的环境里 pytest 一收集 `tests/integration` 就整体
+  `Interrupted: 1 error during collection`——本套件其他所有门（chromium、webcrack、
+  wabt、radare2、rcodesign……）缺工具时都能干净跳过，唯独这一个文件让"缺一个可选
+  Python 包"变成收集期全灭，与 skip != pass 的设计直接矛盾。导入改为 try/except 守卫，
+  缺席时 `pytest.skip(allow_module_level=True)` 只跳过本门；CI 泳道装了 playwright，
+  行为不变。
+
 ### 修复（linux-integration 泳道的 rcodesign 环境变量碰撞）
 
 - 新 CI 泳道给作业设的 `RCODESIGN_VERSION`（只想用来拼下载 URL）被 rcodesign 自身的
