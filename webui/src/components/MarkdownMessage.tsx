@@ -3,7 +3,14 @@ import { parseMarkdown, safeHref, type MarkdownBlock } from "../lib/markdown";
 
 type Props = { text: string; streaming?: boolean };
 
-const INLINE_RE = /`([^`\n]+)`|\*\*(.+?)\*\*|\[([^\]]+)\]\(([^)\s]+)\)|~~(.+?)~~|\*(.+?)\*/g;
+// The link destination allows one level of balanced parentheses so URLs that
+// end in a parenthesised segment survive intact -- Wikipedia's
+// `.../C%2B%2B_(programming_language)` and MSDN's `_(v=vs.110)` anchors are the
+// common cases. A flat `[^)\s]+` stopped at the first `)`, so the href lost its
+// closing paren (a 404) and the stray `)` leaked out as literal text. The two
+// alternatives are mutually exclusive by first character (`(` vs not), so the
+// nested quantifier cannot backtrack catastrophically.
+const INLINE_RE = /`([^`\n]+)`|\*\*(.+?)\*\*|\[([^\]]+)\]\(((?:[^()\s]+|\([^()\s]*\))+)\)|~~(.+?)~~|\*(.+?)\*/g;
 
 function renderInline(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];

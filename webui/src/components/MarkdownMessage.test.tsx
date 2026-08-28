@@ -23,6 +23,20 @@ describe("MarkdownMessage", () => {
     expect(screen.getByRole("link", { name: "ok" })).toHaveAttribute("href", "https://example.com");
   });
 
+  it("keeps parentheses that belong to a link's URL", () => {
+    render(
+      <MarkdownMessage
+        text={"see [C++](https://en.wikipedia.org/wiki/C%2B%2B_(programming_language)) now"}
+      />,
+    );
+    expect(screen.getByRole("link", { name: "C++" })).toHaveAttribute(
+      "href",
+      "https://en.wikipedia.org/wiki/C%2B%2B_(programming_language)",
+    );
+    // The closing paren was consumed by the URL, so it must not leak as text.
+    expect(screen.queryByText(/\)\s*now/)).toBeNull();
+  });
+
   it("escapes raw HTML instead of executing it", () => {
     render(<MarkdownMessage text={"<script>alert(1)</script>"} />);
     expect(document.querySelector("script")).toBeNull();

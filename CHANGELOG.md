@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Markdown 行内链接的 URL 含括号时被截断成 404）
+
+- `webui/src/components/MarkdownMessage.tsx` 的行内正则用 `([^)\s]+)` 抓链接目标，
+  在第一个 `)` 处停下。逆向语境里带括号的 URL 很常见——维基百科的
+  `.../C%2B%2B_(programming_language)`、MSDN 的 `_(v=vs.110)` 锚点——`([^)\s]+)`
+  只吃到 `..._(programming_language`，`href` 丢了收尾括号（指向 404），而多出来的 `)`
+  作为普通文本漏在链接后面。把目标捕获组改成 `((?:[^()\s]+|\([^()\s]*\))+)`，允许一层
+  配平括号，于是这类 URL 完整保留；两个分支按首字符（`(` 与非 `(`）互斥，嵌套量词不会
+  灾难性回溯。`javascript:` 之类仍由 `safeHref` 拦成非链接，纯 URL 行为不变。
+  `MarkdownMessage.test.tsx` 增补带配平括号 URL 的链接回归。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
