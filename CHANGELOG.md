@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **279（162 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **280（163 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -408,6 +408,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `items_limit`、`items_truncated`(上限 4096),`min_length`(默认 4,1..64)控制最短保留长度;
   会正确跳过 active/passive/显式内存索引三类数据段的偏移常量表达式,数据段拆不开时置
   `malformed`,无数据段时 `has_data_section=false`。
+
+### 新增（Android 意图过滤器）
+
+- 新增 `apk.intent_filters`:把每个组件的 `<intent-filter>` 摊开——应用声明的入口点。`apk.components`
+  只给名字,这里给外界怎么触达:组件应答的 action/category,以及让它成为深链/自定义 scheme 处理器的
+  data 过滤(scheme/host/path/mimeType)。只回真正声明了过滤器的组件。回 `components`、`count`、
+  `total`、`has_more`。每个组件带 `type`(activity/service/receiver)、`name`、`exported`(true/false,
+  属性缺省时为 null 走平台默认)、`actions`/`categories`、`data`(过滤字典列表)、`schemes`(去重的
+  scheme)、`deep_link`(有 scheme 即 true)与 `has_more`(该组件 action/category 被截)。带自定义
+  scheme 或 MAIN/LAUNCHER 的导出组件是首先要看的攻击面。
 
 ### 新增（Android 清单元数据）
 

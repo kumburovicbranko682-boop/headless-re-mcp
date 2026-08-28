@@ -39,6 +39,8 @@ _MAX_FILES_COLLECT = 50_000
 _MAX_META_DATA = 500
 _MAX_META_VALUE_CHARS = 4096
 _ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
+_MAX_INTENT_COMPONENTS = 500
+_MAX_INTENT_ITEMS = 100
 
 
 class ApkError(RuntimeError):
@@ -400,6 +402,76 @@ class ApkClient:
         return {
             "meta_data": items,
             "count": len(items),
+            "total": total,
+            "has_more": has_more,
+        }
+
+    def intent_filters(self, path: Path) -> JsonObject:
+        """Map each component's <intent-filter>: the app's declared entry points.
+
+        components lists names; this lists how the outside world reaches them --
+        the actions and categories a component answers to, and any data filters
+        (scheme/host/path/mimeType) that make it a deep-link or custom-scheme
+        handler. Only components that actually declare a filter are returned.
+        exported is read from the manifest (true/false, or null when the
+        attribute is absent and the platform default applies); an exported
+        component with a MAIN/LAUNCHER or a custom-scheme filter is the attack
+        surface a reviewer looks for first.
+        """
+        apk = self._apk(path)
+
+        def _exported(itemtype: str, name: str) -> bool | None:
+            try:
+                raw = apk.get_attribute_value(itemtype, "exported", name=name)
+            except Exception:  # noqa: BLE001 - androguard manifest access varies
+                return None
+            if raw is None or str(raw) == "":
+                return None
+            return str(raw).strip().lower() == "true"
+
+        components: list[JsonObject] = []
+        total = 0
+        has_more = False
+        for itemtype, getter in (
+            ("activity", apk.get_activities),
+            ("service", apk.get_services),
+            ("receiver", apk.get_receivers),
+        ):
+            for raw_name in getter() or []:
+                name = str(raw_name)
+                try:
+                    filt = apk.get_intent_filters(itemtype, name)
+                except Exception:  # noqa: BLE001
+                    filt = {}
+                if not filt:
+                    continue
+                total += 1
+                if len(components) >= _MAX_INTENT_COMPONENTS:
+                    has_more = True
+                    continue
+                actions, actions_more = _cap_names(filt.get("action"), _MAX_INTENT_ITEMS)
+                categories, cats_more = _cap_names(filt.get("category"), _MAX_INTENT_ITEMS)
+                data_entries = filt.get("data") or []
+                data = [d for d in data_entries[:_MAX_INTENT_ITEMS] if isinstance(d, dict)]
+                schemes = sorted(
+                    {str(d["scheme"]) for d in data if d.get("scheme")}
+                )
+                components.append(
+                    {
+                        "type": itemtype,
+                        "name": name,
+                        "exported": _exported(itemtype, name),
+                        "actions": actions,
+                        "categories": categories,
+                        "data": data,
+                        "schemes": schemes,
+                        "deep_link": bool(schemes),
+                        "has_more": actions_more or cats_more,
+                    }
+                )
+        return {
+            "components": components,
+            "count": len(components),
             "total": total,
             "has_more": has_more,
         }

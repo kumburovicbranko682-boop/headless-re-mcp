@@ -97,6 +97,24 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.intent_filters")
+    def apk_intent_filters(session_id: str) -> dict[str, Any]:
+        """Map each component's <intent-filter> -- the app's declared entry points.
+
+        Where apk.components lists names, this shows how the outside world
+        reaches them. Answers with components (only those that declare a
+        filter), count, total and has_more. Each component carries type
+        (activity, service or receiver), name, exported (true/false, or null
+        when the attribute is absent and the platform default applies), actions
+        and categories (the android:name lists), data (a list of
+        scheme/host/port/path/mimeType filter dicts), schemes (the distinct
+        url schemes), deep_link (true when any scheme is present) and has_more
+        (that component's action/category list was capped). An exported
+        component with a custom-scheme or MAIN/LAUNCHER filter is the entry
+        point to inspect first.
+        """
+        return _dump(analysis.apk_intent_filters(session_id))
+
     @tools.tool(name="apk.meta_data")
     def apk_meta_data(session_id: str) -> dict[str, Any]:
         """Lift every <meta-data> element from the manifest (keys, SDK markers).

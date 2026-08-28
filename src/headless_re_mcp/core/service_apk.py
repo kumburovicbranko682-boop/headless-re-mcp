@@ -122,6 +122,9 @@ class ApkAnalysisMixin:
     def apk_meta_data(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "meta_data")
 
+    def apk_intent_filters(self, session_id: str) -> Result[JsonObject]:
+        return self._apk_call(session_id, "intent_filters")
+
     def apk_files(self, session_id: str, offset: int = 0, limit: int = 200) -> Result[JsonObject]:
         try:
             binary = self._apk_binary(session_id)
