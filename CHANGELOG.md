@@ -52,6 +52,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `spill_dir` 时落全文并带 `manifest_xml_path`、未超限不落盘且不建空目录、不给 `spill_dir` 保持旧形状(向后\
   兼容)、写失败降级为无路径,以及服务层把溢出文件注册成带 `artifact_id` 的制品。
 
+### 诚实（device.packages / device.properties 先排序再切页，超限页是真正的字母序前缀，而非装作有序的安装序切片）
+
+- `device.packages` / `device.properties` 过去按设备返回顺序(安装序 / getprop 序)收满 `capped` 条就 `break`,\
+  再对这一页 `sort()`。结果是“任意子集,排过序”:一个字母序靠前的包/键完全可能排在设备返回的第 501 位而被丢在\
+  cap 之外,于是它从有序页的中间凭空消失——agent 查“com.foo 装了吗”在有序列表里找不到,便误判为未安装,哪怕它\
+  其实在设备上。现改为先收全、`sort()`、再切 `[:capped]`:超限页是确定的字母序前缀,`has_more` 为真表示更多项\
+  排在最后一条之后。这样“名字落在页内区间却缺席”才等价于“确实没有”,与 `apk.strings` / `apk.classes` 先排序\
+  再分页的诚实范式一致。收全再切页的内存开销可忽略(原始 shell 文本本就整段在内存里)。
+- 文档串补明这一语义;`tests/unit/test_adb_device_readouts.py` 与 `test_device_properties_fields.py` 把\
+  逆序输入下的返回页钉到字母序前缀(`com.a/b/c`、`ro.k.a/b/c`),cap-then-sort 会失败。
+
 ### 测试（钉住 frida.java.classes / methods 的 has_more 全靠“向脚本多要一个”：脚本按 limit+1 枚举，回包按 limit 切页）
 
 - `frida.java.classes` / `frida.java.methods` 的 `has_more` 是否诚实,取决于后端向设备脚本请求的是\

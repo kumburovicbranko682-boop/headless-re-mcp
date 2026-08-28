@@ -489,16 +489,20 @@ class AdbBackend:
         if _is_host_error_output(text):
             raise AdbError("backend_error", "getprop failed", output=text[:800])
         props: dict[str, str] = {}
-        has_more = False
         for line in text.splitlines():
             match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
-            if not match:
-                continue
-            if len(props) >= capped:
-                has_more = True
-                break
-            props[match.group(1)] = match.group(2)
-        return {"properties": props, "count": len(props), "has_more": has_more}
+            if match:
+                props[match.group(1)] = match.group(2)
+        # Cap the sorted-by-key prefix, matching packages: a capped map must be
+        # a deterministic alphabetical slice so a caller can tell "this key is
+        # absent within the page" from "this key may sit past the cap".
+        items = sorted(props.items())
+        total = len(items)
+        return {
+            "properties": dict(items[:capped]),
+            "count": min(total, capped),
+            "has_more": total > capped,
+        }
 
     def packages(
         self, serial: str, *, third_party_only: bool = False, limit: int = 500
@@ -510,23 +514,26 @@ class AdbBackend:
         text = str(raw)
         if _is_host_error_output(text):
             raise AdbError("backend_error", "pm list failed", output=text[:800])
-        pkgs: list[str] = []
-        has_more = False
+        names: list[str] = []
         for line in text.splitlines():
             if not line.startswith("package:"):
                 continue
             name = line.split(":", 1)[1].strip()
-            if not name:
-                continue
-            if len(pkgs) >= capped:
-                has_more = True
-                break
-            pkgs.append(name)
-        pkgs.sort()
+            if name:
+                names.append(name)
+        # Sort before the cap, not after: a capped list must be a real
+        # alphabetical prefix, not an arbitrary install-order slice that was
+        # merely sorted for display. Only then can a caller reading a name's
+        # absence conclude "it sorts within this page and is not present, so it
+        # is not installed" -- with cap-then-sort a package could sit past the
+        # cap yet sort early, going missing from the middle of the page so an
+        # agent read a real install as "not installed".
+        names.sort()
+        total = len(names)
         return {
-            "packages": pkgs,
-            "count": len(pkgs),
-            "has_more": has_more,
+            "packages": names[:capped],
+            "count": min(total, capped),
+            "has_more": total > capped,
             "third_party_only": third_party_only,
         }
 

@@ -98,8 +98,15 @@ def test_logcat_clamps_the_requested_line_count() -> None:
     assert dev.calls == [["logcat", "-d", "-t", "5000"]]
 
 
-def test_packages_reports_has_more_and_sorts_the_page() -> None:
-    """A list longer than the cap says has_more and comes back sorted."""
+def test_packages_reports_has_more_and_returns_the_alphabetical_prefix() -> None:
+    """A list longer than the cap says has_more and returns the alphabetically
+    first names -- not an arbitrary install-order slice that was merely sorted.
+
+    The device lists in reverse order (com.e first); a cap-then-sort would keep
+    com.c/d/e (the first three seen) and sort those. Requiring the page to be
+    com.a/b/c pins sort-before-cap, so a caller can trust that a name sorting
+    within the page but absent from it is genuinely not installed.
+    """
     listing = "\n".join(
         f"package:{name}" for name in ("com.e", "com.d", "com.c", "com.b", "com.a")
     )
@@ -108,8 +115,7 @@ def test_packages_reports_has_more_and_sorts_the_page() -> None:
     assert payload["count"] == 3
     assert payload["has_more"] is True
     assert payload["third_party_only"] is False
-    assert payload["packages"] == sorted(payload["packages"])
-    assert set(payload["packages"]) <= {"com.a", "com.b", "com.c", "com.d", "com.e"}
+    assert payload["packages"] == ["com.a", "com.b", "com.c"]
 
 
 def test_packages_complete_list_is_not_labelled_partial() -> None:

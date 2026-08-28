@@ -66,8 +66,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with properties (the name-to-value map), count, and has_more
         so a page that filled the cap is not read as every property. There
-        is no props or items field. An adb error line (a dead or offline
-        device) is a failure, not an empty property set.
+        is no props or items field. A capped page is the alphabetically first
+        keys, so a key that sorts within the page but is absent is genuinely
+        unset; has_more true means more keys sort after the last one returned.
+        An adb error line (a dead or offline device) is a failure, not an
+        empty property set.
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
@@ -80,8 +83,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List installed package names, optionally only third-party ones.
 
         Answers with packages, count, has_more, and third_party_only so a
-        page that filled the cap is not read as every package. An adb error
-        line (a dead or offline device) is a failure, not an empty device.
+        page that filled the cap is not read as every package. packages is the
+        alphabetically first names, so a name that sorts within the page but is
+        absent is genuinely not installed; has_more true means more sort after
+        the last name returned. An adb error line (a dead or offline device) is
+        a failure, not an empty device.
         """
         return _dump(
             analysis.device_packages(

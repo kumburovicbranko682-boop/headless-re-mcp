@@ -57,3 +57,26 @@ def test_a_capped_property_list_says_has_more() -> None:
     assert "Answers with properties" in doc
     assert "has_more" in doc
     assert "count" in doc
+
+
+class _ReverseKeyDev:
+    """getprop output whose keys arrive in reverse-alphabetical order."""
+
+    def shell(self, args: Any, timeout: float | None = None) -> str:
+        del args, timeout
+        return "\n".join(f"[ro.k.{letter}]: [{letter}]" for letter in ("e", "d", "c", "b", "a"))
+
+
+def test_a_capped_property_map_is_the_alphabetical_key_prefix() -> None:
+    """A capped map must be the alphabetically first keys, not an arbitrary
+    getprop-order slice: only then can a caller tell 'this key is absent within
+    the page' from 'this key may sit past the cap'. Keys arrive reversed, so a
+    cap-then-slice would keep ro.k.e/d/c; requiring ro.k.a/b/c pins sort-before-
+    cap for properties the same way packages does."""
+    backend = AdbBackend()
+    backend._available = True
+    backend._device = lambda serial: _ReverseKeyDev()  # type: ignore[method-assign]
+    payload = backend.properties("emulator-5554", limit=3)
+    assert payload["has_more"] is True
+    assert payload["count"] == 3
+    assert list(payload["properties"]) == ["ro.k.a", "ro.k.b", "ro.k.c"]
