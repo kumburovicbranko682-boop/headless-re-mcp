@@ -29,6 +29,11 @@ def _tool_docstring(name: str) -> str:
 
 
 class _FakeApk:
+    def get_package(self) -> str:
+        # A readable package name is the client's "the manifest parsed" signal;
+        # a valid APK always has one, so the fake must too or the guard fires.
+        return "com.example.app"
+
     def get_permissions(self) -> list[str]:
         return [f"P{index}" for index in range(300)]
 

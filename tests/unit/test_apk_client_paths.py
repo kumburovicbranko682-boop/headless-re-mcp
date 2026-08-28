@@ -244,6 +244,9 @@ def test_permissions_falls_back_when_requested_is_unsupported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class OldApk:
+        def get_package(self) -> str:
+            return "com.example.app"
+
         def get_permissions(self) -> list[str]:
             return ["android.permission.INTERNET", "android.permission.CAMERA"]
 
@@ -257,6 +260,57 @@ def test_permissions_falls_back_when_requested_is_unsupported(
 
     assert payload["requested_permissions"] == payload["permissions"]
     assert payload["count"] == 2
+
+
+@pytest.mark.parametrize("method", ["permissions", "components"])
+def test_manifest_derived_reads_refuse_an_unparseable_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    """A malformed-AXML APK must not answer manifest views with empty lists.
+
+    A file named ``*.apk`` that is a zip carrying a garbage AndroidManifest.xml
+    still opens (classify_target keys on the extension, describe_apk only checks
+    the entry exists), but androguard then returns an empty package name and
+    empty permission/component lists. Empty here is indistinguishable from a
+    valid APK that declares nothing, so an agent reads "no permissions" / "no
+    exported components" -- a false-negative -- for a manifest it could not
+    decode. open() already refuses this; these reads must too, via the same
+    readable-package signal. certificates and native_libs are not guarded: they
+    read META-INF and zip entries, not the manifest, so their empties are honest.
+    """
+
+    class _UnparseableManifestApk:
+        def get_package(self) -> str:
+            return ""  # androguard's answer when the AXML did not decode
+
+        def get_permissions(self) -> list[str]:
+            return []
+
+        def get_requested_permissions(self) -> list[str]:
+            return []
+
+        def get_activities(self) -> list[str]:
+            return []
+
+        def get_services(self) -> list[str]:
+            return []
+
+        def get_receivers(self) -> list[str]:
+            return []
+
+        def get_providers(self) -> list[str]:
+            return []
+
+        def get_main_activity(self) -> str | None:
+            return None
+
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _UnparseableManifestApk())
+
+    with pytest.raises(ApkError) as caught:
+        getattr(client, method)(tmp_path / "app.apk")
+    assert caught.value.code == "backend_error"
+    assert "did not parse" in caught.value.message
 
 
 def test_certificates_tolerate_missing_signatures_and_odd_certs(

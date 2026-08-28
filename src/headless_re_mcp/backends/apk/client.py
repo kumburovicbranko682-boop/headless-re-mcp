@@ -232,8 +232,34 @@ class ApkClient:
             "truncated": len(xml) > _MAX_MANIFEST_CHARS,
         }
 
+    def _require_readable_manifest(self, apk: Any) -> None:
+        """Refuse manifest-derived reads when the manifest did not parse.
+
+        classify_target keys on the ``.apk`` extension and describe_apk only
+        checks that an ``AndroidManifest.xml`` entry exists (it is stdlib-only
+        and cannot decode binary AXML), so a file named ``*.apk`` that is a zip
+        carrying a truncated or hostile, malformed-AXML manifest still opens as
+        an androguard APK and reaches these tools. get_package() then comes back
+        empty and every manifest view answers with an empty list -- which is
+        indistinguishable from a valid APK that genuinely declares nothing. An
+        unattended agent then reads "no permissions" / "no exported components"
+        (a false-negative security clearance; Android malware ships malformed
+        AXML precisely to break naive static analysers) for a file whose
+        manifest could not be decoded. open() already refuses this; the
+        manifest-derived reads must too, using the same signal -- a readable
+        package name means the AXML parsed.
+        """
+        if not apk.get_package():
+            raise ApkError(
+                "backend_error",
+                "APK manifest did not parse (no readable package name); "
+                "permissions and components are unavailable",
+                package=None,
+            )
+
     def permissions(self, path: Path) -> JsonObject:
         apk = self._apk(path)
+        self._require_readable_manifest(apk)
         declared, declared_more = _cap_names(apk.get_permissions(), _MAX_PERMISSIONS)
         try:
             requested, requested_more = _cap_names(
@@ -289,6 +315,7 @@ class ApkClient:
 
     def components(self, path: Path) -> JsonObject:
         apk = self._apk(path)
+        self._require_readable_manifest(apk)
         activities, a_more = _cap_names(apk.get_activities(), _MAX_COMPONENT_NAMES)
         services, s_more = _cap_names(apk.get_services(), _MAX_COMPONENT_NAMES)
         receivers, r_more = _cap_names(apk.get_receivers(), _MAX_COMPONENT_NAMES)

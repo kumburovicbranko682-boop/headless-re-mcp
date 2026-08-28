@@ -253,6 +253,9 @@ def test_permissions_falls_back_when_requested_permissions_is_unavailable(
     """Older androguard has no get_requested_permissions; fall back to declared."""
 
     class Apk:
+        def get_package(self) -> str:
+            return "com.example.app"
+
         def get_permissions(self) -> list[str]:
             return ["android.permission.INTERNET"]
 

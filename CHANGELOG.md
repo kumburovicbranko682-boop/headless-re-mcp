@@ -5,6 +5,31 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（apk.permissions/components 对畸形 manifest 返回误导性空结果，现拒为 backend_error）
+
+- 真机复现（androguard 4.1.4）：一个名为 `*.apk`、内含**垃圾** AndroidManifest.xml
+  条目的 zip 能一路通过——`classify_target` 只看扩展名，`describe_apk` 只查
+  manifest 条目是否存在（它刻意仅用 stdlib、不解析二进制 AXML，以免会话创建
+  依赖 androguard），于是会话照常建立。此时 `apk.open`/`apk.manifest` 正确报
+  `backend_error`，但 `apk.permissions` 与 `apk.components` 却返回**成功的空结果**
+  （androguard 对无法解析的 AXML 让 `get_package()` 返回 ''、各 getter 返回空表）。
+- 危害：空结果与"合法 APK 但确实没声明任何权限/组件"无法区分。无人值守 agent
+  会把"无权限/无导出组件"当成事实结论——一个安全相关的**假阴性**（Android 恶意
+  软件正是常以畸形 AXML 破坏朴素静态分析器）。`open()` 早就用"包名是否可读"这个
+  信号挡住了同类误读（`if not package: raise backend_error`），但守卫没扩展到
+  manifest 派生的兄弟方法。
+- 改法：新增 `ApkClient._require_readable_manifest(apk)`，在 `permissions` 与
+  `components` 取数据前先按 `get_package()` 判定 manifest 是否解析成功，失败则抛
+  `backend_error`（"APK manifest did not parse …"）。这是与 `open()` 完全相同的
+  信号——合法 APK 的 AXML 一旦解析出来必带包名（root 属性）。`certificates` 与
+  `native_libs` **不**加守卫：它们读 META-INF 与 zip 条目、不依赖 manifest，畸形
+  manifest 下的空结果是诚实的。
+- 真机验证：垃圾 AXML 的 APK 现在 `permissions`/`components` 报 backend_error、
+  `certificates`/`native_libs` 仍诚实返回；合法 fixture（aapt2 构建）不受影响，
+  权限与组件照常返回。新增参数化单测 `test_manifest_derived_reads_refuse_an_unparseable_manifest`
+  钉死两方法在无包名时的拒绝；五处直接 fake `_apk` 的既有单测补上 `get_package()`
+  以正确建模合法 APK。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

@@ -3369,6 +3369,9 @@ class TestDeviceListsDiscloseTruncation:
         from headless_re_mcp.backends.apk.client import _MAX_COMPONENT_NAMES, ApkClient
 
         class FakeApk:
+            def get_package(self) -> str:
+                return "com.example.app"
+
             def get_activities(self) -> list[str]:
                 return [f"A{index}" for index in range(_MAX_COMPONENT_NAMES + 10)]
 
