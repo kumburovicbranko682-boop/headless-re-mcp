@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import socket
 import stat
 import threading
 import zipfile
@@ -41,6 +42,20 @@ _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
 _MAX_DEVICES = 64
+# /proc/net/raw and raw6 list every raw IP socket system-wide; bound the page.
+_MAX_RAW_SOCKETS = 512
+# IP protocol numbers seen in a raw socket's local_address "port" field. A raw
+# socket carries a protocol, not a port, so this names the common ones.
+_IP_PROTOCOLS = {
+    1: "icmp",
+    2: "igmp",
+    6: "tcp",
+    17: "udp",
+    58: "ipv6-icmp",
+    89: "ospf",
+    132: "sctp",
+    255: "raw",
+}
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
@@ -190,6 +205,95 @@ def _is_host_error_output(text: str) -> bool:
     return bool(captured) and all(
         line.lstrip().lower().startswith(("error:", "adb:")) for line in captured
     )
+
+
+def _raw_ipv4(hexip: str) -> str | None:
+    """Decode /proc/net's 8-hex IPv4 address (stored host-endian) to dotted quad."""
+    try:
+        octets = bytes.fromhex(hexip)
+    except ValueError:
+        return None
+    if len(octets) != 4:
+        return None
+    return ".".join(str(byte) for byte in reversed(octets))
+
+
+def _raw_ipv6(hexip: str) -> str | None:
+    """Decode /proc/net's 32-hex IPv6 address to a compact string.
+
+    The kernel prints the 16 bytes as four 32-bit words in host byte order, so
+    each 4-byte word is reversed before the whole is handed to ``inet_ntop``.
+    """
+    if len(hexip) != 32:
+        return None
+    try:
+        raw = bytes.fromhex(hexip)
+    except ValueError:
+        return None
+    ordered = b"".join(raw[i : i + 4][::-1] for i in range(0, 16, 4))
+    try:
+        return socket.inet_ntop(socket.AF_INET6, ordered)
+    except (OSError, ValueError):
+        return None
+
+
+def _parse_raw_sockets(text: str, family: str) -> tuple[str, list[JsonObject]]:
+    """Parse one /proc/net/raw[6] dump into (status, rows).
+
+    ``status`` is ``ok`` (readable, rows may be empty), ``unavailable`` (the
+    device answered "No such file"/"Permission denied" -- family disabled or
+    SELinux-restricted), or ``host_error`` (an adb host error, or output with
+    no recognizable header). For a raw socket the local_address "port" field is
+    the IP protocol number, not a port, so it is decoded as ``protocol``.
+    """
+    if _is_host_error_output(text):
+        return ("host_error", [])
+    lowered = text.lower()
+    if "no such file" in lowered or "permission denied" in lowered:
+        return ("unavailable", [])
+    decode = _raw_ipv4 if family == "ipv4" else _raw_ipv6
+    header_seen = False
+    rows: list[JsonObject] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if not header_seen:
+            # The header is the only line carrying "local_address"; /proc/net/raw
+            # labels the peer "rem_address" and raw6 labels it "remote_address".
+            if "local_address" in line:
+                header_seen = True
+            continue
+        fields = line.split()
+        if len(fields) < 10:
+            continue
+        local_ip_hex, _, proto_hex = fields[1].partition(":")
+        remote_ip_hex, _, _ = fields[2].partition(":")
+        local_ip = decode(local_ip_hex)
+        remote_ip = decode(remote_ip_hex)
+        if local_ip is None:
+            continue
+        try:
+            protocol = int(proto_hex, 16)
+            state = int(fields[3], 16)
+            uid = int(fields[7])
+            inode = int(fields[9])
+        except ValueError:
+            continue
+        rows.append(
+            {
+                "family": family,
+                "local_ip": local_ip,
+                "protocol": protocol,
+                "protocol_name": _IP_PROTOCOLS.get(protocol, str(protocol)),
+                "remote_ip": remote_ip if remote_ip is not None else "",
+                "state": state,
+                "uid": uid,
+                "inode": inode,
+            }
+        )
+    if not header_seen:
+        return ("host_error", [])
+    return ("ok", rows)
 
 
 def _call(method: Any, *args: Any, timeout: float | None = None, **kwargs: Any) -> Any:
@@ -476,6 +580,54 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read device info: {exc}") from exc
+
+    def raw_sockets(self, serial: str, *, limit: int = 500) -> JsonObject:
+        """List raw IP sockets from /proc/net/raw and /proc/net/raw6.
+
+        A raw (SOCK_RAW) socket sends and receives IP packets directly, below
+        the transport layer; opening one needs CAP_NET_RAW, so a raw socket
+        owned by an ordinary app uid is unusual -- ping/traceroute use them, but
+        so do port scanners, custom-protocol clients and some malware. For a raw
+        socket the local_address "port" field is the IP protocol number (1=ICMP,
+        6=TCP, 17=UDP, 58=ICMPv6), not a port, so it is reported as ``protocol``
+        with a ``protocol_name`` rather than a fabricated port. Each row carries
+        family, local_ip, protocol, protocol_name, remote_ip, state, uid, inode.
+
+        Both address families are read. ``families`` reports which of ipv4/ipv6
+        was readable: a false entry means that family is disabled or SELinux
+        denied /proc/net access, so its sockets are simply absent rather than
+        reported empty. When neither family is readable and the failure was an
+        adb host error (offline device), that is a ``backend_error``; when both
+        were merely denied or absent, the result is returned with an empty list
+        and both families false, which is an honest "could not read", not "no
+        raw sockets".
+        """
+        dev = self._device(serial)
+        capped = max(1, min(int(limit), _MAX_RAW_SOCKETS))
+        sockets: list[JsonObject] = []
+        families: dict[str, bool] = {}
+        statuses: list[str] = []
+        has_more = False
+        for family, path in (("ipv4", "/proc/net/raw"), ("ipv6", "/proc/net/raw6")):
+            text = _device_shell(dev, f"cat {path}")
+            status, rows = _parse_raw_sockets(text, family)
+            statuses.append(status)
+            families[family] = status == "ok"
+            if status != "ok":
+                continue
+            for row in rows:
+                if len(sockets) >= capped:
+                    has_more = True
+                    break
+                sockets.append(row)
+        if "ok" not in statuses and "host_error" in statuses:
+            raise AdbError("backend_error", "reading /proc/net/raw failed")
+        return {
+            "sockets": sockets,
+            "count": len(sockets),
+            "has_more": has_more,
+            "families": families,
+        }
 
     def properties(self, serial: str, *, limit: int = 500) -> JsonObject:
         dev = self._device(serial)

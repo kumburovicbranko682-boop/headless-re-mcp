@@ -58,6 +58,26 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_info(serial))
 
+    @tools.tool(name="device.raw_sockets")
+    def device_raw_sockets(
+        serial: str, limit: Annotated[int, Field(ge=1, le=512)] = 500
+    ) -> dict[str, Any]:
+        """List raw IP (SOCK_RAW) sockets from /proc/net/raw and /proc/net/raw6.
+
+        A raw socket sends/receives IP packets directly and needs CAP_NET_RAW,
+        so one owned by an app uid is unusual -- ping/traceroute use them, but so
+        do scanners and some malware. Answers with sockets (each with family,
+        local_ip, protocol, protocol_name, remote_ip, state, uid, inode), count,
+        has_more, and families (which of ipv4/ipv6 was readable).
+
+        For a raw socket the local_address port field is the IP protocol number,
+        not a port, so it is reported as protocol/protocol_name. A families entry
+        is false when that family is disabled or SELinux denied /proc/net access,
+        so its sockets are absent rather than reported empty. An adb host error
+        (offline device) is a failure, not an empty set.
+        """
+        return _dump(analysis.device_raw_sockets(serial, limit=limit))
+
     @tools.tool(name="device.properties")
     def device_properties(
         serial: str, limit: Annotated[int, Field(ge=1, le=2000)] = 500

@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -85,6 +85,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   全部写效果；`GET` 回传 `mode`。切换立即写入本机配置，完全访问时会放行当前停着的批准卡片。
 - 未配置 autonomy 键时，加壳 PE 分析所需的 `state_change` 加相关 `file_write` 默认自动批准
   （patches / APK 改包除外）。
+
+### 新增（设备侦察）
+
+- **`device.raw_sockets`（只读）**：读 `/proc/net/raw` 与 `/proc/net/raw6`，列出原始 IP
+  （SOCK_RAW）套接字。原始套接字直接收发 IP 包、需 CAP_NET_RAW，普通 app uid 持有的很反常——
+  ping/traceroute 用它，端口扫描、自定义协议客户端与部分恶意软件也用它。原始套接字的
+  local_address「端口」字段其实是 IP 协议号（1=ICMP、6=TCP、17=UDP、58=ICMPv6），故回
+  `protocol`/`protocol_name` 而非伪造端口。每条回 `family`、`local_ip`、`protocol`、
+  `protocol_name`、`remote_ip`、`state`、`uid`、`inode`，配合 `count`/`has_more` 与
+  `families`（ipv4/ipv6 各自是否可读）。诚实契约：某族 `families` 为 false 表示该族被禁用或
+  SELinux 拒绝访问 `/proc/net`，其套接字是「读不到」而非「空」；两族都读不到且为 adb 主机错误
+  （设备离线）时按 `backend_error` 上报，两族仅被拒绝/缺失时回空列表且两族 false，即诚实的
+  「读不到」而非「无原始套接字」。
 
 ### 新增（x64dbg 用户态反检测）
 

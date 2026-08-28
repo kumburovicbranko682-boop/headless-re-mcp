@@ -161,6 +161,9 @@ class DeviceAnalysisMixin:
     def device_info(self, serial: str) -> Result[JsonObject]:
         return self._adb_wrap("info", serial=serial)
 
+    def device_raw_sockets(self, serial: str, limit: int = 500) -> Result[JsonObject]:
+        return self._adb_wrap("raw_sockets", serial=serial, limit=limit)
+
     def device_properties(self, serial: str, limit: int = 500) -> Result[JsonObject]:
         return self._adb_wrap("properties", serial=serial, limit=limit)
 
