@@ -105,6 +105,21 @@ def test_device_info_row_defaults_blank_state_to_unknown() -> None:
     assert _device_info_row(info) == {"serial": "dev1", "state": "unknown"}
 
 
+def test_device_info_row_from_single_element_tuple_defaults_the_state() -> None:
+    # Some adbutils shapes carry only the serial; the missing state must still
+    # normalize to "unknown" rather than an index error.
+    assert _device_info_row(("solo-serial",)) == {"serial": "solo-serial", "state": "unknown"}
+
+
+def test_apk_package_name_recovers_when_utf8_decode_fails(tmp_path: Path) -> None:
+    # A compiled manifest whose bytes are not valid UTF-8 must not raise out of
+    # the plaintext attempt: the reader falls through to the UTF-16 string-pool
+    # scan and still finds the id.
+    blob = b"\xff\xfe" + ("package\x00com.example.app").encode("utf-16-le")
+    apk = _apk(tmp_path / "badutf8.apk", blob)
+    assert _apk_package_name(apk) == "com.example.app"
+
+
 def test_file_mode_size_from_attribute_object() -> None:
     info = SimpleNamespace(mode=0o100644, size=4096)
     assert _file_mode_size(info) == (0o100644, 4096)
@@ -204,6 +219,18 @@ def test_pids_for_package_ps_scan_stops_at_sixteen_matches() -> None:
     assert pids is not None
     assert len(pids) == 16
     assert pids[0] == 1000
+
+
+def test_pids_for_package_ps_line_without_a_numeric_token_is_skipped() -> None:
+    # A matching ps line whose first three columns are all non-numeric yields no
+    # pid; the reader moves on rather than mis-reading a name as a pid.
+    dev = _FakeDev(
+        {
+            ("pidof", "com.example.app"): "pidof: not found",
+            "ps -A": "USER PPID NAME com.example.app\n",
+        }
+    )
+    assert _pids_for_package(dev, "com.example.app") == []
 
 
 def test_pids_for_package_nonempty_pidof_without_digits_is_none() -> None:
