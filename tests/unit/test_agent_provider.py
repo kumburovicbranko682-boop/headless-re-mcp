@@ -626,6 +626,101 @@ async def test_tool_call_stream_caps_distinct_calls(
             pass
 
 
+@pytest.mark.asyncio
+async def test_a_content_array_nested_past_the_recursion_limit_still_streams() -> None:
+    """One hostile ``content`` array must not end the run as an incident.
+
+    The C json decoder accepts lists nested thousands of levels deep -- around
+    ten times sys.getrecursionlimit() measured on 3.12 -- while a recursive
+    Python walk burns two frames per level. A provider chunk whose delta
+    content is such an array therefore parsed fine and then blew up the text
+    extractor with RecursionError, which the orchestrator records as an
+    internal incident rather than a provider fault.
+    """
+    depth = 2_000
+    nested = json.loads("[" * depth + '"deep text"' + "]" * depth)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        chunks = [
+            {"choices": [{"delta": {"content": nested}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ]
+        body = "".join(
+            f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n" for chunk in chunks
+        ) + "data: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(respond),
+    )
+    events = [
+        event async for event in provider.stream_chat(messages=[], tools=[], model="m")
+    ]
+    assert [event.text for event in events if event.type == "text_delta"] == ["deep text"]
+    assert events[-1].type == "completed"
+
+
+def test_plain_text_keeps_part_order_and_survives_any_parseable_depth() -> None:
+    """The iterative walk must match the old recursion on ordinary parts."""
+    mixed = ["a", ["b", {"type": "text", "text": "c"}], "d"]
+    assert openai_compatible._plain_text(mixed) == "abcd"
+    depth = 6_000
+    deep = json.loads("[" * depth + '"x"' + "]" * depth)
+    assert openai_compatible._plain_text(deep) == "x"
+
+
+@pytest.mark.asyncio
+async def test_an_infinite_usage_count_is_treated_as_absent() -> None:
+    """json.loads accepts the bare Infinity literal; int(inf) is OverflowError.
+
+    A usage block saying ``"completion_tokens": Infinity`` passed the
+    ``value >= 0`` check (unlike NaN) and then died converting to int, so one
+    absurd accounting field from the provider ended a stream whose actual
+    output was fine.
+    """
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        chunks = [
+            {"choices": [{"delta": {"content": "hi"}}]},
+            {"choices": [], "usage": {"completion_tokens": float("inf")}},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ]
+        body = "".join(
+            f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n" for chunk in chunks
+        ) + "data: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(respond),
+    )
+    events = [
+        event async for event in provider.stream_chat(messages=[], tools=[], model="m")
+    ]
+    assert [event.type for event in events] == ["text_delta", "completed"]
+    assert events[-1].output_tokens is None
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected"),
+    [
+        ({"completion_tokens": float("inf")}, None),
+        ({"completion_tokens": float("nan")}, None),
+        ({"completion_tokens": float("-inf")}, None),
+        ({"completion_tokens": 12.0}, 12),
+        # A non-finite first key must fall through to the later spellings.
+        ({"completion_tokens": float("inf"), "output_tokens": 7}, 7),
+    ],
+)
+def test_usage_output_tokens_only_accepts_finite_counts(
+    usage: dict[str, object], expected: int | None
+) -> None:
+    assert openai_compatible._usage_output_tokens(usage) == expected
+
+
 def test_protecting_provider_config_does_not_hang_when_icacls_is_a_launcher(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

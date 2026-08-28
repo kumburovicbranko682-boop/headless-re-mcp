@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import AsyncIterator, Sequence
 from threading import Lock
 from typing import Any
@@ -32,17 +33,32 @@ def _plain_text(value: Any) -> str:
 
     Providers disagree: a string, a list of parts, or a small object with
     ``text`` / ``content``. Anything else is ignored rather than stringified.
+
+    Iterative on purpose. The C json decoder accepts lists nested thousands of
+    levels deep -- around ten times sys.getrecursionlimit() measured on 3.12 --
+    while a recursive walk here burnt two Python frames per level, so a chunk
+    whose content was such an array parsed fine and then raised RecursionError
+    out of this extractor: an incident-labelled run failure for a shape only
+    the provider controls. Input size is already capped by the SSE line limit,
+    which bounds this loop.
     """
     if isinstance(value, str):
         return value
-    if isinstance(value, list):
-        return "".join(_plain_text(item) for item in value)
-    if isinstance(value, dict):
-        for key in ("text", "content", "summary"):
-            piece = value.get(key)
-            if isinstance(piece, str) and piece:
-                return piece
-    return ""
+    parts: list[str] = []
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, list):
+            stack.extend(reversed(item))
+        elif isinstance(item, dict):
+            for key in ("text", "content", "summary"):
+                piece = item.get(key)
+                if isinstance(piece, str) and piece:
+                    parts.append(piece)
+                    break
+    return "".join(parts)
 
 
 def _hidden_texts(delta: dict[str, Any]) -> list[str]:
@@ -85,7 +101,11 @@ def _usage_output_tokens(usage: Any) -> int | None:
         value = usage.get(key)
         if isinstance(value, int) and value >= 0:
             return value
-        if isinstance(value, float) and value >= 0:
+        # json.loads accepts the bare Infinity literal, and inf passes the
+        # ``>= 0`` check that already screens out NaN, so int() raised
+        # OverflowError and one absurd accounting field ended the stream.
+        # A non-finite count is treated like any other unusable value.
+        if isinstance(value, float) and value >= 0 and math.isfinite(value):
             return int(value)
     details = usage.get("completion_tokens_details")
     if isinstance(details, dict):
