@@ -345,6 +345,31 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
         _assert_mapped(marker.get("address"))
         assert marker["address"].get("architecture") == expect_arch, marker
 
+        # r2.read is the data-side reader. Point it at the marker string's own
+        # address -- a .rodata data address r2.disasm would only decode as a run
+        # of invalid bytes -- and the exact bytes must come back, byte for byte.
+        # This is the "follow a data xref to a blob, then read it" workflow the
+        # code-facing readers cannot serve. The window is the marker length, so
+        # the bytes must decode to exactly the marker with no short read.
+        marker_va = int(marker["address"]["va"])
+        want = _ELF_MARKER.encode("ascii")
+        read = service.r2_read(session_id, marker_va, size=len(want), timeout=60.0)
+        assert read.ok and read.data is not None, read.error
+        assert read.data.get("encoding") == "hex"
+        assert read.data.get("count") == len(want), read.data
+        assert bytes.fromhex(read.data["data"]) == want, read.data
+        assert read.data.get("address_va") == marker_va
+        _assert_mapped(read.data.get("address"))
+        assert read.data["address"].get("architecture") == expect_arch, read.data
+        assert "short_read" not in read.data
+        # The same address decoded as code is undecodable bytes: r2.disasm there
+        # returns rows it flags invalid, which is exactly why the data reader
+        # exists beside it. (Some bytes may chance-decode, so assert only that at
+        # least one row is invalid, not that every one is.)
+        as_code = service.r2_disasm(session_id, marker_va, count=len(want), timeout=60.0)
+        assert as_code.ok and as_code.data is not None, as_code.error
+        assert as_code.data.get("invalid_count", 0) >= 1, as_code.data
+
         imports = service.r2_imports(session_id, timeout=60.0)
         assert imports.ok and imports.data is not None, imports.error
         assert imports.data.get("parsed") is True

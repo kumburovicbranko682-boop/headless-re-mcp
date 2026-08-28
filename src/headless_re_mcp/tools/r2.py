@@ -186,4 +186,26 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         address, xrefs, truncated or has_more field.
         """
         return _dump(analysis.r2_xrefs(session_id, address, timeout=timeout))
+
+    @tools.tool(name="r2.read")
+    def r2_read(
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+        size: Annotated[int, Field(ge=1, le=65536)] = 64,
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Read size raw bytes at a virtual address, as radare2 maps them.
+
+        Where r2.disasm decodes an address as code, this reads it as data: the
+        global, jump table, or embedded key/blob a data xref points at has no
+        opcodes, so r2.disasm returns a run of invalid rows there and only the
+        raw bytes carry the content -- this is the r2 line's read-memory
+        primitive, the static twin of frida.memory.read. Runs ``pxj``. Answers
+        with data (lowercase hex, no separators), encoding ("hex"), count (bytes
+        actually returned), size (bytes asked), address (va/rva/module) and
+        address_va (the integer asked). count < size and short_read is set when
+        the window ran off the end of the mapped region. There is no integer
+        address field and no inline byte array; decode data from hex.
+        """
+        return _dump(analysis.r2_read(session_id, address, size=size, timeout=timeout))
     return tools.bindings

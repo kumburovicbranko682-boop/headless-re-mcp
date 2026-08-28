@@ -9,10 +9,21 @@ from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
-from headless_re_mcp.backends.r2.mapping import _item_va, enrich_r2_payload, parse_r2_arrays
+from headless_re_mcp.backends.r2.mapping import (
+    _item_va,
+    address_dict,
+    enrich_r2_payload,
+    parse_r2_arrays,
+    parse_r2_json,
+    pe_preferred_base,
+)
 
 JsonObject = dict[str, Any]
 _MAX_OUTPUT = 1_000_000
+# A single r2.read window. Enough for a data blob, a jump table, or a chunk of
+# an embedded key/certificate, while bounding the pxj int-array output (each
+# byte costs ~4 chars of JSON, so 64 KiB stays well under _MAX_OUTPUT).
+_MAX_READ_BYTES = 64 * 1024
 _ALLOWED = frozenset(
     {
         "i",
@@ -34,6 +45,8 @@ _ALLOWED = frozenset(
     }
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+# pxj <n> @ addr: read n raw bytes at a virtual address as a JSON int array.
+_PXJ_COMMAND = re.compile(r"pxj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 # axj (whole DB), axtj (refs to), axfj (refs from), each seeked with ``@ addr``.
 # r2 6.x makes ``axj @ addr`` return nothing, so xrefs queries axtj/axfj, which
 # honour the seek on every version; axj stays whitelisted for the enrich filter
@@ -67,6 +80,9 @@ def _require_allowed_command(command: str) -> None:
         return
     pdj = _PDJ_COMMAND.fullmatch(command)
     if pdj is not None and int(pdj.group(1)) <= 512:
+        return
+    pxj = _PXJ_COMMAND.fullmatch(command)
+    if pxj is not None and int(pxj.group(1)) <= _MAX_READ_BYTES:
         return
     if _AXREF_COMMAND.fullmatch(command) is not None:
         return
@@ -164,6 +180,60 @@ class R2Client:
             "address": address,
         }
         return enrich_r2_payload(payload, binary=binary)
+
+    def read_bytes(
+        self,
+        binary: Path,
+        address: int,
+        *,
+        size: int = 64,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """Read ``size`` raw bytes at virtual address ``address`` from the image.
+
+        ``r2.disasm`` decodes an address as code; this reads it as data. A data
+        xref lands on a global, a jump table, or an embedded key/blob that has no
+        opcodes -- point ``pdj`` there and every byte comes back as an
+        ``invalid`` row, so only the raw bytes carry the content. ``pxj`` returns
+        those bytes as a JSON int array (no analysis pass needed), which this
+        collapses to a hex string. A short read (fewer bytes than asked) means
+        the window ran off the end of the mapped region; it is disclosed rather
+        than silently padded so a partial blob is not read as the whole thing.
+        """
+        if type(address) is not int or address < 0:
+            raise R2Error("invalid_params", "address must be a non-negative int")
+        if type(size) is not int or not 1 <= size <= _MAX_READ_BYTES:
+            raise R2Error("invalid_params", f"size must be 1..{_MAX_READ_BYTES}")
+        cmd = f"pxj {size} @ {address}"
+        # pxj reads the mapped bytes directly, so skip the ``aa`` analysis the
+        # code-facing tools run -- it would only slow a plain byte read.
+        data = self.run(binary, [cmd], timeout=timeout)
+        parsed = parse_r2_json(str(data.get("raw") or ""))
+        values = parsed if isinstance(parsed, list) else []
+        blob = bytes(int(v) & 0xFF for v in values if isinstance(v, int))
+        arch, image_base = pe_preferred_base(binary)
+        result: JsonObject = {
+            "commands": [cmd],
+            "module": binary.name,
+            "size": size,
+            "encoding": "hex",
+            "data": blob.hex(),
+            "count": len(blob),
+            "parsed": parsed is not None,
+            "address_va": address,
+        }
+        if image_base is not None:
+            result["image_base"] = image_base
+        if arch is not None:
+            result["architecture"] = arch.value
+        mapped = address_dict(
+            address, module=binary.name, image_base=image_base, architecture=arch
+        )
+        if mapped is not None:
+            result["address"] = mapped
+        if len(blob) < size:
+            result["short_read"] = True
+        return result
 
     def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
         if not self.available or self.executable is None:
