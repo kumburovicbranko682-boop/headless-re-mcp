@@ -315,6 +315,68 @@ def test_web_har_export_writes_a_valid_har_that_carries_every_request(
     assert resource_types == {"Document", "Script"}
 
 
+def test_web_har_export_uses_the_captured_request_time(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """CDP's wallTime must reach the web HAR's startedDateTime, like the proxy's.
+
+    requestWillBeSent carries wallTime -- the real epoch the request began --
+    and the web capture keeps it as started_at so the export stamps each entry
+    with the true time instead of the one export instant. A request the browser
+    reported no wallTime for falls back to the export instant, staying spec-valid.
+    """
+    from datetime import UTC, datetime
+
+    epoch = 1_700_000_000.0
+
+    class _Handle:
+        def __init__(self) -> None:
+            self.lock = Lock()
+            self.requests = {
+                "0": {
+                    "requestId": "0",
+                    "url": "https://example.com/0",
+                    "method": "GET",
+                    "resourceType": "Document",
+                    "status": 200,
+                    "mimeType": "text/html",
+                    "started_at": epoch,
+                },
+                "1": {
+                    "requestId": "1",
+                    "url": "https://example.com/1",
+                    "method": "GET",
+                    "resourceType": "Script",
+                    "status": 200,
+                    "mimeType": "text/javascript",
+                    "started_at": epoch + 5,
+                },
+                # No started_at (browser reported no wallTime): export-time fallback.
+                "2": {
+                    "requestId": "2",
+                    "url": "https://example.com/2",
+                    "method": "GET",
+                    "resourceType": "Script",
+                    "status": 200,
+                    "mimeType": "text/javascript",
+                },
+            }
+
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _Handle())
+    out = tmp_path / "capture.har"
+    backend.har_export("s", out)
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    stamps = {e["request"]["url"]: e["startedDateTime"] for e in doc["log"]["entries"]}
+    assert stamps["https://example.com/0"] == datetime.fromtimestamp(epoch, tz=UTC).isoformat()
+    assert (
+        stamps["https://example.com/1"]
+        == datetime.fromtimestamp(epoch + 5, tz=UTC).isoformat()
+    )
+    # The row with no wallTime still produced a valid (fallback) instant.
+    datetime.fromisoformat(stamps["https://example.com/2"])
+
+
 def test_web_har_export_is_bounded_by_the_capture_cap(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
