@@ -403,4 +403,41 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_code(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.disassemble")
+    def wasm_disassemble(
+        path: str,
+        function: Annotated[int, Field(ge=0)],
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=5000)] = 200,
+    ) -> dict[str, Any]:
+        """Decode one defined function's instruction stream (section 10).
+
+        wasm.code weighs each function; this reads what one function does. The
+        only way to see a wasm function's actual instructions when no source or
+        wat is on hand -- the wasm analogue of ghidra.disassemble. function is
+        the absolute function index (same numbering as wasm.functions / wasm.code
+        / wasm.callgraph), so an index below imported_count names an import,
+        which has no body. The decoder models the MVP plus bulk-memory,
+        reference-type and sign-extension opcodes; on a SIMD/atomic or unknown
+        opcode it stops cleanly rather than desync, so what it emits is
+        trustworthy. Pure Python, no wabt.
+
+        Answers with function, found (false when the index has no defined body),
+        imported (true when the index names an import), name (from the name
+        section when present), body_size, local_count, instructions (paged),
+        count, total, offset, has_more, complete (the whole body decoded),
+        stopped_reason (e.g. unsupported_opcode:0xfd when the decode stopped),
+        resolved (false when the code section will not parse) and scan_capped.
+        Each instruction carries offset (byte offset in the body), op (the
+        mnemonic, or op_0xNN for an unnamed numeric op), opcode (hex) and
+        operands (a list of rendered immediates: an index, a const value, a
+        block type, memarg align/offset...).
+
+        A file that is not a WebAssembly module is refused as invalid_params and
+        one over 16 MiB as too_large.
+        """
+        return _dump(
+            analysis.wasm_disassemble(path, function, offset=offset, limit=limit)
+        )
+
     return tools.bindings

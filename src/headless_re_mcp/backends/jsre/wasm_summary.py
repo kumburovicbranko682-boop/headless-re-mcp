@@ -2,8 +2,8 @@
 
 Unlike ``wasm.wat`` / ``wasm.info`` (which shell out to wabt's ``wasm2wat`` and
 ``wasm-objdump``), this reads the binary section table directly, so it answers
-even on a host where wabt was never installed. It does not disassemble code;
-it lays out the sections, folds the import/export surface -- the single most
+even on a host where wabt was never installed. It lays out the sections, folds
+the import/export surface -- the single most
 useful thing for triaging a stripped module, since it names the host functions
 the module reaches for (``wasi_snapshot_preview1.*``, ``env.emscripten_*``) --
 and reports memory limits, the start function, and the custom-section list.
@@ -16,6 +16,7 @@ exception.
 
 from __future__ import annotations
 
+import struct
 from typing import Any
 
 JsonObject = dict[str, Any]
@@ -1673,4 +1674,404 @@ def list_wasm_code(data: bytes, *, offset: int = 0, limit: int = 100) -> JsonObj
     result["count"] = len(window)
     result["offset"] = start
     result["has_more"] = start + len(window) < len(bodies)
+    return result
+
+
+# wasm.disassemble caps: a single function body can hold a very long instruction
+# stream, so the decode is bounded and the returned page capped.
+_MAX_DISASM_COLLECT = 100_000
+_MAX_DISASM_PAGE = 5000
+_MAX_BR_TABLE_TARGETS = 256
+
+# Mnemonics for every opcode whose immediate operands this decoder knows how to
+# skip, plus a readable subset of the no-immediate numeric ops. Any opcode in
+# 0x45..0xC4 that is absent here is still a no-immediate numeric op, so it is
+# rendered as op_0xNN and the stream stays aligned; an opcode outside that range
+# and absent here has unknown immediates, so the decode stops rather than desync.
+_MNEMONICS: dict[int, str] = {
+    0x00: "unreachable",
+    0x01: "nop",
+    0x02: "block",
+    0x03: "loop",
+    0x04: "if",
+    0x05: "else",
+    0x0B: "end",
+    0x0C: "br",
+    0x0D: "br_if",
+    0x0E: "br_table",
+    0x0F: "return",
+    0x10: "call",
+    0x11: "call_indirect",
+    0x1A: "drop",
+    0x1B: "select",
+    0x1C: "select",
+    0x20: "local.get",
+    0x21: "local.set",
+    0x22: "local.tee",
+    0x23: "global.get",
+    0x24: "global.set",
+    0x25: "table.get",
+    0x26: "table.set",
+    0x28: "i32.load",
+    0x29: "i64.load",
+    0x2A: "f32.load",
+    0x2B: "f64.load",
+    0x2C: "i32.load8_s",
+    0x2D: "i32.load8_u",
+    0x2E: "i32.load16_s",
+    0x2F: "i32.load16_u",
+    0x30: "i64.load8_s",
+    0x31: "i64.load8_u",
+    0x32: "i64.load16_s",
+    0x33: "i64.load16_u",
+    0x34: "i64.load32_s",
+    0x35: "i64.load32_u",
+    0x36: "i32.store",
+    0x37: "i64.store",
+    0x38: "f32.store",
+    0x39: "f64.store",
+    0x3A: "i32.store8",
+    0x3B: "i32.store16",
+    0x3C: "i64.store8",
+    0x3D: "i64.store16",
+    0x3E: "i64.store32",
+    0x3F: "memory.size",
+    0x40: "memory.grow",
+    0x41: "i32.const",
+    0x42: "i64.const",
+    0x43: "f32.const",
+    0x44: "f64.const",
+    0x45: "i32.eqz",
+    0x46: "i32.eq",
+    0x47: "i32.ne",
+    0x48: "i32.lt_s",
+    0x49: "i32.lt_u",
+    0x4A: "i32.gt_s",
+    0x4B: "i32.gt_u",
+    0x4C: "i32.le_s",
+    0x4D: "i32.le_u",
+    0x4E: "i32.ge_s",
+    0x4F: "i32.ge_u",
+    0x50: "i64.eqz",
+    0x51: "i64.eq",
+    0x52: "i64.ne",
+    0x67: "i32.clz",
+    0x68: "i32.ctz",
+    0x69: "i32.popcnt",
+    0x6A: "i32.add",
+    0x6B: "i32.sub",
+    0x6C: "i32.mul",
+    0x6D: "i32.div_s",
+    0x6E: "i32.div_u",
+    0x6F: "i32.rem_s",
+    0x70: "i32.rem_u",
+    0x71: "i32.and",
+    0x72: "i32.or",
+    0x73: "i32.xor",
+    0x74: "i32.shl",
+    0x75: "i32.shr_s",
+    0x76: "i32.shr_u",
+    0x77: "i32.rotl",
+    0x78: "i32.rotr",
+    0x7C: "i64.add",
+    0x7D: "i64.sub",
+    0x7E: "i64.mul",
+    0x7F: "i64.div_s",
+    0x80: "i64.div_u",
+    0x83: "i64.and",
+    0x84: "i64.or",
+    0x85: "i64.xor",
+    0x86: "i64.shl",
+    0x87: "i64.shr_s",
+    0x88: "i64.shr_u",
+    0xA7: "i32.wrap_i64",
+    0xAC: "i64.extend_i32_s",
+    0xAD: "i64.extend_i32_u",
+    0xC0: "i32.extend8_s",
+    0xC1: "i32.extend16_s",
+    0xC2: "i64.extend8_s",
+    0xC3: "i64.extend16_s",
+    0xC4: "i64.extend32_s",
+    0xD0: "ref.null",
+    0xD1: "ref.is_null",
+    0xD2: "ref.func",
+    0xFC: "fc",
+    0xFD: "simd",
+    0xFE: "atomic",
+}
+
+# The 0xFC prefix opcodes whose immediates this decoder can skip.
+_FC_OPS: dict[int, str] = {
+    0: "i32.trunc_sat_f32_s",
+    1: "i32.trunc_sat_f32_u",
+    2: "i32.trunc_sat_f64_s",
+    3: "i32.trunc_sat_f64_u",
+    4: "i64.trunc_sat_f32_s",
+    5: "i64.trunc_sat_f32_u",
+    6: "i64.trunc_sat_f64_s",
+    7: "i64.trunc_sat_f64_u",
+    8: "memory.init",
+    9: "data.drop",
+    10: "memory.copy",
+    11: "memory.fill",
+    12: "table.init",
+    13: "elem.drop",
+    14: "table.copy",
+    15: "table.grow",
+    16: "table.size",
+    17: "table.fill",
+}
+
+
+def _read_blocktype(data: bytes, pos: int) -> tuple[str, int]:
+    """Decode a block type: 0x40 (empty), a single valtype, or an s33 type index."""
+    byte = data[pos] if pos < len(data) else 0
+    if byte == 0x40:
+        return "()", pos + 1
+    if byte in _VALTYPES:
+        return _VALTYPES[byte], pos + 1
+    index, pos = _sleb(data, pos)
+    return f"type {index}", pos
+
+
+def _decode_instructions(
+    data: bytes, start: int, end: int
+) -> tuple[list[JsonObject], str | None, bool]:
+    """Decode a function body's instruction stream between start and end.
+
+    Returns the instructions, a stop reason (None when the whole stream decoded),
+    and whether the collection cap was hit. The decoder only advances past an
+    opcode it can size: on an opcode with immediates it does not model (SIMD /
+    atomics) or an unknown one, it stops rather than desync into garbage.
+    """
+    pos = start
+    out: list[JsonObject] = []
+    stopped: str | None = None
+    capped = False
+    while pos < end:
+        if len(out) >= _MAX_DISASM_COLLECT:
+            capped = True
+            break
+        rel = pos - start
+        try:
+            op, pos = _u8(data, pos)
+            name = _MNEMONICS.get(op)
+            operands: list[str] = []
+            if op in (0x02, 0x03, 0x04):
+                bt, pos = _read_blocktype(data, pos)
+                operands.append(bt)
+            elif op in (0x0C, 0x0D):
+                idx, pos = _uleb(data, pos)
+                operands.append(str(idx))
+            elif op == 0x0E:
+                n, pos = _uleb(data, pos)
+                targets: list[str] = []
+                for _ in range(n):
+                    tgt, pos = _uleb(data, pos)
+                    if len(targets) < _MAX_BR_TABLE_TARGETS:
+                        targets.append(str(tgt))
+                default, pos = _uleb(data, pos)
+                operands = targets + [f"default {default}"]
+            elif op == 0x10:
+                idx, pos = _uleb(data, pos)
+                operands.append(f"func {idx}")
+            elif op == 0x11:
+                type_idx, pos = _uleb(data, pos)
+                table_idx, pos = _uleb(data, pos)
+                operands = [f"type {type_idx}", f"table {table_idx}"]
+            elif op in (0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26):
+                idx, pos = _uleb(data, pos)
+                operands.append(str(idx))
+            elif 0x28 <= op <= 0x3E:
+                align, pos = _uleb(data, pos)
+                mem_offset, pos = _uleb(data, pos)
+                operands = [f"align={align}", f"offset={mem_offset}"]
+            elif op in (0x3F, 0x40):
+                _, pos = _u8(data, pos)
+            elif op in (0x41, 0x42):
+                value, pos = _sleb(data, pos)
+                operands.append(str(value))
+            elif op == 0x43:
+                if pos + 4 > end:
+                    raise _WasmTruncated
+                operands.append(repr(struct.unpack("<f", data[pos : pos + 4])[0]))
+                pos += 4
+            elif op == 0x44:
+                if pos + 8 > end:
+                    raise _WasmTruncated
+                operands.append(repr(struct.unpack("<d", data[pos : pos + 8])[0]))
+                pos += 8
+            elif op == 0xD0:
+                reftype, pos = _u8(data, pos)
+                operands.append(_valtype(reftype))
+            elif op == 0xD2:
+                idx, pos = _uleb(data, pos)
+                operands.append(f"func {idx}")
+            elif op == 0x1C:
+                n, pos = _uleb(data, pos)
+                for _ in range(n):
+                    vt, pos = _u8(data, pos)
+                    operands.append(_valtype(vt))
+            elif op == 0xFC:
+                sub, pos = _uleb(data, pos)
+                sub_name = _FC_OPS.get(sub)
+                if sub_name is None:
+                    stopped = f"unsupported_opcode:0xfc/{sub}"
+                    break
+                name = sub_name
+                if sub == 8:  # memory.init: dataidx + reserved memidx
+                    dataidx, pos = _uleb(data, pos)
+                    _, pos = _u8(data, pos)
+                    operands.append(f"data {dataidx}")
+                elif sub == 9:  # data.drop: dataidx
+                    dataidx, pos = _uleb(data, pos)
+                    operands.append(f"data {dataidx}")
+                elif sub == 10:  # memory.copy: two reserved memidx
+                    _, pos = _u8(data, pos)
+                    _, pos = _u8(data, pos)
+                elif sub == 11:  # memory.fill: reserved memidx
+                    _, pos = _u8(data, pos)
+                elif sub in (12, 14):  # table.init/copy: two indices
+                    a, pos = _uleb(data, pos)
+                    b, pos = _uleb(data, pos)
+                    operands = [str(a), str(b)]
+                elif sub in (13, 15, 16, 17):  # elem.drop / table.grow/size/fill
+                    idx, pos = _uleb(data, pos)
+                    operands.append(str(idx))
+            elif op in (0xFD, 0xFE):
+                stopped = f"unsupported_opcode:0x{op:02x}"
+                break
+            if name is None:
+                if 0x45 <= op <= 0xC4:
+                    name = f"op_0x{op:02x}"
+                else:
+                    stopped = f"unsupported_opcode:0x{op:02x}"
+                    break
+        except (_WasmTruncated, _WasmMalformed):
+            stopped = "truncated"
+            break
+        out.append(
+            {
+                "offset": rel,
+                "op": name,
+                "opcode": f"0x{op:02x}",
+                "operands": operands,
+            }
+        )
+    return out, stopped, capped
+
+
+def _locate_code_body(
+    payload: bytes, target: int
+) -> tuple[int, int, int, int] | None:
+    """Find the target-th body in a code section, returning its instruction span.
+
+    Returns (instr_start, end, body_size, local_count) for the body at index
+    ``target`` (0-based among defined functions), or None when it is out of
+    range. The locals vector at the head of the body is walked only to find
+    where the instruction stream begins.
+    """
+    count, pos = _uleb(payload, 0)
+    for index in range(count):
+        body_size, pos = _uleb(payload, pos)
+        end = pos + body_size
+        if end > len(payload):
+            raise _WasmTruncated
+        bpos = pos
+        total_locals = 0
+        group_count, bpos = _uleb(payload, bpos)
+        for _ in range(group_count):
+            if bpos >= end:
+                break
+            n, bpos = _uleb(payload, bpos)
+            _, bpos = _u8(payload, bpos)
+            total_locals += n
+        if index == target:
+            return bpos, end, body_size, total_locals
+        pos = end
+    return None
+
+
+def list_wasm_disassemble(
+    data: bytes, *, function: int, offset: int = 0, limit: int = 200
+) -> JsonObject:
+    """Decode one defined function's instruction stream (section 10).
+
+    wasm.code gives a function's body size and locals; this decodes the body
+    into instructions -- the view an analyst needs to read what a wasm function
+    actually does when no source or wat is available. function is the absolute
+    function index (matching wasm.functions / wasm.code), so an index below the
+    imported-function count names an import, which has no body. The decoder
+    models the MVP plus bulk-memory, reference-type and sign-extension opcodes;
+    on a SIMD/atomic or unknown opcode it stops cleanly (complete false,
+    stopped_reason set) rather than desyncing into garbage, so what it does emit
+    is trustworthy. Pure Python, no wabt.
+    """
+    result: JsonObject = {
+        "function": int(function),
+        "found": False,
+        "imported": False,
+        "instructions": [],
+        "count": 0,
+        "total": 0,
+        "offset": max(0, int(offset)),
+        "has_more": False,
+        "complete": False,
+        "stopped_reason": None,
+        "resolved": True,
+        "scan_capped": False,
+        "body_size": 0,
+        "local_count": 0,
+    }
+    sections, name_payload = _collect_sections(data)
+
+    imported_count = 0
+    if 2 in sections:
+        try:
+            imported_count = len(_parse_func_imports(sections[2]))
+        except (_WasmTruncated, _WasmMalformed):
+            imported_count = 0
+
+    if function < 0:
+        return result
+    if function < imported_count:
+        result["imported"] = True
+        return result
+
+    if 10 not in sections:
+        return result
+
+    try:
+        located = _locate_code_body(sections[10], function - imported_count)
+    except (_WasmTruncated, _WasmMalformed):
+        result["resolved"] = False
+        return result
+    if located is None:
+        return result
+
+    instr_start, end, body_size, local_count = located
+    result["found"] = True
+    result["body_size"] = body_size
+    result["local_count"] = local_count
+
+    if name_payload is not None:
+        try:
+            func_names = _parse_function_names(name_payload)
+        except (_WasmTruncated, _WasmMalformed):
+            func_names = {}
+        if function in func_names:
+            result["name"] = func_names[function]
+
+    instructions, stopped, capped = _decode_instructions(sections[10], instr_start, end)
+    result["stopped_reason"] = stopped
+    result["complete"] = stopped is None
+    result["scan_capped"] = capped
+    result["total"] = len(instructions)
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_DISASM_PAGE))
+    window = instructions[start : start + cap]
+    result["instructions"] = window
+    result["count"] = len(window)
+    result["offset"] = start
+    result["has_more"] = start + len(window) < len(instructions)
     return result

@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **314（196 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **315（197 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -486,6 +486,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不了时为 false)与 `scan_capped`。每个函数带 `index`、`body_size`、`local_count`、`local_groups`
   (各 {count,type})、`local_groups_truncated` 与 `name`。非模块报 `invalid_params`,超 16 MiB 报
   `too_large`。
+- 新增 `wasm.disassemble`:解码单个定义函数的指令流(节 10)。`wasm.code` 称每个函数有多重,这个读某个函数到底
+  做什么——没有源码或 wat 时看清 wasm 函数真实指令的唯一途径,是 `ghidra.disassemble` 的 wasm 对应物。
+  `function` 是绝对函数索引(与 `wasm.functions`/`wasm.code`/`wasm.callgraph` 同一编号),故低于 imported_count
+  的索引指的是导入函数、没有代码体。解码器覆盖 MVP 加 bulk-memory、reference-type 与符号扩展指令;遇到 SIMD/
+  atomic 或未知操作码时干净停下(complete false、置 stopped_reason),而非错位成乱码,所以吐出来的内容可信。纯
+  Python 无需 wabt。回 `function`、`found`(该索引无定义体时 false)、`imported`(索引指向导入时 true)、`name`
+  (name 节存在时)、`body_size`、`local_count`、`instructions`(分页)、`count`/`total`/`offset`/`has_more`、
+  `complete`(整段体已解完)、`stopped_reason`(如解码停在 unsupported_opcode:0xfd)、`resolved`(代码节解析不了
+  为 false)与 `scan_capped`。每条指令带 `offset`(体内字节偏移)、`op`(助记符,或未命名数值操作码的 op_0xNN)、
+  `opcode`(十六进制)与 `operands`(渲染后的立即数列表:索引、常量值、块类型、memarg 的 align/offset...)。非模块
+  报 `invalid_params`,超 16 MiB 报 `too_large`。
 - 新增 `wasm.globals`:纯 Python 列出模块定义的全局变量(节 6)。summary 只给计数,这里逐个命名:
   每行带 `index`(全局索引空间里的位置,导入全局在前故作为偏移加上)、`value_type`、`mutable`
   (可变全局常是加壳器藏栈指针/解密 key 的地方),与 `init`——初始化表达式首指令的解码:`{op}` 加

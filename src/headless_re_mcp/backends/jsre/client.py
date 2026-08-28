@@ -23,6 +23,7 @@ from headless_re_mcp.backends.jsre.wasm_summary import (
     extract_wasm_strings,
     list_wasm_code,
     list_wasm_data,
+    list_wasm_disassemble,
     list_wasm_elements,
     list_wasm_exports,
     list_wasm_functions,
@@ -489,6 +490,25 @@ class WasmClient:
                 "backend_error", f"input unreadable: {exc}", path=str(resolved)
             ) from exc
         return list_wasm_code(raw, offset=offset, limit=limit)
+
+    def disassemble(
+        self, path: Path, *, function: int, offset: int = 0, limit: int = 200
+    ) -> JsonObject:
+        """Decode one defined function's instruction stream (pure Python, no wabt)."""
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        if not _looks_like_wasm(resolved):
+            raise JsReError(
+                "invalid_params",
+                "not a WebAssembly module: missing the \\0asm magic",
+                path=str(resolved),
+            )
+        try:
+            raw = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        return list_wasm_disassemble(raw, function=function, offset=offset, limit=limit)
 
 
 def _discover_webcrack() -> Path | None:
