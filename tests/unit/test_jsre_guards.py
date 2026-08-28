@@ -18,11 +18,24 @@ import headless_re_mcp.backends.jsre.client as jsre_client
 from headless_re_mcp.backends.jsre.client import (
     JsClient,
     JsReError,
+    WasmClient,
     _capped_file_listing,
     _looks_like_wasm,
     _require_existing_file,
     _resolve_wabt_tool,
 )
+
+
+def _sparse_oversized_file(path: Path) -> Path:
+    """A file whose stat size clears the input cap without allocating it.
+
+    truncate reports the length in st_size while leaving the extent unwritten,
+    so the guard sees an oversized input at zero disk cost -- and the sparse
+    body reads as zero bytes, which is deliberately not the wasm magic.
+    """
+    with path.open("wb") as handle:
+        handle.truncate(jsre_client._MAX_INPUT_BYTES + 1)
+    return path
 
 
 def _bundle(tmp_path: Path) -> Path:
@@ -104,6 +117,39 @@ def test_require_existing_file_reports_a_missing_input_as_not_found(tmp_path: Pa
         _require_existing_file(missing, missing="input file not found")
     assert caught.value.code == "not_found"
     assert caught.value.details.get("path") == str(missing)
+
+
+def test_require_existing_file_refuses_an_oversized_input_as_too_large(tmp_path: Path) -> None:
+    """An input past the byte cap is refused before the child is launched.
+
+    webcrack and wabt read the whole file, so handing them a multi-gigabyte
+    input would bind the child on work the adapter never bounded. The guard
+    stops at the cap with too_large, and reports both the offending size and
+    the ceiling so the caller learns why rather than seeing a mystery timeout.
+    """
+    big = _sparse_oversized_file(tmp_path / "huge.js")
+    with pytest.raises(JsReError) as caught:
+        _require_existing_file(big, missing="input file not found")
+    assert caught.value.code == "too_large"
+    assert caught.value.details.get("max_file_size") == jsre_client._MAX_INPUT_BYTES
+    assert caught.value.details.get("size") == jsre_client._MAX_INPUT_BYTES + 1
+
+
+def test_wasm_input_caps_size_before_it_checks_the_magic(tmp_path: Path) -> None:
+    """An oversized non-module is too_large, not misreported as bad magic.
+
+    WasmClient runs the shared size cap ahead of the \\0asm magic probe on
+    purpose: a 2 GB file that happens not to open with the module magic is
+    still refused for its size, so the caller is told to shrink the input
+    rather than being sent to fix a magic byte on a file that was never going
+    to be read. Passing a present tool clears the capability gate so the
+    ordering itself is what the assertion pins.
+    """
+    big = _sparse_oversized_file(tmp_path / "huge.wasm")
+    client = WasmClient()
+    with pytest.raises(JsReError) as caught:
+        client._require_input(big, Path("/bin/true"), "wasm2wat")
+    assert caught.value.code == "too_large"
 
 
 def test_looks_like_wasm_is_false_when_the_path_cannot_be_read(tmp_path: Path) -> None:
