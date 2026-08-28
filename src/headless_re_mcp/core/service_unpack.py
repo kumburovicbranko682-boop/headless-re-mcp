@@ -92,6 +92,25 @@ JsonObject = dict[str, Any]
 _OEP_REGION_SNAPSHOT_LIMIT = 512
 
 
+def _safe_expanduser(raw: str) -> Path:
+    """Path(raw).expanduser(), but treat an unresolvable ~user as a caller error.
+
+    The dump_path/path readers below feed a caller-supplied string to
+    ``Path(...).expanduser().resolve(...)`` inside a ``try/except BaseException``
+    that hands the exception to ``_failure``. A missing file (FileNotFoundError)
+    and an embedded NUL (ValueError) map to clean codes there, but
+    ``expanduser()`` raises RuntimeError for a ``~user`` whose home cannot be
+    resolved, and RuntimeError is not mapped -- so a path the caller fully
+    controls filed an internal_error incident. Convert it to the same
+    FileNotFoundError a missing path already yields, so the whole "give me a
+    usable dump path" contract answers with file_not_found.
+    """
+    try:
+        return Path(raw).expanduser()
+    except RuntimeError as exc:
+        raise FileNotFoundError(f"path could not be resolved: {raw!r}") from exc
+
+
 def _refuse_rebuild_that_will_not_fit(
     path: Path, *, observed_size: int | None = None
 ) -> Result[JsonObject] | None:
@@ -353,7 +372,7 @@ class UnpackMixin:
             blocked = self._guard_unpack_active(session_id, stage="stub_coupling")
             if blocked is not None:
                 return blocked
-            path = Path(dump_path).expanduser().resolve(strict=True)
+            path = _safe_expanduser(dump_path).resolve(strict=True)
             artifact_root = self.settings.artifact_root.expanduser().resolve()
             if artifact_root not in path.parents and path.parent != artifact_root:
                 return Result[JsonObject](
@@ -502,7 +521,7 @@ class UnpackMixin:
         stub_coupling: JsonObject | None = None
         still_vm_stub_count: int | None = None
         if dump_path:
-            dump = Path(dump_path).expanduser().resolve()
+            dump = _safe_expanduser(dump_path).resolve()
             artifact_root = self.settings.artifact_root.expanduser().resolve()
             if artifact_root not in dump.parents and dump.parent != artifact_root:
                 return Result[JsonObject](
@@ -626,7 +645,7 @@ class UnpackMixin:
             blocked = self._guard_unpack_active(session_id, stage="iat_rebuild")
             if blocked is not None:
                 return blocked
-            path = Path(dump_path).expanduser().resolve(strict=True)
+            path = _safe_expanduser(dump_path).resolve(strict=True)
             artifact_root = self.settings.artifact_root.expanduser().resolve()
             if artifact_root not in path.parents and path.parent != artifact_root:
                 return Result[JsonObject](
@@ -788,7 +807,7 @@ class UnpackMixin:
             blocked = self._guard_unpack_active(session_id, stage="pe_rebuild")
             if blocked is not None:
                 return blocked
-            path = Path(dump_path).expanduser().resolve(strict=True)
+            path = _safe_expanduser(dump_path).resolve(strict=True)
             artifact_root = self.settings.artifact_root.expanduser().resolve()
             if artifact_root not in path.parents and path.parent != artifact_root:
                 return Result[JsonObject](
@@ -916,7 +935,7 @@ class UnpackMixin:
         try:
             session = self.registry.get(session_id)
             session.require_pe()
-            target = Path(path).expanduser().resolve(strict=True)
+            target = _safe_expanduser(path).resolve(strict=True)
             from headless_re_mcp.core.service import _session_owns_artifact_path
 
             if not _session_owns_artifact_path(

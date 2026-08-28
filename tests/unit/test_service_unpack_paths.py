@@ -24,6 +24,7 @@ from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.service_unpack import (
     _read_dump_for_rebuild,
     _refuse_rebuild_that_will_not_fit,
+    _safe_expanduser,
 )
 from headless_re_mcp.detection.die import DieScanError
 from headless_re_mcp.unpack.pe_rebuild import PeRebuildError
@@ -178,6 +179,16 @@ def test_read_dump_for_rebuild_detects_a_size_change(
 # ---------------------------------------------------------------------------
 
 
+def test_safe_expanduser_maps_an_unresolvable_home_to_file_not_found() -> None:
+    """A ~user with no resolvable home makes Path.expanduser() raise
+    RuntimeError, which _failure does not map and turned into an internal_error
+    incident. The helper converts it to the FileNotFoundError a missing path
+    already yields, and leaves a resolvable path untouched."""
+    with pytest.raises(FileNotFoundError):
+        _safe_expanduser("~nosuchuser_zzz/dump.bin")
+    assert _safe_expanduser("/tmp/somewhere/dump.bin") == Path("/tmp/somewhere/dump.bin")
+
+
 def test_stub_coupling_rejects_a_path_outside_the_artifact_root(tmp_path: Path) -> None:
     service = _service(tmp_path)
     binary = tmp_path / "sample.exe"
@@ -188,6 +199,21 @@ def test_stub_coupling_rejects_a_path_outside_the_artifact_root(tmp_path: Path) 
     result = service.unpack_stub_coupling(session_id, str(outside))
     assert not result.ok and result.error is not None
     assert result.error.code == "invalid_params"
+
+
+def test_stub_coupling_maps_an_unresolvable_home_dump_path_to_file_not_found(
+    tmp_path: Path,
+) -> None:
+    """End to end: a ~user dump_path used to 500 as an internal_error incident
+    before the artifact-root check could even run; it now reads as
+    file_not_found like any other unusable path."""
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    result = service.unpack_stub_coupling(session_id, "~nosuchuser_zzz/dump.bin")
+    assert not result.ok and result.error is not None
+    assert result.error.code == "file_not_found"
 
 
 def test_stub_coupling_reports_gate_and_pause(tmp_path: Path) -> None:
