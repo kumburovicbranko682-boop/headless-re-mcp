@@ -115,15 +115,21 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         serial: str,
         server_binary: str = "",
         port: Annotated[int, Field(ge=1, le=65535)] = 27042,
+        bind_host: str = "127.0.0.1",
     ) -> dict[str, Any]:
         """Push and start frida-server on a rooted device/emulator via adb (best-effort).
 
         Answers with running, pushed and port, plus note when the process is
         not visible. There is no ok field, no started field and no server field.
         Envelope success with running false means the process is not visible.
+        bind_host is the interface frida-server listens on; it defaults to
+        127.0.0.1, reachable over the USB/adb transport or an adb forward but
+        not from the network. Pass 0.0.0.0 only to reach it by device IP.
         """
         return _dump(
-            analysis.frida_server_ensure(session_id, serial, server_binary=server_binary, port=port)
+            analysis.frida_server_ensure(
+                session_id, serial, server_binary=server_binary, port=port, bind_host=bind_host
+            )
         )
 
     @tools.tool(name="frida.applications")
