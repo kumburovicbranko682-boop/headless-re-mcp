@@ -19,6 +19,7 @@ import time
 from collections import Counter, OrderedDict, deque
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from headless_re_mcp.backends.common.har import har_entry, serialize_har
@@ -371,6 +372,66 @@ def summarize_flows(
 _MAX_SEARCH_RESULTS = 1000
 _SEARCH_SNIPPET_CHARS = 80
 _SEARCH_SNIPPET_MAX = 400
+# proxy.endpoints result cap: distinct endpoints are bounded by the flow ring,
+# but the returned page is still capped like every other list.
+_MAX_ENDPOINTS_PAGE = 1000
+
+
+def fold_endpoints(rows: list[JsonObject], *, limit: int = 100) -> JsonObject:
+    """Fold a flow snapshot into distinct (method, host, path) endpoints.
+
+    Pure over the recorder's summary rows. The query string is stripped so
+    ``/search?q=a`` and ``/search?q=b`` collapse to one endpoint -- the view an
+    API map wants -- and each endpoint aggregates its hit count, the distinct
+    status codes seen, and how many of its flows errored. Ranked by hits.
+    """
+    buckets: dict[tuple[str, str, str], JsonObject] = {}
+    for row in rows:
+        method = str(row.get("method") or "").upper() or "?"
+        url = str(row.get("url") or "")
+        host = str(row.get("host") or "")
+        path = "/"
+        if url:
+            parts = urlsplit(url)
+            if not host:
+                host = parts.netloc
+            path = parts.path or "/"
+        key = (method, host, path)
+        bucket = buckets.get(key)
+        if bucket is None:
+            bucket = {
+                "method": method,
+                "host": host,
+                "path": path,
+                "hits": 0,
+                "_statuses": set(),
+                "errors": 0,
+            }
+            buckets[key] = bucket
+        bucket["hits"] += 1
+        status = row.get("status")
+        if isinstance(status, int):
+            bucket["_statuses"].add(status)
+        if row.get("error"):
+            bucket["errors"] += 1
+
+    endpoints: list[JsonObject] = []
+    for bucket in buckets.values():
+        statuses = bucket.pop("_statuses")
+        bucket["statuses"] = sorted(statuses)
+        endpoints.append(bucket)
+    endpoints.sort(
+        key=lambda e: (-e["hits"], str(e["host"]), str(e["path"]), str(e["method"]))
+    )
+    cap = max(1, min(int(limit), _MAX_ENDPOINTS_PAGE))
+    window = endpoints[:cap]
+    return {
+        "endpoints": window,
+        "count": len(window),
+        "total": len(endpoints),
+        "truncated": len(window) < len(endpoints),
+        "total_flows": len(rows),
+    }
 
 
 def _headers_text(headers: dict[str, str]) -> str:
@@ -839,6 +900,10 @@ class ProxyBackend:
         if items:
             dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
         return summarize_flows(items, dropped=dropped, top=top)
+
+    def endpoints(self, session_id: str, *, limit: int = 100) -> JsonObject:
+        inst = self._get(session_id)
+        return fold_endpoints(inst.recorder.snapshot(), limit=limit)
 
     def search(
         self,

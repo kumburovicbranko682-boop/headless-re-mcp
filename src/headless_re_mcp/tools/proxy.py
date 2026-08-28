@@ -96,6 +96,24 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_stats(session_id, top=top))
 
+    @tools.tool(name="proxy.endpoints")
+    def proxy_endpoints(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Fold the capture into distinct (method, host, path) endpoints.
+
+        Turns a noisy flow log into the API map: the query string is stripped so
+        /search?q=a and /search?q=b collapse into one GET /search, and each
+        endpoint aggregates how often it was hit, the distinct status codes seen,
+        and how many of its flows errored. Answers with endpoints (ranked by
+        hits), count, total (distinct endpoints), truncated (the list was
+        capped), and total_flows (rows folded). Each endpoint carries method,
+        host, path, hits, statuses (a sorted list of distinct status codes) and
+        errors. Use proxy.flows to read the individual rows behind an endpoint.
+        """
+        return _dump(analysis.proxy_endpoints(session_id, limit=limit))
+
     @tools.tool(name="proxy.search")
     def proxy_search(
         session_id: str,

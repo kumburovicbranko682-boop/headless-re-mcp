@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **277（160 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **278（161 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -458,6 +458,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `top_mime_types`(排序后各取前 `top` 条,默认 10,上限 50)及其背后的 `host_count` /
   `mime_type_count`。host 由每条 url 解析,`mime_type` 剥掉 `; charset=...` 只留裸媒体类型;
   聚合逻辑抽成纯函数 `summarize_requests`,不依赖运行中的浏览器,可独立单测。
+
+### 新增（抓包端点归并）
+
+- 新增 `proxy.endpoints`:把嘈杂的流水日志折成 API 地图——按 `(method, host, path)` 归并,查询串
+  剥掉,于是 `/search?q=a` 与 `/search?q=b` 合成一个 `GET /search`,每个端点聚合命中次数、见过的
+  不同状态码、以及其中多少条出错。回 `endpoints`(按命中排序)、`count`、`total`(不同端点数)、
+  `truncated`(列表被截)与 `total_flows`(折进去的行数)。每个端点带 `method`/`host`/`path`/`hits`/
+  `statuses`(去重排序的状态码列表)/`errors`。要看某端点背后的单条流用 `proxy.flows`。
 
 ### 新增（抓包全文检索）
 

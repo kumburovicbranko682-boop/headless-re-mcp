@@ -105,6 +105,9 @@ class ProxyAnalysisMixin:
     def proxy_stats(self, session_id: str, top: int = 10) -> Result[JsonObject]:
         return self._proxy_wrap(session_id, "stats", session_id, top=top)
 
+    def proxy_endpoints(self, session_id: str, limit: int = 100) -> Result[JsonObject]:
+        return self._proxy_wrap(session_id, "endpoints", session_id, limit=limit)
+
     def proxy_search(
         self,
         session_id: str,
