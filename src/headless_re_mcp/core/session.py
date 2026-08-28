@@ -168,6 +168,9 @@ class SessionRegistry:
                 # The CodeView RSDS record -- the PE build fingerprint, the
                 # pair to an ELF build-id / Mach-O UUID; absent is an answer.
                 metadata["pe"].update(_pe_debug_fingerprint(path))
+                # VS_VERSIONINFO -- the self-declared identity (versions,
+                # CompanyName/ProductName strings); a claim, not a verdict.
+                metadata["pe"].update(_pe_version_info(path))
                 # Managed resources are a separate store from the PE resource
                 # tree: the ManifestResource census covers the Assembly.Load
                 # packer pattern.
@@ -3402,6 +3405,17 @@ _PE_RES_MAX_DEPTH = 8
 _PE_RES_MAX_ENTRIES = 8192
 _PE_RES_MAX_PAYLOADS = 64
 _PE_RES_MAX_TREE = 32 * 1024 * 1024
+# The RT_VERSION resource (type 16) carries VS_VERSIONINFO -- the PE's
+# self-declared identity: the numeric file/product versions and the
+# CompanyName/ProductName/OriginalFilename strings Explorer shows and malware
+# routinely fakes. The pair to an APK's package identity, a .NET assembly
+# version and an ELF/Mach-O soname/install_name.
+_PE_RT_VERSION = 16
+_VS_FIXED_SIG = 0xFEEF04BD
+_VS_FIXED_SIZE = 52
+_PE_MAX_VERSION_BLOB = 64 * 1024
+_PE_MAX_VERSION_STRINGS = 32
+_PE_MAX_VERSION_CHARS = 256
 _PE_RES_MAX_NAME = 128
 # The standard RT_* resource type ids, so a flagged payload names the resource
 # it hid in (RT_RCDATA is the dropper's usual choice, but a PE in a "bitmap" is
@@ -4318,6 +4332,191 @@ def _pe_debug_fingerprint(path: Path) -> dict[str, Any]:
                 }
             }
     return {}
+
+
+def _pe_version_info(path: Path) -> dict[str, Any]:
+    """VS_VERSIONINFO -- the PE's self-declared identity -- as ``{"version_info": ...}``.
+
+    The pair to an APK's package identity, a .NET assembly version and an
+    ELF/Mach-O soname/install_name: the numeric file and product versions from
+    VS_FIXEDFILEINFO and the StringFileInfo table (CompanyName, ProductName,
+    OriginalFilename, FileDescription, ...) that Explorer's Details pane shows.
+    Self-declared, so a claim to triage, not a verdict -- malware routinely
+    fakes a Microsoft identity here, which is exactly why the strings must be
+    on the record next to the signature facts that could back them.
+
+    Bounded and fail-closed: the resource walk to the RT_VERSION leaf is depth-
+    and entry-capped, the blob and every string are size-capped, and a PE
+    without the resource (or with one that decodes to nothing) carries no fact
+    -- absence is a real answer.
+    """
+    try:
+        if path.stat().st_size > _PE_MAX_IMPORT_FILE:
+            return {}
+        with path.open("rb") as stream:
+            raw = stream.read(_PE_MAX_IMPORT_FILE)
+    except OSError:
+        return {}
+    view = _pe_header_view(raw)
+    if view is None:
+        return {}
+    _magic, dir_count, dir_off, sections = view
+    blob = _pe_version_blob(raw, dir_count, dir_off, sections)
+    if blob is None:
+        return {}
+    parsed = _vs_versioninfo(blob)
+    if parsed is None:
+        return {}
+    return {"version_info": parsed}
+
+
+def _pe_version_blob(
+    raw: bytes,
+    dir_count: int,
+    dir_off: int,
+    sections: list[tuple[int, int, int, int]],
+) -> bytes | None:
+    """The first RT_VERSION leaf's bytes out of the resource tree, or None."""
+    entry = dir_off + _PE_RESOURCE_DIR * 8
+    if dir_count <= _PE_RESOURCE_DIR or entry + 8 > len(raw):
+        return None
+    res_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    res_size = int.from_bytes(raw[entry + 4 : entry + 8], "little")
+    if res_rva == 0 or res_size == 0:
+        return None
+    res_base = _pe_rva_to_offset(sections, res_rva)
+    if res_base is None:
+        return None
+    tree = raw[res_base : res_base + min(res_size, _PE_RES_MAX_TREE)]
+
+    def first_leaf(node_off: int, depth: int) -> bytes | None:
+        # Under the RT_VERSION type node: name then language levels, ending in
+        # an IMAGE_RESOURCE_DATA_ENTRY whose bytes live inside the tree.
+        if depth > _PE_RES_MAX_DEPTH or node_off + 16 > len(tree):
+            return None
+        named = int.from_bytes(tree[node_off + 12 : node_off + 14], "little")
+        idd = int.from_bytes(tree[node_off + 14 : node_off + 16], "little")
+        cursor = node_off + 16
+        for _ in range(min(named + idd, _PE_RES_MAX_ENTRIES)):
+            if cursor + 8 > len(tree):
+                return None
+            offset_field = int.from_bytes(tree[cursor + 4 : cursor + 8], "little")
+            cursor += 8
+            if offset_field & 0x80000000:
+                found = first_leaf(offset_field & 0x7FFFFFFF, depth + 1)
+                if found is not None:
+                    return found
+                continue
+            if offset_field + 16 > len(tree):
+                continue
+            data_rva = int.from_bytes(tree[offset_field : offset_field + 4], "little")
+            size = int.from_bytes(tree[offset_field + 4 : offset_field + 8], "little")
+            if res_rva <= data_rva and data_rva - res_rva + size <= len(tree):
+                start = data_rva - res_rva
+                return tree[start : start + min(size, _PE_MAX_VERSION_BLOB)]
+        return None
+
+    if len(tree) < 16:
+        return None
+    named = int.from_bytes(tree[12:14], "little")
+    idd = int.from_bytes(tree[14:16], "little")
+    cursor = 16
+    for _ in range(min(named + idd, _PE_RES_MAX_ENTRIES)):
+        if cursor + 8 > len(tree):
+            return None
+        name_field = int.from_bytes(tree[cursor : cursor + 4], "little")
+        offset_field = int.from_bytes(tree[cursor + 4 : cursor + 8], "little")
+        cursor += 8
+        if name_field == _PE_RT_VERSION and offset_field & 0x80000000:
+            return first_leaf(offset_field & 0x7FFFFFFF, 1)
+    return None
+
+
+def _vs_block(blob: bytes, pos: int) -> tuple[int, int, str, int] | None:
+    """``(end, value_len, key, value_pos)`` for the version block at ``pos``.
+
+    Every VS_VERSIONINFO node shares one shape: wLength, wValueLength, wType,
+    a NUL-terminated UTF-16 key, then 32-bit padding before the value.
+    """
+    if pos + 6 > len(blob):
+        return None
+    w_length = int.from_bytes(blob[pos : pos + 2], "little")
+    if w_length < 6:
+        return None
+    end = min(pos + w_length, len(blob))
+    value_len = int.from_bytes(blob[pos + 2 : pos + 4], "little")
+    key_end = pos + 6
+    while key_end + 2 <= end and blob[key_end : key_end + 2] != b"\x00\x00":
+        key_end += 2
+    key = blob[pos + 6 : key_end].decode("utf-16-le", errors="replace")
+    value_pos = (key_end + 2 + 3) & ~3
+    return end, value_len, key, value_pos
+
+
+def _vs_versioninfo(blob: bytes) -> dict[str, Any] | None:
+    """The decoded VS_VERSIONINFO facts, or None when the blob is not one."""
+    root = _vs_block(blob, 0)
+    if root is None:
+        return None
+    end, value_len, key, value_pos = root
+    if key != "VS_VERSION_INFO":
+        return None
+    strings: dict[str, str] = {}
+    out: dict[str, Any] = {"file_version": None, "product_version": None, "strings": strings}
+    has_fixed = (
+        value_len >= _VS_FIXED_SIZE
+        and value_pos + _VS_FIXED_SIZE <= len(blob)
+        and int.from_bytes(blob[value_pos : value_pos + 4], "little") == _VS_FIXED_SIG
+    )
+    if has_fixed:
+
+        def dotted(at: int) -> str:
+            ms = int.from_bytes(blob[value_pos + at : value_pos + at + 4], "little")
+            ls = int.from_bytes(blob[value_pos + at + 4 : value_pos + at + 8], "little")
+            return f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
+
+        out["file_version"] = dotted(8)
+        out["product_version"] = dotted(16)
+    pos = (value_pos + value_len + 3) & ~3
+    while pos + 6 <= end:  # the children: StringFileInfo and VarFileInfo
+        child = _vs_block(blob, pos)
+        if child is None:
+            break
+        child_end, _len, child_key, table_pos = child
+        if child_key == "StringFileInfo":
+            _vs_string_tables(blob, table_pos, child_end, strings)
+        if child_end <= pos:
+            break
+        pos = (child_end + 3) & ~3
+    if out["file_version"] is None and not strings:
+        return None  # a version resource that decodes to nothing is no identity
+    return out
+
+
+def _vs_string_tables(blob: bytes, pos: int, end: int, strings: dict[str, str]) -> None:
+    """Collect String entries from every StringTable under StringFileInfo."""
+    while pos + 6 <= end:
+        table = _vs_block(blob, pos)
+        if table is None:
+            return
+        table_end, _len, _key, entry_pos = table
+        while entry_pos + 6 <= table_end:
+            block = _vs_block(blob, entry_pos)
+            if block is None:
+                return
+            block_end, _vlen, name, text_pos = block
+            if name and name not in strings and len(strings) < _PE_MAX_VERSION_STRINGS:
+                text_end = text_pos
+                while text_end + 2 <= block_end and blob[text_end : text_end + 2] != b"\x00\x00":
+                    text_end += 2
+                value = blob[text_pos:text_end].decode("utf-16-le", errors="replace")
+                strings[name[:_PE_MAX_VERSION_CHARS]] = value[:_PE_MAX_VERSION_CHARS]
+            if block_end <= entry_pos:
+                return
+            entry_pos = (block_end + 3) & ~3
+        if table_end <= pos:
+            return
+        pos = (table_end + 3) & ~3
 
 
 def _pe_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:

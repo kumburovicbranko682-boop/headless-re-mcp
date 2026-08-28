@@ -28,6 +28,7 @@ from headless_re_mcp.core.session import (
     _pe_overlay,
     _pe_resource_payloads,
     _pe_tls_facts,
+    _pe_version_info,
     describe_pe_clr,
 )
 
@@ -1024,6 +1025,134 @@ class TestPeDebugFingerprint:
         pdb = _pe_debug_fingerprint(_DOTNET_FIXTURE)["pdb"]
         assert pdb["guid"] == _GUID
         assert pdb["path"] == r"C:\build\headless\MyAssembly.pdb"
+
+
+def _vs_node(
+    key: str, value: bytes, value_len: int, children: list[bytes], w_type: int = 0
+) -> bytes:
+    """One VS_VERSIONINFO node: header, UTF-16 key, padded value, padded children."""
+    body = bytearray(key.encode("utf-16-le") + b"\x00\x00")
+    while (6 + len(body)) % 4:
+        body += b"\x00"
+    body += value
+    for child in children:
+        while (6 + len(body)) % 4:
+            body += b"\x00"
+        body += child
+    return struct.pack("<HHH", 6 + len(body), value_len, w_type) + bytes(body)
+
+
+def _vs_string(key: str, value: str) -> bytes:
+    text = value.encode("utf-16-le") + b"\x00\x00"
+    return _vs_node(key, text, len(value) + 1, [], w_type=1)  # wValueLength is in WCHARs
+
+
+def _version_blob(
+    *,
+    file_version: tuple[int, int, int, int] = (1, 2, 3, 4),
+    product_version: tuple[int, int, int, int] = (9, 8, 7, 6),
+    strings: dict[str, str] | None = None,
+    with_fixed: bool = True,
+    root_key: str = "VS_VERSION_INFO",
+) -> bytes:
+    """A VS_VERSIONINFO blob with the given fixed versions and string table."""
+    fixed = b""
+    if with_fixed:
+        fms = (file_version[0] << 16) | file_version[1]
+        fls = (file_version[2] << 16) | file_version[3]
+        pms = (product_version[0] << 16) | product_version[1]
+        pls = (product_version[2] << 16) | product_version[3]
+        fixed = struct.pack("<IIIIII", 0xFEEF04BD, 0x0001_0000, fms, fls, pms, pls)
+        fixed += b"\x00" * 28  # flags/OS/type/date fields the reader ignores
+    children: list[bytes] = []
+    if strings:
+        table = _vs_node("040904b0", b"", 0, [_vs_string(k, v) for k, v in strings.items()])
+        children.append(_vs_node("StringFileInfo", b"", 0, [table]))
+    return _vs_node(root_key, fixed, len(fixed), children)
+
+
+class TestPeVersionInfo:
+    """_pe_version_info reads VS_VERSIONINFO -- the PE's self-declared identity.
+
+    The pair to an APK's package identity and a .NET assembly version: numeric
+    file/product versions from VS_FIXEDFILEINFO plus the StringFileInfo table
+    Explorer's Details pane shows. Self-declared, so a claim for triage --
+    malware fakes a Microsoft identity here -- never a verdict.
+    """
+
+    def test_a_pe_without_resources_carries_no_identity(self, tmp_path: Path) -> None:
+        path = tmp_path / "bare.exe"
+        path.write_bytes(_native_pe())
+        assert _pe_version_info(path) == {}
+
+    def test_versions_and_strings_read_exactly(self, tmp_path: Path) -> None:
+        blob = _version_blob(
+            strings={
+                "CompanyName": "Contoso Ltd",
+                "ProductName": "Widget",
+                "OriginalFilename": "widget.exe",
+            }
+        )
+        path = tmp_path / "widget.exe"
+        path.write_bytes(_pe_with_resources([(16, 1, blob)]))
+        assert _pe_version_info(path) == {
+            "version_info": {
+                "file_version": "1.2.3.4",
+                "product_version": "9.8.7.6",
+                "strings": {
+                    "CompanyName": "Contoso Ltd",
+                    "ProductName": "Widget",
+                    "OriginalFilename": "widget.exe",
+                },
+            }
+        }
+
+    def test_a_resource_without_fixed_info_still_reads_strings(self, tmp_path: Path) -> None:
+        # Some resource editors drop VS_FIXEDFILEINFO but keep the strings;
+        # the identity claim is the strings, so they must survive alone.
+        blob = _version_blob(with_fixed=False, strings={"CompanyName": "Contoso Ltd"})
+        path = tmp_path / "nofixed.exe"
+        path.write_bytes(_pe_with_resources([(16, 1, blob)]))
+        info = _pe_version_info(path)["version_info"]
+        assert info["file_version"] is None
+        assert info["strings"] == {"CompanyName": "Contoso Ltd"}
+
+    def test_other_resources_without_rt_version_read_nothing(self, tmp_path: Path) -> None:
+        path = tmp_path / "manifest_only.exe"
+        path.write_bytes(
+            _pe_with_resources([(24, 1, b'<?xml version="1.0"?><assembly/>')])
+        )
+        assert _pe_version_info(path) == {}
+
+    def test_a_foreign_root_key_is_not_version_info(self, tmp_path: Path) -> None:
+        blob = _version_blob(root_key="NOT_VERSION_INFO", strings={"CompanyName": "X"})
+        path = tmp_path / "foreign.exe"
+        path.write_bytes(_pe_with_resources([(16, 1, blob)]))
+        assert _pe_version_info(path) == {}
+
+    def test_the_string_table_is_bounded(self, tmp_path: Path) -> None:
+        blob = _version_blob(strings={f"Key{i:02d}": "v" for i in range(40)})
+        path = tmp_path / "many.exe"
+        path.write_bytes(_pe_with_resources([(16, 1, blob)]))
+        info = _pe_version_info(path)["version_info"]
+        assert len(info["strings"]) == 32  # _PE_MAX_VERSION_STRINGS
+
+    def test_a_truncated_blob_fails_closed(self, tmp_path: Path) -> None:
+        # The root declares a 52-byte fixed value the cut blob cannot hold:
+        # nothing decodes, so no identity is claimed and nothing raises.
+        blob = _version_blob(strings={"CompanyName": "Contoso Ltd"})[:30]
+        path = tmp_path / "cut.exe"
+        path.write_bytes(_pe_with_resources([(16, 1, blob)]))
+        assert _pe_version_info(path) == {}
+
+    def test_session_over_a_pe_carries_the_identity(self, tmp_path: Path) -> None:
+        blob = _version_blob(strings={"CompanyName": "Contoso Ltd"})
+        path = tmp_path / "app.exe"
+        path.write_bytes(_pe_with_resources([(16, 1, blob)]))
+        session = SessionRegistry().create(str(path))
+        info = session.metadata["pe"]["version_info"]
+        assert info["file_version"] == "1.2.3.4"
+        assert info["strings"]["CompanyName"] == "Contoso Ltd"
 
 
 class TestPeResourcePayloads:
