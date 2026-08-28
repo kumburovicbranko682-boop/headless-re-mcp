@@ -26,7 +26,15 @@ ALLOWED = frozenset({100})
 
 
 class _OsProxy:
-    name = "nt"
+    """Pin ``name`` for ui_win32 while forwarding the rest to the real os.
+
+    Pinning "posix" lets the off-Windows refusal test run (not skip) on a real
+    Windows host: the guard arm is selected by what ui_win32 reads, not by the
+    ambient platform.
+    """
+
+    def __init__(self, name: str = "nt") -> None:
+        self.name = name
 
     def __getattr__(self, attribute: str) -> Any:
         return getattr(os, attribute)
@@ -208,8 +216,8 @@ def _table() -> dict[int, dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(os.name == "nt", reason="the refusal only exists off Windows")
-def test_win32_ui_is_refused_off_windows() -> None:
+def test_win32_ui_is_refused_off_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(uw, "os", _OsProxy("posix"))
     with pytest.raises(UiPidBoundaryError) as refused:
         uw.hwnd_owner_pid(5)
     assert refused.value.code == "unsupported_on_platform"

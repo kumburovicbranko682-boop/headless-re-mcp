@@ -275,6 +275,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `_OsProxy`,与 `test_config_discovery_paths.py` 的既有惯例同形)。用例选中
   哪条臂由被测模块读到的值决定,与宿主平台无关,五个用例在全矩阵上都执行。
 
+- 同类收编:`test_ui_win32_messages_and_capture.py` 的
+  `test_win32_ui_is_refused_off_windows` 也曾在 Windows 上 `skipif`——
+  `ui_win32.hwnd_owner_pid` 的 `unsupported_on_platform` 拒绝臂在 Windows
+  矩阵上无人断言。该文件已有钉死 "nt" 的 `_OsProxy`,泛化为带构造参数后
+  用 `_OsProxy("posix")` 让此用例全平台真跑。至此全库 "off Windows" 门禁
+  类 skipif 清零(其余 `skipif(os.name == "nt")` 均为符号链接/权限位/shebang
+  等真实平台机制,非门禁臂)。
+
 ### 修复（事故日志脱敏关键字与结构化脱敏对齐）
 
 ### 修复（apk.sign / apk.decode 先验证输入是有效 zip，再启 JVM）
