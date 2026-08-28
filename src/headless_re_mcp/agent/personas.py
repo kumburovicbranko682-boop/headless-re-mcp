@@ -265,10 +265,15 @@ class PersonaStore:
         return self.list_public()
 
     def import_path(self, path: Path) -> JsonObject:
-        resolved = path.expanduser()
         try:
-            resolved = resolved.resolve()
-        except OSError as exc:
+            # expanduser() is not just string work: for a ~user whose home
+            # cannot be resolved it raises RuntimeError, and resolve() raises
+            # ValueError on a path with an embedded NUL. Neither is the OSError
+            # this only caught, so the import route -- which maps ValueError to
+            # 400 -- let the RuntimeError escape as a 500 with a logged incident,
+            # and surfaced the NUL ValueError's raw "embedded null byte" message.
+            resolved = path.expanduser().resolve()
+        except (OSError, RuntimeError, ValueError) as exc:
             raise ValueError("persona_path_unreadable") from exc
         if resolved.suffix.lower() not in {".md", ".txt"}:
             raise ValueError("persona_not_markdown")

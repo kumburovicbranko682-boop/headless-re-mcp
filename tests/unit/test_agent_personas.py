@@ -92,6 +92,24 @@ def test_persona_path_import_rejects_invalid_content(
         store.import_path(source)
 
 
+def test_persona_path_import_rejects_an_unresolvable_home(tmp_path: Path) -> None:
+    """~user for a user with no resolvable home makes Path.expanduser() raise
+    RuntimeError -- not the OSError this only caught, and not the ValueError the
+    HTTP route maps to a 400. Before the fix the import route 500'd with a
+    logged incident on a path a client fully controls."""
+    store = PersonaStore(tmp_path / "personas", seed_paths=())
+    with pytest.raises(ValueError, match="persona_path_unreadable"):
+        store.import_path(Path("~nosuchuser_zzz/persona.md"))
+
+
+def test_persona_path_import_rejects_an_embedded_nul(tmp_path: Path) -> None:
+    """resolve() raises ValueError('embedded null byte') on a NUL in the path;
+    normalize it to the store's own code instead of leaking the raw message."""
+    store = PersonaStore(tmp_path / "personas", seed_paths=())
+    with pytest.raises(ValueError, match="persona_path_unreadable"):
+        store.import_path(Path("bad\x00name.md"))
+
+
 def test_persona_index_and_prompt_reads_are_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

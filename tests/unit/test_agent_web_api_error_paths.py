@@ -286,6 +286,19 @@ def test_import_persona_from_a_missing_path_is_a_400(app_client: Any) -> None:
     assert reply.json()["detail"] == "persona_path_missing"
 
 
+def test_import_persona_from_an_unresolvable_home_is_a_400(app_client: Any) -> None:
+    """A ~user path with no resolvable home makes Path.expanduser() raise
+    RuntimeError; before the guard the import route 500'd instead of the 400 a
+    missing path already returned, for a path the caller fully controls."""
+    client, _ = app_client
+    reply = client.post(
+        "/api/agent/personas/import",
+        json={"path": "~nosuchuser_zzz/persona.md"},
+    )
+    assert reply.status_code == 400, reply.text
+    assert reply.json()["detail"] == "persona_path_unreadable"
+
+
 def test_import_persona_from_content_then_delete_it(app_client: Any) -> None:
     client, _ = app_client
     imported = client.post(
