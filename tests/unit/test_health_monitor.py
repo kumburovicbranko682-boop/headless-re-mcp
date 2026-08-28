@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 
 from headless_re_mcp.core.health import BackendHealthMonitor
@@ -259,3 +260,71 @@ def test_a_backend_that_recovers_starts_from_zero_if_it_drops_again() -> None:
         "a fresh drop must be retried at once, not held back by the previous failure"
     )
     assert while_failing < 15
+
+
+class _OwnedLock:
+    """A lock that remembers which thread holds it, for the assertion below."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.owner: int | None = None
+
+    def __enter__(self) -> _OwnedLock:
+        self._lock.acquire()
+        self.owner = threading.get_ident()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.owner = None
+        self._lock.release()
+
+    def held_by_current_thread(self) -> bool:
+        return self.owner == threading.get_ident()
+
+
+def test_the_backoff_map_is_only_mutated_under_the_lock() -> None:
+    """Every mutation of the backoff map must hold the monitor lock.
+
+    ``forget`` iterates ``_reconnect_backoff`` under the lock to clear a closing
+    session. The sweep touches that same map in ``_reconnect_is_due``,
+    ``_note_reconnect_failed`` and the two success pops -- all of which used to
+    run off the lock, so a close on one thread raced the sweep on another into
+    ``RuntimeError: dictionary changed size during iteration`` and failed the
+    close. Rather than wait for that race to surface under load, assert the
+    invariant directly with a map that refuses any mutation made without the lock
+    held; with the accesses off-lock this fires on the first sweep.
+    """
+    guard = _OwnedLock()
+
+    class _GuardedDict(dict):  # type: ignore[type-arg]
+        def __setitem__(self, key: object, value: object) -> None:
+            assert guard.held_by_current_thread(), f"backoff set off-lock: {key!r}"
+            super().__setitem__(key, value)
+
+        def __delitem__(self, key: object) -> None:
+            assert guard.held_by_current_thread(), f"backoff del off-lock: {key!r}"
+            super().__delitem__(key)
+
+        def pop(self, *args: object, **kwargs: object) -> object:
+            assert guard.held_by_current_thread(), "backoff pop off-lock"
+            return super().pop(*args, **kwargs)
+
+    worker = FakeWorker(connected=False)
+    worker.reconnect_error = ConnectionError("gone")
+    monitor = _monitor(("s1", BackendKind.X64DBG, worker))
+    monitor._lock = guard  # type: ignore[assignment]
+    monitor._reconnect_backoff = _GuardedDict()
+
+    # Failing reconnects exercise _note_reconnect_failed (first failures add a
+    # key) and _reconnect_is_due (skipped checks rewrite it).
+    for _ in range(40):
+        monitor.check_once()
+    # A reconnect that now succeeds exercises the success pop...
+    worker.reconnect_error = None
+    for _ in range(70):
+        monitor.check_once()
+        if worker.transport_connected:
+            break
+    # ...and a plainly connected worker exercises the elif-connected pop.
+    worker.transport_connected = True
+    monitor.check_once()

@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（BackendHealthMonitor 的 _reconnect_backoff 现在全程持锁访问）
+
+- `core/health.py` 的健康巡检对 `_reconnect_backoff` 的每一次改动——`_reconnect_is_due`
+  的重写、`_note_reconnect_failed` 的新增、以及重连成功/已连接两条路径上的 `pop`——此前都
+  在 `_entries` 锁之外进行，而 `forget()` 在关闭会话时正持着该锁遍历同一张表。于是一个线程
+  关会话与另一个线程巡检相撞，抛 `RuntimeError: dictionary changed size during iteration`，
+  把一次普通的会话关闭变成失败。改为所有对 `_reconnect_backoff` 的访问都在同一把锁下进行
+  （`threading.Lock` 非可重入，但这些调用都不在持锁时发生），慢的 `reconnect()` 仍在锁外，
+  巡检的被动性不受影响。新增
+  `test_health_monitor.py::test_the_backoff_map_is_only_mutated_under_the_lock`：用一张
+  「未持锁改动即断言失败」的映射直接钉死不变量（去掉修复即在首次巡检 off-lock set 抛断言，
+  非空覆盖），比依赖竞态在压力下偶发更可靠。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

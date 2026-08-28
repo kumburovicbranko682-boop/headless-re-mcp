@@ -193,10 +193,12 @@ class BackendHealthMonitor:
                 else:
                     reconnects += 1
                     last_error = None
-                    self._reconnect_backoff.pop(key, None)
+                    with self._lock:
+                        self._reconnect_backoff.pop(key, None)
                     connected = bool(getattr(worker, "transport_connected", True))
         elif connected:
-            self._reconnect_backoff.pop(key, None)
+            with self._lock:
+                self._reconnect_backoff.pop(key, None)
 
         # Published as one finished value: a reader must never see a row that is
         # half updated, for instance connected already true but the repair not
@@ -225,16 +227,25 @@ class BackendHealthMonitor:
         seconds, so one unreachable backend delays every other session's health
         check by that much on every sweep.
         """
-        failures, skip_remaining = self._reconnect_backoff.get(key, (0, 0))
-        if skip_remaining > 0:
-            self._reconnect_backoff[key] = (failures, skip_remaining - 1)
-            return False
-        return True
+        # Under the lock like every other touch of this map. The sweep mutates
+        # it here and in _note_reconnect_failed/the pops above, all off the
+        # entries lock, while forget() iterates it under that lock on a session
+        # close from another thread -- so an unlocked mutation here raced the
+        # iteration into "dictionary changed size during iteration" and killed
+        # the close. threading.Lock is not reentrant, but none of these run
+        # while the lock is already held.
+        with self._lock:
+            failures, skip_remaining = self._reconnect_backoff.get(key, (0, 0))
+            if skip_remaining > 0:
+                self._reconnect_backoff[key] = (failures, skip_remaining - 1)
+                return False
+            return True
 
     def _note_reconnect_failed(self, key: tuple[str, str]) -> None:
-        failures, _ = self._reconnect_backoff.get(key, (0, 0))
-        failures += 1
-        self._reconnect_backoff[key] = (failures, _checks_to_skip(failures))
+        with self._lock:
+            failures, _ = self._reconnect_backoff.get(key, (0, 0))
+            failures += 1
+            self._reconnect_backoff[key] = (failures, _checks_to_skip(failures))
 
     def forget(self, session_id: str) -> None:
         with self._lock:
