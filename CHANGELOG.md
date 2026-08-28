@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（web.navigate 不写时间线，会话访问过哪些 URL 这一最关键的审计事实没有留痕）
+
+- 紧接上一条 frida.memory.read 的同类缺陷：`web.navigate` 走的是通用 `_web_wrap`，什么时间线行都不写，而
+  它的兄弟们 `web.open`/`web.close`/`web.screenshot`/`web.har.export` 都写。"会话导航去过哪些 URL"恰恰是一次
+  Web 分析最关键的调查事实（甚至比截图、导出 HAR 更重要），却偏偏没留痕——审计线上只看得到"浏览器已打开/
+  已截图/已导出 HAR"，看不到到底访问了哪些站点。现在 `web_navigate` 改为独立方法（与 open/close/screenshot
+  同构），追加一行 `web.navigate`（"browser navigated"），记录落地后的 url（`data["url"]`，与 `web.open` 记录
+  落地 url 的口径一致，因此发生跳转到别的 host 时审计线上呈现的是真正落地的地址）；错误映射与包裹保持不变，
+  对后端 `navigate` 的调用签名不变（既有的参数转发测试仍通过）。新增回归测试：spy 掉 `_timeline_append`，让
+  navigate 的落地 url 与请求 url 不同，断言时间线里恰好有一行 `web.navigate` 且记录的是落地 url；旧实现无此
+  行即失败。
+
 ### 修复（frida.memory.read 不写时间线，唯一没有审计痕迹的 frida 探针）
 
 - `frida.memory.read` 是 `service_ext` 里唯一不追加时间线行的 frida 探针：兄弟们 `frida.attach`/`frida.modules`/

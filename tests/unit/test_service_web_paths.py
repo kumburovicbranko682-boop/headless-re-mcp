@@ -13,8 +13,11 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from headless_re_mcp.backends.web import WebError
 from headless_re_mcp.config import Settings
+from headless_re_mcp.core import service_web
 from headless_re_mcp.core.models import Session, TargetKind
 from headless_re_mcp.core.service import AnalysisService
 
@@ -256,6 +259,37 @@ def test_web_screenshot_and_har_export_keep_web_error_codes(tmp_path: Path) -> N
         assert result.error.code == "invalid_state"
     finally:
         service.close_all()
+
+
+def test_web_navigate_records_the_landed_url_in_the_timeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Navigation must leave a timeline row naming the url, like web.open does.
+
+    Which URLs a session visited is the primary investigative fact of a web
+    analysis run, but navigate went through the generic _web_wrap and recorded
+    nothing -- while less consequential siblings (screenshot, har.export) did.
+    The row records the landed url (post-redirect), matching web.open, so a
+    redirect onto a different host is what the audit trail shows.
+    """
+    rows: list[tuple[str, dict[str, object]]] = []
+    real_append = service_web._timeline_append
+
+    def _capture(svc: object, sid: str, event: str, message: str, **d: object) -> None:
+        rows.append((event, d))
+        real_append(svc, sid, event, message, **d)
+
+    monkeypatch.setattr(service_web, "_timeline_append", _capture)
+    service, web = _service(tmp_path)
+    try:
+        session = service.registry.create("https://example.invalid")
+        # The requested url redirects; the landed url is what should be recorded.
+        web.answers["navigate"] = {"url": "https://example.invalid/landed"}
+        result = service.web_navigate(session.id, "https://example.invalid/start", timeout=4.0)
+        assert result.ok is True
+    finally:
+        service.close_all()
+    assert ("web.navigate", {"url": "https://example.invalid/landed"}) in rows
 
 
 def test_web_wrap_forwards_arguments_and_maps_unexpected_errors(tmp_path: Path) -> None:

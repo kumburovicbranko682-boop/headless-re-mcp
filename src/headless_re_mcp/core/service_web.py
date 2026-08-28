@@ -114,7 +114,21 @@ class WebAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def web_navigate(self, session_id: str, url: str, timeout: float = 30.0) -> Result[JsonObject]:
-        return self._web_wrap(session_id, "navigate", session_id, url, timeout=timeout)
+        try:
+            data = self._web.navigate(session_id, url, timeout=timeout)
+            # Record the navigation like web.open/close/screenshot/har.export do.
+            # Which URLs a session visited is the primary investigative fact of a
+            # web analysis run, yet navigate -- unlike its less consequential
+            # siblings -- left no timeline row. Record the landed url (post
+            # redirect, exactly as web.open records data["url"]).
+            _timeline_append(
+                self, session_id, "web.navigate", "browser navigated", url=data.get("url")
+            )
+            return _success(data, session_id=session_id, backend="web")
+        except WebError as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
 
     def web_close(self, session_id: str) -> Result[JsonObject]:
         try:
