@@ -750,6 +750,11 @@ def test_functions_service_runs_aac_so_discovery_is_not_shallow(
 
     monkeypatch.setattr(r2_client, "run_bounded", capture)
     pe = _minimal_pe(tmp_path)
+    # _minimal_pe leaves the COFF machine field zero (its client-level callers
+    # never reach PE validation); session creation does, so stamp x86-64 here.
+    raw = bytearray(pe.read_bytes())
+    raw[0x84:0x86] = (0x8664).to_bytes(2, "little")
+    pe.write_bytes(bytes(raw))
     settings = replace(
         Settings.load(),
         r2=str(_stub_executable(tmp_path)),
