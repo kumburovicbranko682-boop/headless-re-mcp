@@ -1,5 +1,16 @@
-"""Cover the proxy service arms: start reclaim, stop/flow/har error mapping,
-body capture registration, and the Android CA push flow."""
+"""ProxyAnalysisMixin: success, mid-flight rollback and error envelopes.
+
+These drive the service-level proxy methods through a real AnalysisService with
+the mitmproxy (and, for the CA push, adb) backend faked out, so the parts the
+backend-only tests never reach -- the state re-checks that run *after* the
+backend call, the artifact registration of a spilled body / HAR, and each
+except arm -- are exercised without a live proxy.
+
+The re-checks matter for an unattended run: a session that another thread closes
+while proxy.start is binding a port, or while proxy.ca.install pushes a cert,
+must roll the half-done work back (stop the just-started proxy) and answer with
+a state error, not report a proxy running against a session that is gone.
+"""
 
 from __future__ import annotations
 
@@ -9,442 +20,408 @@ from typing import Any
 
 import pytest
 
-import headless_re_mcp.core.service_proxy as sp
 from headless_re_mcp.backends.adb import AdbError
 from headless_re_mcp.backends.proxy import ProxyError
 from headless_re_mcp.config import Settings
+from headless_re_mcp.core.models import SessionState
 from headless_re_mcp.core.service import AnalysisService
 
 
-class _FakeProxy:
-    def __init__(self) -> None:
-        self.started: list[str] = []
-        self.stopped: list[str] = []
-        self.on_start: Any = None
-        self.start_error: BaseException | None = None
-        self.stop_error: BaseException | None = None
-        self.status_error: BaseException | None = None
-        self.flow_get_result: dict[str, Any] = {}
-        self.flow_get_error: BaseException | None = None
-        self.ca: Path | None = None
-
-    def start(
-        self, session_id: str, host: str = "127.0.0.1", port: int = 8080
-    ) -> dict[str, Any]:
-        if self.start_error is not None:
-            raise self.start_error
-        self.started.append(session_id)
-        if self.on_start is not None:
-            self.on_start(session_id)
-        return {
-            "running": True,
-            "host": host,
-            "port": port,
-            "endpoint": f"{host}:{port}",
-        }
-
-    def stop(self, session_id: str) -> dict[str, Any]:
-        if self.stop_error is not None:
-            raise self.stop_error
-        self.stopped.append(session_id)
-        return {"stopped": True}
-
-    def status(self, session_id: str) -> dict[str, Any]:
-        if self.status_error is not None:
-            raise self.status_error
-        return {"running": True}
-
-    def flows(self, session_id: str, offset: int = 0, limit: int = 100) -> dict[str, Any]:
-        return {"flows": [], "offset": offset, "limit": limit}
-
-    def replay(self, session_id: str, flow_id: str) -> dict[str, Any]:
-        return {"replayed": flow_id}
-
-    def flow_get(
-        self, session_id: str, flow_id: str, artifact_dir: Path
-    ) -> dict[str, Any]:
-        if self.flow_get_error is not None:
-            raise self.flow_get_error
-        return self.flow_get_result
-
-    def export_har(self, session_id: str, out: Path) -> dict[str, Any]:
-        Path(out).write_text("[]", encoding="utf-8")
-        return {"path": str(out)}
-
-    def ca_cert_path(self) -> Path | None:
-        return self.ca
-
-    def close_all(self) -> None:
-        pass
+@pytest.fixture
+def service(tmp_path: Path) -> Any:
+    svc = AnalysisService(replace(Settings.load(), artifact_root=tmp_path / "artifacts"))
+    try:
+        yield svc
+    finally:
+        svc.close_all()
 
 
-class _FakeAdb:
-    def __init__(self) -> None:
-        self.pushed: list[tuple[str, str, str]] = []
-        self.on_push: Any = None
-        self.push_error: BaseException | None = None
-
-    def push(self, serial: str, local: str, remote: str) -> None:
-        if self.push_error is not None:
-            raise self.push_error
-        self.pushed.append((serial, local, remote))
-        if self.on_push is not None:
-            self.on_push()
-
-
-def _service(tmp_path: Path) -> tuple[AnalysisService, _FakeProxy]:
-    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
-    service = AnalysisService(settings)
-    proxy = _FakeProxy()
-    service._proxy_backend = proxy  # type: ignore[assignment]
-    return service, proxy
-
-
-def _web_session(service: AnalysisService) -> str:
+def _web_session(service: Any) -> str:
     created = service.create_session("https://example.com/app", target="web")
     assert created.data is not None
     return str(created.data["session"]["id"])
 
 
-def test_proxy_start_records_backend_and_timeline(tmp_path: Path) -> None:
-    service, proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        result = service.proxy_start(session_id, port=19080)
-        assert result.ok, result.error
-        assert result.data is not None
-        assert result.data["endpoint"] == "127.0.0.1:19080"
-        assert proxy.started == [session_id]
-    finally:
-        service.close_all()
+def test_proxy_start_success_records_the_endpoint(service: Any, monkeypatch: Any) -> None:
+    """A clean start returns the backend payload and records the backend/timeline."""
+    session_id = _web_session(service)
+    monkeypatch.setattr(
+        service._proxy_backend,
+        "start",
+        lambda sid, host="127.0.0.1", port=8080: {
+            "running": True,
+            "host": host,
+            "port": port,
+            "endpoint": f"{host}:{port}",
+        },
+    )
+
+    result = service.proxy_start(session_id, port=8081)
+
+    assert result.ok, result.error
+    assert result.data is not None
+    assert result.data["endpoint"] == "127.0.0.1:8081"
 
 
-def test_proxy_start_maps_a_backend_error(tmp_path: Path) -> None:
-    service, proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        proxy.start_error = ProxyError("unavailable", "mitmproxy missing")
-        result = service.proxy_start(session_id)
-        assert result.ok is False
-        assert result.error is not None
-        assert result.error.code == "unavailable"
-    finally:
-        service.close_all()
-
-
-def test_proxy_start_reclaims_a_port_if_the_session_closes_mid_launch(
-    tmp_path: Path,
+def test_proxy_start_rolls_back_when_the_session_closes_mid_start(
+    service: Any, monkeypatch: Any
 ) -> None:
-    service, proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        proxy.on_start = lambda sid: service.close_session(sid)
-        result = service.proxy_start(session_id)
-        assert result.ok is False
-        # start bound a port, then the re-check tore it back down.
-        assert proxy.started == [session_id]
-        assert session_id in proxy.stopped
-    finally:
-        service.close_all()
+    """A session closed between the guard and the bind stops the proxy and fails.
+
+    The port was bound before the second state check saw CLOSED, so leaving it
+    would leak a listener nothing can ever stop -- the mixin stops it and returns
+    a state error instead of a running proxy.
+    """
+    session_id = _web_session(service)
+    stopped: list[str] = []
+
+    def fake_start(sid: str, host: str = "127.0.0.1", port: int = 8080) -> dict[str, Any]:
+        service.registry.transition(sid, SessionState.FAILED)
+        return {"running": True, "host": host, "port": port, "endpoint": f"{host}:{port}"}
+
+    def fake_stop(sid: str) -> dict[str, Any]:
+        stopped.append(sid)
+        return {}
+
+    monkeypatch.setattr(service._proxy_backend, "start", fake_start)
+    monkeypatch.setattr(service._proxy_backend, "stop", fake_stop)
+
+    result = service.proxy_start(session_id)
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+    assert stopped == [session_id]
 
 
-def test_proxy_stop_maps_backend_and_unexpected_errors(tmp_path: Path) -> None:
-    service, proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        proxy.stop_error = ProxyError("not_found", "no proxy")
-        mapped = service.proxy_stop(session_id)
-        assert mapped.ok is False
-        assert mapped.error is not None
-        assert mapped.error.code == "not_found"
+def test_proxy_start_maps_a_proxy_error(service: Any, monkeypatch: Any) -> None:
+    """A backend refusal (port already bound) comes back with its own code."""
+    session_id = _web_session(service)
 
-        proxy.stop_error = RuntimeError("kaboom")
-        unexpected = service.proxy_stop(session_id)
-        assert unexpected.ok is False
-    finally:
-        service.close_all()
+    def boom(sid: str, host: str = "127.0.0.1", port: int = 8080) -> dict[str, Any]:
+        raise ProxyError("invalid_state", "port is already in use", host=host, port=port)
 
+    monkeypatch.setattr(service._proxy_backend, "start", boom)
 
-def test_proxy_status_wraps_backend_and_unexpected_errors(tmp_path: Path) -> None:
-    service, proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        ok = service.proxy_status(session_id)
-        assert ok.ok, ok.error
+    result = service.proxy_start(session_id)
 
-        proxy.status_error = ProxyError("unavailable", "down")
-        mapped = service.proxy_status(session_id)
-        assert mapped.ok is False
-        assert mapped.error is not None
-        assert mapped.error.code == "unavailable"
-
-        proxy.status_error = RuntimeError("boom")
-        unexpected = service.proxy_status(session_id)
-        assert unexpected.ok is False
-    finally:
-        service.close_all()
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "invalid_state"
 
 
-def test_proxy_flow_get_registers_request_and_response_bodies(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_proxy_stop_success(service: Any, monkeypatch: Any) -> None:
+    session_id = _web_session(service)
+    monkeypatch.setattr(service._proxy_backend, "stop", lambda sid: {"stopped": True})
+
+    result = service.proxy_stop(session_id)
+
+    assert result.ok, result.error
+    assert result.data == {"stopped": True}
+
+
+def test_proxy_stop_maps_a_proxy_error(service: Any, monkeypatch: Any) -> None:
+    session_id = _web_session(service)
+
+    def boom(sid: str) -> dict[str, Any]:
+        raise ProxyError("invalid_state", "no proxy running")
+
+    monkeypatch.setattr(service._proxy_backend, "stop", boom)
+
+    result = service.proxy_stop(session_id)
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "invalid_state"
+
+
+def test_proxy_stop_maps_an_unexpected_error(service: Any, monkeypatch: Any) -> None:
+    session_id = _web_session(service)
+
+    def boom(sid: str) -> dict[str, Any]:
+        raise ValueError("wat")
+
+    monkeypatch.setattr(service._proxy_backend, "stop", boom)
+
+    result = service.proxy_stop(session_id)
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+
+
+def test_proxy_flow_get_skips_a_non_dict_part_and_registers_a_spilled_body(
+    service: Any, monkeypatch: Any, tmp_path: Path
 ) -> None:
-    service, proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        proxy.flow_get_result = {
-            "request": {"body_path": "/tmp/req.bin"},
-            "response": {"body_path": "/tmp/resp.bin"},
+    """A None request part is skipped; a response with a spilled body is registered.
+
+    The artifact id hangs off the response part, never the top level, so a
+    request body and a response body can never overwrite one another's id.
+    """
+    session_id = _web_session(service)
+
+    def fake_flow_get(sid: str, fid: str, artifact_dir: Path) -> dict[str, Any]:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        dest = artifact_dir / "flow-body.bin"
+        dest.write_bytes(bytes(range(64)))
+        return {
+            "id": fid,
+            "request": None,
+            "response": {
+                "status": 200,
+                "headers": {},
+                "size": 64,
+                "body_path": str(dest),
+                "spill_reason": "binary",
+            },
         }
 
-        outcomes: list[dict[str, str]] = [
-            {"artifact_id": "art-1"},
-            {"artifact_error": "spill lost"},
-            {},  # neither id nor error -> body left as-is
-            {},
-        ]
-        pending = iter(outcomes)
+    monkeypatch.setattr(service._proxy_backend, "flow_get", fake_flow_get)
 
-        def fake_register(_svc: Any, _sid: str, path: Path, **_kw: Any) -> dict[str, str]:
-            return next(pending)
+    result = service.proxy_flow_get(session_id, "f1")
 
-        monkeypatch.setattr(sp, "_register_capture", fake_register)
-        first = service.proxy_flow_get(session_id, "flow-7")
-        assert first.ok, first.error
-        assert first.data is not None
-        assert first.data["request"]["artifact_id"] == "art-1"
-        assert first.data["response"]["artifact_error"] == "spill lost"
+    assert result.ok, result.error
+    assert result.data is not None
+    assert "artifact_id" not in result.data
+    assert result.data["response"]["artifact_id"]
 
-        # A registration that reports neither key leaves the body untouched.
-        proxy.flow_get_result = {
-            "request": {"body_path": "/tmp/a.bin"},
-            "response": {"body_path": "/tmp/b.bin"},
+
+def test_proxy_flow_get_reports_an_artifact_error_without_failing(
+    service: Any, monkeypatch: Any
+) -> None:
+    """Registration failing must not fail the fetch; the file exists either way."""
+    session_id = _web_session(service)
+
+    def fake_flow_get(sid: str, fid: str, artifact_dir: Path) -> dict[str, Any]:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        dest = artifact_dir / "flow-body.bin"
+        dest.write_bytes(b"\x00\x01")
+        return {
+            "id": fid,
+            "request": {"method": "GET", "url": "http://x/i", "headers": {}, "size": 0, "body": ""},
+            "response": {"status": 200, "headers": {}, "size": 2, "body_path": str(dest)},
         }
-        second = service.proxy_flow_get(session_id, "flow-8")
-        assert second.ok, second.error
-        assert second.data is not None
-        assert "artifact_id" not in second.data["request"]
-        assert "artifact_error" not in second.data["request"]
-    finally:
-        service.close_all()
+
+    def boom(**fields: Any) -> dict[str, Any]:
+        raise RuntimeError("store offline")
+
+    monkeypatch.setattr(service._proxy_backend, "flow_get", fake_flow_get)
+    monkeypatch.setattr(service, "record_artifact", boom)
+
+    result = service.proxy_flow_get(session_id, "f1")
+
+    assert result.ok, result.error
+    assert result.data is not None
+    assert "store offline" in result.data["response"]["artifact_error"]
 
 
-def test_proxy_flow_get_skips_non_dict_and_bodyless_parts(tmp_path: Path) -> None:
-    service, proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        proxy.flow_get_result = {
-            "request": "not-a-dict",
-            "response": {"headers": {}},
+def test_proxy_flow_get_leaves_a_body_path_that_is_not_on_disk_untouched(
+    service: Any, monkeypatch: Any
+) -> None:
+    """A body_path the backend named but never wrote registers as neither.
+
+    _register_capture no-ops on a missing file (the capture must not fail over
+    bookkeeping), so the part keeps its body_path and gains no artifact id or
+    error -- the defensive path opposite the successful and errored ones.
+    """
+    session_id = _web_session(service)
+
+    def fake_flow_get(sid: str, fid: str, artifact_dir: Path) -> dict[str, Any]:
+        return {
+            "id": fid,
+            "request": {"method": "GET", "url": "http://x/i", "headers": {}, "size": 0, "body": ""},
+            "response": {
+                "status": 200,
+                "headers": {},
+                "size": 7,
+                "body_path": str(artifact_dir / "never-written.bin"),
+            },
         }
-        result = service.proxy_flow_get(session_id, "flow-8")
-        assert result.ok, result.error
-        assert result.data is not None
-        assert "artifact_id" not in result.data["response"]
-    finally:
-        service.close_all()
+
+    monkeypatch.setattr(service._proxy_backend, "flow_get", fake_flow_get)
+
+    result = service.proxy_flow_get(session_id, "f1")
+
+    assert result.ok, result.error
+    assert result.data is not None
+    resp = result.data["response"]
+    assert "artifact_id" not in resp
+    assert "artifact_error" not in resp
 
 
-def test_proxy_flow_get_maps_a_backend_error(tmp_path: Path) -> None:
-    service, proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        proxy.flow_get_error = ProxyError("not_found", "no such flow")
-        result = service.proxy_flow_get(session_id, "missing")
-        assert result.ok is False
-        assert result.error is not None
-        assert result.error.code == "not_found"
-    finally:
-        service.close_all()
+def test_proxy_flow_get_maps_a_proxy_error(service: Any, monkeypatch: Any) -> None:
+    session_id = _web_session(service)
+
+    def boom(sid: str, fid: str, artifact_dir: Path) -> dict[str, Any]:
+        raise ProxyError("not_found", "unknown flow id", flow_id=fid)
+
+    monkeypatch.setattr(service._proxy_backend, "flow_get", boom)
+
+    result = service.proxy_flow_get(session_id, "missing")
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "not_found"
 
 
-def test_proxy_export_har_registers_the_capture(tmp_path: Path) -> None:
-    service, _proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        result = service.proxy_export_har(session_id)
-        assert result.ok, result.error
-        assert result.data is not None
-        assert "artifact_id" in result.data
-    finally:
-        service.close_all()
+def test_proxy_flow_get_maps_an_unexpected_error(service: Any, monkeypatch: Any) -> None:
+    session_id = _web_session(service)
+
+    def boom(sid: str, fid: str, artifact_dir: Path) -> dict[str, Any]:
+        raise ValueError("wat")
+
+    monkeypatch.setattr(service._proxy_backend, "flow_get", boom)
+
+    result = service.proxy_flow_get(session_id, "f1")
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
 
 
-def test_proxy_export_har_maps_a_backend_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_proxy_export_har_registers_the_artifact(service: Any, monkeypatch: Any) -> None:
+    session_id = _web_session(service)
+
+    def fake_export(sid: str, out: Path) -> dict[str, Any]:
+        out.write_text("{}", encoding="utf-8")
+        return {"path": str(out), "entry_count": 0, "truncated": False, "size": 2}
+
+    monkeypatch.setattr(service._proxy_backend, "export_har", fake_export)
+
+    result = service.proxy_export_har(session_id)
+
+    assert result.ok, result.error
+    assert result.data is not None
+    assert result.data["artifact_id"]
+
+
+def test_proxy_export_har_maps_a_proxy_error(service: Any, monkeypatch: Any) -> None:
+    session_id = _web_session(service)
+
+    def boom(sid: str, out: Path) -> dict[str, Any]:
+        raise ProxyError("too_large", "HAR export exceeds capture cap")
+
+    monkeypatch.setattr(service._proxy_backend, "export_har", boom)
+
+    result = service.proxy_export_har(session_id)
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "too_large"
+
+
+def test_proxy_export_har_maps_an_unexpected_error(service: Any, monkeypatch: Any) -> None:
+    session_id = _web_session(service)
+
+    def boom(sid: str, out: Path) -> dict[str, Any]:
+        raise ValueError("wat")
+
+    monkeypatch.setattr(service._proxy_backend, "export_har", boom)
+
+    result = service.proxy_export_har(session_id)
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+
+
+def test_proxy_ca_install_refuses_a_closed_session(service: Any) -> None:
+    session_id = _web_session(service)
+    service.registry.transition(session_id, SessionState.FAILED)
+
+    result = service.proxy_ca_install_android(session_id, "emulator-5554")
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+
+
+def test_proxy_ca_install_reports_a_missing_ca(service: Any, monkeypatch: Any) -> None:
+    session_id = _web_session(service)
+    monkeypatch.setattr(service._proxy_backend, "ca_cert_path", lambda: None)
+
+    result = service.proxy_ca_install_android(session_id, "emulator-5554")
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "not_found"
+
+
+def test_proxy_ca_install_pushes_the_cert(service: Any, monkeypatch: Any, tmp_path: Path) -> None:
+    session_id = _web_session(service)
+    cert = tmp_path / "mitmproxy-ca-cert.pem"
+    cert.write_text("cert", encoding="utf-8")
+    monkeypatch.setattr(service._proxy_backend, "ca_cert_path", lambda: cert)
+    pushed: list[tuple[str, str, str]] = []
+
+    class _Adb:
+        def push(self, serial: str, local: str, remote: str) -> dict[str, Any]:
+            pushed.append((serial, local, remote))
+            return {"local": local, "remote": remote, "size": 4}
+
+    service._adb_backend = _Adb()
+
+    result = service.proxy_ca_install_android(session_id, "emulator-5554")
+
+    assert result.ok, result.error
+    assert result.data is not None
+    assert result.data["pushed_to"] == "/data/local/tmp/mitmproxy-ca-cert.pem"
+    assert pushed and pushed[0][0] == "emulator-5554"
+
+
+def test_proxy_ca_install_rolls_back_when_session_closes_mid_push(
+    service: Any, monkeypatch: Any, tmp_path: Path
 ) -> None:
-    service, proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
+    """A session closed while the cert pushes must answer with a state error."""
+    session_id = _web_session(service)
+    cert = tmp_path / "mitmproxy-ca-cert.pem"
+    cert.write_text("cert", encoding="utf-8")
+    monkeypatch.setattr(service._proxy_backend, "ca_cert_path", lambda: cert)
 
-        def boom(_sid: str, _out: Path) -> dict[str, Any]:
-            raise ProxyError("unavailable", "proxy down")
+    class _Adb:
+        def push(self, serial: str, local: str, remote: str) -> dict[str, Any]:
+            service.registry.transition(session_id, SessionState.FAILED)
+            return {"local": local, "remote": remote, "size": 4}
 
-        monkeypatch.setattr(proxy, "export_har", boom)
-        result = service.proxy_export_har(session_id)
-        assert result.ok is False
-        assert result.error is not None
-        assert result.error.code == "unavailable"
-    finally:
-        service.close_all()
+    service._adb_backend = _Adb()
 
+    result = service.proxy_ca_install_android(session_id, "emulator-5554")
 
-def test_proxy_ca_install_pushes_the_cert_to_the_device(tmp_path: Path) -> None:
-    service, proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        cert = tmp_path / "mitmproxy-ca-cert.pem"
-        cert.write_text("cert", encoding="utf-8")
-        proxy.ca = cert
-        adb = _FakeAdb()
-        service._adb_backend = adb  # type: ignore[assignment]
-        result = service.proxy_ca_install_android(session_id, "emulator-5554")
-        assert result.ok, result.error
-        assert result.data is not None
-        assert result.data["pushed_to"].endswith("mitmproxy-ca-cert.pem")
-        assert adb.pushed and adb.pushed[0][0] == "emulator-5554"
-    finally:
-        service.close_all()
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
 
 
-def test_proxy_ca_install_refuses_without_a_generated_ca(tmp_path: Path) -> None:
-    service, proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        proxy.ca = None
-        service._adb_backend = _FakeAdb()  # type: ignore[assignment]
-        result = service.proxy_ca_install_android(session_id, "emulator-5554")
-        assert result.ok is False
-        assert result.error is not None
-        assert result.error.code == "not_found"
-    finally:
-        service.close_all()
+def test_proxy_ca_install_maps_an_adb_error(service: Any, monkeypatch: Any, tmp_path: Path) -> None:
+    session_id = _web_session(service)
+    cert = tmp_path / "mitmproxy-ca-cert.pem"
+    cert.write_text("cert", encoding="utf-8")
+    monkeypatch.setattr(service._proxy_backend, "ca_cert_path", lambda: cert)
+
+    class _Adb:
+        def push(self, serial: str, local: str, remote: str) -> dict[str, Any]:
+            raise AdbError("backend_error", "push failed", remote=remote)
+
+    service._adb_backend = _Adb()
+
+    result = service.proxy_ca_install_android(session_id, "emulator-5554")
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "backend_error"
 
 
-def test_proxy_ca_install_refuses_on_a_closed_session(tmp_path: Path) -> None:
-    service, _proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        service.close_session(session_id)
-        service._adb_backend = _FakeAdb()  # type: ignore[assignment]
-        result = service.proxy_ca_install_android(session_id, "emulator-5554")
-        assert result.ok is False
-    finally:
-        service.close_all()
+def test_proxy_status_maps_an_unexpected_error(service: Any, monkeypatch: Any) -> None:
+    """_proxy_wrap's catch-all arm turns a stray backend error into an envelope."""
+    session_id = _web_session(service)
 
+    def boom(sid: str) -> dict[str, Any]:
+        raise ValueError("wat")
 
-def test_proxy_ca_install_maps_an_adb_error(tmp_path: Path) -> None:
-    service, proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        cert = tmp_path / "ca.pem"
-        cert.write_text("cert", encoding="utf-8")
-        proxy.ca = cert
-        adb = _FakeAdb()
-        adb.push_error = AdbError("device_offline", "no device")
-        service._adb_backend = adb  # type: ignore[assignment]
-        result = service.proxy_ca_install_android(session_id, "emulator-5554")
-        assert result.ok is False
-        assert result.error is not None
-        assert result.error.code == "device_offline"
-    finally:
-        service.close_all()
+    monkeypatch.setattr(service._proxy_backend, "status", boom)
 
+    result = service.proxy_status(session_id)
 
-def test_proxy_ca_install_reclaims_if_the_session_closes_after_push(
-    tmp_path: Path,
-) -> None:
-    service, proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        cert = tmp_path / "ca.pem"
-        cert.write_text("cert", encoding="utf-8")
-        proxy.ca = cert
-        adb = _FakeAdb()
-        adb.on_push = lambda: service.close_session(session_id)
-        service._adb_backend = adb  # type: ignore[assignment]
-        result = service.proxy_ca_install_android(session_id, "emulator-5554")
-        assert result.ok is False
-    finally:
-        service.close_all()
-
-
-def test_proxy_start_refuses_a_closed_session_up_front(tmp_path: Path) -> None:
-    service, proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        service.close_session(session_id)
-        result = service.proxy_start(session_id)
-        assert result.ok is False
-        assert proxy.started == []
-    finally:
-        service.close_all()
-
-
-def test_proxy_stop_reports_success(tmp_path: Path) -> None:
-    service, _proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        service.proxy_start(session_id)
-        result = service.proxy_stop(session_id)
-        assert result.ok, result.error
-        assert result.data is not None
-        assert result.data["stopped"] is True
-    finally:
-        service.close_all()
-
-
-def test_proxy_flows_and_replay_wrap_the_backend(tmp_path: Path) -> None:
-    service, _proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        flows = service.proxy_flows(session_id, offset=5, limit=10)
-        assert flows.ok, flows.error
-        assert flows.data is not None
-        assert flows.data["offset"] == 5
-
-        replay = service.proxy_replay(session_id, "flow-2")
-        assert replay.ok, replay.error
-        assert replay.data is not None
-        assert replay.data["replayed"] == "flow-2"
-    finally:
-        service.close_all()
-
-
-def test_proxy_flow_get_refuses_a_traversal_session_id(tmp_path: Path) -> None:
-    service, _proxy = _service(tmp_path)
-    try:
-        _web_session(service)
-        result = service.proxy_flow_get("../escape", "flow-1")
-        assert result.ok is False
-        assert result.error is not None
-        assert result.error.code == "invalid_params"
-    finally:
-        service.close_all()
-
-
-def test_proxy_flow_get_wraps_an_unexpected_error(tmp_path: Path) -> None:
-    service, proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-        proxy.flow_get_error = RuntimeError("decode fell over")
-        result = service.proxy_flow_get(session_id, "flow-1")
-        assert result.ok is False
-    finally:
-        service.close_all()
-
-
-def test_proxy_export_har_wraps_an_unexpected_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    service, proxy = _service(tmp_path)
-    try:
-        session_id = _web_session(service)
-
-        def boom(_sid: str, _out: Path) -> dict[str, Any]:
-            raise RuntimeError("disk full")
-
-        monkeypatch.setattr(proxy, "export_har", boom)
-        result = service.proxy_export_har(session_id)
-        assert result.ok is False
-    finally:
-        service.close_all()
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
