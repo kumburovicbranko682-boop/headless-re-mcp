@@ -157,6 +157,56 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-integration:
+    # Portable-backend real gates on a hosted runner. The Web (CDP + webcrack +
+    # wabt), proxy (mitmproxy) and Android-static (androguard) lines only ever
+    # skipped on a bare machine, so their real-machine contracts -- browser
+    # lifecycle, capture-port release, APK metadata, the agent workbench -- were
+    # never exercised by CI (the self-hosted Windows gate job is manual-only and
+    # has never been green). This job installs those portable backends and runs
+    # the gates for real on every push. x64dbg / IDA / Win32 gates stay
+    # Windows-only and the integration conftest skips them here with an explicit
+    # reason, so "skip != pass" still holds.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Install package with portable backends
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,android,browser,proxy]"
+
+      - name: Install portable RE tooling
+        run: |
+          # wabt -> wasm2wat/wasm-objdump; webcrack (Node 24) for JS; Playwright
+          # Chromium for the CDP-driven web gates. Each backend degrades to an
+          # honest skip if it is missing, but installing them is what turns the
+          # non-PE gates from skips into real passes.
+          sudo apt-get update
+          sudo apt-get install -y wabt
+          npm install -g webcrack
+          python -m playwright install --with-deps chromium
+
+      - name: Integration gates (portable backends)
+        # Run every gate rather than a hardcoded subset -- the same policy the
+        # Windows job uses -- so a newly added portable gate is picked up
+        # automatically. The conftest marks Windows-only and unconfigured-backend
+        # gates as skipped with a reason, and -rs prints each one so a skip is
+        # never mistaken for a pass. Only the portable Web/Android/proxy gates
+        # actually execute here.
+        env:
+          PYTHONPATH: src
+        run: python -m pytest tests/integration -rs --tb=short --timeout=180
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
