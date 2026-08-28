@@ -46,6 +46,24 @@ def _session_artifact_roots(artifact_root: Path, session_id: str) -> tuple[Path,
     return real(artifact_root, session_id)
 
 
+def _safe_expanduser(raw: str) -> Path:
+    """Path(raw).expanduser(), but treat an unresolvable ~user as a caller error.
+
+    dotnet_verify resolves a caller-supplied path with
+    ``Path(path).expanduser().resolve(strict=True)`` inside a
+    ``try/except BaseException`` that hands the exception to ``_failure``. A
+    missing file (FileNotFoundError) and an embedded NUL (ValueError) map to
+    clean codes there, but ``expanduser()`` raises RuntimeError for a ``~user``
+    whose home cannot be resolved, and RuntimeError is not mapped -- so a path
+    the caller fully controls filed an internal_error incident. Convert it to
+    the same FileNotFoundError a missing path already yields.
+    """
+    try:
+        return Path(raw).expanduser()
+    except RuntimeError as exc:
+        raise FileNotFoundError(f"path could not be resolved: {raw!r}") from exc
+
+
 class DotnetAnalysisMixin:
     """.NET inspect / deobfuscate / IL / verify ops.
 
@@ -400,7 +418,7 @@ class DotnetAnalysisMixin:
         """Re-inspect a .NET artifact with the built-in CLR metadata checker."""
         try:
             self.registry.get(session_id)
-            target = Path(path).expanduser().resolve(strict=True)
+            target = _safe_expanduser(path).resolve(strict=True)
             owned = _session_owns_artifact_path(
                 self.settings.artifact_root,
                 session_id,

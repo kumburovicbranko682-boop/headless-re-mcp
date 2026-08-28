@@ -512,6 +512,20 @@ def test_verify_rejects_a_path_outside_the_session_artifacts(tmp_path: Path) -> 
         service.close_all()
 
 
+def test_verify_maps_an_unresolvable_home_path_to_file_not_found(tmp_path: Path) -> None:
+    """A ~user path whose home cannot be resolved makes Path.expanduser() raise
+    RuntimeError, which _failure does not map; before the guard it filed an
+    internal_error incident for a path the caller fully controls. It now reads
+    as file_not_found like any other unusable path."""
+    service, session_id, _ = _service(tmp_path)
+    try:
+        result = service.dotnet_verify(session_id, "~nosuchuser_zzz/managed.exe")
+        assert not result.ok and result.error is not None
+        assert result.error.code == "file_not_found"
+    finally:
+        service.close_all()
+
+
 def test_verify_reports_an_owned_verified_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
