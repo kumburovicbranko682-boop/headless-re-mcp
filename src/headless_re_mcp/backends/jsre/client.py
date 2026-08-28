@@ -8,6 +8,7 @@ needs Node.js 22 or 24; wabt provides ``wasm2wat`` and ``wasm-objdump``.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from contextlib import suppress
@@ -22,6 +23,38 @@ _MAX_INLINE = 400_000
 _MAX_STDERR = 8000
 _MAX_LISTED_FILES = 2000
 _MAX_COUNTED_FILES = 50_000
+# js.strings reads string literals straight from the source with no external
+# tool. Bound the literal count scanned, the per-string length kept, the search
+# term, the page and the template-nesting depth so a hostile or machine-
+# generated bundle cannot make one call build an unbounded reply or recurse away.
+_MIN_JS_STRING_LEN = 1
+_MAX_JS_STRING_LEN = 8192
+_MAX_JS_STRINGS_SCAN = 200_000
+_MAX_JS_STRINGS_PAGE = 5000
+_MAX_JS_STRINGS_CONTAINS = 256
+_MAX_JS_TEMPLATE_DEPTH = 32
+_JS_CATEGORIES = frozenset({"url", "path", "text"})
+# A '/' begins a regex literal (rather than division) only in expression
+# position -- i.e. right after one of these, or at the very start of input.
+_JS_REGEX_PRECEDERS = frozenset("([{,;:?=!&|^~+-*/%<>")
+_JS_URL_RE = re.compile(r"^(?:https?|wss?|ftp)://", re.IGNORECASE)
+_JS_PATH_RE = re.compile(r"^/[A-Za-z0-9._~%/:@!$&'()*+,;=\-{}?#\[\]]*$")
+_JS_SIMPLE_ESCAPES = {
+    "n": "\n",
+    "t": "\t",
+    "r": "\r",
+    "b": "\b",
+    "f": "\f",
+    "v": "\v",
+    "0": "\0",
+    "\\": "\\",
+    "'": "'",
+    '"': '"',
+    "`": "`",
+    "/": "/",
+    "\n": "",  # line continuation: backslash-newline is removed
+    "\r": "",
+}
 # Output is already sliced. The child still has to load the file, and an
 # unattended pass that pointed js.deobfuscate at a captured bundle started
 # node on whatever sat on disk -- measured 2,097,152 bytes still reached
@@ -131,6 +164,246 @@ def _bounded_output(
     return result
 
 
+def _unescape_js(raw: str) -> str:
+    """Resolve the common JS string escapes so a value is readable, best-effort.
+
+    Handles \\n \\t \\r \\b \\f \\v \\0, the escaped quotes/backslash/slash,
+    \\xHH, \\uHHHH and \\u{...}, and drops the backslash from a line
+    continuation. An unknown escape keeps the following character verbatim; a
+    malformed hex/unicode escape is left as-is rather than raising.
+    """
+    if "\\" not in raw:
+        return raw
+    out: list[str] = []
+    i = 0
+    n = len(raw)
+    while i < n:
+        ch = raw[i]
+        if ch != "\\" or i + 1 >= n:
+            out.append(ch)
+            i += 1
+            continue
+        nxt = raw[i + 1]
+        if nxt == "x" and i + 4 <= n:
+            with suppress(ValueError):
+                out.append(chr(int(raw[i + 2 : i + 4], 16)))
+                i += 4
+                continue
+        if nxt == "u":
+            if i + 2 < n and raw[i + 2] == "{":
+                close = raw.find("}", i + 3)
+                if close != -1:
+                    with suppress(ValueError):
+                        cp = int(raw[i + 3 : close], 16)
+                        if 0 <= cp <= 0x10FFFF:
+                            out.append(chr(cp))
+                            i = close + 1
+                            continue
+            elif i + 6 <= n:
+                with suppress(ValueError):
+                    out.append(chr(int(raw[i + 2 : i + 6], 16)))
+                    i += 6
+                    continue
+        out.append(_JS_SIMPLE_ESCAPES.get(nxt, nxt))
+        i += 2
+    return "".join(out)
+
+
+def _js_regex_allowed(last_sig: str) -> bool:
+    return last_sig == "" or last_sig in _JS_REGEX_PRECEDERS
+
+
+def _scan_js_quoted(text: str, i: int, n: int, quote: str) -> tuple[str, int]:
+    """Read a '...' / \"...\" literal starting at the opening quote; returns (value, next)."""
+    i += 1
+    buf: list[str] = []
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            if i + 1 < n:
+                buf.append(text[i : i + 2])
+                i += 2
+                continue
+            i += 1
+            break
+        if c == quote:
+            i += 1
+            return _unescape_js("".join(buf)), i
+        if c == "\n":  # a plain string literal cannot hold a raw newline
+            return _unescape_js("".join(buf)), i
+        buf.append(c)
+        i += 1
+    return _unescape_js("".join(buf)), i
+
+
+def _scan_js_regex(text: str, i: int, n: int) -> int | None:
+    """If text[i]=='/' opens a single-line regex, return the index after its flags.
+
+    Returns None when no terminating '/' is found before the line ends, so the
+    caller can fall back to treating the '/' as a division operator.
+    """
+    j = i + 1
+    in_class = False
+    while j < n:
+        c = text[j]
+        if c == "\n":
+            return None
+        if c == "\\":
+            j += 2
+            continue
+        if c == "[":
+            in_class = True
+        elif c == "]":
+            in_class = False
+        elif c == "/" and not in_class:
+            j += 1
+            while j < n and text[j].isalpha():
+                j += 1
+            return j
+        j += 1
+    return None
+
+
+def _scan_js_string_literals(text: str, *, max_literals: int) -> tuple[list[str], bool]:
+    """Collect every string / template-quasi literal in JS source, in order.
+
+    A single pass that skips line and block comments and regex literals (so a
+    quote inside one is not mistaken for a string start), reads ' and " strings,
+    and walks template literals -- emitting each static quasi and recursing into
+    ${...} interpolations so nested strings are found too. Returns the raw list
+    (with duplicates) and whether the literal cap stopped the scan early.
+    """
+    out: list[str] = []
+    state = {"capped": False}
+    n = len(text)
+
+    def emit(value: str) -> None:
+        if state["capped"]:
+            return
+        if len(out) >= max_literals:
+            state["capped"] = True
+            return
+        out.append(value)
+
+    def emit_quasi(buf: list[str]) -> None:
+        if buf:
+            value = _unescape_js("".join(buf))
+            if value:
+                emit(value)
+
+    def scan_template(i: int, depth: int) -> int:
+        i += 1  # past the opening backtick
+        buf: list[str] = []
+        while i < n:
+            c = text[i]
+            if c == "\\":
+                if i + 1 < n:
+                    buf.append(text[i : i + 2])
+                    i += 2
+                    continue
+                i += 1
+                break
+            if c == "`":
+                i += 1
+                break
+            if c == "$" and i + 1 < n and text[i + 1] == "{":
+                emit_quasi(buf)
+                buf = []
+                i = scan_interp(i + 2, depth + 1)
+                continue
+            buf.append(c)
+            i += 1
+        emit_quasi(buf)
+        return i
+
+    def scan_interp(i: int, depth: int) -> int:
+        if depth > _MAX_JS_TEMPLATE_DEPTH:
+            brace = 1
+            while i < n and brace > 0:
+                if text[i] == "{":
+                    brace += 1
+                elif text[i] == "}":
+                    brace -= 1
+                i += 1
+            return i
+        brace = 1
+        while i < n and brace > 0:
+            c = text[i]
+            if c == "/" and i + 1 < n and text[i + 1] == "/":
+                i += 2
+                while i < n and text[i] != "\n":
+                    i += 1
+                continue
+            if c == "/" and i + 1 < n and text[i + 1] == "*":
+                i += 2
+                while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                    i += 1
+                i = min(n, i + 2)
+                continue
+            if c in ("'", '"'):
+                value, i = _scan_js_quoted(text, i, n, c)
+                if value:
+                    emit(value)
+                continue
+            if c == "`":
+                i = scan_template(i, depth + 1)
+                continue
+            if c == "{":
+                brace += 1
+            elif c == "}":
+                brace -= 1
+            i += 1
+        return i
+
+    i = 0
+    last_sig = ""
+    while i < n and not state["capped"]:
+        c = text[i]
+        if c in " \t\r\n\f\v":
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            i += 2
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i = min(n, i + 2)
+            continue
+        if c == "/" and _js_regex_allowed(last_sig):
+            end = _scan_js_regex(text, i, n)
+            i = end if end is not None else i + 1
+            last_sig = "/"
+            continue
+        if c in ("'", '"'):
+            value, i = _scan_js_quoted(text, i, n, c)
+            emit(value)
+            last_sig = c
+            continue
+        if c == "`":
+            i = scan_template(i, 0)
+            last_sig = "`"
+            continue
+        last_sig = c
+        i += 1
+    return out, state["capped"]
+
+
+def _classify_js_string(value: str) -> str:
+    """Bucket a literal as a url, an endpoint path, or plain text for triage."""
+    v = value.strip()
+    if _JS_URL_RE.match(v):
+        return "url"
+    if v.startswith("//") and "." in v and " " not in v and len(v) > 3:
+        return "url"  # protocol-relative //host/path
+    if len(v) > 1 and " " not in v and "\n" not in v and _JS_PATH_RE.match(v):
+        return "path"
+    return "text"
+
+
 class JsClient:
     """webcrack-backed JavaScript deobfuscation and bundle unpacking."""
 
@@ -212,6 +485,117 @@ class JsClient:
             "has_more": start + len(window) < file_count,
             "listing_truncated": listed_more,
         }
+
+    def strings(
+        self,
+        path: Path,
+        *,
+        min_length: int = _MIN_JS_STRING_LEN,
+        category: str = "",
+        contains: str = "",
+        offset: int = 0,
+        limit: int = 200,
+    ) -> JsonObject:
+        """Extract and classify string literals from a JS file, no webcrack needed.
+
+        js.deobfuscate needs Node/webcrack and returns the whole unminified body;
+        this reads the source directly (so it works with no external tool) and
+        answers the first question of web-app triage -- what endpoints, URLs,
+        keys and messages a bundle carries. It is the JS analogue of apk.strings
+        / wasm.strings: a single-pass scan that pulls the content of every string
+        and template literal (skipping comments and regex literals so their
+        contents are not mistaken for strings), then dedups by value with an
+        occurrence count and buckets each into a ``category`` -- ``url`` (http,
+        https, ws, wss, ftp or protocol-relative), ``path`` (a leading-slash
+        endpoint) or ``text``. ``category`` filters the listing to one bucket,
+        ``contains`` is a case-insensitive substring, and ``min_length`` drops
+        short noise.
+
+        Answers with strings (each value, count, category, and truncated when the
+        value was cut at 8192 chars), count, total, offset and has_more for
+        paging over the filtered set, distinct (all unique literals before
+        filtering), category_counts (the url/path/text breakdown of the length/
+        contains-filtered set, so it is informative even under a category filter),
+        min_length and scan_capped (set once the 200000-literal ceiling stopped
+        the scan). The list field is strings, not results.
+        """
+        if category and category not in _JS_CATEGORIES:
+            raise JsReError(
+                "invalid_params",
+                "category must be url, path, text or empty",
+                category=category,
+            )
+        if not isinstance(contains, str):
+            contains = ""
+        if len(contains) > _MAX_JS_STRINGS_CONTAINS:
+            raise JsReError(
+                "invalid_params",
+                f"contains must be at most {_MAX_JS_STRINGS_CONTAINS} chars",
+            )
+        min_len = max(1, int(min_length))
+        resolved = _require_existing_file(path, missing="input file not found")
+        try:
+            raw_bytes = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        text = raw_bytes.decode("utf-8", errors="replace")
+        literals, scan_capped = _scan_js_string_literals(
+            text, max_literals=_MAX_JS_STRINGS_SCAN
+        )
+        counts: dict[str, int] = {}
+        truncated_values: set[str] = set()
+        for value in literals:
+            # Round-trip through utf-8 so a lone surrogate from a \\uD800 escape
+            # cannot break JSON serialisation of the envelope later.
+            safe = value.encode("utf-8", "replace").decode("utf-8")
+            if len(safe) > _MAX_JS_STRING_LEN:
+                safe = safe[:_MAX_JS_STRING_LEN]
+                truncated_values.add(safe)
+            counts[safe] = counts.get(safe, 0) + 1
+        distinct = len(counts)
+        needle = contains.lower()
+        category_counts = {"url": 0, "path": 0, "text": 0}
+        categorized: list[tuple[str, int, str]] = []
+        for value, count in counts.items():
+            if len(value) < min_len:
+                continue
+            if needle and needle not in value.lower():
+                continue
+            cat = _classify_js_string(value)
+            category_counts[cat] += 1
+            categorized.append((value, count, cat))
+        selected = (
+            [row for row in categorized if row[2] == category] if category else categorized
+        )
+        total = len(selected)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_JS_STRINGS_PAGE))
+        window = selected[start : start + cap]
+        strings_out: list[JsonObject] = []
+        for value, count, cat in window:
+            item: JsonObject = {"value": value, "count": count, "category": cat}
+            if value in truncated_values:
+                item["truncated"] = True
+            strings_out.append(item)
+        result: JsonObject = {
+            "path": str(resolved),
+            "strings": strings_out,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
+            "distinct": distinct,
+            "category_counts": category_counts,
+            "min_length": min_len,
+            "scan_capped": scan_capped,
+        }
+        if category:
+            result["category"] = category
+        if contains:
+            result["contains"] = contains
+        return result
 
 
 _WASM_MAGIC = b"\x00asm"

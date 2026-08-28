@@ -66,6 +66,48 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="js.strings")
+    def js_strings(
+        path: str,
+        min_length: Annotated[int, Field(ge=1, le=1024)] = 2,
+        category: str = "",
+        contains: str = "",
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=5000)] = 200,
+    ) -> dict[str, Any]:
+        """Extract and classify string literals from a JS file (no webcrack needed).
+
+        js.deobfuscate needs Node/webcrack and returns the whole body; this reads
+        the source directly and answers the first triage question -- what
+        endpoints, URLs, keys and messages a bundle carries. The JS analogue of
+        apk.strings / wasm.strings: a single pass pulls the content of every
+        string and template literal (comments and regex literals are skipped so
+        their contents are not mistaken for strings), dedups by value with an
+        occurrence count, and buckets each into a category -- url (http, https,
+        ws, wss, ftp or protocol-relative //host), path (a leading-slash
+        endpoint) or text. Narrow with category (one bucket), contains (a
+        case-insensitive substring) and min_length (drop short noise).
+
+        Answers with strings (each value, count, category, plus truncated when a
+        value was cut at 8192 chars), count, total, offset and has_more over the
+        filtered set, distinct (all unique literals before filtering),
+        category_counts (the url/path/text breakdown, informative even under a
+        category filter), min_length and scan_capped (set once the
+        200000-literal ceiling stopped the scan). The list field is strings, not
+        results. Works on any .js file on disk, including one spilled by
+        web.script.source.
+        """
+        return _dump(
+            analysis.js_strings(
+                path,
+                min_length=min_length,
+                category=category,
+                contains=contains,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0

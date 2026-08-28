@@ -148,7 +148,7 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "jsre.webcrack",
         "backend": "web",
         "status_probe": "webcrack",
-        "tools": ["js.deobfuscate", "js.beautify", "js.unpack_bundle"],
+        "tools": ["js.deobfuscate", "js.beautify", "js.strings", "js.unpack_bundle"],
         "summary": "JavaScript deobfuscation and bundle unpacking via webcrack",
         "optional": True,
     },
