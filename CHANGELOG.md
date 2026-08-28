@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（`apk.xrefs` 对框架/库方法一律返回空调用者，与自身文档相悖）
+
+- `apk.xrefs` 文档承诺「列出名为 method_name 的**每一个**方法的调用者」，但实现里
+  `if method.is_external() or method.name != target: continue` 把外部（框架/库）方法直接跳过。逆向里
+  最常问的恰恰是「谁调了 `Cipher.doFinal` / `Runtime.exec` / `URL.openConnection`」——在 androguard 中
+  这些目标是 **external** 的 `MethodAnalysis`，其 `get_xref_from()` 正是应用内的调用点集合。于是对任何
+  框架 API 查 xref 都静默得到空调用者列表，既无用又与工具契约矛盾。现去掉 `is_external()` 这一项，只按
+  `method.name != target` 过滤，令内部与外部同名方法的调用点一并计入（cap/has_more 逻辑不变）。改动仅此
+  一处、不触及分页（分页是另一条线的关注点）。新增 `tests/unit/test_apk_xrefs_external_methods.py`：用假的
+  analysis 对象（造一个真 APK 需完整 Android 工具链，不便随测携带）钉住两点——查一个 external 方法能列出其
+  应用内调用者、同名的内部+外部方法调用者会合并；两条断言在改前的代码上均失败（外部调用者被丢弃）、按修复
+  后的实现才通过（已实测改前两红、改后全绿）。既有 `test_apk_page_clamp.py` 的 xrefs 桩用内部方法，去掉过滤
+  后仍匹配，照旧全过。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
