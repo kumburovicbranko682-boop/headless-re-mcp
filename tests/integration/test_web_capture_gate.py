@@ -133,13 +133,19 @@ def test_web_capture_chain_records_real_traffic(site: str) -> None:
             )
         try:
             # network.list must record the fetch the page's script made,
-            # complete with the response metadata CDP attaches later.
+            # complete with the response metadata CDP attaches later. Wait for
+            # the row to be complete: loadingFinished (which stamps the receive
+            # phase) arrives moments after responseReceived sets the status, and
+            # the timing assertions below read this snapshot and the HAR
+            # exported after it.
             def find_fetch_row() -> dict[str, Any] | None:
                 listing = service.web_network_list(session_id)
                 assert listing.ok, listing.error
                 for row in listing.data["requests"]:
                     if row.get("url", "").endswith("/data.json") and row.get("status") == 200:
-                        return dict(row)
+                        timings = row.get("timings") or {}
+                        if timings.get("receive", -1) >= 0:
+                            return dict(row)
                 return None
 
             row = _poll(find_fetch_row, message="the page's /data.json fetch was never recorded")
@@ -193,22 +199,24 @@ def test_web_capture_chain_records_real_traffic(site: str) -> None:
             expected = datetime.fromtimestamp(started_at, UTC).isoformat()
             assert by_url[site + "/data.json"]["startedDateTime"] == expected
 
-            # Real per-phase timings, derived from CDP's response.timing the way
-            # Chrome's own HAR export does: the fetch row must carry measured
-            # send/wait durations (ms), and they must thread through to the HAR
-            # entry's timings with receive left at the spec's -1 (loadingFinished
-            # is not wired) and time equal to their non-negative sum. Measured
-            # against real Chromium, where a synthetic ResourceTiming cannot
-            # reach; a regression that dropped the timing object would revert
-            # every entry to time 0 / all -1 and fail here.
+            # Real per-phase timings, derived the way Chrome's own HAR export
+            # does: send/wait from CDP's response.timing and receive from
+            # loadingFinished against the headers-received anchor. The fetch row
+            # must carry measured wait and receive durations (ms), and they must
+            # thread through to the HAR entry's timings with time equal to the
+            # non-negative sum. Measured against real Chromium, where a
+            # synthetic ResourceTiming cannot reach; a regression that dropped
+            # the timing object or the finished hook would revert entries to
+            # time 0 / all -1 and fail here.
             row_timings = row.get("timings")
             assert isinstance(row_timings, dict), row
             assert row_timings.get("wait", -1) >= 0, row_timings
+            assert row_timings.get("receive", -1) >= 0, row_timings
             assert all(value >= 0 for value in row_timings.values()), row_timings
             har_timings = by_url[site + "/data.json"]["timings"]
             assert har_timings["send"] == row_timings.get("send", -1)
             assert har_timings["wait"] == row_timings["wait"]
-            assert har_timings["receive"] == -1, har_timings
+            assert har_timings["receive"] == row_timings["receive"]
             measured = [v for v in har_timings.values() if v >= 0]
             assert by_url[site + "/data.json"]["time"] == round(sum(measured), 3)
 

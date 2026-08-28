@@ -80,8 +80,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         visible. A request row also carries started_at (the unix epoch, in
         seconds, when CDP saw the request begin) when the browser reported
         it -- the same instant the HAR export uses for startedDateTime. A row
-        also carries timings (measured send/wait durations in milliseconds,
-        from CDP's response timing; phases it could not measure are absent) --
+        also carries timings (measured send/wait/receive durations in
+        milliseconds, from CDP's response timing and loadingFinished; phases it
+        could not measure are absent) --
         the same values the HAR export puts in each entry's timings, whose
         non-negative sum is that entry's time. A request the browser could not
         complete (DNS/connect failure, a CSP/mixed-content/client block, or a

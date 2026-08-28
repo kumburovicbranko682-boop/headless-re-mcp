@@ -58,6 +58,7 @@ def test_wiring_enables_all_four_cdp_domains() -> None:
     assert set(cdp.handlers) == {
         "Network.requestWillBeSent",
         "Network.responseReceived",
+        "Network.loadingFinished",
         "Network.loadingFailed",
         "Debugger.scriptParsed",
         "Runtime.consoleAPICalled",
@@ -107,6 +108,106 @@ def test_response_enriches_its_request_and_ignores_an_unknown_id() -> None:
     assert handle.requests["r1"]["mimeType"] == "text/html"
     on_response({"requestId": "ghost", "response": {"status": 500, "mimeType": "x"}})
     assert "ghost" not in handle.requests
+
+
+def _response_with_timing(request_id: str, *, request_time: float, headers_end: float) -> dict:
+    return {
+        "requestId": request_id,
+        "response": {
+            "status": 200,
+            "mimeType": "application/json",
+            "timing": {
+                "requestTime": request_time,
+                "sendStart": 1.0,
+                "sendEnd": 2.0,
+                "receiveHeadersEnd": headers_end,
+            },
+        },
+    }
+
+
+def test_loading_finished_adds_the_receive_phase_from_the_stored_anchor() -> None:
+    """loadingFinished turns the headers-received anchor into timings.receive.
+
+    The response event stores the monotonic instant headers finished arriving
+    (requestTime + receiveHeadersEnd/1000); loadingFinished's timestamp is on
+    the same clock, so their difference is the body download -- HAR's receive
+    phase, computed the way Chrome DevTools' own HAR export computes it. The
+    anchor is consumed: a duplicate finished event must be a no-op, and an
+    orphan id (already-evicted row) must never resurrect anything.
+    """
+    handle, cdp = _wired_session()
+    cdp.handlers["Network.requestWillBeSent"](_request_event("r1"))
+    # Headers done at 100.0 + 40ms; body finished 60ms after that.
+    cdp.handlers["Network.responseReceived"](
+        _response_with_timing("r1", request_time=100.0, headers_end=40.0)
+    )
+    on_finished = cdp.handlers["Network.loadingFinished"]
+    on_finished({"requestId": "r1", "timestamp": 100.1})
+    entry = handle.requests["r1"]
+    assert entry["timings"] == {"send": 1.0, "wait": 38.0, "receive": 60.0}
+    assert handle.receive_anchors == {}
+
+    # Consumed anchor: a stray duplicate must not recompute or crash.
+    on_finished({"requestId": "r1", "timestamp": 200.0})
+    assert entry["timings"]["receive"] == 60.0
+    on_finished({"requestId": "ghost", "timestamp": 1.0})
+    assert "ghost" not in handle.requests
+
+
+def test_loading_finished_drops_junk_clocks_instead_of_negative_receive() -> None:
+    """A backwards or junk timestamp leaves receive unmeasured, never negative.
+
+    A clock step (finished before the anchor) or a junk timing object must not
+    ship a negative duration into the HAR time sum; the anchor is still
+    consumed so the map cannot grow.
+    """
+    handle, cdp = _wired_session()
+    on_finished = cdp.handlers["Network.loadingFinished"]
+
+    cdp.handlers["Network.requestWillBeSent"](_request_event("back"))
+    cdp.handlers["Network.responseReceived"](
+        _response_with_timing("back", request_time=100.0, headers_end=40.0)
+    )
+    on_finished({"requestId": "back", "timestamp": 99.0})
+    assert "receive" not in handle.requests["back"]["timings"]
+    assert handle.receive_anchors == {}
+
+    # A -1 "not applicable" receiveHeadersEnd stores no anchor at all, so the
+    # later finished event has nothing to measure against.
+    cdp.handlers["Network.requestWillBeSent"](_request_event("na"))
+    cdp.handlers["Network.responseReceived"](
+        _response_with_timing("na", request_time=100.0, headers_end=-1)
+    )
+    assert handle.receive_anchors == {}
+    on_finished({"requestId": "na", "timestamp": 200.0})
+    assert "receive" not in handle.requests["na"].get("timings", {})
+
+
+def test_receive_anchors_are_evicted_and_cleared_with_their_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The anchor map can never outgrow the ring or outlive a failed request.
+
+    Anchors are keyed by request id beside the row (not in it, rows are handed
+    to callers verbatim), so they must go when the row is evicted and when
+    loadingFailed means no loadingFinished will ever consume them -- otherwise
+    a page whose requests never finish grows the map for the session's life.
+    """
+    monkeypatch.setattr(web_client, "_MAX_REQUESTS", 2)
+    handle, cdp = _wired_session()
+    on_request = cdp.handlers["Network.requestWillBeSent"]
+    on_response = cdp.handlers["Network.responseReceived"]
+    for index in range(3):
+        on_request(_request_event(f"r{index}"))
+        on_response(_response_with_timing(f"r{index}", request_time=100.0, headers_end=40.0))
+    assert list(handle.requests) == ["r1", "r2"]
+    assert set(handle.receive_anchors) == {"r1", "r2"}
+
+    cdp.handlers["Network.loadingFailed"](
+        {"requestId": "r2", "errorText": "net::ERR_FAILED", "canceled": False}
+    )
+    assert set(handle.receive_anchors) == {"r1"}
 
 
 def test_loading_failed_marks_the_request_and_ignores_an_unknown_id() -> None:

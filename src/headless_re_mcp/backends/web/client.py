@@ -101,12 +101,13 @@ def _cdp_phase_timings(timing: Any) -> JsonObject:
     request write (``sendEnd - sendStart``) and ``wait`` is the server's think
     time until the first response header (``receiveHeadersEnd - sendEnd``), the
     two phases this event alone can measure and exactly what Chrome DevTools'
-    own HAR export derives from this object. ``receive`` (body download) needs
-    ``loadingFinished``, which this capture does not wire, so it stays the HAR's
-    -1 "not measured" sentinel rather than being guessed. Only a phase whose
-    both offsets are present and ordered is emitted; a -1 "not applicable"
-    endpoint or a backwards pair is dropped rather than shipped as a negative
-    duration.
+    own HAR export derives from this object. ``receive`` (body download) ends at
+    ``loadingFinished``, a separate event, so it is not measured here: the
+    response handler stores this timing's headers-received instant (see
+    ``_receive_anchor``) and the finished handler computes receive from it. Only
+    a phase whose both offsets are present and ordered is emitted; a -1 "not
+    applicable" endpoint or a backwards pair is dropped rather than shipped as a
+    negative duration.
     """
     if not isinstance(timing, dict):
         return {}
@@ -124,6 +125,32 @@ def _cdp_phase_timings(timing: Any) -> JsonObject:
     measure("send", timing.get("sendStart"), timing.get("sendEnd"))
     measure("wait", timing.get("sendEnd"), timing.get("receiveHeadersEnd"))
     return phases
+
+
+def _receive_anchor(timing: Any) -> float | None:
+    """The monotonic instant response headers finished arriving, in seconds.
+
+    ResourceTiming's ``requestTime`` is a monotonic baseline in seconds and
+    ``receiveHeadersEnd`` a millisecond offset from it, so their sum is the
+    headers-received instant on the same clock ``loadingFinished.timestamp``
+    uses -- their difference is HAR's receive phase (body download), computed
+    exactly the way Chrome DevTools' HAR export computes it. ``None`` when
+    either member is absent or junk (a -1 "not applicable" offset, a NaN, a
+    non-positive baseline), so no anchor is stored and receive honestly stays
+    the -1 "not measured" sentinel.
+    """
+    if not isinstance(timing, dict):
+        return None
+    base = timing.get("requestTime")
+    headers_end = timing.get("receiveHeadersEnd")
+    if (
+        isinstance(base, (int, float))
+        and isinstance(headers_end, (int, float))
+        and base > 0
+        and headers_end >= 0
+    ):
+        return float(base) + float(headers_end) / 1000.0
+    return None
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -336,6 +363,14 @@ class _WebSession:
         self.console: deque[JsonObject] = deque(maxlen=_MAX_CONSOLE)
         self.requests_dropped = 0
         self.console_dropped = 0
+        # Monotonic instant each request's response headers finished arriving
+        # (ResourceTiming's requestTime + receiveHeadersEnd), kept until its
+        # loadingFinished computes the HAR receive phase from it. Held beside
+        # the row, not in it, because rows are handed to callers verbatim
+        # (network.list / network.get) and a raw clock anchor is not part of
+        # that contract. Popped on finish/failure and evicted in lockstep with
+        # the requests ring, so it can never outgrow it.
+        self.receive_anchors: dict[str, float] = {}
         # Bounded like the other two: scriptParsed fires for every script a page
         # parses, so a long-lived tab (or one that eval()s) would otherwise grow
         # this dictionary for as long as the session is open.
@@ -525,7 +560,8 @@ class WebBackend:
             with handle.lock:
                 handle.requests[str(params.get("requestId"))] = entry
                 while len(handle.requests) > _MAX_REQUESTS:
-                    handle.requests.popitem(last=False)
+                    evicted_id, _ = handle.requests.popitem(last=False)
+                    handle.receive_anchors.pop(evicted_id, None)
                     handle.requests_dropped += 1
 
         def on_response(params: JsonObject) -> None:
@@ -538,15 +574,42 @@ class WebBackend:
             # of the -1 "not measured" sentinel, the same fidelity the proxy HAR
             # gets from mitmproxy's flow timestamps.
             timings = _cdp_phase_timings(resp.get("timing"))
+            anchor = _receive_anchor(resp.get("timing"))
             with handle.lock:
-                entry = handle.requests.get(str(params.get("requestId")))
+                request_id = str(params.get("requestId"))
+                entry = handle.requests.get(request_id)
                 if entry is not None:
                     entry["status"] = resp.get("status")
                     entry["mimeType"] = mime_type
                     if timings:
                         entry["timings"] = timings
+                    if anchor is not None:
+                        handle.receive_anchors[request_id] = anchor
                     if mime_truncated:
                         entry["metadata_truncated"] = True
+
+        def on_finished(params: JsonObject) -> None:
+            # loadingFinished's timestamp is on the same monotonic clock as
+            # ResourceTiming's requestTime, so its distance from the anchor the
+            # response event stored (headers fully received) is the body
+            # download -- HAR's receive phase, computed exactly the way Chrome
+            # DevTools' own HAR export computes it. The anchor is consumed here:
+            # a request finishes once, and a stray duplicate must be a no-op.
+            timestamp = params.get("timestamp")
+            with handle.lock:
+                request_id = str(params.get("requestId"))
+                anchor = handle.receive_anchors.pop(request_id, None)
+                entry = handle.requests.get(request_id)
+                if entry is None or anchor is None:
+                    return
+                # A NaN timestamp fails the ordering check, like every other
+                # junk clock value in the timing pipeline.
+                if isinstance(timestamp, (int, float)) and timestamp >= anchor:
+                    timings = entry.get("timings")
+                    if not isinstance(timings, dict):
+                        timings = {}
+                        entry["timings"] = timings
+                    timings["receive"] = round((float(timestamp) - anchor) * 1000, 3)
 
         def on_failed(params: JsonObject) -> None:
             # CDP fires loadingFailed for a request that never produced a
@@ -566,7 +629,11 @@ class WebBackend:
                 params.get("blockedReason"), _MAX_METADATA_BYTES
             )
             with handle.lock:
-                entry = handle.requests.get(str(params.get("requestId")))
+                request_id = str(params.get("requestId"))
+                # A failed request never reaches loadingFinished, so its anchor
+                # would otherwise sit in the map until ring eviction clears it.
+                handle.receive_anchors.pop(request_id, None)
+                entry = handle.requests.get(request_id)
                 if entry is not None:
                     entry["error"] = True
                     entry["error_msg"] = error_text
@@ -613,6 +680,7 @@ class WebBackend:
 
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
+        cdp.on("Network.loadingFinished", on_finished)
         cdp.on("Network.loadingFailed", on_failed)
         cdp.on("Debugger.scriptParsed", on_script)
         # Over CDP like the rest, not page.on("console"). The high-level event

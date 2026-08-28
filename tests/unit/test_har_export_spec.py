@@ -499,10 +499,11 @@ def test_cdp_phase_timings_derives_send_and_wait_and_drops_junk() -> None:
 
     The offsets are ms ticks relative to requestTime, so a difference is already
     a duration -- send is sendEnd-sendStart, wait is receiveHeadersEnd-sendEnd,
-    the two phases responseReceived can measure. receive needs loadingFinished
-    (unwired) so it is never produced here. A -1 "not applicable" endpoint or a
-    backwards pair must be dropped, not shipped as a negative duration that
-    would corrupt the HAR time sum.
+    the two phases responseReceived can measure. receive ends at the separate
+    loadingFinished event, so this helper never produces it -- the finished
+    handler computes it from the anchor _receive_anchor derives. A -1 "not
+    applicable" endpoint or a backwards pair must be dropped, not shipped as a
+    negative duration that would corrupt the HAR time sum.
     """
     good = _cdp_phase_timings(
         {"sendStart": 1.0, "sendEnd": 3.5, "receiveHeadersEnd": 40.0}
@@ -526,13 +527,14 @@ def test_cdp_phase_timings_derives_send_and_wait_and_drops_junk() -> None:
 def test_web_har_export_carries_the_measured_phase_timings(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """A row's measured send/wait must reach the HAR entry's timings and time.
+    """A row's measured phases must reach the HAR entry's timings and time.
 
-    on_response derives the phases from CDP's response.timing and stores them on
-    the request row; the export passes them to har_entry, which replaces the -1
-    sentinel and reports time as the sum -- the same pipeline the proxy HAR uses
-    from mitmproxy timestamps. A row with no measured phase keeps the historical
-    all -1 / time 0.
+    on_response derives send/wait from CDP's response.timing and on_finished
+    adds receive from loadingFinished; the export passes whatever the row
+    carries to har_entry, which replaces the -1 sentinels and reports time as
+    the sum -- the same pipeline the proxy HAR uses from mitmproxy timestamps.
+    A row whose loadingFinished never arrived keeps receive -1, and a row with
+    no measured phase keeps the historical all -1 / time 0.
     """
 
     class _Handle:
@@ -546,7 +548,7 @@ def test_web_har_export_carries_the_measured_phase_timings(
                     "resourceType": "Document",
                     "status": 200,
                     "mimeType": "text/html",
-                    "timings": {"send": 1.5, "wait": 18.0},
+                    "timings": {"send": 1.5, "wait": 18.0, "receive": 5.25},
                 },
                 "1": {
                     "requestId": "1",
@@ -555,6 +557,15 @@ def test_web_har_export_carries_the_measured_phase_timings(
                     "resourceType": "Script",
                     "status": 200,
                     "mimeType": "text/javascript",
+                },
+                "2": {
+                    "requestId": "2",
+                    "url": "https://example.com/unfinished",
+                    "method": "GET",
+                    "resourceType": "Fetch",
+                    "status": 200,
+                    "mimeType": "application/json",
+                    "timings": {"send": 1.0, "wait": 2.0},
                 },
             }
 
@@ -565,13 +576,14 @@ def test_web_har_export_carries_the_measured_phase_timings(
     doc = _assert_valid_har(out.read_text(encoding="utf-8"))
     entries = {e["request"]["url"]: e for e in doc["log"]["entries"]}
     timed = entries["https://example.com/timed"]
-    assert timed["timings"]["send"] == 1.5
-    assert timed["timings"]["wait"] == 18.0
-    assert timed["timings"]["receive"] == -1
-    assert timed["time"] == 19.5
+    assert timed["timings"] == {"send": 1.5, "wait": 18.0, "receive": 5.25}
+    assert timed["time"] == 24.75
     untimed = entries["https://example.com/untimed"]
     assert untimed["timings"] == {"send": -1, "wait": -1, "receive": -1}
     assert untimed["time"] == 0
+    unfinished = entries["https://example.com/unfinished"]
+    assert unfinished["timings"] == {"send": 1.0, "wait": 2.0, "receive": -1}
+    assert unfinished["time"] == 3.0
 
 
 def test_web_har_export_is_bounded_by_the_capture_cap(
