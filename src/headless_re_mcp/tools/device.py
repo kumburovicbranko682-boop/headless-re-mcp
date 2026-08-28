@@ -71,6 +71,21 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
+    @tools.tool(name="device.arp")
+    def device_arp(serial: str) -> dict[str, Any]:
+        """List the ARP neighbour table (/proc/net/arp).
+
+        The device's view of its local network -- which IPs it resolved to
+        which MACs, on which interface -- the LAN-neighbour half of network
+        recon that pairs with device.connections. Answers with arp (each entry
+        carrying ip, mac, the raw flags hex, a complete flag from the ATF_COM
+        bit, and device), count, and has_more. /proc/net/arp is world-readable
+        so no root is needed; an empty table is an honest result (no resolved
+        neighbours), not an error, while a read that never returns the header
+        is; the list is capped with has_more.
+        """
+        return _dump(analysis.device_arp(serial))
+
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,

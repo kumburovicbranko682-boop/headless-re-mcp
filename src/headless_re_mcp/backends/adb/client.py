@@ -40,6 +40,7 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_ARP = 1024
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -525,6 +526,58 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def arp(self, serial: str) -> JsonObject:
+        """List the ARP neighbour table from /proc/net/arp.
+
+        The device's view of its local network: which IPs it has resolved to
+        which MACs, on which interface, and whether each entry is complete.
+        Paired with device.connections (the sockets), this is the LAN-neighbour
+        half of network recon -- what else is on the same segment. /proc/net/arp
+        is world-readable, so no root is needed.
+
+        Each entry carries ip, mac, the raw flags hex, a complete flag decoded
+        from the ATF_COM bit (an incomplete entry has the 00:00:00:00:00:00
+        placeholder MAC), and device (the interface). An empty table is a real,
+        honest result -- a device with no resolved neighbours -- so it is not an
+        error; only a read that never returns the kernel's header (permission
+        denied, no such file) is. The list is capped with has_more.
+        """
+        dev = self._device(serial)
+        raw = _device_shell(dev, "cat /proc/net/arp")
+        text = str(raw)
+        # A successful read always carries the kernel's "IP address" header;
+        # its absence is the permission-denied / no-such-file signal. An empty
+        # table (header only) is legitimate and must not be treated as failure.
+        if "IP address" not in text:
+            raise AdbError(
+                "backend_error", "reading /proc/net/arp failed", output=text[:800]
+            )
+        entries: list[JsonObject] = []
+        has_more = False
+        for line in text.splitlines():
+            if "IP address" in line:
+                continue
+            fields = line.split()
+            if len(fields) < 6:
+                continue
+            if len(entries) >= _MAX_ARP:
+                has_more = True
+                break
+            try:
+                flags_val = int(fields[2], 16)
+            except ValueError:
+                flags_val = 0
+            entries.append(
+                {
+                    "ip": fields[0],
+                    "mac": fields[3],
+                    "flags": fields[2],
+                    "complete": bool(flags_val & 0x2),
+                    "device": fields[5],
+                }
+            )
+        return {"arp": entries, "count": len(entries), "has_more": has_more}
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a
