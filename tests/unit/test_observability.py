@@ -131,6 +131,66 @@ def test_totals_survive_the_window_rolling() -> None:
     assert tool["calls_total"] == 5
 
 
+def test_configure_telemetry_logging_is_idempotent(telemetry_log: Path) -> None:
+    first = configure_telemetry_logging()
+    second = configure_telemetry_logging()
+
+    assert first == second == telemetry_log
+
+
+def test_totals_returns_defensive_copies() -> None:
+    ring = TelemetryRing()
+    record_tool_call("demo.copy", ok=False, duration_ms=1.0, ring=ring)
+
+    snapshot = ring.totals()
+    snapshot["demo.copy"].calls = 999
+
+    fresh = ring.totals()["demo.copy"]
+    assert fresh.calls == 1
+    assert fresh.failures == 1
+
+
+def test_envelope_readers_tolerate_shapeless_payloads() -> None:
+    assert telemetry_module._envelope_ok("not a dict") is True
+    assert telemetry_module._envelope_ok({"data": 1}) is True
+    assert telemetry_module._envelope_error_code("not a dict") is None
+    assert telemetry_module._envelope_error_code({"error": {"code": 500}}) is None
+
+
+def test_a_handler_without_an_inspectable_signature_still_instruments() -> None:
+    # inspect.signature(type) raises ValueError; the guard must swallow it.
+    assert telemetry_module._session_parameter_index(type) is None
+
+    def handler(session_id: str) -> dict[str, Any]:
+        return {"ok": True}
+
+    handler.__signature__ = "corrupted"  # type: ignore[attr-defined]
+    assert telemetry_module._session_parameter_index(handler) is None
+
+    ring = TelemetryRing()
+    wrapped = instrument(handler, name="demo.opaque", ring=ring)
+    assert wrapped("sess-1")["ok"] is True
+    record = ring.recent(1)[0]
+    assert record["tool"] == "demo.opaque"
+    # Without a signature the positional session id cannot be recovered.
+    assert record["session_id"] is None
+
+
+def test_resolve_log_dir_falls_back_to_temp_when_the_choice_is_unusable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A process that cannot write logs must still start."""
+    import tempfile
+
+    monkeypatch.delenv("HEADLESS_RE_LOG_DIR", raising=False)
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file where a directory must go", encoding="utf-8")
+
+    chosen = resolve_log_dir(blocker / "logs")
+
+    assert chosen == Path(tempfile.gettempdir()) / "headless-re-mcp" / "logs"
+
+
 def test_utc_formatter_does_not_lie_about_the_zone() -> None:
     formatter = UtcFormatter("%(asctime)sZ")
     record = logging.LogRecord("n", logging.INFO, "p", 1, "m", None, None)

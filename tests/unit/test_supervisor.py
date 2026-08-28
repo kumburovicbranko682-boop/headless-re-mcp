@@ -519,3 +519,89 @@ def test_the_real_default_spawn_starts_and_restarts_an_actual_process(
         "child.started",
         "supervisor.restart_limit",
     ]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-tree terminate")
+def test_terminate_kills_a_real_posix_popen_through_the_tree_helper() -> None:
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        **no_window_popen_kwargs(),
+    )
+    supervisor = Supervisor(["x"])
+
+    supervisor._terminate(process)
+
+    assert process.poll() is not None, "the supervised process must be gone"
+
+
+def test_terminate_falls_back_to_kill_when_wait_cannot_take_a_timeout() -> None:
+    """A fake child whose wait() rejects timeout= must still end up dead."""
+
+    class Stubborn:
+        def __init__(self) -> None:
+            self.terminated = False
+            self.killed = False
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self) -> int:  # no timeout parameter: wait(timeout=15) raises
+            return 0
+
+        def kill(self) -> None:
+            self.killed = True
+
+    child = Stubborn()
+    Supervisor(["x"])._terminate(child)
+
+    assert child.terminated is True
+    assert child.killed is True
+
+
+def test_terminate_tolerates_a_child_with_no_lifecycle_methods() -> None:
+    class Inert:
+        pass
+
+    # Nothing to call is a no-op, not a crash during shutdown.
+    Supervisor(["x"])._terminate(Inert())
+
+
+def test_terminate_survives_a_stuck_wait_on_a_child_without_kill() -> None:
+    class NoKill:
+        def terminate(self) -> None:
+            return None
+
+        def wait(self) -> int:  # rejects timeout=, and there is no kill()
+            return 0
+
+    Supervisor(["x"])._terminate(NoKill())
+
+
+def test_the_report_serializes_for_operators() -> None:
+    from headless_re_mcp.supervisor import SupervisorReport
+
+    payload = SupervisorReport(starts=2, crash_restarts=1, stopped_reason="stopped").as_json()
+
+    assert payload["starts"] == 2
+    assert payload["crash_restarts"] == 1
+    assert payload["stopped_reason"] == "stopped"
+    assert payload["last_exit_code"] is None
+
+
+def test_build_child_argv_only_adds_bind_flags_it_was_given() -> None:
+    bare = build_child_argv("serve-web")
+    assert bare[-1] == "serve-web"
+    assert "--host" not in bare and "--port" not in bare
+
+    host_only = build_child_argv("serve-web", host="127.0.0.1")
+    assert host_only[-2:] == ["--host", "127.0.0.1"]
+    assert "--port" not in host_only
+
+    port_only = build_child_argv("serve-web", port=9000)
+    assert port_only[-2:] == ["--port", "9000"]
+    assert "--host" not in port_only
+
+    stdio = build_child_argv("serve", host="127.0.0.1", port=9000, config="c.json")
+    assert stdio[-1] == "serve"
+    assert "--host" not in stdio and "--port" not in stdio
+    assert stdio[1:4] == ["-m", "headless_re_mcp", "--config"]

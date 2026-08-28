@@ -1181,3 +1181,97 @@ async def test_doctor_description_names_live_fields() -> None:
         assert "no ok" in text
     finally:
         analysis.close_all()
+
+
+def _stdio_service(tmp_path: Path) -> AnalysisService:
+    return AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+
+
+def test_run_stdio_hands_the_server_to_the_loop_and_releases_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import headless_re_mcp.mcp.server as server_module
+
+    service = _stdio_service(tmp_path)
+    closed: list[bool] = []
+    monkeypatch.setattr(service, "close_all", lambda: closed.append(True))
+    monkeypatch.setattr(
+        server_module, "install_global_exception_hooks", lambda ctx: tmp_path
+    )
+    monkeypatch.setattr(server_module, "configure_telemetry_logging", lambda: None)
+    handed: list[object] = []
+    monkeypatch.setattr(
+        server_module.anyio, "run", lambda fn, srv: handed.append((fn, srv))
+    )
+
+    server_module.run_stdio(service)
+
+    assert closed == [True]
+    assert handed and handed[0][0] is server_module._run_stdio
+
+
+def test_run_stdio_releases_sessions_even_when_the_loop_dies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import headless_re_mcp.mcp.server as server_module
+
+    service = _stdio_service(tmp_path)
+    closed: list[bool] = []
+    monkeypatch.setattr(service, "close_all", lambda: closed.append(True))
+    monkeypatch.setattr(
+        server_module, "install_global_exception_hooks", lambda ctx: tmp_path
+    )
+    monkeypatch.setattr(server_module, "configure_telemetry_logging", lambda: None)
+
+    def explode(fn: object, srv: object) -> None:
+        raise RuntimeError("event loop refused to start")
+
+    monkeypatch.setattr(server_module.anyio, "run", explode)
+
+    with pytest.raises(RuntimeError, match="event loop refused to start"):
+        server_module.run_stdio(service)
+
+    assert closed == [True]
+
+
+def test_the_stdio_loop_serves_through_the_parse_reply_wrapper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_run_stdio must wire the guarded streams into the MCP server."""
+    from contextlib import asynccontextmanager
+
+    import anyio
+
+    import headless_re_mcp.mcp.server as server_module
+    import headless_re_mcp.mcp.stdio_errors as stdio_errors
+
+    service = _stdio_service(tmp_path)
+    try:
+        server = create_server(service)
+
+        @asynccontextmanager
+        async def fake_streams():  # type: ignore[no-untyped-def]
+            yield ("read-stream", "write-stream")
+
+        monkeypatch.setattr(
+            stdio_errors, "stdio_server_with_parse_replies", fake_streams
+        )
+        handed: list[tuple[object, object]] = []
+
+        async def fake_run(read: object, write: object, options: object) -> None:
+            handed.append((read, write))
+
+        monkeypatch.setattr(server._mcp_server, "run", fake_run)
+        anyio.run(server_module._run_stdio, server)
+
+        assert handed == [("read-stream", "write-stream")]
+    finally:
+        service.close_all()

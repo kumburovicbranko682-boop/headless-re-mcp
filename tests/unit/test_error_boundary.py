@@ -311,3 +311,84 @@ def test_the_asyncio_hook_logs_unawaited_failures_and_scrubs_secrets(
 def test_installing_the_asyncio_hook_outside_a_loop_is_a_quiet_no_op() -> None:
     """install_global_exception_hooks runs before any loop exists; it must not raise."""
     boundary.install_asyncio_exception_handler()
+
+
+def test_the_asyncio_hook_accepts_an_explicit_loop() -> None:
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    try:
+        boundary.install_asyncio_exception_handler(loop)
+        assert loop.get_exception_handler() is not None
+    finally:
+        loop.close()
+
+
+def _install_hooks_restorably(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)
+    monkeypatch.setattr(sys, "unraisablehook", sys.unraisablehook)
+    monkeypatch.setattr(threading, "excepthook", threading.excepthook)
+    boundary.install_global_exception_hooks("test-process")
+
+
+def test_the_process_hook_prints_an_envelope_and_lets_ctrl_c_through(
+    incident_log: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import sys
+
+    _install_hooks_restorably(monkeypatch)
+
+    passed_through: list[type[BaseException]] = []
+    monkeypatch.setattr(
+        sys, "__excepthook__", lambda t, e, tb: passed_through.append(t)
+    )
+    sys.excepthook(KeyboardInterrupt, KeyboardInterrupt(), None)
+    assert passed_through == [KeyboardInterrupt]
+    assert capsys.readouterr().err == ""
+
+    secret = "sk-live-" + "cafef00d0123"
+    sys.excepthook(RuntimeError, RuntimeError(f"boom api_key={secret}"), None)
+    err = capsys.readouterr().err
+    envelope = json.loads(err.strip().splitlines()[-1])
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "uncaught_exception"
+    assert secret not in err
+
+
+def test_the_thread_hook_synthesizes_an_error_when_given_none(
+    incident_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    _install_hooks_restorably(monkeypatch)
+
+    threading.excepthook(
+        SimpleNamespace(
+            exc_type=RuntimeError, exc_value=None, exc_traceback=None, thread=None
+        )
+    )
+
+    logged = incident_log.read_text(encoding="utf-8")
+    assert "thread exception hook received no exception" in logged
+    assert "thread:unknown" in logged
+
+
+def test_the_unraisable_hook_synthesizes_an_error_when_given_none(
+    incident_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    _install_hooks_restorably(monkeypatch)
+
+    sys.unraisablehook(
+        SimpleNamespace(exc_value=None, err_msg="del went wrong", object="<finalizer>")
+    )
+
+    logged = incident_log.read_text(encoding="utf-8")
+    assert "del went wrong" in logged
+    assert "unraisable:" in logged

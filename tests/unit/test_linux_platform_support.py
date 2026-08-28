@@ -44,6 +44,29 @@ def test_linux_non_x86_64_is_not_claimed_supported() -> None:
     assert report["support_level"] == "unsupported"
 
 
+def test_platform_key_recognises_windows_spellings_and_unknown_systems() -> None:
+    from headless_re_mcp.platform_support import platform_key
+
+    assert platform_key(os_name="nt", system="Windows") == "windows"
+    assert platform_key(os_name="posix", system="Windows") == "windows"
+    assert platform_key(os_name="posix", system="Haiku") == "haiku"
+    assert platform_key(os_name="java", system="") == "java"
+    assert platform_key(os_name="", system="") == "unknown"
+
+
+def test_a_windows_x86_64_host_reports_full_support() -> None:
+    report = runtime_platform_report(
+        os_name="nt",
+        system="Windows",
+        machine="AMD64",
+    )
+
+    assert report["core_supported"] is True
+    assert report["support_level"] == "full"
+    assert report["package_format"] == "wheel_sdist_or_msi"
+    assert report["windows_only_status"] == "ready"
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux installer contract")
 def test_linux_installer_resolves_repo_independently_of_working_directory(
     tmp_path: Path,

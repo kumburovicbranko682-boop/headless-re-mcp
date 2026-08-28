@@ -163,6 +163,61 @@ def test_probe_ready_still_reports_a_live_child() -> None:
         assert detail == "http 200"
 
 
+def test_probe_ready_refuses_a_url_that_is_not_http() -> None:
+    ok, detail = probe_ready("ftp://127.0.0.1/readyz", timeout=0.2)
+
+    assert ok is False
+    assert detail == "unreachable: ValueError"
+
+
+def test_probe_ready_preserves_the_query_string() -> None:
+    seen: list[str] = []
+
+    class Echo(BaseHTTPRequestHandler):
+        def log_message(self, *args: object) -> None:
+            return
+
+        def do_GET(self) -> None:
+            seen.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    for port in _serve(Echo):
+        ok, _detail = probe_ready(
+            f"http://127.0.0.1:{port}/readyz?deep=1", timeout=0.5
+        )
+        assert ok is True
+        assert seen == ["/readyz?deep=1"]
+
+
+def test_probe_ready_gives_up_on_a_connection_that_never_forms(
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    """No socket yet means nothing to shut down; the deadline still holds."""
+    import http.client
+
+    class Wedged:
+        def __init__(self, host: object, port: object, timeout: float) -> None:
+            self.sock = None
+
+        def request(self, method: str, path: str) -> None:
+            time.sleep(1.4)
+            raise OSError("late")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(http.client, "HTTPConnection", Wedged)
+    started = time.perf_counter()
+    ok, detail = probe_ready("http://127.0.0.1:1/readyz", timeout=0.2)
+    elapsed = time.perf_counter() - started
+
+    assert ok is False
+    assert detail == "unreachable: TimeoutError"
+    assert elapsed < 1.5
+
+
 def test_probe_ready_names_a_non_200() -> None:
     class Sick(BaseHTTPRequestHandler):
         def log_message(self, *args: object) -> None:
