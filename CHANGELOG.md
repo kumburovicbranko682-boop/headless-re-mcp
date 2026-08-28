@@ -10,6 +10,8 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
+知识库(会话记忆)新增经真实 MCP stdio 服务的端到端 Gate（`tests/integration/test_knowledge_store_gate.py`）。多步分析——尤其是 Agent 的——靠 `knowledge.record`/`knowledge.query` 记住已学到的东西:这个函数是入口、那个 API 被导入、这个结构体 16 字节。要让这份记忆可用,它必须表现得像个 store 而非 log:同一事实录两次要就地更正而非堆重复;事实要按 kind 分组,好让后一步问「我们知道哪些函数」;一个会话的笔记绝不能渗进另一个;学到的东西要进入运行产出的报告。这些都不需要反编译器,本该在裸机上可证,却一直没有端到端 gate。本 gate 驱动真实 MCP stdio 服务钉住契约:幂等 upsert、按 kind 分组——`function/main` 录两次只剩一行、取第二个值、保留原 `created_at`(`replaced` 由假转真);`knowledge.query` 对不同事实计总、按 kind 分组带计数、按请求过滤到单一 kind、并回读那份「写入时不回显、需读回」的 value;按会话隔离且进报告——一个会话录的事实在另一个会话不可见,而某会话持有的事实出现在其 `report.generate` 产出里(finding 计数与渲染的 Markdown 皆然),没有任何事实的会话仍干净出报告、finding 计数为零。纯 stdlib、stdio 回环、无后端、任意平台。
+
 新增 Linux x86_64 核心支持：wheel/sdist 与 `scripts/install-linux.sh` 可安装，`doctor --strict` 以平台动态必需项判断就绪，`serve` / `serve-web`、会话、制品和可移植后端可在 Linux 加载。doctor 与 `/readyz` 现在报告 `full`（Windows）或 `core`（Linux）支持级别。
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
