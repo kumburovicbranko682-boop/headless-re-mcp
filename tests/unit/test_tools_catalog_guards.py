@@ -151,3 +151,78 @@ def test_invoke_wraps_handler_exceptions_in_an_envelope() -> None:
     envelope = cat.invoke("e.tool", {})
     assert envelope["ok"] is False
     assert envelope["error"] is not None
+
+
+def _typed_tool(cat: CommandCatalog, name: str = "typed.tool") -> None:
+    def handler(session_id: str, address: int = 0) -> dict[str, Any]:
+        return {"ok": True, "data": None, "error": None, "meta": {}}
+
+    cat.bind_handler(name, handler, input_schema={"type": "object"}, description="d")
+
+
+@pytest.mark.parametrize(
+    ("arguments", "needle"),
+    [
+        ({"sessionId": "abc"}, "missing a required argument"),
+        ({"session_id": "abc", "bogus": 1}, "unexpected keyword argument"),
+        ({}, "missing a required argument"),
+    ],
+)
+def test_invoke_reclassifies_bad_arguments_as_invalid_params(
+    arguments: dict[str, Any], needle: str
+) -> None:
+    """A misspelled, extra or missing argument is the caller's fault.
+
+    spec.handler(**arguments) would raise TypeError, which the envelope files as
+    an internal_error with a logged incident -- telling an unattended model the
+    server broke on a call it could fix by renaming a field. It must instead read
+    as invalid_params so the caller corrects the arguments and retries.
+    """
+    cat = CommandCatalog([_spec("typed.tool")])
+    _typed_tool(cat)
+
+    result = cat.invoke("typed.tool", arguments)
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_params"
+    assert result["error"]["details"]["tool"] == "typed.tool"
+    assert needle in result["error"]["message"]
+
+
+def test_invoke_runs_a_valid_typed_call() -> None:
+    cat = CommandCatalog([_spec("typed.tool")])
+    _typed_tool(cat)
+
+    assert cat.invoke("typed.tool", {"session_id": "abc", "address": 5})["ok"] is True
+
+
+def test_invoke_keeps_a_handler_internal_type_error_as_internal_error() -> None:
+    """Only the argument binding is reclassified; a defect inside the handler is not.
+
+    The signature pre-check passes for well-formed arguments, so a TypeError the
+    handler raises for its own reason still reaches the envelope as internal_error
+    -- the reclassification must not swallow genuine server defects.
+    """
+    cat = CommandCatalog([_spec("boom.tool")])
+
+    def handler(session_id: str) -> dict[str, Any]:
+        raise TypeError("genuine internal defect")
+
+    cat.bind_handler("boom.tool", handler, input_schema={"type": "object"}, description="d")
+
+    result = cat.invoke("boom.tool", {"session_id": "abc"})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "internal_error"
+
+
+def test_invoke_lets_a_kwargs_handler_accept_any_argument() -> None:
+    """A **kwargs handler binds anything, so the check never rejects its calls."""
+    cat = CommandCatalog([_spec("open.tool")])
+
+    def handler(**kwargs: Any) -> dict[str, Any]:
+        return {"ok": True, "data": kwargs, "error": None, "meta": {}}
+
+    cat.bind_handler("open.tool", handler, input_schema={"type": "object"}, description="d")
+
+    assert cat.invoke("open.tool", {"anything": 1, "else": 2})["ok"] is True

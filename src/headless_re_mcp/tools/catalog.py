@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -525,10 +526,53 @@ class CommandCatalog:
             raise RuntimeError(f"tool handler is not bound: {name}")
         from headless_re_mcp.error_boundary import exception_envelope
 
+        binding_error = self._binding_error(spec.handler, arguments)
+        if binding_error is not None:
+            # A misspelled, missing or extra argument is the caller's mistake, not
+            # a server defect. Without this check spec.handler(**arguments) raises
+            # TypeError, which the envelope below files as an internal_error with a
+            # logged incident -- noise that also tells an unattended model "server
+            # bug, do not retry" about a call it could fix by renaming a field.
+            # Reclassify it as invalid_params, naming the binding failure so the
+            # caller can correct the arguments and try again.
+            return {
+                "ok": False,
+                "data": None,
+                "error": {
+                    "code": "invalid_params",
+                    "message": f"{name}: {binding_error}",
+                    "details": {"tool": name},
+                    "retryable": False,
+                },
+                "meta": {},
+            }
         try:
             return spec.handler(**arguments)
         except BaseException as exc:  # noqa: BLE001 - Agent transport must stay alive
             return exception_envelope(exc, context=f"agent-tool:{name}")
+
+    @staticmethod
+    def _binding_error(
+        handler: Callable[..., dict[str, Any]], arguments: dict[str, Any]
+    ) -> str | None:
+        """Return the message for an argument-binding failure, else None.
+
+        inspect.signature follows the @wraps chain to the innermost typed handler,
+        and the write-guard wrapper forwards *args/**kwargs unchanged, so the
+        resolved signature is exactly what the call will accept. A handler that
+        declares **kwargs binds anything, so this never rejects a call the handler
+        would have taken. If the signature cannot be introspected the check is
+        skipped and the call proceeds as before.
+        """
+        try:
+            signature = inspect.signature(handler)
+        except (TypeError, ValueError):
+            return None
+        try:
+            signature.bind(**arguments)
+        except TypeError as exc:
+            return str(exc)
+        return None
 
 
 COMMAND_CATALOG = CommandCatalog()
