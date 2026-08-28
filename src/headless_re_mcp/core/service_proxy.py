@@ -158,6 +158,28 @@ class ProxyAnalysisMixin:
             content_type_filter=content_type_filter,
         )
 
+    def proxy_secrets(
+        self,
+        session_id: str,
+        offset: int = 0,
+        limit: int = 100,
+        url_filter: str = "",
+        content_type_filter: str = "",
+        name_filter: str = "",
+        include_generic: bool = False,
+    ) -> Result[JsonObject]:
+        return self._proxy_wrap(
+            session_id,
+            "secrets",
+            session_id,
+            offset=offset,
+            limit=limit,
+            url_filter=url_filter,
+            content_type_filter=content_type_filter,
+            name_filter=name_filter,
+            include_generic=include_generic,
+        )
+
     def proxy_flow_get(self, session_id: str, flow_id: str) -> Result[JsonObject]:
         try:
             data = self._proxy.flow_get(session_id, flow_id, self._proxy_artifact_dir(session_id))

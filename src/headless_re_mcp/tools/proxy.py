@@ -183,6 +183,60 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="proxy.secrets")
+    def proxy_secrets(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        url_filter: str = "",
+        content_type_filter: str = "",
+        name_filter: str = "",
+        include_generic: bool = False,
+    ) -> dict[str, Any]:
+        """Find credentials that crossed the wire: keys/tokens in the live capture.
+
+        The dynamic-traffic counterpart to js.secrets and apk.secrets. Those scan
+        a file at rest; this scans what the target actually sent and received --
+        an Authorization or Cookie header, an OAuth token riding a redirect url,
+        an api key echoed back in a JSON response -- credentials that are minted
+        at runtime and never appear in the static bundle. It runs the same shared
+        detector table (AWS/Google/GitHub/Slack/Stripe keys, JWTs, private-key
+        headers, basic-auth urls, ...) over each retained flow's url,
+        request/response headers and decoded request/response bodies
+        (gzip/deflate/zstd, bounded exactly like proxy.search). Deduplicated by
+        (detector, value). Answers with secrets, count, total (distinct findings
+        after name_filter), offset, has_more, detectors (the distinct detector
+        names present), dropped (ring evictions, same as proxy.flows) and
+        scan_capped (the distinct-findings ceiling or the shared decoded-byte scan
+        budget was hit). Each secrets row is {detector, value (the matched
+        credential, clipped with value_truncated when long), count (occurrences
+        across the capture), where (sorted distinct locations: url,
+        request_headers, response_headers, request_body, response_body -- a hit in
+        request_headers reads as the client sending it, one in response_body as
+        the server leaking it), first_flow ({id, seq, url, where}, the flow to hand
+        proxy.flow.get)}. url_filter and content_type_filter pre-narrow which flows
+        are scanned (case-insensitive substring, AND-combined), bounding decode
+        work like proxy.search. name_filter then keeps only findings whose detector
+        or value contains that substring (case-insensitive), applied before paging
+        so total is the match count. include_generic adds a high-entropy
+        base64/hex catch-all for a value no specific detector claimed (off by
+        default; it trades recall for precision). Rows are ordered by detector,
+        then occurrence count (descending), then value. The list field is secrets;
+        to read a matched flow in full use proxy.flow.get with a finding's
+        first_flow.id.
+        """
+        return _dump(
+            analysis.proxy_secrets(
+                session_id,
+                offset=offset,
+                limit=limit,
+                url_filter=url_filter,
+                content_type_filter=content_type_filter,
+                name_filter=name_filter,
+                include_generic=include_generic,
+            )
+        )
+
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
         """Fetch one flow's headers and body (large bodies spill to an artifact).

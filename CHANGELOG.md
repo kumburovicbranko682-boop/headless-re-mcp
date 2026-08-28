@@ -294,6 +294,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **`js.secrets`/`apk.secrets` 扫的是静止文件，但凭据泄漏最要命的一处是「运行时到底有哪些 key/token 真的过了线」——`Authorization`/`Cookie` 头、
+  跟着重定向 url 走的 OAuth token、被 JSON 响应回显的 api key——这些是运行时现签发的，静态 bundle 里根本没有**。新增只读工具 `proxy.secrets`：把
+  `js.secrets`/`apk.secrets` 用的同一套高精度凭据探测器（共享模块 `backends/common/secret_scan.py`，现在 JS/APK/代理三条线共用一份规则）跑在环形
+  缓冲里保留的每一条流上——url、请求/响应头、以及解码后（gzip/deflate/zstd，边界与 `proxy.search` 一致）的请求/响应体。按 `(detector, value)` 去重，
+  每行 `{detector, value（命中的凭据，过长置 value_truncated）, count（整份 capture 里的出现次数）, where（去重后的命中位置：url、request_headers、
+  response_headers、request_body、response_body——命中在 request_headers 读作客户端在发它、在 response_body 读作服务端在漏它）, first_flow（{id, seq,
+  url, where}，可直接丢给 proxy.flow.get 的那条流）}`，按 detector 再 count 再 value 排序。答复另带 `detectors`（命中的探测器种类集合）、`dropped`
+  （环形缓冲的整体逐出计数，同 `proxy.flows`）与 `scan_capped`（命中数上限或与 `proxy.search` 共享的解码字节预算耗尽）。`url_filter`/`content_type_filter`
+  先收窄扫哪些流（大小写不敏感子串、AND 组合，界定解码开销，同 `proxy.search`）；`name_filter` 再对 detector 或 value 做大小写不敏感子串匹配、分页前应用，
+  故 `total` 是命中数。`include_generic` 对没被具体探测器认领的值补一个高熵 base64/hex 兜底（默认关，牺牲召回换精度）。列表字段是 `secrets`；要完整读某条
+  命中流用 `proxy.flow.get` 加该行的 `first_flow.id`。只读，工具总数 290→291（173 只读 / 118 写）。
 - **移动逆向最先要问的另一问是「这个 app 到底连哪些后端」——host、URL、api 路径；`apk.strings` 能倒出整个 DEX 字符串池，但得自己从上千条里挑**。
   新增只读工具 `apk.endpoints`：把 `js.endpoints` 用的同一套 URL/路径识别（现已抽到共享模块 `backends/common/endpoint_scan.py`，JS 与 APK 两条线
   共用一份规则）跑在每一条 DEX 字符串常量上，抽出带协议的 URL（http/https/ws/wss/ftp）以及（`include_paths` 为真时）整条即路径的请求路径

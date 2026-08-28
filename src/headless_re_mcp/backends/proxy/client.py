@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.secret_scan import iter_secret_matches
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
 
 JsonObject = dict[str, Any]
@@ -72,6 +73,13 @@ _MAX_HEADER_TEXT = 64 * 1024
 # far more, so scanning stops here (scan_capped True) rather than spinning on a
 # decompression-heavy capture.
 _MAX_SEARCH_SCAN_BYTES = 256 * 1024 * 1024
+# proxy.secrets aggregation bounds. Distinct (detector, value) findings are
+# capped (scan_capped when hit) so a hostile capture cannot grow the answer
+# without bound; the matched credential value and the first flow's url echo are
+# each clipped. The decoded-byte scan budget is shared with proxy.search.
+_MAX_PROXY_SECRET_FINDINGS = 20000
+_MAX_PROXY_SECRET_VALUE = 512
+_MAX_PROXY_SECRET_URL = 256
 
 
 def _add_capped(target: set[str], value: str, cap: int, agg: dict[str, Any]) -> None:
@@ -1009,6 +1017,164 @@ class ProxyBackend:
             "total": len(results),
             "offset": start,
             "has_more": start + len(window) < len(results),
+            "dropped": dropped,
+            "scan_capped": scan_capped,
+        }
+
+    def secrets(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        url_filter: str = "",
+        content_type_filter: str = "",
+        name_filter: str = "",
+        include_generic: bool = False,
+    ) -> JsonObject:
+        """Detect embedded credentials in the captured traffic (headers/bodies/urls).
+
+        The dynamic-traffic counterpart to js.secrets/apk.secrets: those scan a
+        file at rest, this scans what actually crossed the wire during the
+        session -- Authorization/Cookie headers, an OAuth token in a redirect
+        url, an api key echoed in a JSON response -- which a static pass never
+        sees. It runs the same shared detector table over each retained flow's
+        url, request/response headers and decoded request/response bodies
+        (gzip/deflate/zstd, bounded exactly like proxy.search) and aggregates the
+        hits. Deduplicated by (detector, value): each row is {detector, value (the
+        matched credential, clipped with value_truncated when long), count
+        (occurrences across the capture), where (the distinct locations it
+        appeared -- url, request_headers, response_headers, request_body,
+        response_body -- so a token in a request header reads as the client
+        sending it and one in a response body as the server leaking it), and
+        first_flow ({id, seq, url, where}, the flow to hand proxy.flow.get)}.
+        url_filter and content_type_filter pre-narrow which flows are scanned
+        (bounding decode work) like proxy.search; name_filter then keeps only
+        findings whose detector or value contains that substring
+        (case-insensitive), applied before paging so total is the match count.
+        include_generic adds a high-entropy base64/hex catch-all for a body/header
+        value no specific detector claimed. Answers also carry detectors (the
+        distinct detector set present), dropped (ring eviction across the whole
+        capture), and scan_capped when the distinct-findings ceiling or the shared
+        decoded-byte scan budget was hit.
+        """
+        inst = self._get(session_id)
+        items = inst.recorder.snapshot()
+        dropped = 0
+        if items:
+            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
+        url_needle = url_filter.strip().lower() if isinstance(url_filter, str) else ""
+        if url_needle:
+            items = [i for i in items if url_needle in str(i.get("url", "")).lower()]
+        type_needle = (
+            content_type_filter.strip().lower() if isinstance(content_type_filter, str) else ""
+        )
+        if type_needle:
+            items = [
+                i for i in items if type_needle in str(i.get("content_type", "") or "").lower()
+            ]
+        aggregates: dict[tuple[str, str], JsonObject] = {}
+        scanned = 0
+        scan_capped = False
+        stop = False
+
+        def add(detector: str, value: str, where: str, flow_ref: JsonObject) -> bool:
+            nonlocal scan_capped
+            key = (detector, value)
+            current = aggregates.get(key)
+            if current is None:
+                if len(aggregates) >= _MAX_PROXY_SECRET_FINDINGS:
+                    scan_capped = True
+                    return False
+                row: JsonObject = {
+                    "detector": detector,
+                    "value": value[:_MAX_PROXY_SECRET_VALUE],
+                    "count": 1,
+                    "_where": {where},
+                    "first_flow": {**flow_ref, "where": where},
+                }
+                if len(value) > _MAX_PROXY_SECRET_VALUE:
+                    row["value_truncated"] = True
+                aggregates[key] = row
+            else:
+                current["count"] = int(current["count"]) + 1
+                where_set = current["_where"]
+                if isinstance(where_set, set):
+                    where_set.add(where)
+            return True
+
+        def scan(where: str, text: str, flow_ref: JsonObject) -> bool:
+            for detector, value in iter_secret_matches(text, include_generic=include_generic):
+                if not add(detector, value, where, flow_ref):
+                    return False
+            return True
+
+        for item in items:
+            flow_id = str(item.get("id") or "")
+            url = str(item.get("url", "") or "")
+            flow_ref: JsonObject = {
+                "id": flow_id,
+                "seq": item.get("seq"),
+                "url": url[:_MAX_PROXY_SECRET_URL],
+            }
+            if not scan("url", url, flow_ref):
+                stop = True
+            raw = inst.recorder.raw(flow_id)
+            if not stop and raw is not None and raw is not _OMITTED_BODY:
+                req = getattr(raw, "request", None)
+                resp = getattr(raw, "response", None)
+                if not scan("request_headers", _headers_text(req), flow_ref):
+                    stop = True
+                if not stop:
+                    req_bytes, _ct = _request_body(req)
+                    if req_bytes:
+                        text, used = _bounded_search_text(req_bytes)
+                        scanned += used
+                        if not scan("request_body", text, flow_ref):
+                            stop = True
+                if not stop and not scan("response_headers", _headers_text(resp), flow_ref):
+                    stop = True
+                if not stop and resp is not None:
+                    try:
+                        rc = resp.raw_content or b""
+                    except Exception:  # noqa: BLE001
+                        rc = b""
+                    if rc:
+                        body, _enc, _decoded, _trunc = _decode_body(resp, rc)
+                        text, used = _bounded_search_text(body)
+                        scanned += used
+                        if not scan("response_body", text, flow_ref):
+                            stop = True
+            if stop:
+                break
+            if scanned >= _MAX_SEARCH_SCAN_BYTES:
+                scan_capped = True
+                break
+
+        needle = name_filter.strip().lower() if isinstance(name_filter, str) else ""
+        secrets: list[JsonObject] = []
+        for row in aggregates.values():
+            where_set = row.pop("_where")
+            row["where"] = sorted(where_set) if isinstance(where_set, set) else []
+            secrets.append(row)
+        if needle:
+            secrets = [
+                s
+                for s in secrets
+                if needle in str(s["detector"]).lower() or needle in str(s["value"]).lower()
+            ]
+        secrets.sort(key=lambda s: (str(s["detector"]), -int(s["count"]), str(s["value"])))
+        detectors = sorted({str(s["detector"]) for s in secrets})
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = secrets[start : start + cap]
+        return {
+            "secrets": window,
+            "count": len(window),
+            "total": len(secrets),
+            "offset": start,
+            "has_more": start + len(window) < len(secrets),
+            "detectors": detectors,
             "dropped": dropped,
             "scan_capped": scan_capped,
         }
