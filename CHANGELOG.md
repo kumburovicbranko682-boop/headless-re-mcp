@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（虚拟桌面面板迟到的旧会话快照/截图覆盖新会话）
+
+- `VirtualDesktopMonitor` 由 Inspector 以普通 prop 传 `sessionId`（不带 key），切会话
+  不重挂载；而 `loadSnapshot`（1s 轮询）和 `capture`（800ms 抓帧）都在 `await` 之后无条件
+  `setState`。目标忙时旧会话的慢快照/慢帧在切换后才落地，会把上一个会话的窗口列表——
+  乃至它的桌面截图——画到用户已切到的新会话上，直到下一拍轮询才被冲掉。与 WebMonitor
+  同族修法：加 `currentSession` ref 追踪最新会话，`await` 后（含 catch 分支）发现闭包里的
+  `sessionId` 已过期就直接丢弃；`capture` 在创建 object URL 之前先判，旧帧既不上屏也不
+  泄漏 blob。新增回归测试模拟"会话 A 慢快照在切到 B 后才返回"，旧代码 `win-a` 会盖掉
+  `win-b`（红），修复后保持 B 的视图（绿）。SPA 产物同步重建。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

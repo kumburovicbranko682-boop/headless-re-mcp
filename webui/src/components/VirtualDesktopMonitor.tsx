@@ -62,11 +62,22 @@ export function VirtualDesktopMonitor({ sessionId, onSessionMissing }: { session
   const frameUrlRef = useRef<string | null>(null);
   const capturingRef = useRef(false);
   const windowsRef = useRef<DesktopWindow[]>([]);
+  // The pane swaps sessionId without remounting (Inspector renders it with a
+  // plain prop, not a key), and both loops apply their results with an
+  // unconditional setState after an await. A busy debuggee's slow snapshot or
+  // frame, started before a switch, then lands last and paints the previous
+  // session's window list -- and its desktop screenshot -- onto the session the
+  // user moved to. The 1s/800ms polls heal it, but a reordered slow response
+  // holds the wrong desktop on screen until the next tick. Track the latest
+  // sessionId and drop any continuation whose captured id is no longer current.
+  const currentSession = useRef(sessionId);
+  currentSession.current = sessionId;
 
   const loadSnapshot = useCallback(async () => {
     if (!sessionId) { setSnapshot(null); return; }
     try {
     const result = await api<DesktopEnvelope>(`/api/sessions/${encodeURIComponent(sessionId)}/virtual-desktop`);
+    if (currentSession.current !== sessionId) return;
     if (!result.ok || !result.data) {
       setSnapshot(null);
       const gone = isSessionGone(result.error);
@@ -86,6 +97,7 @@ export function VirtualDesktopMonitor({ sessionId, onSessionMissing }: { session
       setDegraded({ reason: "empty_capture", backend: null });
     }
     } catch (reason) {
+      if (currentSession.current !== sessionId) return;
       setSnapshot(null);
       setError(stripErrorPrefix(String(reason)));
     }
@@ -107,6 +119,9 @@ export function VirtualDesktopMonitor({ sessionId, onSessionMissing }: { session
     capturingRef.current = true;
     try {
       const frame = await apiFrame(`/api/sessions/${encodeURIComponent(sessionId)}/virtual-desktop/frame?hwnd=${selectedHwnd}`);
+      // Bail before creating the object URL so a stale frame from the session
+      // the user left is neither shown nor leaked.
+      if (currentSession.current !== sessionId) return;
       const next = URL.createObjectURL(frame.blob);
       if (frameUrlRef.current) URL.revokeObjectURL(frameUrlRef.current);
       frameUrlRef.current = next;
@@ -114,6 +129,7 @@ export function VirtualDesktopMonitor({ sessionId, onSessionMissing }: { session
       setDegraded(frame.degraded ? { reason: frame.reason, backend: frame.backend } : null);
       setError(null);
     } catch (reason) {
+      if (currentSession.current !== sessionId) return;
       const mapped = captureFailureHint(String(reason));
       if (mapped.kind === "degraded") {
         setDegraded({ reason: mapped.reason, backend: null });
