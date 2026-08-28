@@ -98,4 +98,34 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 
+    @tools.tool(name="wasm.summary")
+    def wasm_summary(path: str) -> dict[str, Any]:
+        """Summarize a .wasm module's structure in pure Python (no wabt needed).
+
+        Where wasm.wat / wasm.info shell out to wabt (and go
+        capability_unavailable when it is absent), this reads the binary
+        section table itself, so it answers on any host. It does not
+        disassemble code.
+
+        Answers with version, a sections table (each id, name, size, offset and
+        an entry count), and per-section tallies: type_count, import_count,
+        function_count (defined), table_count, memory_count, global_count,
+        export_count, element_count, data_segment_count, and start_function.
+
+        The high-value fields are imports and exports: imports lists each
+        {module, name, kind, ...} so you can see the host surface the module
+        reaches for (wasi_snapshot_preview1.*, env.emscripten_*), and exports
+        lists each {name, kind, index}. Both carry an import_kinds /
+        export_kinds breakdown and an *_truncated flag; they are capped at 500
+        entries. memories reports {initial_pages, max_pages, shared} per linear
+        memory, and custom_sections plus module_name / has_name_section surface
+        debug metadata.
+
+        A file that is not a WebAssembly module is refused as invalid_params
+        and one over 16 MiB as too_large. Malformed input never raises: a bad
+        section is listed in malformed_sections and skipped, and a binary that
+        ends early sets truncated.
+        """
+        return _dump(analysis.wasm_summary(path))
+
     return tools.bindings

@@ -19,6 +19,7 @@ from headless_re_mcp.backends.common.bounded_run import (
     clamp_cli_timeout,
     run_bounded,
 )
+from headless_re_mcp.backends.jsre.wasm_summary import summarize_wasm
 
 JsonObject = dict[str, Any]
 _MAX_INLINE = 400_000
@@ -279,6 +280,29 @@ class WasmClient:
         return _note_nonzero_exit(
             _bounded_output(stdout, "objdump", include_bytes=False), code=code, stderr=stderr
         )
+
+    def summary(self, path: Path) -> JsonObject:
+        """Parse the module's section table in pure Python (no wabt required).
+
+        Unlike wat/info this needs no external tool, so it degrades to a bad
+        magic (invalid_params) or a missing/oversized file (not_found /
+        too_large) rather than to capability_unavailable. The same size cap
+        that guards the wabt path bounds the read here.
+        """
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        if not _looks_like_wasm(resolved):
+            raise JsReError(
+                "invalid_params",
+                "not a WebAssembly module: missing the \\0asm magic",
+                path=str(resolved),
+            )
+        try:
+            data = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        return summarize_wasm(data)
 
 
 def _discover_webcrack() -> Path | None:
