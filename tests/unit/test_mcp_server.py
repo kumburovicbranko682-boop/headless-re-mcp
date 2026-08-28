@@ -280,6 +280,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "device.properties",
         "device.packages",
         "device.package_paths",
+        "device.processes",
         "device.install",
         "device.uninstall",
         "device.launch",

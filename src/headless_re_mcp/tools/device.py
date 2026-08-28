@@ -116,6 +116,36 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_package_paths(serial, package))
 
+    @tools.tool(name="device.processes")
+    def device_processes(
+        serial: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        name_filter: str = "",
+    ) -> dict[str, Any]:
+        """List processes running on the device right now (ps -A).
+
+        device.packages lists what is installed; this lists what is live, so an
+        app id becomes a running target -- the bridge to frida.attach/spawn,
+        which need the pid (or process name) of a process that zygote has
+        actually forked, not just an installed package. Answers with processes,
+        count, total, offset, has_more, and collection_truncated when the device
+        reported more than the 8192-row ceiling. Each processes row is {pid,
+        name} plus user and ppid when ps reported them; the app's process is the
+        row whose name is the package id (or package:process for a component
+        that declared its own process). Rows are ordered by pid. name_filter
+        keeps only rows whose name contains that substring (case-insensitive),
+        applied before paging so total is the match count -- the way to find one
+        app's process on a device running hundreds. The list field is
+        processes, and the field to hand frida is pid. Read-only: ps -A takes no
+        caller-supplied token, so nothing here can inject a shell command.
+        """
+        return _dump(
+            analysis.device_processes(
+                serial, offset=offset, limit=limit, name_filter=name_filter
+            )
+        )
+
     @tools.tool(name="device.install")
     def device_install(
         serial: str, apk_path: str, reinstall: bool = True

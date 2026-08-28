@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **279（161 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **280（162 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -320,6 +320,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   同样的 `offset`/`limit` 分页与 `total`/`has_more`，成员数超 `_MAX_FILES_COLLECT`（10000）采集上限时置 `scan_capped`；
   `name_filter` 对成员路径做大小写敏感子串匹配、在采集上限前应用，故超上限的 `assets/` 载荷仍可按名找到。加密/损坏的成员
   仍按元数据列出、`kind` 留空。只读，工具总数 273→274（156 只读 / 118 写）。
+- **`device.packages` 报的是"装了什么"，拿不到"此刻在跑什么"，装好的包名与可附加的运行目标之间断了一截**。一个 app id 在 zygote
+  fork 出进程前并不是可附加的目标，而 `frida.attach`/`frida.spawn` 要的是进程 pid（或进程名），此前设备线没有任何工具能把运行中的
+  进程连同 pid 列出来。新增只读工具 `device.processes`：跑 `ps -A`，按表头列名（而非固定列序）定位 PID/USER/PPID/NAME 列，逐行整形成
+  `{pid, name, user, ppid}`。答复带 `processes`、`count`、`total`、`offset`、`has_more`，设备报的行数超 8192 上限时置
+  `collection_truncated`。app 的进程就是 `name` 等于包名（组件声明了独立进程时为 `包名:进程`）的那一行；行按 pid 排序。`name_filter`
+  按名字子串（大小写不敏感）在分页前过滤，故 `total` 是命中数——在跑着数百进程的设备上定位某个 app 进程的办法。于是
+  `device.processes`→`frida.attach(pid=…)` 把"装了什么"接到"附加到正在跑的那个"。`ps -A` 不取任何调用方 token，无法注入 shell
+  命令。只读，工具总数 279→280（162 只读 / 118 写）。
 - **`device.packages` 只报包名，拿不到已装应用在设备上的 APK 路径，动态线与静态线之间断了一截**。分析者在设备上锁定一个包后，
   下一步通常是把它的 APK 拉下来交给 `apk.*` 静态分析，但此前没有工具能给出安装位置，只能靠手头另有一份 APK。新增只读工具
   `device.package_paths`：对给定包名跑 `pm path`，返回其在设备上的 APK 路径——base APK 以及 app bundle 安装时带的每个 split

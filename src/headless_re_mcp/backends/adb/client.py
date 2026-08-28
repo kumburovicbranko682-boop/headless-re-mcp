@@ -39,6 +39,11 @@ _MAX_PROPERTIES = 2000
 # so a device that reports a pathological number cannot grow the answer without
 # bound (paths_truncated when hit).
 _MAX_PACKAGE_PATHS = 64
+# A device runs a few hundred processes; cap the collection so a device that
+# reports a pathological number (or a wedged ps that never stops) cannot grow
+# the answer without bound (collection_truncated when hit).
+_MAX_PROCESSES = 8192
+_MAX_PROCESSES_PAGE = 2000
 _MAX_DEVICES = 64
 # Only the head of AndroidManifest.xml is scanned for a package id, and it is
 # read as a bounded stream so a decompression-bomb manifest cannot OOM install().
@@ -265,6 +270,67 @@ def _pids_for_package(dev: Any, package: str) -> list[int] | None:
     return pids
 
 
+def _parse_ps(raw: str) -> tuple[list[JsonObject], bool]:
+    """Turn ``ps -A`` output into ``[{pid, name, user, ppid}]`` rows.
+
+    Android's toybox ``ps`` prints a header (``USER PID PPID ... NAME``) whose
+    column order is not fixed across versions, so the header is read to locate
+    the PID, USER/UID, PPID and NAME/CMD columns by name rather than assuming a
+    layout. Every column before NAME is a single token, so the process name --
+    the only field that can carry spaces (an ARGS-style ps) -- is everything
+    from the name column to end of line. A row whose PID is not a number is
+    skipped (the header itself, a blank line, a wrapped banner). Collection
+    stops at the ceiling; the second return value is True when it did, so the
+    caller can flag a truncated list rather than silently dropping the tail.
+    """
+    lines = [line for line in raw.splitlines() if line.strip()]
+    if not lines:
+        return [], False
+    header = lines[0].split()
+    try:
+        pid_idx = header.index("PID")
+    except ValueError as exc:
+        raise AdbError(
+            "backend_error", "could not parse ps output (no PID column)"
+        ) from exc
+    user_idx = next(
+        (i for i, tok in enumerate(header) if tok in ("USER", "UID")), None
+    )
+    ppid_idx = next((i for i, tok in enumerate(header) if tok == "PPID"), None)
+    name_idx = next(
+        (i for i, tok in enumerate(header) if tok in ("NAME", "CMD", "COMMAND", "ARGS")),
+        len(header) - 1,
+    )
+    name_is_last = name_idx >= len(header) - 1
+    rows: list[JsonObject] = []
+    truncated = False
+    for line in lines[1:]:
+        tokens = line.split()
+        if pid_idx >= len(tokens):
+            continue
+        pid_token = tokens[pid_idx]
+        if not pid_token.isdigit():
+            continue
+        if name_is_last:
+            name = " ".join(tokens[name_idx:]) if name_idx < len(tokens) else ""
+        else:
+            name = tokens[name_idx] if name_idx < len(tokens) else ""
+        if not name:
+            continue
+        if len(rows) >= _MAX_PROCESSES:
+            truncated = True
+            break
+        row: JsonObject = {"pid": int(pid_token), "name": name}
+        if user_idx is not None and user_idx < len(tokens):
+            row["user"] = tokens[user_idx]
+        if ppid_idx is not None and ppid_idx < len(tokens):
+            ppid_token = tokens[ppid_idx]
+            if ppid_token.isdigit():
+                row["ppid"] = int(ppid_token)
+        rows.append(row)
+    return rows, truncated
+
+
 def _file_mode_size(info: Any) -> tuple[int, int]:
     mode = int(getattr(info, "mode", 0) or 0)
     size = int(getattr(info, "size", 0) or 0)
@@ -461,6 +527,49 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def processes(
+        self,
+        serial: str,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+    ) -> JsonObject:
+        """What is actually running on the device right now (``ps -A``).
+
+        device.packages lists what is installed; this lists what is live, with
+        each process's pid -- the bridge to frida.attach/frida.spawn and to
+        device.pull of a process's own files, since an app id is not a running
+        target until zygote has forked it. Reads ``ps -A`` and shapes each row
+        into {pid, name, user, ppid}; the app process is the row whose name is
+        the package id (or package:process for a declared process). Rows are
+        ordered by pid. name_filter keeps only rows whose name contains that
+        substring (case-insensitive), applied before paging so total is the
+        match count -- the way to find one app's process on a device running
+        hundreds. Read-only: it only observes, and ``ps -A`` takes no
+        caller-supplied token, so nothing here can inject a shell command.
+        """
+        dev = self._device(serial)
+        raw = _device_shell(dev, ["ps", "-A"], timeout=_ADB_PROBE_TIMEOUT_S)
+        rows, collection_truncated = _parse_ps(str(raw))
+        needle = name_filter.strip().lower() if isinstance(name_filter, str) else ""
+        if needle:
+            rows = [row for row in rows if needle in str(row["name"]).lower()]
+        rows.sort(key=lambda row: int(row["pid"]))
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_PROCESSES_PAGE))
+        window = rows[start : start + cap]
+        result: JsonObject = {
+            "processes": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+        }
+        if collection_truncated:
+            result["collection_truncated"] = True
+        return result
 
     def package_paths(self, serial: str, package: str) -> JsonObject:
         """Where an installed package's APK(s) live on the device.

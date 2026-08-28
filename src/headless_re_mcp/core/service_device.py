@@ -167,6 +167,21 @@ class DeviceAnalysisMixin:
     def device_package_paths(self, serial: str, package: str) -> Result[JsonObject]:
         return self._adb_wrap("package_paths", serial=serial, package=package)
 
+    def device_processes(
+        self,
+        serial: str,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+    ) -> Result[JsonObject]:
+        return self._adb_wrap(
+            "processes",
+            serial=serial,
+            offset=offset,
+            limit=limit,
+            name_filter=name_filter,
+        )
+
     def device_install(
         self, serial: str, apk_path: str, reinstall: bool = True
     ) -> Result[JsonObject]:
