@@ -318,6 +318,23 @@ def test_navigation_target_rewrites_a_local_file_and_leaves_urls_alone(tmp_path:
         assert _navigation_target(passthrough) == passthrough.strip()
 
 
+def test_navigation_target_never_raises_on_a_hostile_url() -> None:
+    """A best-effort normaliser on the web.open/web.navigate input path must not
+    itself throw on a caller-supplied url: an embedded null byte, an over-long
+    string or a ~ that cannot expand falls back to the raw text (stripped), which
+    the browser then rejects with its own navigation error."""
+    for hostile in (
+        "x\x00y",
+        "https://a\x00b",
+        "a" * 5000,
+        "\x00",
+        "  \x00  ",
+        "~\x00/evil",
+        "ws://h\x00st",
+    ):
+        assert _navigation_target(hostile) == hostile.strip()
+
+
 def test_web_open_opens_a_local_asset_locator_as_a_file_url(tmp_path: Path) -> None:
     """A downloaded .html/.js/.wasm classifies as a web session whose locator is
     a filesystem path; web.open with no url must hand the browser a file:// URL,

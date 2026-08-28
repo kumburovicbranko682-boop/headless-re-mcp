@@ -43,11 +43,18 @@ def _navigation_target(raw: str) -> str:
     text = raw.strip()
     if not text or is_http_url(text):
         return text
+    # Best-effort: any failure to resolve the string as a local file falls back
+    # to handing the raw text to the browser, which reports its own navigation
+    # error. The path probing here is the only part that can throw on a hostile
+    # url -- ``expanduser`` raises RuntimeError when no home dir resolves,
+    # ``is_file``/``resolve`` raise OSError/ValueError on an embedded null byte or
+    # an over-long path (version-dependent) -- so this normaliser must never be
+    # the thing that raises out of web.open/web.navigate on caller input.
     try:
         candidate = Path(text).expanduser()
         if candidate.is_file():
             return candidate.resolve().as_uri()
-    except OSError:
+    except (OSError, ValueError, RuntimeError):
         return text
     return text
 
