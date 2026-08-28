@@ -348,6 +348,21 @@ class WorkflowAnalysisMixin:
         validated = _workflow_timeout(timeout)
         if isinstance(validated, ValueError):
             return _failure(validated, session_id=session_id)
+        # keys is a handler kwarg the workflow.module.refresh tool schema types as
+        # a list of strings, but the agent and OpenAI-bridge transports call the
+        # handler straight from model arguments with no pydantic coercion. A
+        # non-list keys, or a non-string element, reached ``key.strip()`` and
+        # raised TypeError/AttributeError here -- before _workflow_request, with no
+        # try/except -- so it escaped the method and was filed as an internal_error
+        # incident instead of the invalid_request a bad selection already earns
+        # just below.
+        if keys is not None and (
+            not isinstance(keys, list) or not all(isinstance(key, str) for key in keys)
+        ):
+            return _failure(
+                ValueError("module refresh keys must be a list of strings"),
+                session_id=session_id,
+            )
         normalized_keys = None if keys is None else [key.strip() for key in keys]
         if normalized_keys is not None and (
             not normalized_keys

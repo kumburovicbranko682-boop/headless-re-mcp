@@ -223,6 +223,24 @@ def test_module_refresh_rejects_blank_empty_or_duplicate_keys(keys: list[str]) -
     assert not host.calls
 
 
+@pytest.mark.parametrize("keys", [[123], ["ok", None], "libc", 5, {"k": "v"}])
+def test_module_refresh_rejects_non_string_keys(keys: object) -> None:
+    """A non-list keys or a non-string element is a clean invalid_request.
+
+    The agent and OpenAI-bridge transports bypass the schema, so a non-list keys
+    or a non-string element reached ``key.strip()`` and raised
+    TypeError/AttributeError before _workflow_request -- an internal_error
+    incident -- rather than the invalid_request a bad selection already earns. The
+    guard must refuse it before the runtime is touched.
+    """
+    host = _Double()
+    result = host.workflow_module_refresh("sess", keys=keys)  # type: ignore[arg-type]
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+    assert not host.calls
+
+
 def test_module_refresh_of_every_key_runs_the_transition(
     engine: dict[str, list[Any]],
 ) -> None:
