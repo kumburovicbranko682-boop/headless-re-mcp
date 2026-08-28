@@ -152,6 +152,21 @@ def test_run_scylla_refuses_an_input_that_is_not_a_regular_file(tmp_path: Path) 
     assert excinfo.value.code == ScyllaErrorCode.INPUT_NOT_FOUND
 
 
+def test_run_scylla_reports_a_missing_input_as_structured_not_a_raw_oserror(
+    tmp_path: Path,
+) -> None:
+    # resolve(strict=True) used to raise FileNotFoundError before the
+    # not-a-file branch could run, so a path that does not exist escaped as a
+    # raw OSError (leaking the absolute path) instead of INPUT_NOT_FOUND.
+    exe = tmp_path / "scylla.exe"
+    exe.write_bytes(b"fake")
+    missing = tmp_path / "nope.exe"
+    with pytest.raises(ScyllaError) as excinfo:
+        run_scylla(exe, missing, tmp_path / "out.exe", input_sha256="0" * 64)
+    assert excinfo.value.code == ScyllaErrorCode.INPUT_NOT_FOUND
+    assert excinfo.value.details.get("input_path") == str(missing)
+
+
 def test_run_scylla_refuses_an_oversize_input(tmp_path: Path) -> None:
     exe = tmp_path / "scylla.exe"
     exe.write_bytes(b"fake")

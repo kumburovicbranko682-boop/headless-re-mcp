@@ -151,6 +151,20 @@ def test_run_refuses_an_input_that_is_not_a_regular_file(tmp_path: Path) -> None
     assert caught.value.code == XvlkcErrorCode.INPUT_NOT_FOUND
 
 
+def test_run_reports_a_missing_input_as_structured_not_a_raw_oserror(tmp_path: Path) -> None:
+    # resolve(strict=True) used to raise FileNotFoundError before the
+    # not-a-file branch could run, so a path that does not exist escaped as a
+    # raw OSError (leaking the absolute path) instead of INPUT_NOT_FOUND.
+    exe = _cli(tmp_path, "exit 0\n") if os.name != "nt" else (tmp_path / "exe")
+    if os.name == "nt":
+        exe.write_bytes(b"MZ")
+    missing = tmp_path / "nope.exe"
+    with pytest.raises(XvlkcError) as caught:
+        run_xvlkc(exe, missing, tmp_path / "out.exe", input_sha256="0" * 64)
+    assert caught.value.code == XvlkcErrorCode.INPUT_NOT_FOUND
+    assert caught.value.details.get("input_path") == str(missing)
+
+
 def test_run_refuses_input_over_the_size_cap(tmp_path: Path) -> None:
     exe = _cli(tmp_path, "exit 0\n")
     src = _write_pe(tmp_path / "in.exe")

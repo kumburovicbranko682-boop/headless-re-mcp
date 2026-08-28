@@ -260,6 +260,18 @@ def test_run_rejects_non_file_input(tmp_path: Path) -> None:
     assert excinfo.value.code == VmpDumperErrorCode.INPUT_NOT_FOUND
 
 
+def test_run_reports_a_missing_input_as_structured_not_a_raw_oserror(tmp_path: Path) -> None:
+    # resolve(strict=True) used to raise FileNotFoundError before the
+    # not-a-file branch could run, so a path that does not exist escaped as a
+    # raw OSError (leaking the absolute path) instead of INPUT_NOT_FOUND.
+    exe, _ = _sample(tmp_path)
+    missing = tmp_path / "nope.exe"
+    with pytest.raises(VmpDumperError) as excinfo:
+        run_vmp_dumper(exe, missing, tmp_path / "out.exe", input_sha256="x", pid=1)
+    assert excinfo.value.code == VmpDumperErrorCode.INPUT_NOT_FOUND
+    assert excinfo.value.details.get("input_path") == str(missing)
+
+
 def test_run_rejects_existing_destination(tmp_path: Path) -> None:
     exe, sample = _sample(tmp_path)
     dest = tmp_path / "out.exe"

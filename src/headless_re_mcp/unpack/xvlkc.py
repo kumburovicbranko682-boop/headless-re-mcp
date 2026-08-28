@@ -163,7 +163,18 @@ def run_xvlkc(
 ) -> XvlkcResult:
     """Run XVLKC on a work copy; publish the newest PE output to output_path."""
     exe = Path(executable).expanduser()
-    source = Path(input_path).expanduser().resolve(strict=True)
+    try:
+        source = Path(input_path).expanduser().resolve(strict=True)
+    except (FileNotFoundError, OSError, RuntimeError) as exc:
+        # resolve(strict=True) raises before the INPUT_NOT_FOUND branch below
+        # can run, so a missing input escaped as a raw FileNotFoundError that
+        # also leaked the absolute path. Convert it to the same structured
+        # refusal a directory (which resolves, then fails is_file) already gets.
+        raise XvlkcError(
+            XvlkcErrorCode.INPUT_NOT_FOUND,
+            f"input binary not found: {input_path}",
+            details={"input_path": str(input_path)},
+        ) from exc
     destination = Path(output_path).expanduser()
     if not exe.is_file():
         raise XvlkcError(
