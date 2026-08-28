@@ -1071,7 +1071,7 @@ class UnpackMixin:
 
             pe_ok = True
             pe_verify = payload.get("pe")
-            if not isinstance(pe_verify, dict):
+            if not isinstance(pe_verify, dict):  # pragma: no cover - payload["pe"] is always a dict
                 pe_ok = False
             ui_matched = None
             ui_gate_payload = payload.get("ui_gate")
