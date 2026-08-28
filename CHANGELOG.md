@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 文档 / 测试（r2.functions 只提了 items_truncated,漏了 items_total / items_limit,与四个姊妹工具不一致）
+
+- `enrich_r2_payload` 对所有 r2 列表(functions/strings/imports/exports/xrefs)一视同仁:列表超过 4096 的 item
+  上限时,同时返回 `items_truncated` / `items_total` / `items_limit` 这一"total 只是下界"的三元组。可
+  `r2.functions` 的工具文档只提了 `items_truncated`,漏掉了另外两个,而 `r2.strings`/`imports`/`exports`/`xrefs`
+  四个都完整写了——于是只读 functions 文档的调用方无从得知 total 是个下界。现在把 `r2.functions` 文档补齐到
+  "Read items_truncated, items_total and items_limit when the list filled the cap (4096). There is no has_more
+  field.",与姊妹工具一致。新增 `tests/unit/test_r2_functions_fields.py`:一是用 4099 个函数条目驱动
+  `enrich_r2_payload`,断言 `count=4096`、三元组齐全、无 `has_more`/`functions` 字段;二是加一条覆盖全部五个可截断
+  列表工具的守卫,断言每个文档都点名三元组(disasm 豁免,它的 count 上限 512 低于 4096,永不截断)。旧文档下守卫
+  会失败(已验证),补齐后通过。纯文档+测试,无运行时行为变化。
+
 ### 修复（apk.xrefs 未排序、无 offset:调用点多的方法只能拿到一个不确定的子集,后面的都够不着）
 
 - `apk.xrefs`(列出某方法的所有调用者)是 apk 分析读取里唯一既不排序也不分页的:它按 androguard 的迭代顺序
