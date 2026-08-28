@@ -227,6 +227,11 @@ def test_proxy_export_har_names_path_and_entry_count(
     assert "output" not in payload
     assert payload["entry_count"] == 4
     assert payload["path"].endswith("capture.har")
+    # size is the serialized HAR's byte length; it survives _register_capture
+    # and reaches the caller, so the docstring must name it (it tells the agent
+    # whether web.har.read's byte cap will read the file back).
+    assert payload["size"] == (tmp_path / "capture.har").stat().st_size
     doc = _tool_docstring("proxy.export_har")
     assert "path" in doc
     assert "entry_count" in doc
+    assert "size" in doc

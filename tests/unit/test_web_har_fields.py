@@ -59,6 +59,11 @@ def test_web_har_export_puts_the_file_in_path_not_har(
     assert "artifact" not in payload
     assert payload["entry_count"] == 1
     assert payload["path"].endswith("c.har")
+    # size is the serialized HAR's byte length; it survives _register_capture
+    # and reaches the caller, so the docstring must name it (it tells the agent
+    # whether web.har.read's byte cap will read the file back).
+    assert payload["size"] == (tmp_path / "c.har").stat().st_size
     doc = _tool_docstring("web.har.export")
     assert "Answers with path" in doc
     assert "entry_count" in doc
+    assert "size" in doc
