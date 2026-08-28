@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **291（171 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **292（172 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -642,6 +642,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   表单，断言 `web.forms` 把两个表单各自分组、`action`/`method`/字段正确、隐藏 token 带值且 `hidden` 为真；单测 mock
   page.evaluate 钉住整形、隐藏标记、字段与表单溢出、空页、非 dict 载荷降级、传给页面的上限与 docstring 形状。该工具计入
   读效果，工具面因此 290→291。
+- **单个方法的签名与属性之前得靠手工解析**。`apk.methods` 只把一个类的方法列成裸 `{name, descriptor, access}`，要知道
+  「这个方法的参数/返回是什么、是不是 native」就得自己解 Dalvik 描述符 `(...)V` 和 access 位串。新增只读的
+  `apk.method_info`：解析单个方法（类名接受点分或 Lsmali/ 两种形式），把描述符拆成 `params`（各参数类型描述符，如
+  `Ljava/lang/String;`、`[B`、`I`）与 `return_type`，把 access 标志解码成布尔位。回 `class_name`、`name`、`descriptor`、
+  `params`、`return_type`、`access`（标志串），以及 `is_public`/`is_private`/`is_protected`/`is_static`/`is_final`/
+  `is_native`/`is_abstract`/`is_synthetic`/`is_constructor`，外加 `is_external` 与 `has_code`。承重的是 `is_native` 配
+  `has_code` 为假：这类方法没有 Dalvik 方法体、把控制交给原生 `.so`——顺着它接 `apk.native_libs` 与在导出 `.so` 上跑
+  r2/Ghidra。方法名重载（同名不同签名）时报 `invalid_params` 并列出候选描述符，传 `descriptor`（apk.methods 给的精确
+  `(params)return` 串）择一；未知类/方法报 `not_found`。活体门在真 DEX 上对夹具的 native `decrypt()` 断言标志解码
+  （public|native=0x101）、`has_code` 为假、描述符解析为无参返回 void，并断言未知方法 `not_found`；单测另覆盖描述符解析器
+  （数组/对象/基元与畸形尾串）、富签名解析、点分名解析、重载消歧、外部方法零标志降级、空名与 docstring 形状。该工具计入
+  读效果，工具面因此 291→292。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`

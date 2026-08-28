@@ -42,6 +42,63 @@ _MAX_MANIFEST_CHARS = 200_000
 _MAX_FILES_PAGE = 5000
 _MAX_ENTRY_NAME = 1024
 
+# Dalvik method access flags (dex format), most-to-least significant bits of
+# interest. Decoded into explicit booleans by apk.method_info so a caller reads
+# "native" / "static" without parsing the flag string androguard renders.
+_ACCESS_PUBLIC = 0x1
+_ACCESS_PRIVATE = 0x2
+_ACCESS_PROTECTED = 0x4
+_ACCESS_STATIC = 0x8
+_ACCESS_FINAL = 0x10
+_ACCESS_NATIVE = 0x100
+_ACCESS_ABSTRACT = 0x400
+_ACCESS_SYNTHETIC = 0x1000
+_ACCESS_CONSTRUCTOR = 0x10000
+
+
+def _split_type_list(params: str) -> list[str]:
+    """Split a Dalvik parameter run into individual type descriptors.
+
+    ``Ljava/lang/String;[BI`` -> ``['Ljava/lang/String;', '[B', 'I']``. Array
+    prefixes (``[``) bind to the type that follows; ``L...;`` runs to its
+    semicolon; every other letter is a one-char primitive. A malformed tail
+    (an ``L`` with no ``;``) is emitted whole rather than dropped, so a parse
+    slip degrades to a visible descriptor instead of a silent omission.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(params)
+    while i < n:
+        start = i
+        while i < n and params[i] == "[":
+            i += 1
+        if i >= n:
+            out.append(params[start:])
+            break
+        if params[i] == "L":
+            end = params.find(";", i)
+            if end == -1:
+                out.append(params[start:])
+                break
+            i = end + 1
+        else:
+            i += 1
+        out.append(params[start:i])
+    return out
+
+
+def _parse_method_descriptor(descriptor: str) -> tuple[list[str], str]:
+    """``(Ljava/lang/String;[BI)V`` -> ``(['Ljava/lang/String;','[B','I'], 'V')``.
+
+    Returns ``([], "")`` for a descriptor that is not the ``(params)return``
+    shape, so a caller always gets a list and a string rather than an error.
+    """
+    text = descriptor.replace(" ", "")
+    if not text.startswith("(") or ")" not in text:
+        return ([], "")
+    close = text.index(")")
+    return (_split_type_list(text[1:close]), text[close + 1 :])
+
 
 def _apk_entry_category(name: str) -> str:
     """Bucket an APK zip entry by what it is, for triage.
@@ -952,6 +1009,112 @@ class ApkClient:
             "offset": offset,
             "has_more": offset + len(window) < len(methods),
             "scan_capped": scan_more,
+        }
+
+    @_guard_androguard
+    def method_info(
+        self,
+        path: Path,
+        class_name: str,
+        method_name: str,
+        *,
+        descriptor: str | None = None,
+    ) -> JsonObject:
+        """One method's shape: parsed signature and decoded access flags.
+
+        apk.methods lists a class's methods as raw ``{name, descriptor, access}``;
+        this resolves a single method and hands back the parts a caller otherwise
+        parses by hand -- the ``(params)return`` descriptor split into a params
+        list and a return_type, and the Dalvik access flags decoded into explicit
+        booleans. The load-bearing one is is_native: a native method has no
+        Dalvik body and hands control to a ``.so`` (pair it with apk.native_libs
+        and r2/Ghidra on the extracted lib), which has_code false confirms.
+        """
+        parsed = self._parsed(path)
+        cls = class_name.strip()
+        if not cls:
+            raise ApkError("invalid_params", "class_name is required")
+        name = method_name.strip()
+        if not name:
+            raise ApkError("invalid_params", "method_name is required")
+        smali = _dotted_to_smali(cls)
+        klass = next(
+            (
+                k
+                for k in parsed.analysis.get_classes()
+                if k.name == cls or k.name == smali
+            ),
+            None,
+        )
+        if klass is None:
+            raise ApkError("not_found", "class not found", class_name=class_name)
+        wanted = descriptor.strip() if descriptor else None
+        matches = [
+            m
+            for m in klass.get_methods()
+            if m.name == name
+            and (wanted is None or str(getattr(m, "descriptor", "") or "") == wanted)
+        ]
+        if not matches:
+            details: JsonObject = {"class_name": class_name, "method_name": method_name}
+            if wanted is not None:
+                details["descriptor"] = wanted
+            raise ApkError("not_found", "method not found", **details)
+        if len(matches) > 1:
+            # An overloaded name (same name, different signatures). Rather than
+            # silently pick one, name the candidates so the caller re-queries
+            # with descriptor -- the same disambiguation apk.methods surfaces.
+            raise ApkError(
+                "invalid_params",
+                "method name is overloaded; pass descriptor to disambiguate",
+                class_name=class_name,
+                method_name=method_name,
+                candidates=[str(getattr(m, "descriptor", "") or "") for m in matches],
+            )
+        method = matches[0]
+        method_desc = str(getattr(method, "descriptor", "") or "")
+        params, return_type = _parse_method_descriptor(method_desc)
+
+        # Prefer the underlying EncodedMethod's integer flags for the booleans
+        # and for whether a Dalvik body exists; an external method (one only
+        # seen referenced) has neither, so the flags stay zero and is_external
+        # carries the story.
+        flags = 0
+        has_code = False
+        access_str = str(getattr(method, "access", "") or "")
+        enc = method.get_method() if hasattr(method, "get_method") else None
+        if enc is not None:
+            try:
+                flags = int(enc.get_access_flags())
+            except Exception:  # noqa: BLE001 - flag getter varies by androguard build
+                flags = 0
+            try:
+                has_code = enc.get_code() is not None
+            except Exception:  # noqa: BLE001 - defensive against exotic method stand-ins
+                has_code = False
+            if not access_str:
+                try:
+                    access_str = str(enc.get_access_flags_string())
+                except Exception:  # noqa: BLE001 - as above
+                    access_str = ""
+        return {
+            "class_name": klass.name,
+            "name": method.name,
+            "descriptor": method_desc,
+            "params": params,
+            "return_type": return_type,
+            "access": access_str,
+            "is_public": bool(flags & _ACCESS_PUBLIC),
+            "is_private": bool(flags & _ACCESS_PRIVATE),
+            "is_protected": bool(flags & _ACCESS_PROTECTED),
+            "is_static": bool(flags & _ACCESS_STATIC),
+            "is_final": bool(flags & _ACCESS_FINAL),
+            "is_native": bool(flags & _ACCESS_NATIVE),
+            "is_abstract": bool(flags & _ACCESS_ABSTRACT),
+            "is_synthetic": bool(flags & _ACCESS_SYNTHETIC),
+            "is_constructor": bool(flags & _ACCESS_CONSTRUCTOR),
+            "is_external": method.is_external(),
+            "has_code": has_code,
         }
 
     @_guard_androguard

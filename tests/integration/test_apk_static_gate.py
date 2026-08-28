@@ -567,6 +567,31 @@ def test_apk_static_pipeline_parses_a_real_manifest(tmp_path: Path) -> None:
         assert missing.error is not None
         assert missing.error.code == "not_found"
 
+        # method_info must read the EncodedMethod against a real DEX: the access
+        # flags (public|native = 0x101) decode to booleans and, because a native
+        # method has no Dalvik body, has_code is false. The fixture's decrypt()
+        # is exactly that Java->native boundary, so is_native must be true and
+        # the descriptor must parse to no params returning void.
+        minfo = service.apk_method_info(
+            session_id, "com.example.headlessre.Secret", _DEX_METHOD
+        )
+        assert minfo.ok, minfo.error
+        assert minfo.data["name"] == _DEX_METHOD
+        assert minfo.data["descriptor"] == "()V"
+        assert minfo.data["params"] == []
+        assert minfo.data["return_type"] == "V"
+        assert minfo.data["is_native"] is True
+        assert minfo.data["is_public"] is True
+        assert minfo.data["has_code"] is False
+        assert minfo.data["is_external"] is False
+        assert "native" in minfo.data["access"]
+        ghost = service.apk_method_info(
+            session_id, "com.example.headlessre.Secret", "no_such_method"
+        )
+        assert ghost.ok is False
+        assert ghost.error is not None
+        assert ghost.error.code == "not_found"
+
         strings = service.apk_strings(session_id, limit=50)
         assert strings.ok, strings.error
         assert _DEX_METHOD in strings.data["strings"]

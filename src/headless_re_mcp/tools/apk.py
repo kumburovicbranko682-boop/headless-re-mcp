@@ -244,6 +244,36 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_class_info(session_id, class_name))
 
+    @tools.tool(name="apk.method_info")
+    def apk_method_info(
+        session_id: str,
+        class_name: str,
+        method_name: str,
+        descriptor: str | None = None,
+    ) -> dict[str, Any]:
+        """One method's parsed signature and decoded access flags.
+
+        apk.methods lists a class's methods as raw {name, descriptor, access};
+        this resolves a single method (dotted or Lsmali/ class form) and returns
+        the parts a caller otherwise parses by hand. Answers with class_name,
+        name, descriptor, params (the argument type descriptors, e.g.
+        Ljava/lang/String; or [B or I), return_type, access (the flag string),
+        and the flags decoded to booleans: is_public, is_private, is_protected,
+        is_static, is_final, is_native, is_abstract, is_synthetic,
+        is_constructor, plus is_external and has_code.
+
+        The load-bearing pair is is_native with has_code false: such a method has
+        no Dalvik body and hands control to a native .so -- follow it with
+        apk.native_libs and r2/Ghidra on the extracted library. When the class
+        has several methods of this name (an overload), the call is
+        invalid_params and lists the candidate descriptors; pass descriptor (the
+        exact (params)return string from apk.methods) to pick one. An unknown
+        class or method is not_found.
+        """
+        return _dump(
+            analysis.apk_method_info(session_id, class_name, method_name, descriptor)
+        )
+
     @tools.tool(name="apk.strings")
     def apk_strings(
         session_id: str,
