@@ -5,6 +5,34 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Ghidra 无头后端在非 Windows 上从来跑不通，且导出工具从未对真机生效）
+
+给 portable 线补真机 Gate 时发现 Ghidra 后端有两处只有跑真 `analyzeHeadless` 才会暴露、
+被子进程 mock 的单测一路放过的实质缺陷。二者叠加意味着 `ghidra.headless` 能力虽已完整声明，
+但在 Linux/macOS 上根本无法启动，且 `ghidra.functions/symbols/xrefs/decompile` 即便在
+Windows 上也从未真正产出过结果：
+
+- **启动器发现挑错了平台的脚本**（`backends/ghidra/client.py` 的 `_find_analyze_headless`）：
+  它无条件先找 `analyzeHeadless.bat`。真实的 Ghidra 安装在 `support/` 下同时放着 `.bat`
+  （Windows）和无扩展名的 `analyzeHeadless`（POSIX shell 脚本），于是非 Windows 主机解析到了
+  那个既没有 +x、也不是 shell 脚本的批处理文件，`Popen` 抛 `PermissionError` 并被归为
+  `backend_error`——整个 Ghidra 后端在所有非 Windows 主机上不可达。改为优先选当前平台能真正
+  执行的启动器（POSIX 选 shell、Windows 选 `.bat`），另一个留作单启动器异常安装的兜底。
+- **导出 postScript 用了一个 Ghidra 从不注入的全局 `ARGS`**（`scripts/ExportJson.py`）：
+  Ghidra 的 Jython 注入的是 `currentProgram`/`monitor` 等，从没有 `ARGS`，因此第一行
+  `mode = ARGS[0]` 直接 `NameError`，脚本一个字节的 JSON 都没写出，四个导出工具全部以
+  「export JSON missing after postScript」失败。改为经 GhidraScript 展平出来的
+  `getScriptArgs()` 读取参数（`list()` 包一层以获得纯 Python 的索引/len 语义）。这两处过去无人
+  发觉，正因为适配器单测只 mock 子进程、从不真跑脚本本身。
+
+配套新增 `tests/integration/test_ghidra_live_gate.py`：对可移植目标（有 PE 夹具用之，否则在
+POSIX 现编一个未 strip 的小 ELF）跑通 analyze→functions→symbols→decompile 全链路，断言能
+恢复具名函数、列出符号、并把选定函数反编译成非空 C（是本地现编的 `headless_compute` 时进一步
+校验其乘加算式）。Ghidra/Java 未配置、无目标可产、或安装缺可运行的 Jython postScript 时干净
+skip（skip ≠ pass）。同时补两处单测护栏：`_find_analyze_headless` 在两种启动器都在时按平台取
+舍、以及 `ExportJson.py` 必须经 `getScriptArgs()` 取参并在读取前先给 `ARGS` 赋值。已在装有
+Ghidra 11.4.3 + JDK 21 的 Linux x86_64 上实跑通过（analyze≈5s，每个导出≈6s）。
+
 ### 测试（让 Android/Web/portable 三条线的真机 Gate 在 Linux 上真正跑起来）
 
 PE 之外的 Android、Web 与可移植后端三条线，单测契约覆盖已满，但真机 Gate 过去只在
