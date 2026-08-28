@@ -300,6 +300,21 @@ def _bounded_headers(part: Any) -> tuple[dict[str, str], bool]:
     return out, truncated
 
 
+def _dropped_count(latest_seq: int, retained: int) -> int:
+    """Flows that fell out of the capture ring: everything recorded minus what
+    is still retained.
+
+    ``_seq`` counts every flow ever recorded, so the newest retained flow's seq
+    is the running total, and the ring never holds more than its cap, so the
+    difference is exactly what was evicted. Defined once because both ``flows``
+    and ``status`` report ``dropped`` and must never disagree about it: a caller
+    polling ``status`` on a saturated capture has to see the same eviction count
+    it would read off a ``flows`` page, or the two views tell contradictory
+    stories about how much of the capture was lost.
+    """
+    return max(0, latest_seq - retained)
+
+
 class _FlowRecorder:
     """A mitmproxy addon that snapshots finished flows into a ring buffer.
 
@@ -427,6 +442,10 @@ class _FlowRecorder:
     def count(self) -> int:
         with self._lock:
             return len(self.flows)
+
+    def dropped(self) -> int:
+        with self._lock:
+            return _dropped_count(self._seq, len(self.flows))
 
     def retained_bytes(self) -> int:
         with self._lock:
@@ -624,6 +643,13 @@ class ProxyBackend:
             "retained_max": _MAX_FLOWS,
             "retained_bytes": inst.recorder.retained_bytes(),
             "retained_bytes_max": _MAX_RETAINED_BYTES,
+            # A saturated capture pins flow_count at retained_max and stops
+            # rising, so a caller polling status alone cannot tell a full-but-
+            # quiet ring from one silently shedding flows. Report the same
+            # eviction count flows() does so a monitor can page or export
+            # before more is lost, instead of discovering the loss only when it
+            # finally reads a page.
+            "dropped": inst.recorder.dropped(),
         }
 
     def flows(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
@@ -632,9 +658,11 @@ class ProxyBackend:
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = items[start : start + cap]
-        dropped = 0
-        if items:
-            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
+        # Derive dropped from this one snapshot so total and dropped describe the
+        # same instant; the newest retained entry's seq is the running total, the
+        # same value the recorder's dropped() reads off _seq. Same formula, one
+        # definition, so a flows() page and a status() poll can never disagree.
+        dropped = _dropped_count(int(items[-1].get("seq") or 0), len(items)) if items else 0
         return {
             "flows": window,
             "count": len(window),

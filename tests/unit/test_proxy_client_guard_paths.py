@@ -346,6 +346,35 @@ def test_record_eviction_skips_already_omitted_entries(
     assert recorder._raw["c"] is not _OMITTED_BODY
 
 
+def test_status_and_flows_report_the_same_dropped_count_on_a_saturated_ring() -> None:
+    """status() and flows() must agree about how many flows the ring evicted.
+
+    A capture that overruns the ring pins flow_count at the cap and stops
+    rising; a caller polling status() alone then cannot tell a full-but-quiet
+    ring from one still shedding flows. status() must therefore report the same
+    eviction count a flows() page carries, and both are the one running total
+    minus what is retained. Here ten flows go through a ring that holds three,
+    so seven were evicted; pinning that exact number on both surfaces is what
+    makes this non-vacuous -- a status() that omitted dropped would KeyError,
+    and a second formula that drifted from flows() would return a different
+    number.
+    """
+    recorder = _FlowRecorder(capacity=3)
+    for index in range(10):
+        recorder._record(_mk_flow(flow_id=f"f{index}"))
+    assert recorder.count() == 3
+
+    backend = ProxyBackend()
+    inst = SimpleNamespace(host="127.0.0.1", port=8080, recorder=recorder)
+    backend._instances["s"] = inst  # type: ignore[assignment]
+
+    status = backend.status("s")
+    flows = backend.flows("s")
+    assert status["dropped"] == 7
+    assert flows["dropped"] == 7
+    assert flows["total"] == 3
+
+
 # --------------------------------------------------------------------------
 # _ProxyInstance.start lifecycle
 # --------------------------------------------------------------------------

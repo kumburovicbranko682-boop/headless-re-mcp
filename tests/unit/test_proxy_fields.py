@@ -191,6 +191,10 @@ def test_proxy_status_names_flow_count_and_retained_max() -> None:
     assert payload["retained_max"] == _MAX_FLOWS
     assert payload["retained_bytes"] >= 0
     assert payload["retained_bytes_max"] > payload["retained_bytes"]
+    # Three flows through an eight-slot ring evict nothing, so status honestly
+    # reports zero dropped rather than omitting the field a saturated capture
+    # would need to surface its loss.
+    assert payload["dropped"] == 0
     idle = backend.status("missing")
     assert idle == {"running": False}
     doc = _tool_docstring("proxy.status")
@@ -198,6 +202,7 @@ def test_proxy_status_names_flow_count_and_retained_max() -> None:
     assert "retained_max" in doc
     assert "retained_bytes" in doc
     assert "retained_bytes_max" in doc
+    assert "dropped" in doc
 
 
 def test_proxy_export_har_names_path_and_entry_count(

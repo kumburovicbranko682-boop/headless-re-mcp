@@ -43,9 +43,12 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def proxy_status(session_id: str) -> dict[str, Any]:
         """Report whether the proxy is running and how many flows it captured.
 
-        Answers with running, and when running also host, port, flow_count
-        retained_max, retained_bytes and retained_bytes_max. There is no
-        count or flows field. A session with no proxy answers running false
+        Answers with running, and when running also host, port, flow_count,
+        retained_max, retained_bytes, retained_bytes_max and dropped. dropped
+        is the number of flows evicted from the capture ring -- the same count
+        proxy.flows reports -- so a saturated capture whose flow_count has
+        plateaued at retained_max still shows how much is being lost. There is
+        no count or flows field. A session with no proxy answers running false
         and nothing else, which is not an empty capture.
         """
         return _dump(analysis.proxy_status(session_id))

@@ -720,7 +720,9 @@ def test_backend_start_detects_a_stop_during_launch(
 
 def test_backend_stop_and_status_report_a_live_instance() -> None:
     stopped: list[str] = []
-    recorder = SimpleNamespace(count=lambda: 3, retained_bytes=lambda: 4096)
+    recorder = SimpleNamespace(
+        count=lambda: 3, retained_bytes=lambda: 4096, dropped=lambda: 0
+    )
     inst = SimpleNamespace(
         host="127.0.0.1", port=8080, recorder=recorder, stop=lambda: stopped.append("stopped")
     )
@@ -731,6 +733,7 @@ def test_backend_stop_and_status_report_a_live_instance() -> None:
     assert status["running"] is True
     assert status["flow_count"] == 3
     assert status["retained_bytes"] == 4096
+    assert status["dropped"] == 0
 
     payload = backend.stop("s")
     assert payload == {"stopped": True}

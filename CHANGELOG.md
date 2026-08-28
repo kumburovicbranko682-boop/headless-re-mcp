@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（proxy.status 报告 dropped，与 proxy.flows 口径一致）
+
+- `backends/proxy/client.py`：`proxy.flows` 一直报 `dropped`（从抓包环里被逐出的 flow 数），
+  但 `proxy.status` 没有。抓包一旦把环打满，`flow_count` 就钉在 `retained_max`（2000）不再
+  上涨——只轮询 `status` 的调用方无法区分“环满但静默”与“还在持续丢 flow”，等到读某一页
+  才发现数据已丢。现让 `status` 也报 `dropped`，监控方可以据此提前翻页或导出。
+- 把 `dropped` 口径收敛为单一定义 `_dropped_count(latest_seq, retained) = max(0, seq - retained)`：
+  `_seq` 计入曾记录的每一条 flow，故最新保留条目的 `seq` 就是累计总数，环最多只留 cap 条，
+  两者之差正是被逐出的数量。新增 `_FlowRecorder.dropped()` 供 `status` 调用；`flows` 仍从它
+  那一次 `snapshot` 里按同一公式算，使 `total` 与 `dropped` 描述同一瞬间。此前两处各写一遍
+  公式，是会漂移的两份真相。
+- 相应更新 `proxy.status` 工具 docstring 的字段清单（新增 `dropped`），保持“文档即返回字段
+  契约”的诚实性。
+- 新增 `tests/unit/test_proxy_client_guard_paths.py::test_status_and_flows_report_the_same_dropped_count_on_a_saturated_ring`：
+  十条 flow 过一个容量为 3 的环，逐出 7 条，钉死 `status` 与 `flows` 都报 `dropped == 7`。
+  非空验证：抽掉 `status` 的 dropped 行会 KeyError，两处公式漂移则数字不等。另在
+  `test_proxy_fields.py`/`test_proxy_client_paths.py` 的既有 status 用例上补 `dropped` 断言
+  与 docstring 断言。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
