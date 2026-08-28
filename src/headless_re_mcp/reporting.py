@@ -49,6 +49,9 @@ def _table(headers: list[str], rows: list[list[object]]) -> list[str]:
     return lines
 
 
+_VALUE_KEYS_SHOWN = 4
+
+
 def _summarize_value(value: object) -> str:
 
     if isinstance(value, dict):
@@ -57,7 +60,23 @@ def _summarize_value(value: object) -> str:
 
             return "—"
 
-        return ", ".join(f"{key}={_cell(item)}" for key, item in list(value.items())[:4])
+        items = list(value.items())
+
+        shown = items[:_VALUE_KEYS_SHOWN]
+
+        rendered = ", ".join(f"{key}={_cell(item)}" for key, item in shown)
+
+        hidden = len(items) - len(shown)
+
+        if hidden > 0:
+
+            # Same honesty as _cell's "…" and _note_if_partial: a field the
+            # report silently drops is indistinguishable from one that was never
+            # recorded. When a finding carries more fields than fit, say how many
+            # did not rather than presenting the first few as the whole value.
+            rendered = f"{rendered}, … (+{hidden} more)"
+
+        return rendered
 
     return _cell(value)
 

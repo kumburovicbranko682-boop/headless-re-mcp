@@ -213,3 +213,62 @@ def test_report_reads_the_list_artifacts_key() -> None:
     )
     assert "mod.bin" in markdown
     assert "No artifacts were produced for this session yet." not in markdown
+
+
+def test_a_finding_with_more_fields_than_fit_says_how_many_it_dropped() -> None:
+    """Truncating a finding's value must be as loud as capping the finding list.
+
+    The value cell shows the first few fields so the table stays one line, but a
+    finding that carries more short fields than the cap slipped past unnoticed:
+    the length-based "…" only fires when the joined text is long, so a value of
+    six one-character fields rendered its first four and silently dropped two.
+    A field the report never shows is indistinguishable from one that was never
+    recorded, so the cell must say how many did not fit.
+    """
+    session = {
+        "id": "s1",
+        "binary": "target.exe",
+        "sha256": "ab" * 32,
+        "target": "pe",
+        "architecture": "x64",
+        "state": "ready",
+        "backends": [],
+    }
+    markdown = render_markdown_report(
+        session=session,
+        knowledge={
+            "entries": [
+                {
+                    "kind": "crackme",
+                    "key": "serial",
+                    "value": {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6},
+                    "updated_at": "t",
+                }
+            ],
+            "count": 1,
+            "total": 1,
+        },
+        generated_at="t",
+    )
+    cell = next(line for line in markdown.splitlines() if "a=1" in line)
+    assert "… (+2 more)" in cell, cell
+
+    # Exactly at the cap shows every field and claims nothing was dropped.
+    at_cap = render_markdown_report(
+        session=session,
+        knowledge={
+            "entries": [
+                {
+                    "kind": "note",
+                    "key": "k",
+                    "value": {"a": 1, "b": 2, "c": 3, "d": 4},
+                    "updated_at": "t",
+                }
+            ],
+            "count": 1,
+            "total": 1,
+        },
+        generated_at="t",
+    )
+    at_cap_cell = next(line for line in at_cap.splitlines() if "a=1" in line)
+    assert "more" not in at_cap_cell, at_cap_cell
