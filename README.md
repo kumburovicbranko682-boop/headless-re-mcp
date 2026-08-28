@@ -390,9 +390,17 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 80 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
-  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
+  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄、
+  抓包线离线诚实经真实 MCP 端到端(裸机跨主机确定性)：live 抓包 gate 在没装 mitmproxy 时整体
+  skip，本 gate 反而在裸机上跑起来钉住「没装后端、也没起过代理」时那条契约——只有 `proxy.start`
+  碰后端故缺 mitmproxy 时报 `capability_unavailable`；描述「没有代理」的查询面根本不碰后端:
+  `proxy.status` 只答 running:false 别无它字段(不是缺能力错、也不是空捕获)、`proxy.stop` 对没起过
+  的会话是幂等诚实的空操作(stopped:false 带说明、非错也非谎称拆除)；会交回捕获数据的读则以
+  `invalid_state` 拒绝而绝不伪造空捕获/空 HAR(`proxy.flows`/`proxy.export_har`)——「没有代理」不
+  等于「抓到零条」；且代理是会话级运行态而非目标类型工具:查询面在 PE/APK/web 会话上表现一致、
+  从不答 `target_mismatch`(与 PE-only 脱壳器先拒非 PE 目标恰成对照)）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
   wabt（1）、以及 2 个有文档说明的故意跳过
 - 264 个工具（全部 265 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
