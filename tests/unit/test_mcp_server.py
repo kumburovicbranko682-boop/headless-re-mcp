@@ -274,6 +274,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "dex.methods",
         # Native ELF triage (elf.*)
         "elf.summary",
+        "elf.symbols",
         # Device control (device.*)
         "device.list",
         "device.connect",

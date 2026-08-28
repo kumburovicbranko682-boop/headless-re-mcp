@@ -7,6 +7,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 新增（原生 ELF 离线速览，无需 r2/Ghidra）
 
+- 新增 `elf.symbols`：纯 stdlib 分页读取动态符号表 `.dynsym`——即离线 `nm -D`。动态符号是二进制的链接面：
+  它从共享库**导入**的函数（undefined 项）与它**导出**给别人调用的函数/对象（defined 的 GLOBAL/WEAK 项），
+  且与 `.symtab` 不同，strip 之后依然存在。每条符号给出名字（经 `sh_link` 指向的字符串表解引用，缺失时
+  回退 `.dynstr`）、绑定（GLOBAL/WEAK/LOCAL）、类型（FUNC/OBJECT/…）、value/size/shndx，并直接给出
+  `imported`/`exported` 布尔，调用方不必自己重推 ELF 规则；返回还带 `imported_listed`/`exported_listed`/
+  `symbols_total`/`has_more` 诚实分页。32/64 位符号记录的字段顺序不同（ELF32 是 name/value/size/info/
+  other/shndx，ELF64 是 name/info/other/shndx/value/size），两种都按各自布局精确解析，大小端同样支持。
+  无 `.dynsym`（静态链接）返回空列表加 warning 而非报错；符号记录越界记 warning 停页。已对真实系统
+  二进制验证：`/usr/bin/ls` 数出 128 条动态符号，与 `readelf -s` 完全一致（`nm -D` 127 = 不含 null 符号）；
+  `libz.so.1` 的导出正是 `inflateEnd/deflate/crc32_z`。单测覆盖分类（import/export/LOCAL/null）、诚实
+  分页、无 `.dynsym`、符号表越界与服务路由；既有 ELF MCP stdio Gate 扩到同时打 `elf.symbols`（含分页与
+  非 ELF 拒绝）。
 - 新增 `elf.summary`：纯 stdlib 直接解析单个 ELF（Linux 可执行文件或 `.so`），**无需 r2/Ghidra**。
   原生代码是货真价实的逆向目标——Android 应用的 `lib/**/*.so`、Linux 可执行文件、ELF 恶意样本——但此前
   在工具面里只能经 r2 或 Ghidra 打开，而这两个外部工具并不总是装着。ELF 头、节表与 `.dynamic` 数组都是
@@ -89,7 +101,7 @@ until 1.0 the tool surface may still change between minor versions.
   先例：去掉 POSIX-only 前置断言，只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **269（152 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **270（153 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 

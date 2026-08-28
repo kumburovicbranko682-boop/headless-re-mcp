@@ -1,11 +1,12 @@
-"""elf.summary over real MCP stdio: a native ELF is a first-class thing to read.
+"""elf.* over real MCP stdio: a native ELF is a first-class thing to read.
 
 Native code could only be opened here through r2 or Ghidra, external tools that
-are not always installed. The ELF header/section/dynamic tables are an exact
-binary format that reads with the stdlib alone. This gate drives the real stdio
-server end to end on a hand-assembled ELF (portable, so it runs anywhere) and
-pins the round trip: elf.summary is advertised, it returns the class, machine,
-section list and shared-library dependencies, and a file that is not an ELF fails
+are not always installed. The ELF header/section/dynamic/symbol tables are an
+exact binary format that reads with the stdlib alone. This gate drives the real
+stdio server end to end on a hand-assembled ELF (portable, so it runs anywhere)
+and pins the round trip: elf.summary and elf.symbols are advertised, the summary
+returns the class, machine, section list and shared-library dependencies, the
+symbol page classifies imports and exports, and a file that is not an ELF fails
 with invalid_params rather than an internal fault. It needs no analysis backend,
 so it always runs.
 """
@@ -43,11 +44,21 @@ def _build_elf64() -> bytes:
         struct.pack("<qQ", tag, val)
         for tag, val in [(1, off_libc), (14, off_soname), (0, 0)]
     )
+    # .dynsym: the null symbol, one import (undefined) and one export (defined).
+    dynsym = b"".join(
+        struct.pack("<IBBHQQ", *entry)
+        for entry in [
+            (0, 0, 0, 0, 0, 0),
+            (add("malloc"), 0x12, 0, 0, 0, 0),
+            (add("gate_open"), 0x12, 0, 1, 0x1010, 0x20),
+        ]
+    )
     sections: list[tuple[str, int, int, bytes]] = [
         ("", 0, 0, b""),
         (".text", 1, 0x6, b"\x90" * 8),
         (".dynstr", 3, 0x2, bytes(dynstr)),
         (".dynamic", 6, 0x2, dynamic),
+        (".dynsym", 11, 0x2, dynsym),
         (".symtab", 2, 0x0, b"\x00" * 24),
         (".shstrtab", 3, 0x0, b""),
     ]
@@ -70,6 +81,7 @@ def _build_elf64() -> bytes:
         contents.extend(content)
         offset += len(content)
     shoff = offset
+    dynstr_index = next(i for i, entry in enumerate(placed) if entry[0] == ".dynstr")
     sht = b"".join(
         struct.pack(
             "<IIQQQQIIQQ",
@@ -79,10 +91,10 @@ def _build_elf64() -> bytes:
             0,
             off,
             size,
-            0,
+            dynstr_index if name == ".dynsym" else 0,
             0,
             1,
-            0,
+            24 if name == ".dynsym" else 0,
         )
         for name, stype, flags, off, size in placed
     )
@@ -125,6 +137,7 @@ async def test_mcp_stdio_elf_summary(tmp_path: Path) -> None:
         await client.initialize()
         tools = {tool.name for tool in (await client.list_tools()).tools}
         assert "elf.summary" in tools
+        assert "elf.symbols" in tools
 
         full = await _call(client, "elf.summary", {"path": str(binary)})
         assert full["ok"] is True, full
@@ -136,6 +149,25 @@ async def test_mcp_stdio_elf_summary(tmp_path: Path) -> None:
         assert data["soname"] == "libgate.so"
         assert ".dynamic" in {section["name"] for section in data["sections"]}
 
+        symbols = await _call(client, "elf.symbols", {"path": str(binary)})
+        assert symbols["ok"] is True, symbols
+        listing = symbols["data"]
+        assert listing["symbols_total"] == 3
+        by_name = {s["name"]: s for s in listing["symbols"]}
+        assert by_name["malloc"]["imported"] is True
+        assert by_name["gate_open"]["exported"] is True
+        assert listing["imported_listed"] == 1
+        assert listing["exported_listed"] == 1
+
+        paged = await _call(client, "elf.symbols", {"path": str(binary), "offset": 1, "limit": 1})
+        assert paged["ok"] is True, paged
+        assert [s["name"] for s in paged["data"]["symbols"]] == ["malloc"]
+        assert paged["data"]["has_more"] is True
+
         bad = await _call(client, "elf.summary", {"path": str(junk)})
         assert bad["ok"] is False
         assert bad["error"]["code"] == "invalid_params"
+
+        bad_symbols = await _call(client, "elf.symbols", {"path": str(junk)})
+        assert bad_symbols["ok"] is False
+        assert bad_symbols["error"]["code"] == "invalid_params"

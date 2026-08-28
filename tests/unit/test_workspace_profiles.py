@@ -26,13 +26,14 @@ async def test_full_profile_exposes_every_tool(tmp_path) -> None:
     finally:
         analysis.close_all()
     names = {tool.name for tool in tools}
-    assert len(names) == 269
+    assert len(names) == 270
     assert "apk.open" in names
     assert "web.open" in names
     assert "dex.summary" in names
     assert "dex.classes" in names
     assert "dex.methods" in names
     assert "elf.summary" in names
+    assert "elf.symbols" in names
 
 
 @pytest.mark.asyncio
@@ -66,8 +67,9 @@ async def test_web_profile_hides_android_domain(tmp_path) -> None:
         analysis.close_all()
     assert "web.open" in names
     assert not any(n.startswith(("apk.", "dex.", "device.")) for n in names)
-    # elf.summary is core native triage, not tied to a direction, so it stays.
+    # elf.* is core native triage, not tied to a direction, so it stays.
     assert "elf.summary" in names
+    assert "elf.symbols" in names
 
 
 @pytest.mark.asyncio
