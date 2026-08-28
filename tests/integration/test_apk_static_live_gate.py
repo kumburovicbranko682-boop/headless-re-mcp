@@ -982,6 +982,28 @@ def test_apk_dex_readers_decode_a_populated_dex(tmp_path: Path) -> None:
         assert leaf_bc.ok and leaf_bc.data is not None, leaf_bc.error
         assert [i["mnemonic"] for i in leaf_bc.data["instructions"]] == ["return-void"]
 
+        # Method refs: the same main, summarised. Where the bytecode leg reads the
+        # instruction stream, this abstracts it -- main calls onCreate once and
+        # loads "hello world" once, and touches no field. That is the triage view
+        # (what does this routine reach) built from the resolved references, not a
+        # raw opcode dump.
+        refs = service.apk_method_refs(session_id, "com.example.App", _DEX_CALLER)
+        assert refs.ok and refs.data is not None, refs.error
+        assert refs.data["class_name"] == _DEX_CLASS_SMALI, refs.data
+        assert refs.data["has_code"] is True, refs.data
+        assert refs.data["calls"] == [{"target": "Lcom/example/App;->onCreate()V", "count": 1}]
+        assert refs.data["strings"] == [{"value": _DEX_STRING, "count": 1}]
+        assert refs.data["fields"] == [], refs.data
+        assert refs.data["call_count"] == 1 and refs.data["string_count"] == 1
+        assert refs.data["calls_truncated"] is False
+
+        # onCreate reaches nothing, so all three lists are clean empties.
+        leaf_refs = service.apk_method_refs(session_id, _DEX_CLASS_SMALI, _DEX_CALLEE)
+        assert leaf_refs.ok and leaf_refs.data is not None, leaf_refs.error
+        assert leaf_refs.data["calls"] == []
+        assert leaf_refs.data["fields"] == []
+        assert leaf_refs.data["strings"] == []
+
         # A method the class does not declare is a clean not_found, not a crash.
         missing = service.apk_method_bytecode(session_id, _DEX_CLASS_SMALI, "noSuchMethod")
         assert not missing.ok
@@ -1176,6 +1198,24 @@ def test_apk_field_xrefs_resolve_read_and_write_sites(tmp_path: Path) -> None:
         volatile = service.apk_fields(session_id, "com.example.Store", access="volatile")
         assert volatile.ok and volatile.data is not None, volatile.error
         assert volatile.data["total"] == 0 and volatile.data["fields"] == [], volatile.data
+
+        # apk.method_refs is the per-method view of the same field access: the same
+        # secret that field_xrefs traces globally shows up as a read in load and a
+        # write in save, keyed to each method. The field ref carries its declared
+        # type, so a caller sees "Store.secret : I", not a bare name.
+        field_ref = f"{_DEX_STORE_SMALI}->{_DEX_FIELD_NAME} I"
+        load_refs = service.apk_method_refs(session_id, "com.example.Store", _DEX_FIELD_READER)
+        assert load_refs.ok and load_refs.data is not None, load_refs.error
+        assert load_refs.data["fields"] == [
+            {"field": field_ref, "reads": 1, "writes": 0}
+        ], load_refs.data
+        assert load_refs.data["calls"] == [] and load_refs.data["strings"] == []
+
+        save_refs = service.apk_method_refs(session_id, "com.example.Store", _DEX_FIELD_WRITER)
+        assert save_refs.ok and save_refs.data is not None, save_refs.error
+        assert save_refs.data["fields"] == [
+            {"field": field_ref, "reads": 0, "writes": 1}
+        ], save_refs.data
 
         # A class the DEX does not declare is a clean not_found, not a crash.
         missing = service.apk_fields(session_id, "com.example.Nope")

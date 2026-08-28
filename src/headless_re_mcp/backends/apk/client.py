@@ -29,6 +29,10 @@ _MAX_METHODS_COLLECT = 2000
 # how many rows apk.method_bytecode materialises so a crafted method cannot make
 # one call build an unbounded list.
 _MAX_METHOD_INSNS = 100_000
+# apk.method_refs dedups a method's called targets / touched fields / loaded
+# strings; cap each unique list so a crafted method cannot make one summary
+# build an unbounded envelope.
+_MAX_METHOD_REFS = 4096
 _MAX_NATIVE_LIBS = 256
 # A single native library is at most tens of MB; refuse anything absurd so a
 # crafted APK cannot make extraction write a huge file.
@@ -604,6 +608,57 @@ class ApkClient:
             result["filter"] = active
         return result
 
+    def _resolve_method(
+        self, path: Path, class_name: str, method_name: str, descriptor: str | None
+    ) -> tuple[str, Any, list[Any]]:
+        """Resolve class + name (+ optional descriptor) to one method analysis.
+
+        Returns the class's display name, the chosen ``MethodClassAnalysis`` and
+        every same-named overload, raising the shared invalid_params/not_found
+        contract. Both apk.method_bytecode and apk.method_refs pivot on this, so
+        a method resolves identically whichever reader an agent reaches for.
+        """
+        cls = class_name.strip()
+        mname = method_name.strip()
+        if not cls:
+            raise ApkError("invalid_params", "class_name is required")
+        if not mname:
+            raise ApkError("invalid_params", "method_name is required")
+        parsed = self._parsed(path)
+        smali = _dotted_to_smali(cls)
+        found = [
+            klass
+            for klass in parsed.analysis.get_classes()
+            if klass.name == cls or klass.name == smali
+        ]
+        if not found:
+            raise ApkError("not_found", "class not found", class_name=class_name)
+        matches = [
+            mca
+            for klass in found
+            for mca in klass.get_methods()
+            if not mca.is_external() and str(getattr(mca, "name", "")) == mname
+        ]
+        if not matches:
+            raise ApkError(
+                "not_found", "method not found", class_name=found[0].name, method_name=mname
+            )
+        want = descriptor.strip() if isinstance(descriptor, str) and descriptor.strip() else None
+        if want is None:
+            return found[0].name, matches[0], matches
+        chosen = next((m for m in matches if str(getattr(m, "descriptor", "")) == want), None)
+        if chosen is None:
+            # Present class, present name, but no such signature: name the
+            # overloads the caller could have meant rather than a bare miss.
+            raise ApkError(
+                "not_found",
+                "no method overload with that descriptor",
+                method_name=mname,
+                descriptor=want,
+                available=[str(getattr(m, "descriptor", "")) for m in matches][:32],
+            )
+        return found[0].name, chosen, matches
+
     def method_bytecode(
         self,
         path: Path,
@@ -632,48 +687,10 @@ class ApkClient:
         abstract/native method resolves with ``has_code`` False and no
         instructions.
         """
-        cls = class_name.strip()
         mname = method_name.strip()
-        if not cls:
-            raise ApkError("invalid_params", "class_name is required")
-        if not mname:
-            raise ApkError("invalid_params", "method_name is required")
-        parsed = self._parsed(path)
-        smali = _dotted_to_smali(cls)
-        found = [
-            klass
-            for klass in parsed.analysis.get_classes()
-            if klass.name == cls or klass.name == smali
-        ]
-        if not found:
-            raise ApkError("not_found", "class not found", class_name=class_name)
-        matches = [
-            mca
-            for klass in found
-            for mca in klass.get_methods()
-            if not mca.is_external() and str(getattr(mca, "name", "")) == mname
-        ]
-        if not matches:
-            raise ApkError(
-                "not_found", "method not found", class_name=found[0].name, method_name=mname
-            )
-        want = descriptor.strip() if isinstance(descriptor, str) and descriptor.strip() else None
-        if want is not None:
-            chosen = next(
-                (m for m in matches if str(getattr(m, "descriptor", "")) == want), None
-            )
-            if chosen is None:
-                # Present class, present name, but no such signature: name the
-                # overloads the caller could have meant rather than a bare miss.
-                raise ApkError(
-                    "not_found",
-                    "no method overload with that descriptor",
-                    method_name=mname,
-                    descriptor=want,
-                    available=[str(getattr(m, "descriptor", "")) for m in matches][:32],
-                )
-        else:
-            chosen = matches[0]
+        class_display, chosen, matches = self._resolve_method(
+            path, class_name, method_name, descriptor
+        )
         has_code = False
         try:
             encoded = chosen.get_method()
@@ -711,7 +728,7 @@ class ApkClient:
         cap = max(1, int(limit))
         window = rows[start : start + cap]
         return {
-            "class_name": found[0].name,
+            "class_name": class_display,
             "method": mname,
             "descriptor": str(getattr(chosen, "descriptor", "")),
             "access": str(getattr(chosen, "access", "")),
@@ -726,6 +743,116 @@ class ApkClient:
             # disambiguate if they meant another.
             "overloads": len(matches),
             "insns_capped": total >= _MAX_METHOD_INSNS,
+        }
+
+    def method_refs(
+        self,
+        path: Path,
+        class_name: str,
+        method_name: str,
+        *,
+        descriptor: str | None = None,
+    ) -> JsonObject:
+        """Summarise what one method touches: its calls, fields and strings.
+
+        Where ``apk.method_bytecode`` returns every instruction, this abstracts the
+        triage question an agent actually asks of a routine -- what does it call,
+        which fields does it read or write, which string constants does it load --
+        into three deduplicated lists. It is the static-Dalvik analogue of reading
+        a native function's call and data references at a glance. ``calls`` names
+        each invoked target (``Lpkg/Cls;->m(...)ret``) with how many call sites
+        reach it; ``fields`` names each accessed field with its ``reads`` and
+        ``writes`` counts, so a config flag flipped once stands out from one merely
+        read; ``strings`` names each loaded constant with its occurrence ``count``
+        (an embedded URL, key or error message). Every list is sorted for stable
+        output. The method resolves by class + name, with an optional
+        ``descriptor`` to pin one overload (``overloads`` reports how many share
+        the name); an abstract/native method resolves with ``has_code`` False and
+        empty lists. ``calls_truncated`` / ``fields_truncated`` /
+        ``strings_truncated`` mark a method whose unique set exceeded the 4096 cap.
+        """
+        mname = method_name.strip()
+        class_display, chosen, matches = self._resolve_method(
+            path, class_name, method_name, descriptor
+        )
+        calls: dict[str, int] = {}
+        fields: dict[str, dict[str, int]] = {}
+        strings: dict[str, int] = {}
+        has_code = False
+        capped = {"calls": False, "fields": False, "strings": False}
+
+        def _bump(bucket: dict[str, int], key: str, which: str) -> None:
+            if key in bucket or len(bucket) < _MAX_METHOD_REFS:
+                bucket[key] = bucket.get(key, 0) + 1
+            else:
+                capped[which] = True
+
+        def _bump_field(key: str, *, is_write: bool) -> None:
+            if key in fields or len(fields) < _MAX_METHOD_REFS:
+                entry = fields.setdefault(key, {"reads": 0, "writes": 0})
+                entry["writes" if is_write else "reads"] += 1
+            else:
+                capped["fields"] = True
+
+        try:
+            encoded = chosen.get_method()
+            has_code = encoded.get_code() is not None
+            if has_code:
+                seen = 0
+                for ins in encoded.get_instructions():
+                    seen += 1
+                    if seen > _MAX_METHOD_INSNS:
+                        break
+                    name = str(ins.get_name())
+                    # The resolved reference (a method/field descriptor, or the
+                    # literal for const-string). Instructions without a c-operand
+                    # raise here, so guard rather than classify on kind ids that
+                    # drift between androguard releases.
+                    try:
+                        ref = str(ins.get_translated_kind())
+                    except Exception:  # noqa: BLE001 - androguard raises many types
+                        continue
+                    if not ref:
+                        continue
+                    if name.startswith("invoke"):
+                        _bump(calls, ref, "calls")
+                    elif name.startswith(("iget", "sget")):
+                        _bump_field(ref, is_write=False)
+                    elif name.startswith(("iput", "sput")):
+                        _bump_field(ref, is_write=True)
+                    elif name.startswith("const-string"):
+                        _bump(strings, ref, "strings")
+        except ApkError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError(
+                "backend_error", f"failed to read method refs: {exc}", method_name=mname
+            ) from exc
+
+        call_rows = [
+            {"target": target, "count": count} for target, count in sorted(calls.items())
+        ]
+        field_rows = [
+            {"field": field, "reads": counts["reads"], "writes": counts["writes"]}
+            for field, counts in sorted(fields.items())
+        ]
+        string_rows = [{"value": value, "count": count} for value, count in sorted(strings.items())]
+        return {
+            "class_name": class_display,
+            "method": mname,
+            "descriptor": str(getattr(chosen, "descriptor", "")),
+            "access": str(getattr(chosen, "access", "")),
+            "has_code": has_code,
+            "calls": call_rows,
+            "fields": field_rows,
+            "strings": string_rows,
+            "call_count": len(call_rows),
+            "field_count": len(field_rows),
+            "string_count": len(string_rows),
+            "overloads": len(matches),
+            "calls_truncated": capped["calls"],
+            "fields_truncated": capped["fields"],
+            "strings_truncated": capped["strings"],
         }
 
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:

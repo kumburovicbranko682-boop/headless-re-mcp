@@ -224,6 +224,39 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="apk.method_refs")
+    def apk_method_refs(
+        session_id: str,
+        class_name: str,
+        method_name: str,
+        descriptor: str = "",
+    ) -> dict[str, Any]:
+        """Summarise what one method touches: calls, fields and strings.
+
+        Where apk.method_bytecode returns every instruction, this abstracts the
+        triage question -- what does this routine call, which fields does it read
+        or write, which string constants does it load -- into three deduplicated
+        lists, the static-Dalvik analogue of a native function's call and data
+        references. Resolve by class_name (dotted or Lsmali/form) plus method_name;
+        pass descriptor (e.g. "(I)Z") to pin one overload, else the first is used
+        and overloads reports how many share the name. Answers with class_name,
+        method, descriptor, access, has_code and: calls (each target
+        Lpkg/Cls;->m(...)ret with its call-site count), fields (each field with
+        reads and writes counts, so a flag flipped once stands out from one only
+        read) and strings (each loaded constant with its occurrence count -- an
+        embedded URL, key or error message). Lists are sorted. An abstract/native
+        method has has_code false and empty lists; calls_truncated / fields_truncated
+        / strings_truncated mark a method whose unique set exceeded 4096.
+        """
+        return _dump(
+            analysis.apk_method_refs(
+                session_id,
+                class_name,
+                method_name,
+                descriptor=descriptor,
+            )
+        )
+
     @tools.tool(name="apk.strings")
     def apk_strings(
         session_id: str,
