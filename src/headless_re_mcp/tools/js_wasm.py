@@ -242,4 +242,45 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="wasm.data")
+    def wasm_data(
+        path: str,
+        segment: Annotated[int, Field(ge=0)] = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=65536)] = 4096,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Read the raw bytes of a .wasm Data-section segment (wasm twin of r2.read).
+
+        wasm.strings surfaces only the printable runs in a module's data
+        segments; this is the raw reader for those same segments, so the bytes a
+        strings pass cannot show -- an embedded key, certificate, protobuf
+        descriptor or compressed payload -- are still recoverable. It reads the
+        bytes directly, so it needs no wabt installed.
+
+        Every call answers with segments, the lightweight map of the module's
+        data segments (each {index, mode, memory_offset, size} and no bytes, so
+        the map stays small) and data_segments (their count). mode is "active"
+        (placed in linear memory) or "passive"; memory_offset is the absolute
+        linear-memory address an active segment's i32.const placement resolves to
+        (null for a passive segment, or when the base is an imported global.get).
+        Pick one with segment (default 0) and its raw bytes come back in data as
+        a lowercase hex string, windowed by offset (byte offset into the segment)
+        and limit (bytes, capped at 65536), alongside encoding ("hex"), size (the
+        segment's full length), byte_offset, count (bytes returned) and has_more
+        (more bytes past this window). Page a large segment by advancing offset
+        until has_more is false. A module with no Data section is a clean empty
+        map (data_segments 0, no data field), not an error; a segment index past
+        the end is invalid_params; a missing file is not_found and a malformed
+        module a backend_error. segments_truncated marks a module with more than
+        4096 segments (segments_total keeps the real count). An input over 16 MiB
+        is refused as too_large. Decode data from hex; there is no inline byte
+        array. This is the static twin of frida.memory.read for a wasm module.
+        """
+        return _dump(
+            analysis.wasm_data(
+                path, segment=segment, offset=offset, limit=limit, timeout=timeout
+            )
+        )
+
     return tools.bindings

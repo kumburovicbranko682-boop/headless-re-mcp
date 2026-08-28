@@ -1095,6 +1095,13 @@ _MAX_WASM_STRINGS_PAGE = 5000
 # breaks the run.
 _WASM_PRINTABLE = frozenset(range(0x20, 0x7F)) | {0x09}
 
+# wasm.data bounds: one read window is capped at the same 64 KiB ceiling r2.read
+# uses (each byte is two hex chars, so this stays well inside the reply budget);
+# the segment index is capped so a module with a pathological number of segments
+# cannot flood the map.
+_MAX_WASM_DATA_SEG_BYTES = 64 * 1024
+_MAX_WASM_DATA_SEGMENTS = 4096
+
 
 def _read_wasm_const_offset(data: bytes, pos: int, end: int) -> tuple[int | None, int]:
     """Parse a data segment's offset const-expr, returning (offset, pos_after_end).
@@ -1286,6 +1293,78 @@ def _parse_wasm_strings(data: bytes, *, module: str, min_length: int) -> JsonObj
     }
 
 
+def _parse_wasm_data(data: bytes, *, module: str) -> JsonObject:
+    """Walk the Data section into per-segment placement metadata and raw bytes.
+
+    wasm.strings surfaces only the printable runs in these same segments; this
+    keeps every segment's raw bytes, so an embedded key, certificate, protobuf
+    or compressed blob -- content that is not printable and so is invisible to a
+    strings pass -- is still recoverable. Each segment reports its mode (active,
+    placed in linear memory, or passive) and, for an active segment, the memory
+    offset its ``i32.const`` placement resolves to (None when that base is an
+    imported ``global.get``). The raw ``blob`` bytes ride along for the caller to
+    window; they are stripped before the public reply. Reads the bytes directly
+    (no wabt); a malformed module faults cleanly rather than misreading bytes.
+    """
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        raise JsReError("backend_error", "not a WebAssembly module (bad magic)")
+    version = int.from_bytes(data[4:8], "little")
+    pos = 8
+    n = len(data)
+    segments: list[JsonObject] = []
+    try:
+        while pos < n:
+            sec_id = data[pos]
+            pos += 1
+            sec_size, pos = _read_uleb128(data, pos)
+            sec_end = pos + sec_size
+            if sec_size < 0 or sec_end > n:
+                raise _WasmParseError("section overruns module")
+            if sec_id != 11:  # only the Data section carries segment bytes
+                pos = sec_end
+                continue
+            count, p = _read_uleb128(data, pos)
+            for _ in range(count):
+                if p >= sec_end:
+                    raise _WasmParseError("data segment truncated")
+                flags, p = _read_uleb128(data, p)
+                base: int | None
+                mode: str
+                if flags == 0:  # active, memory 0, offset const-expr
+                    mode = "active"
+                    base, p = _read_wasm_const_offset(data, p, sec_end)
+                elif flags == 1:  # passive: no placement
+                    mode = "passive"
+                    base = None
+                elif flags == 2:  # active with explicit memory index
+                    mode = "active"
+                    _, p = _read_uleb128(data, p)  # memidx
+                    base, p = _read_wasm_const_offset(data, p, sec_end)
+                else:
+                    raise _WasmParseError(f"unknown data segment flags {flags}")
+                seg_len, p = _read_uleb128(data, p)
+                if seg_len < 0 or p + seg_len > sec_end:
+                    raise _WasmParseError("data segment bytes overrun section")
+                segments.append(
+                    {
+                        "index": len(segments),
+                        "mode": mode,
+                        "memory_offset": base,
+                        "size": seg_len,
+                        "blob": data[p : p + seg_len],
+                    }
+                )
+                p += seg_len
+            pos = sec_end
+    except _WasmParseError as exc:
+        raise JsReError("backend_error", f"malformed WebAssembly module: {exc}") from exc
+    except IndexError as exc:  # a read ran off the end despite the guards
+        raise JsReError(
+            "backend_error", "malformed WebAssembly module: unexpected end of data"
+        ) from exc
+    return {"module": module, "version": version, "segments": segments}
+
+
 class WasmClient:
     """wabt-backed WebAssembly inspection (wasm2wat, wasm-objdump)."""
 
@@ -1370,6 +1449,82 @@ class WasmClient:
         parsed["offset"] = start
         parsed["has_more"] = start + len(window) < total
         return parsed
+
+    def data(
+        self,
+        path: Path,
+        *,
+        segment: int = 0,
+        offset: int = 0,
+        limit: int = _MAX_WASM_DATA_SEG_BYTES,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """Read the raw bytes of a Data-section segment (the wasm twin of r2.read).
+
+        wasm.strings is the wasm twin of r2.strings: it surfaces only the
+        printable runs in the data segments. This is the other half -- the raw
+        reader -- so the bytes a strings pass cannot show (an embedded key,
+        certificate, protobuf descriptor or compressed payload) are still
+        recoverable. Every call returns segments, the full lightweight map of the
+        module's data segments (each {index, mode, memory_offset, size}, no
+        bytes) so the caller can see what exists and pick one, plus the raw bytes
+        of the selected segment as a hex window. Reads the bytes directly (no
+        wabt); a malformed module faults cleanly and a missing file is not_found.
+        """
+        _ = timeout
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        parsed = _parse_wasm_data(resolved.read_bytes(), module=resolved.name)
+        segs: list[JsonObject] = parsed["segments"]
+        total_segments = len(segs)
+        index = [
+            {
+                "index": s["index"],
+                "mode": s["mode"],
+                "memory_offset": s["memory_offset"],
+                "size": s["size"],
+            }
+            for s in segs[:_MAX_WASM_DATA_SEGMENTS]
+        ]
+        result: JsonObject = {
+            "module": parsed["module"],
+            "version": parsed["version"],
+            "segments": index,
+            "data_segments": total_segments,
+        }
+        if total_segments > _MAX_WASM_DATA_SEGMENTS:
+            # A module with more segments than the map cap has its index trimmed;
+            # disclose it so "these are all the segments" is never a wrong read.
+            result["segments_truncated"] = True
+            result["segments_total"] = total_segments
+            result["segments_limit"] = _MAX_WASM_DATA_SEGMENTS
+        if total_segments == 0:
+            # No Data section is a clean empty map, not an error (like r2.strings
+            # on a binary with no strings); there is no segment to window.
+            result["count"] = 0
+            return result
+        sel = int(segment)
+        if sel < 0 or sel >= total_segments:
+            raise JsReError(
+                "invalid_params",
+                f"segment {sel} out of range (module has {total_segments})",
+                segment=sel,
+                data_segments=total_segments,
+            )
+        chosen = segs[sel]
+        blob: bytes = chosen["blob"]
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_WASM_DATA_SEG_BYTES))
+        window = blob[start : start + cap]
+        result["segment"] = sel
+        result["mode"] = chosen["mode"]
+        result["memory_offset"] = chosen["memory_offset"]
+        result["size"] = chosen["size"]
+        result["encoding"] = "hex"
+        result["data"] = window.hex()
+        result["byte_offset"] = start
+        result["count"] = len(window)
+        result["has_more"] = start + len(window) < chosen["size"]
+        return result
 
     def wat(
         self, path: Path, *, timeout: float = 120.0, spill_dir: Path | None = None

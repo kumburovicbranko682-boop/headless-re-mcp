@@ -250,3 +250,25 @@ class JsReAnalysisMixin:
             return _failure(_as_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
+
+    def wasm_data(
+        self,
+        path: str,
+        segment: int = 0,
+        offset: int = 0,
+        limit: int = 65536,
+        timeout: float = 30.0,
+    ) -> Result[JsonObject]:
+        try:
+            data = WasmClient(getattr(self.settings, "wabt", None)).data(
+                Path(path),
+                segment=segment,
+                offset=offset,
+                limit=limit,
+                timeout=timeout,
+            )
+            return _success(data, backend="wabt")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
