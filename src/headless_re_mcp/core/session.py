@@ -753,6 +753,15 @@ _MH_DYLDLINK = 0x00000004
 # PT_GNU_STACK PF_X bit, so nx is simply this flag's absence.
 _MH_ALLOW_STACK_EXECUTION = 0x00020000
 _LC_DYLIB_CMDS = frozenset({0x0C, 0x80000018, 0x8000001F})  # LOAD_DYLIB, weak, reexport
+# The two dependency classes worth naming apart from the plain list: a weak
+# dylib is optional capability the image probes for at runtime (dyld leaves
+# its symbols null when the library is missing) -- the Mach-O pair to a PE's
+# delay-load imports -- and a reexported dylib is API forwarding (a facade
+# whose exports really live elsewhere), the pair to PE export forwarders.
+# llvm-objdump prints the same commands as LC_LOAD_WEAK_DYLIB and
+# LC_REEXPORT_DYLIB, so the gate can cross-check the split.
+_LC_LOAD_WEAK_DYLIB = 0x80000018
+_LC_REEXPORT_DYLIB = 0x8000001F
 _LC_SYMTAB = 0x02  # names the symbol/string tables -- where stack_chk imports live
 # FairPlay DRM (App Store) encryption: cryptid != 0 means __TEXT is still
 # encrypted on disk and static analysis reads ciphertext -- the first question
@@ -6897,6 +6906,13 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         facts["wx_segments"] = lc["wx_segments"]
         if lc["dylibs"] is not None:
             facts["dylibs"] = lc["dylibs"]
+            # The optional-dependency channel, split out of the plain list:
+            # weak dylibs are what the image probes for at runtime (the
+            # Mach-O pair to PE delay imports), reexported dylibs are API
+            # forwarding. Reported whenever the dylib walk ran: empty is a
+            # real "no optional deps, fronts for nothing" answer.
+            facts["weak_dylibs"] = lc["weak_dylibs"]
+            facts["reexported_dylibs"] = lc["reexported_dylibs"]
         # LC_RPATH entries, the ELF rpath/runpath analogue; absent stays absent.
         if lc["rpaths"]:
             facts["rpath"] = lc["rpaths"]
@@ -7281,7 +7297,9 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
     """Walk the load commands for the image's identity and dependency facts.
 
     Returns ``dylibs`` (the LC_LOAD_DYLIB / weak / reexport names, or None when
-    the command count is out of range), ``interpreter`` (LC_LOAD_DYLINKER),
+    the command count is out of range), with ``weak_dylibs`` and
+    ``reexported_dylibs`` naming those two subsets apart (optional runtime
+    capability vs API forwarding), ``interpreter`` (LC_LOAD_DYLINKER),
     ``install_name`` (LC_ID_DYLIB, a dylib's own name -- the DT_SONAME analogue),
     ``uuid`` (LC_UUID, the build id), ``entryoff`` (LC_MAIN's file offset of
     main, or None),     ``segments`` ((vmaddr, fileoff, filesize) per LC_SEGMENT
@@ -7302,6 +7320,11 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
     """
     result: dict[str, Any] = {
         "dylibs": None,
+        # The optional (weak) and forwarding (reexport) subsets of that list,
+        # named apart because they answer different questions: what the image
+        # probes for at runtime vs what it merely fronts for.
+        "weak_dylibs": [],
+        "reexported_dylibs": [],
         "interpreter": None,
         "install_name": None,
         "uuid": None,
@@ -7349,6 +7372,10 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
             name = _macho_lc_str(cmds, pos, cmdsize, order)
             if name:
                 names.append(name)
+                if cmd == _LC_LOAD_WEAK_DYLIB:
+                    result["weak_dylibs"].append(name)
+                elif cmd == _LC_REEXPORT_DYLIB:
+                    result["reexported_dylibs"].append(name)
         elif cmd == _LC_BUILD_VERSION and result["platform"] is None and cmdsize >= 24:
             # platform/minos/sdk as u32s after cmd/cmdsize, then ntools
             # build_tool_version entries -- the toolchain provenance, the pair

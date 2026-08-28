@@ -72,11 +72,13 @@ def _macho64_full(filetype: int, flags: int, load_cmds: bytes = b"", ncmds: int 
     )
 
 
-def _lc_load_dylib(name: str) -> bytes:
+def _lc_load_dylib(name: str, *, cmd_kind: int = 0x0C) -> bytes:
+    # dylib_command: LC_LOAD_DYLIB by default; cmd_kind selects the weak
+    # (0x80000018) or reexport (0x8000001F) variant of the same layout.
     raw = name.encode() + b"\x00"
     total = (24 + len(raw) + 3) & ~3  # dylib_command struct is 24 bytes, then the name
     cmd = bytearray(total)
-    cmd[0:4] = (0x0C).to_bytes(4, "little")  # LC_LOAD_DYLIB
+    cmd[0:4] = cmd_kind.to_bytes(4, "little")
     cmd[4:8] = total.to_bytes(4, "little")  # cmdsize
     cmd[8:12] = (24).to_bytes(4, "little")  # name offset
     cmd[24 : 24 + len(raw)] = raw
@@ -1388,6 +1390,53 @@ def test_macho_pie_executable_lists_its_dylibs(tmp_path: Path) -> None:
     assert facts["pie"] is True
     assert facts["linking"] == "dynamic"
     assert facts["dylibs"] == [dylib]
+
+
+class TestMachoDylibClasses:
+    """describe_native names the weak and reexported dylibs apart.
+
+    All three command kinds land in ``dylibs`` (the full dependency set), but
+    a weak dylib is optional capability the image probes for at runtime --
+    dyld leaves its symbols null when the library is missing, the Mach-O pair
+    to PE delay imports -- and a reexported dylib is API forwarding (a facade
+    whose exports live elsewhere). Both subset facts ride whenever the dylib
+    walk ran: empty is a real answer.
+    """
+
+    def test_weak_and_reexported_dylibs_split_out_of_the_plain_list(
+        self, tmp_path: Path
+    ) -> None:
+        plain = "/usr/lib/libSystem.B.dylib"
+        weak = "/usr/lib/swift/libswiftCore.dylib"
+        fronted = "/usr/lib/libcore_real.dylib"
+        cmds = (
+            _lc_load_dylib(plain)
+            + _lc_load_dylib(weak, cmd_kind=0x80000018)  # LC_LOAD_WEAK_DYLIB
+            + _lc_load_dylib(fronted, cmd_kind=0x8000001F)  # LC_REEXPORT_DYLIB
+        )
+        data = _macho64_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=3)
+        facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+        # The full set keeps command order; the subsets name their own kinds.
+        assert facts["dylibs"] == [plain, weak, fronted]
+        assert facts["weak_dylibs"] == [weak]
+        assert facts["reexported_dylibs"] == [fronted]
+
+    def test_plain_dependencies_read_empty_subsets(self, tmp_path: Path) -> None:
+        data = _macho64_full(
+            filetype=2, flags=0x4, load_cmds=_lc_load_dylib("/usr/lib/libc.dylib"), ncmds=1
+        )
+        facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+        assert facts["weak_dylibs"] == []
+        assert facts["reexported_dylibs"] == []
+
+    def test_no_load_commands_at_all_omits_the_subsets_too(self, tmp_path: Path) -> None:
+        # Without a dylib walk there is no dependency answer of any class --
+        # the subsets stay absent exactly when ``dylibs`` does.
+        data = _macho64_full(filetype=2, flags=0, load_cmds=b"", ncmds=0)
+        facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+        assert "dylibs" not in facts
+        assert "weak_dylibs" not in facts
+        assert "reexported_dylibs" not in facts
 
 
 def test_macho_dylib_is_dynamic_but_not_pie(tmp_path: Path) -> None:
