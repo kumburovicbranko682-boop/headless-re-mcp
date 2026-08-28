@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（切换会话后，检查器面板可能停留在上一个会话的迟到数据上）
+
+- 检查器的发现（`FindingsPanel`）、时间线 / 产物 / 审计（`Inspector.tsx` 三个面板）
+  在会话切换时不重挂载，只换 `sessionId` prop；`load` 拿到响应后无条件 `setState`。
+  两次加载竞速时——旧会话数据量大响应慢、新会话响应快——旧会话的迟到响应最后落地，
+  面板就把上一个会话的发现/时间线/产物/审计当成当前会话的显示出来。这四个面板没有
+  轮询，错误数据会一直挂着，直到手动点刷新。改法：每个面板用 `useRef` 跟踪最新的
+  `sessionId`，`load`（及 `FindingsPanel.generate`）在 `await` 之后比对发起时捕获的
+  会话与最新 prop，不一致即丢弃响应。监控面板（`MonitorPanel`）虽有 2 秒轮询自愈，
+  同样加了守卫，消除切换后短暂显示旧会话状态与错误的窗口。
+- 回归测试：新增 `FindingsPanel.test.tsx`，让会话 a 的 knowledge 响应悬置、切到会话 b
+  并渲染其发现，再放行 a 的迟到响应，断言面板仍显示 b 的条目与计数。旧代码下如实失败
+  （面板变成 `9 条发现 … a-key`）。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
