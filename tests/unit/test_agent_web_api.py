@@ -139,6 +139,42 @@ def test_agent_message_limits_are_client_errors_not_incidents(
         assert "run model" in invalid_model.json()["detail"]
 
 
+def test_non_finite_numeric_body_fields_are_client_errors_not_incidents(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """``1e999`` is standard JSON that parses to inf; int(inf) is OverflowError.
+
+    Two handlers coerce a body number with ``int(body.get(...))`` inside an
+    ``except (TypeError, ValueError)``. That catches ``"abc"`` (ValueError) and
+    ``None`` (TypeError) but not the float-infinity a bare ``1e999`` literal
+    parses to: ``int(inf)`` raises OverflowError, which escaped to the web
+    exception boundary as a 500 with a logged incident instead of the 400 every
+    other malformed field returns.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    app = create_app(AnalysisService(settings), token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret", "Content-Type": "application/json"}
+
+    with TestClient(app) as client:
+        mission = client.post(
+            "/api/agent/missions",
+            headers=headers,
+            content='{"objective": "hunt the serial", "max_runs": 1e999}',
+        )
+        assert mission.status_code == 400, mission.text
+
+        provider = client.put(
+            "/api/providers/default",
+            headers=headers,
+            content=(
+                '{"base_url": "https://example.invalid/v1", "model": "fake", '
+                '"context_compression_threshold_percent": 1e999}'
+            ),
+        )
+        assert provider.status_code == 400, provider.text
+
+
 def test_missions_are_queued_over_http_and_the_scheduler_runs(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """The unattended entry point, over the wire.
 

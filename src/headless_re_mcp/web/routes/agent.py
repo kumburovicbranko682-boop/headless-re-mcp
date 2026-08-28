@@ -434,7 +434,11 @@ def register_agent_routes(
                 model=model,
                 max_runs=int(body.get("max_runs", 8)),
             )
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
+            # OverflowError, not the ValueError/TypeError the other bad bodies
+            # raise: a bare ``1e999`` in the JSON parses to float inf, and
+            # int(inf) raises it. Left out, one standard-JSON number turned this
+            # client error into a 500 with a logged incident.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if thread_id is None:
             thread_id = store.create_thread(title=text[:80]).id
@@ -580,7 +584,10 @@ def register_agent_routes(
                 context_compression_threshold_percent=int(body.get("context_compression_threshold_percent", 75)),
             )
             public = configs.save(profile, make_current=body.get("make_current", True) is not False)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
+            # A bare ``1e999`` parses to float inf and int(inf) raises
+            # OverflowError, not the ValueError/TypeError a bad string or type
+            # would; without it this client error escaped as a 500 incident.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return JSONResponse({"ok": True, "profile": public})
 
