@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **270（153 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **271（154 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -390,6 +390,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `items_limit`、`items_truncated`(上限 4096),`min_length`(默认 4,1..64)控制最短保留长度;
   会正确跳过 active/passive/显式内存索引三类数据段的偏移常量表达式,数据段拆不开时置
   `malformed`,无数据段时 `has_data_section=false`。
+
+### 新增（Android 归档清单）
+
+- 新增 `apk.files`:列出整个 zip 的每一个条目并分桶,补上 `apk.native_libs` 只看 `lib/` 的缺口。
+  分页回 `files`(逐条 `name`/`category`/`size`)、`count`/`total`/`offset`/`has_more`、
+  `categories`(桶→计数)与 `total_uncompressed`。`category` 取 manifest/arsc/signature/dex/
+  native_lib/resource/asset/kotlin/other 之一——多 DEX(加固/加载器桩)或 `assets/` 里内嵌的
+  jar/apk 一眼可见。`size` 是未压缩字节数(取自中央目录,androguard 不暴露时为 null,绝不靠
+  逐条解压去读);病态归档条目数触顶时置 `scan_capped`。
 
 ### 新增（Android 安全画像）
 

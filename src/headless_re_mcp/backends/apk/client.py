@@ -34,6 +34,8 @@ _MAX_CLASSES_PAGE = 1000
 _MAX_METHODS_PAGE = 1000
 _MAX_STRINGS_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
+_MAX_FILES_PAGE = 2000
+_MAX_FILES_COLLECT = 50_000
 
 
 class ApkError(RuntimeError):
@@ -370,6 +372,60 @@ class ApkClient:
             "has_more": has_more,
         }
 
+    def files(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        """List every archive entry, bucketed, with best-effort sizes.
+
+        native_libs only sees lib/; this is the whole zip -- how many DEX files
+        (a multidex or a packed loader stub shows up here), embedded jars/apks
+        under assets/, the arsc, the signature block. Sizes come from the
+        central directory when androguard exposes it, and are null otherwise
+        rather than read by inflating each entry.
+        """
+        apk = self._apk(path)
+        sizes: dict[str, int] = {}
+        try:
+            info = apk.zip.infolist()
+            items_view = info.items() if hasattr(info, "items") else []
+            for entry_name, entry in items_view:
+                size = getattr(entry, "uncompressed_size", None)
+                if size is not None:
+                    sizes[str(entry_name)] = int(size)
+        except Exception:  # noqa: BLE001 - zip internals vary across versions
+            sizes = {}
+
+        names: list[str] = []
+        scan_more = False
+        for raw in apk.get_files() or []:
+            if len(names) >= _MAX_FILES_COLLECT:
+                scan_more = True
+                break
+            names.append(str(raw))
+        names.sort()
+
+        categories: dict[str, int] = {}
+        total_uncompressed = 0
+        entries: list[JsonObject] = []
+        for name in names:
+            category = _categorize_apk_entry(name)
+            categories[category] = categories.get(category, 0) + 1
+            size = sizes.get(name)
+            if size is not None:
+                total_uncompressed += size
+            entries.append({"name": name, "category": category, "size": size})
+
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_FILES_PAGE)
+        window = entries[start : start + cap]
+        return {
+            "files": window,
+            "count": len(window),
+            "total": len(entries),
+            "offset": start,
+            "has_more": start + len(window) < len(entries),
+            "categories": categories,
+            "total_uncompressed": total_uncompressed,
+            "scan_capped": scan_more,
+        }
+
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
         names: list[str] = []
@@ -494,6 +550,27 @@ class ApkClient:
             # the enumeration ended or merely stopped.
             "has_more": has_more,
         }
+
+
+def _categorize_apk_entry(name: str) -> str:
+    """Bucket an archive entry the way an APK reviewer reads a zip listing."""
+    if name == "AndroidManifest.xml":
+        return "manifest"
+    if name == "resources.arsc":
+        return "arsc"
+    if name.startswith("META-INF/"):
+        return "signature"
+    if name.endswith(".dex"):
+        return "dex"
+    if name.startswith("lib/"):
+        return "native_lib"
+    if name.startswith("res/"):
+        return "resource"
+    if name.startswith("assets/"):
+        return "asset"
+    if name.startswith("kotlin/"):
+        return "kotlin"
+    return "other"
 
 
 def _as_int(value: Any) -> int | None:

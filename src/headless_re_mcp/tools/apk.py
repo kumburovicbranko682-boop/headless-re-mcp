@@ -97,6 +97,27 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.files")
+    def apk_files(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """List every archive entry (the whole zip), bucketed, with sizes.
+
+        Where apk.native_libs sees only lib/, this walks the full archive.
+        Answers with files (each name, category and size), count, total, offset,
+        has_more, categories (a category->count map) and total_uncompressed.
+        category is one of manifest, arsc, signature, dex, native_lib, resource,
+        asset, kotlin or other -- so a multidex app or an embedded jar/apk under
+        assets/ is visible at a glance. size is the uncompressed byte size when
+        androguard exposes the central directory, else null (never read by
+        inflating the entry). scan_capped marks a pathological archive whose
+        entry count hit the collect cap. Read has_more so a page that filled the
+        limit is not read as every entry.
+        """
+        return _dump(analysis.apk_files(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,
