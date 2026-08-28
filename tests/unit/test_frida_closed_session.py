@@ -37,9 +37,13 @@ class _TrackingAdb:
     ensures = 0
 
     def ensure_frida_server(
-        self, serial: str, server_binary: str | None = None, port: int = 27042
+        self,
+        serial: str,
+        server_binary: str | None = None,
+        port: int = 27042,
+        bind_host: str = "127.0.0.1",
     ) -> dict[str, Any]:
-        del serial, server_binary
+        del serial, server_binary, bind_host
         _TrackingAdb.ensures += 1
         return {"ensured": True, "running": True, "pushed": False, "port": port}
 
@@ -124,9 +128,13 @@ def test_frida_server_ensure_does_not_report_success_if_the_session_closes_durin
 
     class _CloseThenEnsure:
         def ensure_frida_server(
-            self, serial: str, server_binary: str | None = None, port: int = 27042
+            self,
+            serial: str,
+            server_binary: str | None = None,
+            port: int = 27042,
+            bind_host: str = "127.0.0.1",
         ) -> dict[str, Any]:
-            del serial, server_binary
+            del serial, server_binary, bind_host
             service.close_session(session_id)
             return {"ensured": True, "running": True, "pushed": False, "port": port}
 
