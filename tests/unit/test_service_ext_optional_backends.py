@@ -448,8 +448,10 @@ class _FakeFridaProbe:
         del allowed_pid
         return {"pid": pid, "attached": True, "device": "local"}
 
-    def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> dict[str, Any]:
-        del pid, allowed_pid, limit
+    def modules(
+        self, pid: int, *, allowed_pid: int, offset: int = 0, limit: int = 64
+    ) -> dict[str, Any]:
+        del pid, allowed_pid, offset, limit
         return {"modules": [], "count": 0}
 
     def exports(

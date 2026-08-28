@@ -33,12 +33,14 @@ def _tool_docstring(name: str) -> str:
 
 
 class _Exports:
-    def modules(self, limit: int = 64) -> list[dict[str, Any]]:
-        del limit
-        return [
+    def modules(self, offset: int = 0, limit: int = 64) -> dict[str, Any]:
+        # Emulate the real probe: skip offset on the target, report the true
+        # total, so the client's offset/total/has_more contract is exercised.
+        allm = [
             {"name": f"m{index}", "base": "0x1", "size": 1, "path": ""}
             for index in range(25)
         ]
+        return {"modules": allm[offset : offset + limit], "total": len(allm)}
 
 
 class _Script:
@@ -64,8 +66,8 @@ class _Frida:
 def test_frida_modules_says_when_the_page_is_not_the_whole_list() -> None:
     """The catalog named count and total and stopped there.
 
-    Measured: 25 modules, limit 10 -> count 10, total 25, has_more True.
-    An overnight pass that treated the page as complete because has_more
+    Measured: 25 modules, limit 10 -> count 10, total 25, offset 0, has_more
+    True. An overnight pass that treated the page as complete because has_more
     was unnamed had no field to notice the rest.
     """
     client = FridaClient()
@@ -74,10 +76,39 @@ def test_frida_modules_says_when_the_page_is_not_the_whole_list() -> None:
     payload = client.modules(1, allowed_pid=1, limit=10)
     assert payload["count"] == 10
     assert payload["total"] == 25
+    assert payload["offset"] == 0
     assert len(payload["modules"]) == 10
     assert payload["has_more"] is True
     doc = _tool_docstring("frida.modules")
     assert "has_more" in doc
+    assert "offset" in doc
+
+
+def test_frida_modules_offset_pages_past_a_filled_limit() -> None:
+    """offset reaches the modules a filled first page hides.
+
+    frida.modules advertised total and has_more but took no offset, so a process
+    with more native modules than the limit reported has_more True yet gave no
+    way to read the rest -- the same broken contract frida.applications had. With
+    25 modules, offset 20 limit 10 must return the final five (offset 20, count
+    5, total 25, has_more False), and a negative offset (the agent/OpenAI
+    transports bypass the schema's offset >= 0 bound) must clamp to the head.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+
+    tail = client.modules(1, allowed_pid=1, offset=20, limit=10)
+    assert tail["offset"] == 20
+    assert tail["count"] == 5
+    assert tail["total"] == 25
+    assert tail["has_more"] is False
+    assert [m["name"] for m in tail["modules"]] == [f"m{i}" for i in range(20, 25)]
+
+    negative = client.modules(1, allowed_pid=1, offset=-5, limit=10)
+    assert negative["offset"] == 0
+    assert [m["name"] for m in negative["modules"]] == [f"m{i}" for i in range(0, 10)]
+    assert negative["has_more"] is True
 
 class _ExportApi:
     def exports(self, name: str, count: int) -> dict[str, Any]:
@@ -209,8 +240,9 @@ def test_frida_applications_offset_pages_past_a_filled_limit() -> None:
 
     frida.applications advertised total/has_more but took no offset, so a device
     with more apps than the limit could report has_more True yet give no way to
-    reach the rest -- the one Android/Web reader that broke the offset/limit/
-    total/has_more contract the apk.* readers keep. With 25 apps, offset 20
+    reach the rest -- one of the Android/Web readers (with frida.modules) that
+    broke the offset/limit/total/has_more contract the apk.* readers keep. With
+    25 apps, offset 20
     limit 10 must return the final five (offset 20, count 5, total 25, has_more
     False), and an offset past the end must be an empty, terminal page rather
     than a wrap into the tail. The client sorts by identifier so the pages are

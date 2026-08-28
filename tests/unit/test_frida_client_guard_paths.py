@@ -278,7 +278,7 @@ def test_attach_local_maps_a_timeout_flavored_failure_to_timeout() -> None:
 
 def test_modules_reads_the_dict_shaped_enumeration() -> None:
     api = _Api(
-        modules=lambda cap: {
+        modules=lambda offset, cap: {
             "modules": [{"name": "a", "base": "0x1", "size": 1, "path": "/a"}],
             "total": 30,
         }
@@ -289,7 +289,49 @@ def test_modules_reads_the_dict_shaped_enumeration() -> None:
 
     assert payload["count"] == 1
     assert payload["total"] == 30
+    assert payload["offset"] == 0
     assert payload["has_more"] is True
+
+
+def test_modules_offset_pages_past_a_filled_limit() -> None:
+    """offset must reach the modules a filled first page hides.
+
+    frida.modules advertised total and has_more but took no offset, so a process
+    with more native modules than the limit could report has_more True yet give
+    no way to read the rest -- the same broken contract frida.applications had.
+    The probe skips offset on the target and returns the true total, so the
+    client must forward offset, return it, and compute has_more against the far
+    edge. Here a 30-module process paged at offset 25 limit 5 is the terminal
+    page (offset 25, has_more False), and a negative offset (the agent/OpenAI
+    transports bypass the schema's offset >= 0 bound) must clamp to the head.
+    """
+    seen: dict[str, int] = {}
+
+    def _modules(offset: int, cap: int) -> dict[str, Any]:
+        seen["offset"] = offset
+        seen["cap"] = cap
+        # Emulate the target-side skip: window [offset, offset+cap) of 30 modules.
+        window = [
+            {"name": f"m{i}", "base": hex(i), "size": i, "path": f"/m{i}"}
+            for i in range(offset, min(offset + cap, 30))
+        ]
+        return {"modules": window, "total": 30}
+
+    client = _local_client(_LocalFrida(session=_Session(api=_Api(modules=_modules))))
+
+    tail = client.modules(1, allowed_pid=1, offset=25, limit=5)
+    assert seen == {"offset": 25, "cap": 5}
+    assert tail["offset"] == 25
+    assert tail["count"] == 5
+    assert tail["total"] == 30
+    assert tail["has_more"] is False
+    assert [m["name"] for m in tail["modules"]] == [f"m{i}" for i in range(25, 30)]
+
+    negative = client.modules(1, allowed_pid=1, offset=-5, limit=4)
+    assert negative["offset"] == 0
+    assert seen["offset"] == 0
+    assert [m["name"] for m in negative["modules"]] == [f"m{i}" for i in range(0, 4)]
+    assert negative["has_more"] is True
 
 
 def test_exports_rejects_a_blank_module_name() -> None:

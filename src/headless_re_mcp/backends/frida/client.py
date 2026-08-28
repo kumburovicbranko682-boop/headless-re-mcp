@@ -101,11 +101,17 @@ HOOK_TEMPLATE_NAMES: tuple[str, ...] = tuple(_HOOK_TEMPLATES)
 
 _ENUM_SCRIPT = """
 rpc.exports = {
-  modules: function (limit) {
+  modules: function (offset, limit) {
+    // Skip `offset` on the target so a page past the first is a real slice of
+    // the module list, not a re-fetch of the head: enumerateModules returns the
+    // whole list in a stable order (ascending base address) for a process that
+    // is not dlopen-ing, so offset paging over two short probe attaches is
+    // coherent. total is always the full count so has_more is exact.
     var all = Process.enumerateModules();
     var items = [];
+    var start = Math.max(0, offset);
     var cap = Math.max(0, limit);
-    for (var i = 0; i < all.length && items.length < cap; i++) {
+    for (var i = start; i < all.length && items.length < cap; i++) {
       var m = all[i];
       items.push({name: m.name, base: m.base.toString(), size: m.size, path: m.path});
     }
@@ -339,20 +345,32 @@ class FridaClient:
             with contextlib.suppress(Exception):
                 session.detach()
 
-    def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
+    def modules(
+        self, pid: int, *, allowed_pid: int, offset: int = 0, limit: int = 64
+    ) -> JsonObject:
         self._require(pid, allowed_pid)
         session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
+            # modules once reported total + has_more but took no offset, so a
+            # process with more native modules than the limit (a typical app has
+            # 100s: libc/libart/liblog plus its own .so) reported has_more True
+            # yet gave no way to reach the rest -- the same broken offset/limit/
+            # total/has_more contract frida.applications had. The target-side
+            # skip windows the list; clamp offset defensively because the agent/
+            # OpenAI transports bypass the schema's offset >= 0 bound.
+            start = max(0, int(offset))
             capped = max(1, min(int(limit), 256))
-            raw = script.exports_sync.modules(capped)
+            raw = script.exports_sync.modules(start, capped)
             if isinstance(raw, dict):
                 held = list(raw.get("modules") or [])
-                total = int(raw.get("total") or len(held))
+                total = int(raw.get("total") or (start + len(held)))
             else:
+                # Degraded older-script shape (no total): assume the window is
+                # the tail so has_more stays False rather than paging forever.
                 held = list(raw or [])
-                total = len(held)
+                total = start + len(held)
             items = [
                 {
                     "name": str(item.get("name", "")),
@@ -367,7 +385,8 @@ class FridaClient:
                 "modules": items,
                 "count": len(items),
                 "total": total,
-                "has_more": total > len(items),
+                "offset": start,
+                "has_more": start + len(items) < total,
             }
         finally:
             with contextlib.suppress(Exception):

@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（frida.modules 报 total/has_more 却没有 offset，翻不到第一页之后的模块）
+
+- 与之前修的 frida.applications 同一个缺陷：`frida.modules` 返回 `count`/`total`/`has_more`（工具文案还
+  写着"count for this page""has_more so a page ... is not read as the whole list"），却在客户端、service、
+  工具三层都不收 `offset`——于是一个原生模块数超过 limit 的进程（Android 应用进程动辄上百个：libc/
+  libart/liblog 加自带 .so）会 `has_more=True`，但除了把 limit 顶到上限 256 外，根本没有办法读到后面的
+  模块。现补齐 offset 分页：目标侧 `_ENUM_SCRIPT.modules(offset, limit)` 先跳过 offset 再收集（模块按
+  基址升序、进程不 dlopen 时枚举顺序稳定，两次短探针 attach 之间分页自洽），并始终回真实 `total`；
+  客户端 `FridaClient.modules` 增 `offset`（防御性 clamp，因 agent/OpenAI 传输绕过 schema 的
+  `offset >= 0`），回 `offset` 且 `has_more = offset+count < total`；service `frida_modules` 与工具
+  `frida.modules`（`Field(ge=0)`）透传 offset，文案改为"advance offset by the returned count"。
+  测试：改掉三处旧 mock 签名，新增客户端与字段层的 offset 分页用例（含末页 has_more False、负 offset
+  归零到头页），并把 frida.applications 用例里"唯一破坏该契约的 reader"的措辞更正为"之一（另有
+  frida.modules）"。`frida.exports` 是不带 total 的游标式 top-N（有 has_more、无 total/offset，与
+  frida.java.* 同契约），本就自洽，不动。
+
 ### 诊断（doctor 对 Android/Web 后端只说"缺"、不说"怎么装"，补齐可照做的修复提示）
 
 - `doctor` 是排障时最先跑的命令，PE 线每个可选后端在 MISSING 时都给出可照做的 `fix:`（装什么、
