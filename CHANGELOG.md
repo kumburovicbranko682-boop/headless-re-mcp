@@ -5,6 +5,8 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+.NET 元数据检查的 `assembly_name` 不再对真实程序集恒为 `None`。`clr_inspect` 的 Module/Assembly 名称遍历过去遇到第一个自己不提取的表就 `break`,而任何真实程序集在 Module(0x00)与 Assembly(0x20)之间都必有 TypeRef/TypeDef 等表,于是遍历在到达 Assembly 前就停了、`assembly_name` 永远拿不到。现改为用 ECMA-335 真实行宽跳过中间表(与 `metadata_enum` 共用 `table_row_size`),不可测的表则安全降级、保留已取到的名字。附带修正 `metadata_enum` 行宽表里三处会错位后续所有表的尺寸 bug:MethodSemantics(0x18)的 Method 是普通 MethodDef 索引而非 MethodDefOrRef 编码索引;AssemblyRef(0x23)误用了 Assembly 的公式(多一个 HashAlgId(4)、少一个尾部 HashValue blob),在 blob 索引为 2 字节时每行超算 2 字节、破坏引用了其它程序集的样本的资源枚举;File(0x26)的 HashValue 是 blob 索引而非 Implementation 编码索引。IL 反汇编遇到未建模的操作码时也如实置 `partial=True`,不再把可能错位的尾部当作完整反汇编呈现。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /

@@ -407,12 +407,23 @@ def _simple_index_size(row_counts: dict[int, int], table: int) -> int:
     return 4 if row_counts.get(table, 0) >= 65536 else 2
 
 
-def _table_row_size(meta: _MetaCtx, table: int) -> int:
-    """ECMA-335 II.22 row sizes for tables we may need to skip/parse."""
-    rc = meta.row_counts
-    s = meta.string_index_size
-    b = meta.blob_index_size
-    g = meta.guid_index_size
+def table_row_size(
+    row_counts: dict[int, int],
+    table: int,
+    *,
+    string_index_size: int,
+    blob_index_size: int,
+    guid_index_size: int,
+) -> int:
+    """ECMA-335 II.22 row sizes for tables we may need to skip/parse.
+
+    Also used by clr_inspect's Module/Assembly name walk, so both callers
+    skip intervening tables with the same sizing rules.
+    """
+    rc = row_counts
+    s = string_index_size
+    b = blob_index_size
+    g = guid_index_size
     type_def_or_ref = _coded_index_size(rc, (0x02, 0x01, 0x1B), 2)
     has_constant = _coded_index_size(rc, (0x04, 0x08, 0x17), 2)
     has_custom_attribute = _coded_index_size(
@@ -486,10 +497,11 @@ def _table_row_size(meta: _MetaCtx, table: int) -> int:
         0x15: _simple_index_size(rc, 0x02) + _simple_index_size(rc, 0x17),
         0x16: _simple_index_size(rc, 0x17),  # PropertyPtr
         0x17: 2 + s + b,  # Property
-        0x18: 2 + method_def_or_ref + has_semantics,  # MethodSemantics
-        0x19: (
-            _simple_index_size(rc, 0x02) + method_def_or_ref + method_def_or_ref
-        ),
+        # MethodSemantics.Method is a plain MethodDef index (II.22.28), not a
+        # MethodDefOrRef coded index: the two differ once MethodDef or MemberRef
+        # crosses 2^15 rows, and a wrong size here shifts every later table.
+        0x18: 2 + _simple_index_size(rc, 0x06) + has_semantics,
+        0x19: (_simple_index_size(rc, 0x02) + method_def_or_ref + method_def_or_ref),
         0x1A: s,  # ModuleRef
         0x1B: b,  # TypeSpec
         0x1C: 2 + member_forwarded + s + _simple_index_size(rc, 0x1A),
@@ -497,10 +509,17 @@ def _table_row_size(meta: _MetaCtx, table: int) -> int:
         0x20: 4 + 2 + 2 + 2 + 2 + 4 + b + s + s,  # Assembly
         0x21: 4,  # AssemblyProcessor
         0x22: 12,  # AssemblyOS
-        0x23: 4 + 2 + 2 + 2 + 2 + 4 + b + s + s,  # AssemblyRef
+        # AssemblyRef (II.22.5) is not Assembly: no leading HashAlgId(4), but a
+        # trailing HashValue blob. The old copy of Assembly's formula oversized
+        # every row by 2 whenever the blob index is 2 bytes (the common case),
+        # which shifted File/ExportedType/ManifestResource and broke resource
+        # enumeration for nearly any assembly that references another one.
+        0x23: 2 + 2 + 2 + 2 + 4 + b + s + s + b,
         0x24: 4 + _simple_index_size(rc, 0x23),  # AssemblyRefProcessor
         0x25: 12 + _simple_index_size(rc, 0x23),  # AssemblyRefOS
-        0x26: 4 + s + implementation,  # File
+        # File.HashValue is a blob index (II.22.19), not an Implementation
+        # coded index; they only happen to match while both are 2 bytes.
+        0x26: 4 + s + b,
         0x27: 0,  # ExportedType; fixed below
         0x28: 4 + 4 + s + implementation,  # ManifestResource
         0x29: _simple_index_size(rc, 0x02) + implementation,  # NestedClass
@@ -524,6 +543,16 @@ def _table_row_size(meta: _MetaCtx, table: int) -> int:
             details={"table": table},
         )
     return sizes[table]
+
+
+def _table_row_size(meta: _MetaCtx, table: int) -> int:
+    return table_row_size(
+        meta.row_counts,
+        table,
+        string_index_size=meta.string_index_size,
+        blob_index_size=meta.blob_index_size,
+        guid_index_size=meta.guid_index_size,
+    )
 
 
 def _table_start(meta: _MetaCtx, table: int) -> int:
@@ -698,8 +727,17 @@ def _disassemble_il(il: bytes, *, max_insns: int) -> tuple[list[JsonObject], boo
             continue
         info = _OPCODES.get(op)
         if info is None:
+            # This is a curated opcode subset, so an opcode we do not model may
+            # carry an operand we cannot measure -- switch, ldc.i8, calli, the
+            # .s short forms. When it does, the operand bytes get decoded as if
+            # they were the next instruction, so every position after here is
+            # unreliable. We cannot tell an operand-carrying unknown from a bare
+            # one, so, exactly like the 0xFE two-byte prefix above, we surface
+            # the byte opaquely and flag the listing partial rather than present
+            # a possibly desynced tail as a complete decode.
             rebuilt.append({"ip": start, "mnemonic": f"op_{op:02x}", "operand": None})
             i += 1
+            partial = True
             continue
         name, imm = info
         i += 1
