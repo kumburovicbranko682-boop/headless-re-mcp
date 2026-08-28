@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（单测密闭性：3 个"androguard 缺席"用例不再依赖环境里真的没装 androguard）
+
+- `test_available_is_false_when_androguard_is_absent`、
+  `test_require_reports_capability_unavailable_without_androguard`（parse_layer）与
+  `test_without_androguard_the_client_is_unavailable`（paths）此前直接假设"本环境没装 androguard"，
+  一旦装上 `android` extra（比如在跑过 Android 集成门禁的机器上）就三连失败——与此前修掉的 r2
+  `capability_unavailable` 用例是同一类非密闭问题。
+- 现在用 `monkeypatch.setitem(sys.modules, "androguard", None)` 模拟缺席：`None` 条目是 import 系统的
+  负缓存，使 `ApkClient.__init__` 的惰性 `import androguard` 抛 ImportError，客户端如实报告不可用。
+  三个用例在装/不装 androguard 的环境里都通过；已在装有 androguard 的环境全量验证
+  （6617 passed / 0 failed）。
+
 ### 修复（契约诚实性：proxy 的 response_size / HAR body size 是"在网线上"的长度，不是"解码后"）
 
 - `proxy.flows` 的 docstring 称 `response_size` 是"decoded response body length"，HAR 构造器也说 fill

@@ -68,6 +68,18 @@ def _install_androguard(
     monkeypatch.setitem(sys.modules, "androguard.misc", misc)
 
 
+def _absent_androguard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``import androguard`` fail regardless of what is installed.
+
+    A ``None`` entry in ``sys.modules`` is the import system's negative cache, so
+    the lazy ``import androguard`` in ``ApkClient.__init__`` raises ImportError
+    and the client reports itself unavailable -- the same state a bare install
+    has. Without this the absence tests assumed the environment simply had no
+    androguard and broke the moment the ``android`` extra was installed.
+    """
+    monkeypatch.setitem(sys.modules, "androguard", None)
+
+
 def _apk_file(tmp_path: Path, name: str = "app.apk") -> Path:
     path = tmp_path / name
     path.write_bytes(b"PK\x03\x04")
@@ -82,15 +94,18 @@ def test_available_is_true_when_androguard_imports(monkeypatch: pytest.MonkeyPat
     assert ApkClient().available is True
 
 
-def test_available_is_false_when_androguard_is_absent() -> None:
-    # androguard is not installed in this environment; no fake is set up here.
+def test_available_is_false_when_androguard_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    _absent_androguard(monkeypatch)
     assert ApkClient().available is False
 
 
 # --- _require ----------------------------------------------------------------
 
 
-def test_require_reports_capability_unavailable_without_androguard(tmp_path: Path) -> None:
+def test_require_reports_capability_unavailable_without_androguard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _absent_androguard(monkeypatch)
     client = ApkClient()  # available False
     with pytest.raises(ApkError) as caught:
         client.open(_apk_file(tmp_path))
