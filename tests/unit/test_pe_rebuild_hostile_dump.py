@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.unpack.pe_rebuild import MAX_SECTIONS, PeRebuildError, remap_dump_to_file
+from headless_re_mcp.unpack.pe_rebuild import (
+    MAX_SECTIONS,
+    PeRebuildError,
+    parse_runtime_headers,
+    remap_dump_to_file,
+)
 
 FIXTURE = Path(__file__).resolve().parents[2] / "artifacts" / "fixtures-x64" / "console_fixture.exe"
 
@@ -179,6 +184,47 @@ def _craft_dump(
         struct.pack_into("<I", data, off + 16, size)
         struct.pack_into("<I", data, off + 20, 0)
     return bytes(data)
+
+
+def _truncated_optional_header() -> bytes:
+    """A valid MZ/PE up to the optional magic, then the buffer ends.
+
+    SizeOfOptionalHeader is 2, so the optional-header truncation guard
+    (optional + declared_size <= len) passes, yet parse_runtime_headers still
+    reads fixed fields past it -- the entry point at optional+16, the data
+    directory count at optional+92 -- which run off the end of this buffer.
+    """
+    pe_offset = 0x40
+    file_header = pe_offset + 4
+    optional = file_header + 20
+    data = bytearray(optional + 2)
+    data[0:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, pe_offset)
+    data[pe_offset : pe_offset + 4] = b"PE\0\0"
+    struct.pack_into("<H", data, file_header, 0x8664)
+    struct.pack_into("<H", data, file_header + 2, 1)
+    struct.pack_into("<H", data, file_header + 16, 2)
+    struct.pack_into("<H", data, optional, 0x10B)
+    return bytes(data)
+
+
+def test_a_truncated_optional_header_is_a_pe_error_not_a_struct_error() -> None:
+    """struct.error is not a ValueError, so an out-of-range unpack_from used to
+    slip past the (ValueError, PeRebuildError) handlers both call sites use --
+    stub_calls and service_dynamic_inspect.pe_headers_runtime -- and land on the
+    outer ``except BaseException`` as an internal_error incident. A hostile
+    SizeOfOptionalHeader lets a fixed-offset read run off a short buffer, so it
+    must surface as the module's own PeRebuildError instead.
+    """
+    with pytest.raises(PeRebuildError) as caught:
+        parse_runtime_headers(_truncated_optional_header())
+    assert "past the end" in str(caught.value)
+
+
+def test_a_well_formed_crafted_image_still_parses() -> None:
+    """The read guard must not reject an image whose headers fit the buffer."""
+    headers = parse_runtime_headers(_craft_dump(sections=2, overlap=False))
+    assert len(headers["sections"]) == 2
 
 
 def test_a_section_count_the_loader_will_not_map_is_refused() -> None:

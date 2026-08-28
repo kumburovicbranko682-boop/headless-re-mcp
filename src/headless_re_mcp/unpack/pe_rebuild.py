@@ -55,16 +55,34 @@ class RebuildReport:
         }
 
 
+def _unpack(fmt: str, data: bytes | bytearray, offset: int) -> int:
+    try:
+        return int(struct.unpack_from(fmt, data, offset)[0])
+    except struct.error as exc:
+        # struct.error is NOT a ValueError, so an offset past the buffer would
+        # escape the (ValueError, PeRebuildError) handlers both callers use and
+        # turn a truncated or crafted image into an internal_error incident. The
+        # optional-header and section-table guards bound the *declared* sizes,
+        # but the fixed-offset field reads (entry point at optional+16, the data
+        # directories at optional+108, ...) are not all inside those declared
+        # sizes on a hostile image, so a small SizeOfOptionalHeader with a short
+        # buffer reaches here. Re-raise as the module's own ValueError subclass.
+        raise PeRebuildError(
+            f"PE header field at offset {offset:#x} reads past the end of "
+            f"the {len(data)}-byte image"
+        ) from exc
+
+
 def _u16(data: bytes | bytearray, offset: int) -> int:
-    return int(struct.unpack_from("<H", data, offset)[0])
+    return _unpack("<H", data, offset)
 
 
 def _u32(data: bytes | bytearray, offset: int) -> int:
-    return int(struct.unpack_from("<I", data, offset)[0])
+    return _unpack("<I", data, offset)
 
 
 def _u64(data: bytes | bytearray, offset: int) -> int:
-    return int(struct.unpack_from("<Q", data, offset)[0])
+    return _unpack("<Q", data, offset)
 
 
 # The PE specification bounds FileAlignment to a power of two between 512 and
