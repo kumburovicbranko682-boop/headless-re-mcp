@@ -365,6 +365,129 @@ def summarize_flows(
     }
 
 
+# proxy.search ceilings: a capture holds up to _MAX_FLOWS rows, so the result
+# list is capped, and each match snippet is bounded so a hit inside a big body
+# does not drag the whole body into the response.
+_MAX_SEARCH_RESULTS = 1000
+_SEARCH_SNIPPET_CHARS = 80
+_SEARCH_SNIPPET_MAX = 400
+
+
+def _headers_text(headers: dict[str, str]) -> str:
+    return "\n".join(f"{name}: {value}" for name, value in headers.items())
+
+
+def _flow_search_fields(raw: Any) -> dict[str, str]:
+    """The searchable text of a retained flow, keyed by where it came from.
+
+    Reuses the same bounded header read and lazy-decode body read as flow.get,
+    so a body that mitmproxy cannot decode simply contributes nothing rather
+    than raising.
+    """
+    req = getattr(raw, "request", None)
+    resp = getattr(raw, "response", None)
+    fields: dict[str, str] = {}
+    req_headers, _ = _bounded_headers(req)
+    if req_headers:
+        fields["request_headers"] = _headers_text(req_headers)
+    if resp is not None:
+        resp_headers, _ = _bounded_headers(resp)
+        if resp_headers:
+            fields["response_headers"] = _headers_text(resp_headers)
+    req_body = _raw_body(req)
+    if req_body:
+        fields["request_body"] = req_body.decode("utf-8", errors="replace")
+    resp_body = _raw_body(resp)
+    if resp_body:
+        fields["response_body"] = resp_body.decode("utf-8", errors="replace")
+    return fields
+
+
+def _search_snippet(text: str, index: int, needle_len: int) -> str:
+    """A bounded window around a match, with ellipses when it was clipped."""
+    start = max(0, index - _SEARCH_SNIPPET_CHARS)
+    end = min(len(text), index + needle_len + _SEARCH_SNIPPET_CHARS)
+    window = text[start:end]
+    if len(window) > _SEARCH_SNIPPET_MAX:
+        window = window[:_SEARCH_SNIPPET_MAX]
+        end = start + _SEARCH_SNIPPET_MAX
+    prefix = "\u2026" if start > 0 else ""
+    suffix = "\u2026" if end < len(text) else ""
+    return f"{prefix}{window}{suffix}"
+
+
+def search_flows(
+    rows: list[JsonObject],
+    raw_lookup: Any,
+    query: str,
+    *,
+    limit: int = 100,
+    case_sensitive: bool = False,
+) -> JsonObject:
+    """Scan a capture for a substring across url/host/headers/bodies.
+
+    Pure over the recorder's two views (the summary rows plus a flow_id ->
+    raw-flow lookup), so it needs no live proxy and stays testable. url and host
+    come from the summary row and are always searchable; headers and bodies come
+    from the retained raw flow, so a flow whose body was evicted (body_omitted)
+    can only match on url/host and is counted in body_unavailable. matched_in
+    names every field that hit; snippets carries a bounded window for the
+    header/body hits.
+    """
+    cap = max(1, min(int(limit), _MAX_SEARCH_RESULTS))
+    needle = query if case_sensitive else query.lower()
+
+    def _hay(text: str) -> str:
+        return text if case_sensitive else text.lower()
+
+    matches: list[JsonObject] = []
+    body_unavailable = 0
+    truncated = False
+    for row in rows:
+        matched_in: list[str] = []
+        snippets: dict[str, str] = {}
+        for field in ("url", "host"):
+            value = str(row.get(field) or "")
+            if value and needle in _hay(value):
+                matched_in.append(field)
+
+        flow_id = str(row.get("id") or "")
+        raw = raw_lookup(flow_id) if flow_id else None
+        if raw is _OMITTED_BODY:
+            body_unavailable += 1
+        elif raw is not None:
+            for field, text in _flow_search_fields(raw).items():
+                idx = _hay(text).find(needle)
+                if idx != -1:
+                    matched_in.append(field)
+                    snippets[field] = _search_snippet(text, idx, len(query))
+
+        if not matched_in:
+            continue
+        entry: JsonObject = {
+            key: row.get(key)
+            for key in ("id", "method", "url", "host", "status")
+            if key in row
+        }
+        entry["matched_in"] = sorted(set(matched_in))
+        if snippets:
+            entry["snippets"] = snippets
+        matches.append(entry)
+        if len(matches) >= cap:
+            truncated = True
+            break
+
+    return {
+        "query": query,
+        "matches": matches,
+        "count": len(matches),
+        "scanned": len(rows),
+        "truncated": truncated,
+        "body_unavailable": body_unavailable,
+        "case_sensitive": bool(case_sensitive),
+    }
+
+
 class _FlowRecorder:
     """A mitmproxy addon that snapshots finished flows into a ring buffer.
 
@@ -716,6 +839,24 @@ class ProxyBackend:
         if items:
             dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
         return summarize_flows(items, dropped=dropped, top=top)
+
+    def search(
+        self,
+        session_id: str,
+        query: str,
+        *,
+        limit: int = 100,
+        case_sensitive: bool = False,
+    ) -> JsonObject:
+        inst = self._get(session_id)
+        rows = inst.recorder.snapshot()
+        return search_flows(
+            rows,
+            inst.recorder.raw,
+            query,
+            limit=limit,
+            case_sensitive=case_sensitive,
+        )
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
         inst = self._get(session_id)

@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **273（156 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **274（157 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -434,6 +434,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `top_mime_types`(排序后各取前 `top` 条,默认 10,上限 50)及其背后的 `host_count` /
   `mime_type_count`。host 由每条 url 解析,`mime_type` 剥掉 `; charset=...` 只留裸媒体类型;
   聚合逻辑抽成纯函数 `summarize_requests`,不依赖运行中的浏览器,可独立单测。
+
+### 新增（抓包全文检索）
+
+- 新增 `proxy.search`:在整段抓包里搜子串——不止 `proxy.flows` 的摘要列,连每条留存流的
+  请求/响应头与请求/响应体都扫,用来跨会话追一个 token、主机名、JSON 键或报错串而不必先导 HAR。
+  回 `query`、`matches`、`count`、`scanned`(扫过的行数)、`case_sensitive`、`truncated`(结果触顶)
+  与 `body_unavailable`(体已被环形缓冲淘汰、只能搜 url/host 的流数)。每条命中带 `id`/`method`/
+  `url`/`host`/`status`、`matched_in`(命中的字段:url/host/request_headers/response_headers/
+  request_body/response_body)以及头/体命中的 `snippets`(命中处的有界窗口,截断时带省略号)。
+  默认大小写不敏感,`case_sensitive` 打开则区分;是字面子串,不是正则。
 
 ### 新增（抓包聚合）
 

@@ -105,6 +105,22 @@ class ProxyAnalysisMixin:
     def proxy_stats(self, session_id: str, top: int = 10) -> Result[JsonObject]:
         return self._proxy_wrap(session_id, "stats", session_id, top=top)
 
+    def proxy_search(
+        self,
+        session_id: str,
+        query: str,
+        limit: int = 100,
+        case_sensitive: bool = False,
+    ) -> Result[JsonObject]:
+        return self._proxy_wrap(
+            session_id,
+            "search",
+            session_id,
+            query,
+            limit=limit,
+            case_sensitive=case_sensitive,
+        )
+
     def proxy_flow_get(self, session_id: str, flow_id: str) -> Result[JsonObject]:
         try:
             data = self._proxy.flow_get(session_id, flow_id, self._proxy_artifact_dir(session_id))

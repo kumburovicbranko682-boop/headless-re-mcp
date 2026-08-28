@@ -96,6 +96,36 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_stats(session_id, top=top))
 
+    @tools.tool(name="proxy.search")
+    def proxy_search(
+        session_id: str,
+        query: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        case_sensitive: bool = False,
+    ) -> dict[str, Any]:
+        """Search the whole capture for a substring (url, host, headers, bodies).
+
+        Where proxy.flows only surfaces the summary columns, this scans each
+        retained flow's request/response headers and bodies too -- the way you
+        hunt a token, a hostname, a JSON key, or an error string across a
+        session without exporting a HAR.
+
+        Answers with query, matches, count, scanned (rows examined),
+        case_sensitive, truncated (the result cap was hit), and body_unavailable
+        (flows whose body was evicted from the retain ring, so only their
+        url/host could be searched). Each match carries id, method, url, host,
+        status, matched_in (every field that hit: url, host, request_headers,
+        response_headers, request_body, response_body) and, for the header/body
+        hits, snippets -- a bounded window around each match with an ellipsis
+        when it was clipped. The match is case-insensitive unless case_sensitive
+        is set. There is no regex; query is a literal substring.
+        """
+        return _dump(
+            analysis.proxy_search(
+                session_id, query, limit=limit, case_sensitive=case_sensitive
+            )
+        )
+
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
         """Fetch one flow's headers and bodies (large or binary bodies spill).
