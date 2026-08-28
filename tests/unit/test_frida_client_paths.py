@@ -10,6 +10,7 @@ reported ``backend_error`` where the real answer was ``not_found`` or
 
 from __future__ import annotations
 
+import sys
 import time
 from typing import Any
 
@@ -788,6 +789,94 @@ def test_hook_template_device_detaches_when_the_script_raises() -> None:
         client.hook_template_device("usb", 6, "noop", allowed_pids={6})
     assert caught.value.code == "backend_error"
     assert detaches and set(detaches) == {6}
+
+
+def test_init_degrades_when_the_frida_module_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Setting the module to None makes ``import frida`` raise, standing in for a
+    # host without the native package installed.
+    monkeypatch.setitem(sys.modules, "frida", None)
+    client = FridaClient()
+    assert client.available is False
+    assert client._frida is None
+
+
+def test_local_hook_template_passes_a_frida_error_through() -> None:
+    # A FridaError raised inside the probe keeps its own code rather than being
+    # re-wrapped as a generic backend failure.
+    class _F:
+        def attach(self, pid: int) -> Any:
+            del pid
+            raise FridaError("permission_denied", "attach refused by SELinux")
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _F()
+    with pytest.raises(FridaError) as caught:
+        client.hook_template(1, "noop", allowed_pid=1)
+    assert caught.value.code == "permission_denied"
+
+
+def test_java_enumerate_maps_a_timeout_named_script_failure_to_timeout() -> None:
+    detaches: list[int] = []
+
+    class _Api:
+        def classes(self, name_filter: str, count: int) -> list[str]:
+            raise _TimeoutExc("enumerateLoadedClasses timed out")
+
+    class _Device:
+        def attach(self, pid: int) -> _Session:
+            return _Session(_Api(), detaches, tag=pid)
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+    with pytest.raises(FridaError) as caught:
+        client.java_enumerate(None, 5, allowed_pids={5}, mode="classes")
+    assert caught.value.code == "timeout"
+
+
+def test_hook_template_device_maps_a_timeout_named_attach_to_timeout() -> None:
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = (  # type: ignore[method-assign]
+        lambda device_id: _device_that_attach_raises(_TimeoutExc("attach timed out"))
+    )
+    with pytest.raises(FridaError) as caught:
+        client.hook_template_device("usb", 1, "noop", allowed_pids={1})
+    assert caught.value.code == "timeout"
+
+
+def test_hook_template_device_maps_a_timeout_named_load_to_timeout() -> None:
+    detaches: list[int] = []
+
+    class _HangScript:
+        def load(self) -> None:
+            raise _TimeoutExc("script load timed out")
+
+    class _Sess:
+        def __init__(self, tag: int) -> None:
+            self._tag = tag
+
+        def create_script(self, source: str) -> _HangScript:
+            del source
+            return _HangScript()
+
+        def detach(self) -> None:
+            detaches.append(self._tag)
+
+    class _Device:
+        def attach(self, pid: int) -> _Sess:
+            return _Sess(pid)
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+    with pytest.raises(FridaError) as caught:
+        client.hook_template_device("usb", 6, "noop", allowed_pids={6})
+    assert caught.value.code == "timeout"
 
 
 def test_authorize_reports_unavailable_and_bad_pid() -> None:
