@@ -87,6 +87,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `OUTPUT_MISSING`;`probe_de4dot_version` 覆盖缺文件、含 de4dot 横幅、无横幅的干净退出、
   不可执行文件逐形态 OSError 兜底、所有 argv 形态都非 de4dot 时保持 fail-closed。行覆盖
   66% → 92%(余量为 Windows 专有的创建标志/后代枚举与捕获内部边界分支)。
+### 测试（NETReactorSlayer 适配器 fail-closed 合同）
+
+- `dotnet/net_reactor_slayer.py` 的服务级测试用 mock runner 驱动 `dotnet.deobfuscate`,
+  因此 `run_net_reactor_slayer` 本体(argv 白名单、工作副本隔离、运行前后摘要校验、
+  `*_Slayed` 产物发布)与 `probe_net_reactor_slayer` 均未覆盖。新增
+  `tests/unit/test_net_reactor_slayer_adapter.py`:校验类错误在执行前抛出,跨平台运行
+  (缺可执行文件、目录型输入、超过 `max_file_size`、输出已存在、运行前摘要变更);诚实性
+  检查用脚本化假 CLI(`#!/usr/bin/env python3`,收到 `<work_input> --no-pause True` 并在
+  工作副本旁写结果,POSIX 专属):干净运行发布 `*_Slayed` 产物、异名 `*_Slayed*` 单候选经
+  glob 兜底接受、无产物记 `OUTPUT_MISSING`、两个候选歧义同样记 `OUTPUT_MISSING`、stdout
+  洪泛记 `OUTPUT_LIMIT` 不发布产物、非零退出记 `PROCESS_FAILED` 且 retryable、在摘要接缝
+  模拟工具回改原始被 `INPUT_MUTATED` 拦截;`probe_net_reactor_slayer` 覆盖缺文件、含产品
+  横幅、usage+容忍退出码、无标记但有输出的兜底、不可执行文件的 OSError 兜底。行覆盖
+  60% → 97%(余量为两处实践中不可达的防御分支)。
 
 ### 新增（监控台工作台）
 
