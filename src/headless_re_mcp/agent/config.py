@@ -188,10 +188,40 @@ class ProviderConfigStore:
             data = self._read()
         profiles_value = data.get("profiles")
         profiles: dict[str, Any] = profiles_value if isinstance(profiles_value, dict) else {}
-        return {
-            "current": data.get("current"),
-            "profiles": [self._profile_from_raw(key, value).public(source="file") for key, value in profiles.items() if isinstance(value, dict)],
-        }
+        listed: list[dict[str, Any]] = []
+        for key, value in profiles.items():
+            if not isinstance(value, dict):
+                continue
+            try:
+                listed.append(self._profile_from_raw(key, value).public(source="file"))
+            except (TypeError, ValueError) as exc:
+                # One unreadable entry -- hand-edited, or saved before a
+                # validation rule existed (the http+key loopback rule
+                # invalidated older configs) -- must not take the whole
+                # settings page down with it. Raising here 500'd the list for
+                # every profile, and the PUT that could overwrite the bad one
+                # read it first and failed the same way: the only way out was
+                # editing the JSON by hand. The validation messages are fixed
+                # strings and never contain the key, so the error is safe to
+                # show.
+                listed.append(
+                    {
+                        "id": str(key),
+                        "base_url": "",
+                        "model": "",
+                        "known_models": [],
+                        "model_catalogs": [],
+                        "enable_thinking": False,
+                        "reasoning_effort": None,
+                        "context_compression_threshold_percent": 75,
+                        "configured": False,
+                        "api_key_masked": None,
+                        "source": "file",
+                        "invalid": True,
+                        "error": str(exc),
+                    }
+                )
+        return {"current": data.get("current"), "profiles": listed}
 
     def _profile_from_raw(self, profile_id: str, raw: dict[str, Any]) -> ProviderProfile:
         env_prefix = f"HEADLESS_RE_PROVIDER_{profile_id.upper().replace('-', '_')}_"

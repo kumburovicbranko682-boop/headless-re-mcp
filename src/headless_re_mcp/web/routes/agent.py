@@ -586,6 +586,12 @@ def register_agent_routes(
                 existing = configs.get(profile_id)
             except KeyError:
                 existing = None
+            except (TypeError, ValueError):
+                # A stored profile this build cannot parse (hand-edited, or
+                # saved before a validation rule existed). Treating the read
+                # failure as the caller's 400 made the corrupt entry
+                # unfixable through the API; a full valid body overwrites it.
+                existing = None
             incoming_key = body.get("api_key")
             api_key = str(incoming_key) if isinstance(incoming_key, str) and incoming_key.strip() else (existing.api_key if existing else None)
             profile = ProviderProfile(

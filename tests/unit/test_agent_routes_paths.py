@@ -528,6 +528,47 @@ def test_save_provider_rejects_invalid_profile(
     assert invalid.status_code == 400
 
 
+def test_save_overwrites_a_profile_this_build_cannot_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corrupt stored profile must be fixable through the API.
+
+    Reading the existing profile before a save raised ValueError for an entry
+    this build cannot parse (hand-edited, or saved before a validation rule
+    existed), and the route's blanket except turned that into a 400 blaming
+    the caller's valid body. The only way to repair the file was editing it by
+    hand -- on the deployment where the settings page was already down,
+    because listing raised the same error.
+    """
+    import json as json_module
+
+    _, client = _build(tmp_path, monkeypatch)
+    config_path = tmp_path / "providers.json"
+    config_path.write_text(
+        json_module.dumps(
+            {"profiles": {"broken": {"base_url": "not-a-url", "model": "m"}}, "current": "broken"}
+        )
+    )
+
+    listed = client.get("/api/providers", headers=HEADERS)
+    assert listed.status_code == 200
+    entry = next(item for item in listed.json()["profiles"] if item["id"] == "broken")
+    assert entry["invalid"] is True and entry["configured"] is False
+
+    saved = client.put(
+        "/api/providers/broken",
+        headers=HEADERS,
+        json={"base_url": "https://api.example.invalid/v1", "model": "m"},
+    )
+    assert saved.status_code == 200
+
+    relisted = client.get("/api/providers", headers=HEADERS)
+    assert relisted.status_code == 200
+    repaired = next(item for item in relisted.json()["profiles"] if item["id"] == "broken")
+    assert "invalid" not in repaired
+    assert repaired["base_url"] == "https://api.example.invalid/v1"
+
+
 def test_probe_models_success_missing_and_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -94,6 +94,43 @@ def test_save_resets_a_corrupt_profiles_map_and_can_skip_current(tmp_path: Path)
     assert data["current"] == "x", "make_current=False must not move the pointer"
 
 
+def test_list_public_reports_a_corrupt_profile_instead_of_raising(tmp_path: Path) -> None:
+    """One unreadable entry must not take the whole settings page down.
+
+    list_public validated every stored profile through ProviderProfile and
+    raised on the first bad one -- hand-edited, or saved before a validation
+    rule existed (the http+key loopback rule invalidated older configs). The
+    providers route has no handler for that, so /api/providers 500'd for every
+    profile, including the healthy ones the operator needed to keep working.
+    """
+    path = tmp_path / "cfg.json"
+    store = ProviderConfigStore(path)
+    store.save(ProviderProfile(id="good", base_url="https://api.example.invalid", model="gpt"))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["profiles"]["broken"] = {"base_url": "not-a-url", "model": "m"}
+    data["profiles"]["legacy-http"] = {
+        "base_url": "http://lan-host:8000/v1",
+        "model": "m",
+        "api_key": "sk-saved-before-the-loopback-rule",
+    }
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    listed = store.list_public()
+
+    by_id = {entry["id"]: entry for entry in listed["profiles"]}
+    assert set(by_id) == {"good", "broken", "legacy-http"}
+    assert "invalid" not in by_id["good"]
+    assert by_id["good"]["model"] == "gpt"
+    for bad in ("broken", "legacy-http"):
+        assert by_id[bad]["invalid"] is True
+        assert by_id[bad]["configured"] is False
+        assert by_id[bad]["api_key_masked"] is None
+        assert by_id[bad]["error"]
+        # The key itself must never ride along in the report.
+        assert "sk-saved-before-the-loopback-rule" not in json.dumps(by_id[bad])
+    assert listed["current"] == "good"
+
+
 def test_preview_zerofall_masks_provider_keys_without_a_top_level_key(
     tmp_path: Path,
 ) -> None:

@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（一条腐坏的 provider 档案拖垮整个设置页，且 API 层无法自愈）
+
+- `ProviderConfigStore.list_public` 对每条存档走 `ProviderProfile` 全量校验,
+  **第一条不可解析的记录直接抛 ValueError**——手改过的文件、或在校验规则加入
+  之前存的档案(如 "http + api_key 必须回环" 规则会使旧档失效)都会触发。
+  providers 路由没有对应处理,于是 `/api/providers` 对**所有**档案一起 500,
+  设置页整页打不开;更糟的是 PUT 覆盖修复也先 `configs.get(profile_id)` 读旧
+  档,同一个 ValueError 被路由的兜底 except 转成 400、归咎于调用方**合法的**
+  请求体——API 层面无路可走,只能手改 JSON。修复:`list_public` 逐条防御,坏
+  档以 `invalid: true` + 固定校验文案的占位条目呈现(校验消息为定值,不含密
+  钥;占位条目 `configured: false`、`api_key_masked: null`,全字段形状与正常
+  条目一致,前端可照常渲染);PUT 路由把 "读不出的既有档案" 视同不存在,允许
+  完整合法请求体直接覆盖。回归两条:store 级(好档+坏档+旧 http 档并存,列表
+  完整、坏档带标记、密钥不外泄)与路由级(列表 200、PUT 覆盖 200、复列自愈)
+  ——修前全红。邻域 6 个测试文件 53 项全过,ruff / mypy 干净。
+
 ### 修复（scheduler 超时收尾是第五处"先状态后事件"的终态写点）
 
 - 全库清扫 `transition(` 调用点发现 orchestrator 之外还有一处终态写者:
