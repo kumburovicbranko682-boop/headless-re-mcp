@@ -63,6 +63,11 @@ _MAX_FIELD_VALUE_CHARS = 2048
 _MAX_META_TAGS = 300
 _MAX_META_LINKS = 200
 _MAX_META_CONTENT_CHARS = 2048
+# web.links caps: a content-heavy page can carry thousands of anchors and
+# subresources; bound the anchor list, the subresource list and the origin roll-up.
+_MAX_ANCHORS = 500
+_MAX_SUB_RESOURCES = 500
+_MAX_LINK_ORIGINS = 200
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -365,6 +370,152 @@ def _fold_meta_link(raw: object) -> JsonObject:
         "rel": _bounded_metadata(item.get("rel"), _MAX_METADATA_BYTES)[0],
         "href": _bounded_metadata(item.get("href"), _MAX_URL_BYTES)[0],
         "type": _bounded_metadata(item.get("type"), _MAX_METADATA_BYTES)[0],
+    }
+
+
+_LINKS_SCRIPT = """(cfg) => {
+  const anchors = [];
+  const aEls = document.querySelectorAll('a[href]');
+  const anchorTotal = aEls.length;
+  for (let i = 0; i < anchorTotal && anchors.length < cfg.maxAnchors; i++) {
+    const a = aEls[i];
+    let href = '';
+    try { href = String(a.href || ''); } catch (e) { href = ''; }
+    anchors.push({
+      href: href,
+      text: String(a.textContent || '').trim().slice(0, cfg.maxText),
+      target: String(a.getAttribute('target') || ''),
+      rel: String(a.getAttribute('rel') || '')
+    });
+  }
+  const specs = [
+    ['script[src]', 'src', 'script'],
+    ['link[href]', 'href', 'link'],
+    ['img[src]', 'src', 'img'],
+    ['iframe[src]', 'src', 'iframe'],
+    ['source[src]', 'src', 'source'],
+    ['video[src]', 'src', 'video'],
+    ['audio[src]', 'src', 'audio'],
+    ['embed[src]', 'src', 'embed'],
+    ['object[data]', 'data', 'object']
+  ];
+  const resources = [];
+  let resourceTotal = 0;
+  for (let s = 0; s < specs.length; s++) {
+    const els = document.querySelectorAll(specs[s][0]);
+    resourceTotal += els.length;
+    for (let i = 0; i < els.length && resources.length < cfg.maxResources; i++) {
+      let url = '';
+      try { url = String(els[i][specs[s][1]] || ''); } catch (e) { url = ''; }
+      resources.push({ url: url, kind: specs[s][2] });
+    }
+  }
+  return {
+    anchors: anchors,
+    anchor_total: anchorTotal,
+    resources: resources,
+    resource_total: resourceTotal
+  };
+}"""
+
+
+def _link_host(url: str) -> str:
+    try:
+        return urlsplit(url).netloc
+    except ValueError:
+        return ""
+
+
+def _link_origin(url: str) -> str | None:
+    """scheme://host for an http(s)-style URL, else None (mailto/tel/js/data)."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    if not parts.scheme or not parts.netloc:
+        return None
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def _fold_links(raw: object, page_url: str) -> JsonObject:
+    """Fold a page-side anchor/subresource dump into a bounded outbound-ref map."""
+    data = raw if isinstance(raw, dict) else {}
+    page_host = _link_host(page_url)
+
+    origins: OrderedDict[str, JsonObject] = OrderedDict()
+
+    def _note_origin(url: str) -> None:
+        origin = _link_origin(url)
+        if origin is None:
+            return
+        entry = origins.get(origin)
+        if entry is None:
+            if len(origins) >= _MAX_LINK_ORIGINS:
+                return
+            host = _link_host(url)
+            entry = {
+                "origin": origin,
+                "host": host,
+                "count": 0,
+                "external": bool(host) and host != page_host,
+            }
+            origins[origin] = entry
+        entry["count"] = int(entry["count"]) + 1
+
+    anchors: list[JsonObject] = []
+    for item in data.get("anchors") or []:
+        if not isinstance(item, dict):
+            continue
+        href = _bounded_metadata(item.get("href"), _MAX_URL_BYTES)[0]
+        host = _link_host(href)
+        anchors.append(
+            {
+                "href": href,
+                "text": _bounded_metadata(item.get("text"), _MAX_METADATA_BYTES)[0],
+                "target": _bounded_metadata(item.get("target"), _MAX_METADATA_BYTES)[0],
+                "rel": _bounded_metadata(item.get("rel"), _MAX_METADATA_BYTES)[0],
+                "host": host,
+                "external": bool(host) and host != page_host,
+            }
+        )
+        _note_origin(href)
+
+    resources: list[JsonObject] = []
+    for item in data.get("resources") or []:
+        if not isinstance(item, dict):
+            continue
+        url = _bounded_metadata(item.get("url"), _MAX_URL_BYTES)[0]
+        host = _link_host(url)
+        resources.append(
+            {
+                "url": url,
+                "kind": _bounded_metadata(item.get("kind"), _MAX_METADATA_BYTES)[0],
+                "host": host,
+                "external": bool(host) and host != page_host,
+            }
+        )
+        _note_origin(url)
+
+    ranked = sorted(origins.values(), key=lambda row: int(row["count"]), reverse=True)
+    anchor_total = data.get("anchor_total")
+    anchor_total_int = int(anchor_total) if isinstance(anchor_total, int) else len(anchors)
+    resource_total = data.get("resource_total")
+    resource_total_int = (
+        int(resource_total) if isinstance(resource_total, int) else len(resources)
+    )
+    return {
+        "url": page_url,
+        "anchors": anchors,
+        "anchor_count": len(anchors),
+        "anchor_total": anchor_total_int,
+        "anchors_truncated": anchor_total_int > len(anchors),
+        "resources": resources,
+        "resource_count": len(resources),
+        "resource_total": resource_total_int,
+        "resources_truncated": resource_total_int > len(resources),
+        "origins": ranked,
+        "origin_count": len(ranked),
+        "external_origin_count": sum(1 for row in ranked if row["external"]),
     }
 
 
@@ -1303,6 +1454,26 @@ class WebBackend:
                 "refresh": _parse_meta_refresh(raw.get("refresh")),
                 "csp": csp_out,
             }
+
+        return self._runner(handle).call(work)
+
+    def links(self, session_id: str) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            cfg = {
+                "maxAnchors": _MAX_ANCHORS,
+                "maxResources": _MAX_SUB_RESOURCES,
+                "maxText": 200,
+            }
+            try:
+                raw = handle.page.evaluate(_LINKS_SCRIPT, cfg)
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"link read failed: {exc}") from exc
+            if not isinstance(raw, dict):
+                raise WebError("backend_error", "link read returned no data")
+            page_url = _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0]
+            return _fold_links(raw, page_url)
 
         return self._runner(handle).call(work)
 

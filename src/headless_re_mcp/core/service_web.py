@@ -220,6 +220,9 @@ class WebAnalysisMixin:
     def web_meta(self, session_id: str) -> Result[JsonObject]:
         return self._web_wrap(session_id, "meta", session_id)
 
+    def web_links(self, session_id: str) -> Result[JsonObject]:
+        return self._web_wrap(session_id, "links", session_id)
+
     def web_screenshot(self, session_id: str, full_page: bool = False) -> Result[JsonObject]:
         try:
             out = self._web_artifact_dir(session_id) / f"screenshot-{uuid4().hex}.png"

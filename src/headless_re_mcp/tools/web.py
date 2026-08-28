@@ -263,6 +263,26 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_meta(session_id))
 
+    @tools.tool(name="web.links")
+    def web_links(session_id: str) -> dict[str, Any]:
+        """Map the page's outbound references: anchors and subresource origins.
+
+        The exfil/third-party triage view -- where does this page point and whose
+        code and assets does it pull -- built from the live DOM with URLs already
+        resolved to absolute by the browser. Answers with url, then anchors,
+        anchor_count, anchor_total, anchors_truncated; resources, resource_count,
+        resource_total, resources_truncated; and origins, origin_count,
+        external_origin_count. Each anchor carries href, text, target, rel, host
+        and external (the host differs from the page's -- the outbound links worth
+        a look). Each resource carries url, kind (script/link/img/iframe/source/
+        video/audio/embed/object), host and external. origins rolls anchors and
+        subresources up into distinct scheme://host entries ranked by count, each
+        with origin, host, count and external, so a page loading script from a
+        stranger's origin stands out. Read the truncated flags: a content-heavy
+        page caps the anchor and resource lists.
+        """
+        return _dump(analysis.web_links(session_id))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.
