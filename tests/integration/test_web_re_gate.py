@@ -7,6 +7,7 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -25,6 +26,35 @@ _JS_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "obfuscated_sample.js"
 # appear literally in the source (asserted below), so finding it in webcrack's
 # output is proof the escapes were actually decoded, not merely reformatted.
 _DECODED_SECRET = "H3adl3ss"
+
+# A classic webpack bundle: a bootstrap that indexes into a module array via
+# __webpack_require__. Unpacking means recovering the two source modules and
+# rewriting the numeric __webpack_require__(1) back into a real cross-module
+# require -- which is what the assertions below check, distinct from the
+# single-file "deobfuscate" this same tool also emits.
+_WEBPACK_BUNDLE = """\
+(function (modules) {
+  var installedModules = {};
+  function __webpack_require__(moduleId) {
+    if (installedModules[moduleId]) return installedModules[moduleId].exports;
+    var module = (installedModules[moduleId] = { i: moduleId, l: false, exports: {} });
+    modules[moduleId].call(module.exports, module, module.exports, __webpack_require__);
+    module.l = true;
+    return module.exports;
+  }
+  return __webpack_require__((__webpack_require__.s = 0));
+})([
+  function (module, exports, __webpack_require__) {
+    var greet = __webpack_require__(1);
+    module.exports = greet("headless");
+  },
+  function (module, exports) {
+    module.exports = function greet(name) {
+      return "hello " + name;
+    };
+  },
+]);
+"""
 
 # A real module built at test time via wat2wasm (which ships with wabt, right
 # next to the wasm2wat under test). The empty magic-only module the old gate
@@ -147,6 +177,45 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
         # It also rewrites string-keyed member access to dot access while
         # unminifying, another change the input plainly needed.
         assert ".push(" in code, "bracket member access was not simplified"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_js_unpack_bundle_when_webcrack_present(tmp_path: Path) -> None:
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS unpack Gate not run (skip != pass)")
+    bundle = tmp_path / "bundle.js"
+    bundle.write_text(_WEBPACK_BUNDLE, encoding="utf-8")
+    service = AnalysisService()
+    try:
+        result = service.js_unpack_bundle(str(bundle))
+        assert result.ok, result.error
+        out_dir = Path(result.data["output_dir"])
+        # webcrack recognised the bundle and wrote its parts out, rather than
+        # emitting a single reformatted file the way js.deobfuscate does.
+        assert result.data["file_count"] >= 3, result.data
+        assert "bundle.json" in set(result.data["files"]), result.data["files"]
+
+        manifest = json.loads((out_dir / "bundle.json").read_text(encoding="utf-8"))
+        assert manifest["type"] == "webpack"
+        assert len(manifest["modules"]) == 2, manifest
+
+        # The per-module sources, excluding the whole-bundle dump webcrack also
+        # writes. Both split modules must be present.
+        module_sources = {
+            path.name: path.read_text(encoding="utf-8")
+            for path in out_dir.rglob("*.js")
+            if path.name != "deobfuscated.js"
+        }
+        assert len(module_sources) >= 2, module_sources
+        joined = "\n".join(module_sources.values())
+        # The numeric __webpack_require__(1) became a real cross-module require:
+        # the defining act of unpacking, not something deobfuscation would do.
+        assert "require(" in joined, joined
+        assert "__webpack_require__" not in joined, "bootstrap leaked into a module"
+        # The split-out module carries the recovered function body verbatim.
+        assert "function greet" in joined and "hello " in joined, joined
     finally:
         service.close_all()
 
