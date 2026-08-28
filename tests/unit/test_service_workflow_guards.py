@@ -254,10 +254,15 @@ def test_module_refresh_of_named_keys_strips_and_forwards_a_frozenset(
         ("", "mod", 0),  # blank intent id
         ("i", "", 0),  # blank module key
         ("i", "mod", -1),  # negative rva
+        (5, "mod", 0),  # non-string intent id crashed id.strip()
+        ("i", 5, 0),  # non-string module key crashed module_key.strip()
+        ("i", "mod", "10"),  # str rva crashed the < 0 compare
+        ("i", "mod", 1.5),  # a fractional RVA slipped through the sign check
+        ("i", "mod", True),  # bool rva was silently accepted as RVA 1
     ],
 )
 def test_breakpoint_put_refuses_a_malformed_intent_as_invalid_request(
-    intent_id: str, module_key: str, rva: int
+    intent_id: Any, module_key: Any, rva: Any
 ) -> None:
     host = _Double()
     result = host.workflow_breakpoint_put("sess", intent_id, module_key, rva)
@@ -265,6 +270,69 @@ def test_breakpoint_put_refuses_a_malformed_intent_as_invalid_request(
     assert result.error is not None
     # WorkflowInvariantError is a ValueError, so this stays a caller fault,
     # not a logged internal incident.
+    assert result.error.code == "invalid_request"
+    assert not host.calls
+
+
+@pytest.mark.parametrize(
+    ("key", "selector"),
+    [
+        (5, {"name": "a.dll"}),  # non-string key crashed key.strip()
+        (None, {"name": "a.dll"}),
+        ("mod", "a.dll"),  # a bare string is not the selector object
+        ("mod", 5),
+        ("mod", SimpleNamespace()),  # neither a mapping nor a ModuleSelector
+        ("mod", {"nope": 1}),  # mapping refused by the schema (extra=forbid)
+        ("mod", {"base": 0}),  # mapping refused by field validation (gt=0)
+    ],
+)
+def test_module_track_refuses_a_wrong_shaped_key_or_selector(
+    engine: dict[str, list[Any]], key: Any, selector: Any
+) -> None:
+    """A wrong key/selector shape is the caller's mistake, not an incident.
+
+    key/selector are schema-typed at the MCP boundary, but the agent transport
+    binds them raw: a non-string key crashed key.strip() with an AttributeError
+    filed as internal_error, and a wrong selector crashed attribute access
+    inside module resolution the same way. Both must read as invalid_request
+    before any backend touch.
+    """
+    host = _Double()
+    result = host.workflow_module_track("sess", key, selector)
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+    assert not host.calls
+
+
+def test_module_track_coerces_the_schema_dict_selector(
+    engine: dict[str, list[Any]],
+) -> None:
+    """The agent transport delivers selector as the JSON object the schema shows.
+
+    That plain dict used to crash attribute access inside module resolution,
+    which made workflow.module.track unusable from that transport. It must be
+    coerced into the ModuleSelector the resolution code expects.
+    """
+    from headless_re_mcp.core.models import ModuleSelector
+
+    host = _Double()
+    result = host.workflow_module_track("sess", "mod", cast(Any, {"name": "a.dll"}))
+    assert result.ok is True
+    resolved = [call for call in host.calls if call[0] == "resolve_module"]
+    assert len(resolved) == 1
+    assert isinstance(resolved[0][1], ModuleSelector)
+    assert resolved[0][1].name == "a.dll"
+
+
+@pytest.mark.parametrize("key", [5, None, ["mod"]])
+def test_module_untrack_refuses_a_non_string_key(
+    engine: dict[str, list[Any]], key: Any
+) -> None:
+    host = _Double()
+    result = host.workflow_module_untrack("sess", key)
+    assert result.ok is False
+    assert result.error is not None
     assert result.error.code == "invalid_request"
     assert not host.calls
 

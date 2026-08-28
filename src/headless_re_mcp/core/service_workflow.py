@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 
+from pydantic import ValidationError
+
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.core.events import DEFAULT_DEBUG_EVENT_BATCH
 from headless_re_mcp.core.models import BackendKind, ModuleSelector, Result
@@ -287,6 +289,32 @@ class WorkflowAnalysisMixin:
         validated = _workflow_timeout(timeout)
         if isinstance(validated, ValueError):
             return _failure(validated, session_id=session_id)
+        # key/selector are schema-typed at the MCP boundary (str, ModuleSelector),
+        # but the agent and OpenAI-bridge transports bind them straight from model
+        # output with no pydantic coercion. A non-string key crashed key.strip()
+        # with an AttributeError filed as a logged internal_error incident -- and
+        # a selector arriving as the very JSON object the schema describes (a
+        # plain dict) crashed attribute access inside module resolution, which
+        # made module.track unusable from those transports. Coerce the mapping
+        # the schema promises and refuse anything else as the caller fault it is.
+        if not isinstance(key, str):
+            return _failure(ValueError("module key must be a string"), session_id=session_id)
+        if isinstance(selector, Mapping):
+            try:
+                selector = ModuleSelector.model_validate(dict(selector))
+            except ValidationError as exc:
+                summary = "; ".join(
+                    str(item.get("msg", "invalid")) for item in exc.errors()[:3]
+                )
+                return _failure(
+                    ValueError(f"invalid module selector: {summary}"),
+                    session_id=session_id,
+                )
+        elif not isinstance(selector, ModuleSelector):
+            return _failure(
+                ValueError("module selector must be an object with base, path or name"),
+                session_id=session_id,
+            )
 
         def action(runtime: _BackendRuntime) -> JsonObject:
             workflow = self._require_mutable_workflow(session_id)
@@ -323,6 +351,10 @@ class WorkflowAnalysisMixin:
         validated = _workflow_timeout(timeout)
         if isinstance(validated, ValueError):
             return _failure(validated, session_id=session_id)
+        # Same transport gap as workflow_module_track: a non-string key crashed
+        # key.strip() with an AttributeError filed as internal_error.
+        if not isinstance(key, str):
+            return _failure(ValueError("module key must be a string"), session_id=session_id)
 
         def action(runtime: _BackendRuntime) -> JsonObject:
             workflow = self._require_mutable_workflow(session_id)

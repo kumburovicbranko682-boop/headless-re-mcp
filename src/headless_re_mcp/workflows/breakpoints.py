@@ -27,10 +27,23 @@ class BreakpointIntent:
     one_shot: bool = False
 
     def __post_init__(self) -> None:
+        # id/module_key/rva arrive straight from model output on the agent and
+        # OpenAI-bridge transports (workflow.breakpoint.put binds them with no
+        # pydantic coercion), and every caller already maps
+        # WorkflowInvariantError to invalid_request. A non-string id/module_key
+        # hit .strip() with an AttributeError filed as a logged internal_error
+        # incident, a non-int rva crashed the ``< 0`` compare the same way, and
+        # rva=True was silently accepted as a breakpoint at RVA 1.
+        if not isinstance(self.id, str):
+            raise WorkflowInvariantError("breakpoint intent id must be a string")
         if not self.id.strip():
             raise WorkflowInvariantError("breakpoint intent id must not be blank")
+        if not isinstance(self.module_key, str):
+            raise WorkflowInvariantError("breakpoint module key must be a string")
         if not self.module_key.strip():
             raise WorkflowInvariantError("breakpoint module key must not be blank")
+        if type(self.rva) is not int:
+            raise WorkflowInvariantError("breakpoint RVA must be an integer")
         if self.rva < 0:
             raise WorkflowInvariantError("breakpoint RVA must be non-negative")
 

@@ -7,6 +7,8 @@ stale/conflicting acknowledgements, and non-hit / malformed hit events.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 from headless_re_mcp.core.addressing import (
@@ -97,6 +99,36 @@ def test_intent_rejects_blank_module_key() -> None:
 def test_intent_rejects_negative_rva() -> None:
     with pytest.raises(WorkflowInvariantError, match="non-negative"):
         BreakpointIntent(id="oep", module_key="payload", rva=-1)
+
+
+@pytest.mark.parametrize("intent_id", [5, None, ["oep"]])
+def test_intent_rejects_a_non_string_id(intent_id: object) -> None:
+    """workflow.breakpoint.put binds id straight from model output.
+
+    A non-string hit id.strip() with an AttributeError that the service filed
+    as a logged internal_error incident, while the blank-id invariant right
+    next to it already read as invalid_request.
+    """
+    with pytest.raises(WorkflowInvariantError, match="id must be a string"):
+        BreakpointIntent(id=cast(Any, intent_id), module_key="payload", rva=0)
+
+
+@pytest.mark.parametrize("module_key", [5, None, ["payload"]])
+def test_intent_rejects_a_non_string_module_key(module_key: object) -> None:
+    with pytest.raises(WorkflowInvariantError, match="key must be a string"):
+        BreakpointIntent(id="oep", module_key=cast(Any, module_key), rva=0)
+
+
+@pytest.mark.parametrize("rva", ["10", 1.5, None, True])
+def test_intent_rejects_a_non_integer_rva(rva: object) -> None:
+    """The type is the invariant, not just the sign.
+
+    A str/None rva crashed the ``< 0`` compare with a TypeError filed as
+    internal_error, a float slipped through as a fractional RVA, and rva=True
+    was silently accepted as a breakpoint at RVA 1.
+    """
+    with pytest.raises(WorkflowInvariantError, match="RVA must be an integer"):
+        BreakpointIntent(id="oep", module_key="payload", rva=cast(Any, rva))
 
 
 def test_binding_rejects_blank_intent_id() -> None:
