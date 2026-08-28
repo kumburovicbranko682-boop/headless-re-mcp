@@ -179,3 +179,78 @@ class TestListDevicesClassification:
             backend.list_devices()
         assert caught.value.code == "backend_error"
         assert "failed to list devices" in caught.value.message
+
+
+class _OpDev:
+    """A resolved device whose shell/screenshot/app_current raise as scripted.
+
+    Distinct from _RaisingClient (which fails device *resolution*): here _device
+    succeeded and the op's own call fails, which is what each op's except arms
+    must classify.
+    """
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    def shell(self, args: Any, timeout: float | None = None) -> str:
+        del args, timeout
+        raise self._exc
+
+    def screenshot(self, timeout: float | None = None) -> Any:
+        del timeout
+        raise self._exc
+
+    def app_current(self, timeout: float | None = None) -> Any:
+        del timeout
+        raise self._exc
+
+
+def _backend_with_device(dev: Any) -> AdbBackend:
+    backend = AdbBackend()
+    backend._available = True
+    backend._device = lambda serial: dev  # type: ignore[method-assign]
+    return backend
+
+
+class TestOpClassification:
+    """Each op's ``except AdbError: raise`` passthrough is load-bearing.
+
+    _device_shell and _call already classify a stall into AdbError("timeout");
+    without the passthrough, each op's broad except would re-wrap that as its
+    own backend_error and the honest "the device did not answer in time" would
+    be lost. The generic arms are pinned alongside so a mid-op device failure
+    stays an actionable backend_error, never an internal_error incident.
+    """
+
+    def test_force_stop_shell_timeout_keeps_code_timeout(self) -> None:
+        backend = _backend_with_device(_OpDev(TimeoutError("shell timed out")))
+        with pytest.raises(AdbError) as caught:
+            backend.force_stop("emulator-5554", "com.example.app")
+        assert caught.value.code == "timeout"
+
+    def test_force_stop_shell_failure_stays_backend_error(self) -> None:
+        backend = _backend_with_device(_OpDev(RuntimeError("device stalled")))
+        with pytest.raises(AdbError) as caught:
+            backend.force_stop("emulator-5554", "com.example.app")
+        assert caught.value.code == "backend_error"
+
+    def test_screenshot_capture_failure_is_backend_error(self, tmp_path: Any) -> None:
+        backend = _backend_with_device(_OpDev(RuntimeError("screencap failed")))
+        out = tmp_path / "shot.png"
+        with pytest.raises(AdbError) as caught:
+            backend.screenshot("emulator-5554", out)
+        assert caught.value.code == "backend_error"
+        assert "screenshot failed" in caught.value.message
+        assert not out.exists()
+
+    def test_screenshot_timeout_keeps_code_timeout(self, tmp_path: Any) -> None:
+        backend = _backend_with_device(_OpDev(TimeoutError("screencap timed out")))
+        with pytest.raises(AdbError) as caught:
+            backend.screenshot("emulator-5554", tmp_path / "shot.png")
+        assert caught.value.code == "timeout"
+
+    def test_current_activity_timeout_keeps_code_timeout(self) -> None:
+        backend = _backend_with_device(_OpDev(TimeoutError("dumpsys timed out")))
+        with pytest.raises(AdbError) as caught:
+            backend.current_activity("emulator-5554")
+        assert caught.value.code == "timeout"

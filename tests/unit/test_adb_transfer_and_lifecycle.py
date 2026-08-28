@@ -218,6 +218,71 @@ def test_uninstall_reports_false_when_the_package_survives() -> None:
     assert "note" in payload
 
 
+class _OpRaisingDev:
+    """A resolved device whose install/uninstall op itself raises.
+
+    Distinct from a device that fails to resolve (that is _device's own
+    classification): here the device is in hand and the mutating call fails --
+    storage full, an incompatible or policy-blocked package, a mid-transfer
+    disconnect -- which is what the op's own except arm must classify.
+    """
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    def install(self, path: str, timeout: float | None = None, **kwargs: Any) -> None:
+        del path, timeout, kwargs
+        raise self._exc
+
+    def uninstall(self, package: str, timeout: float | None = None) -> None:
+        del package, timeout
+        raise self._exc
+
+
+def test_install_device_failure_is_a_backend_error_not_an_incident(tmp_path: Path) -> None:
+    """A failed install is a device outcome (backend_error), not an internal bug.
+
+    adb rejecting the install -- INSUFFICIENT_STORAGE, an incompatible ABI -- is a
+    normal, actionable device condition. It must classify as backend_error naming
+    the apk, not reach _failure as an internal_error incident telling an agent to
+    file a bug.
+    """
+    apk = tmp_path / "app.apk"
+    _apk_with_package(apk, "com.example.app")
+    dev = _OpRaisingDev(RuntimeError("INSTALL_FAILED_INSUFFICIENT_STORAGE"))
+    with pytest.raises(AdbError) as excinfo:
+        _backend_with(dev).install("emulator-5554", str(apk))
+    assert excinfo.value.code == "backend_error"
+    assert "install failed" in excinfo.value.message
+    assert excinfo.value.details.get("path") == str(apk)
+
+
+def test_install_timeout_stays_a_timeout(tmp_path: Path) -> None:
+    """An install that outruns the transfer deadline keeps its timeout code."""
+    apk = tmp_path / "app.apk"
+    _apk_with_package(apk, "com.example.app")
+    dev = _OpRaisingDev(TimeoutError("install timed out"))
+    with pytest.raises(AdbError) as excinfo:
+        _backend_with(dev).install("emulator-5554", str(apk))
+    assert excinfo.value.code == "timeout"
+
+
+def test_uninstall_device_failure_is_a_backend_error_not_an_incident() -> None:
+    dev = _OpRaisingDev(RuntimeError("DELETE_FAILED_DEVICE_POLICY_MANAGER"))
+    with pytest.raises(AdbError) as excinfo:
+        _backend_with(dev).uninstall("emulator-5554", "com.example.app")
+    assert excinfo.value.code == "backend_error"
+    assert "uninstall failed" in excinfo.value.message
+    assert excinfo.value.details.get("package") == "com.example.app"
+
+
+def test_uninstall_timeout_stays_a_timeout() -> None:
+    dev = _OpRaisingDev(TimeoutError("uninstall timed out"))
+    with pytest.raises(AdbError) as excinfo:
+        _backend_with(dev).uninstall("emulator-5554", "com.example.app")
+    assert excinfo.value.code == "timeout"
+
+
 def test_pull_refuses_a_directory(tmp_path: Path) -> None:
     """A remote directory is refused before any bytes move."""
     sync = _Sync(stat_result=_StatResult(mode=stat.S_IFDIR | 0o755, size=0))
