@@ -5,6 +5,30 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（含非 ASCII 字符的令牌把干净的 401 变成 500）
+
+- Web 控制台的四处鉴权检查都直接用 `secrets.compare_digest(str, str)` 比对
+  访问令牌，而该函数在任一 `str` 操作数含非 ASCII 字符时立即抛
+  `TypeError: comparing strings with non-ASCII characters is not supported`。
+  于是凡是 Bearer 头、`?token=` 查询值或 bootstrap cookie 里带了一个非 ASCII
+  字符的请求，本该回 401 unauthorized 的地方变成未捕获的 500 并写下一条事故日志。
+  cookie 路径最糟：它的校验挂在每个请求都会跑的 cookie 提升中间件上
+  （`promote_bootstrap_cookie`），所以一个畸形 cookie 会把整个控制台 500 掉，
+  而不只是一次调用。
+- 新增 `web/tokens.py::tokens_match`，先把两侧编成 UTF-8 字节再交给
+  `secrets.compare_digest`（`bytes` 操作数没有该限制），既保留常量时间比较，
+  又把一个本就不可能是本机签发的令牌当作"就是不匹配"直接返回 `False`。
+  `web/routes/agent.py`（`authorize`）、`web/routes/spa.py`（`require_token`）、
+  `web/routes/legacy.py`（`_require_token` 与 `_bootstrap_cookie_ok`）四处调用点
+  全部改走该助手；`legacy.py` 仍保留 `secrets` 导入，因为 bootstrap 会话 id
+  还在用 `secrets.token_urlsafe(32)` 生成。
+- 新增 `tests/unit/test_web_token_auth_non_ascii.py`：直接校验 `tokens_match`
+  对非 ASCII（含多字节、emoji）返回布尔而非抛错，并通过真实 app 驱动 legacy
+  Bearer/查询/cookie、agent Bearer、SPA 查询五个入口，断言非 ASCII 令牌回 401
+  而非 500。头/cookie 路径按线路实际以 latin-1 原始字节发送（HTTP 头就是这样传输的），
+  查询路径则用更完整的 Unicode。把 `tokens_match` 临时改回 `str` 比较可让六个用例
+  全红，非空洞。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

@@ -25,6 +25,7 @@ from headless_re_mcp.web.commands import WebCommandAdapter
 from headless_re_mcp.web.deps import build_deps_snapshot
 from headless_re_mcp.web.monitor import build_monitor_snapshot
 from headless_re_mcp.web.setup import configure_ida, run_setup_step, setup_status
+from headless_re_mcp.web.tokens import tokens_match
 
 try:
     from starlette.requests import Request
@@ -114,11 +115,7 @@ def register_legacy_routes(
         if not token_cookie:
             return False
         sessions: set[str] = app.state.bootstrap_sessions
-        return any(
-            len(token_cookie) == len(session_token)
-            and secrets.compare_digest(token_cookie, session_token)
-            for session_token in tuple(sessions)
-        )
+        return any(tokens_match(token_cookie, session_token) for session_token in tuple(sessions))
 
     def _require_token(
         authorization: str | None,
@@ -132,7 +129,7 @@ def register_legacy_routes(
             provided = token_query.strip()
         elif _bootstrap_cookie_ok(token_cookie):
             return
-        if not provided or not secrets.compare_digest(provided, token):
+        if not provided or not tokens_match(provided, token):
             raise HTTPException(status_code=401, detail="unauthorized")
 
     @app.middleware("http")
