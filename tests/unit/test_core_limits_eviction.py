@@ -42,7 +42,9 @@ def test_available_memory_multiplies_pages_by_page_size(
 ) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
     readings = {"SC_AVPHYS_PAGES": 1000, "SC_PAGE_SIZE": 4096}
-    monkeypatch.setattr(os, "sysconf", lambda name: readings[name])
+    # raising=False: os.sysconf does not exist on Windows, where these tests
+    # still run because sys.platform is forced to the POSIX arm above.
+    monkeypatch.setattr(os, "sysconf", lambda name: readings[name], raising=False)
     assert limits.available_memory_bytes() == 1000 * 4096
 
 
@@ -54,7 +56,7 @@ def test_available_memory_returns_none_when_sysconf_is_unavailable(
     def _raise(name: str) -> int:
         raise ValueError(name)
 
-    monkeypatch.setattr(os, "sysconf", _raise)
+    monkeypatch.setattr(os, "sysconf", _raise, raising=False)
     assert limits.available_memory_bytes() is None
 
 
@@ -62,7 +64,7 @@ def test_available_memory_returns_none_on_a_negative_reading(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(os, "sysconf", lambda name: -1)
+    monkeypatch.setattr(os, "sysconf", lambda name: -1, raising=False)
     assert limits.available_memory_bytes() is None
 
 

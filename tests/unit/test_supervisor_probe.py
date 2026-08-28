@@ -170,6 +170,14 @@ def test_probe_ready_refuses_a_url_that_is_not_http() -> None:
     assert detail == "unreachable: ValueError"
 
 
+def test_probe_ready_reports_unreachable_for_a_refused_port() -> None:
+    # Nothing listens on port 1; the probe must build the query path and report
+    # unreachable rather than hang or raise.
+    ok, detail = probe_ready("http://127.0.0.1:1/readyz?verbose=1", timeout=0.3)
+    assert ok is False
+    assert detail.startswith("unreachable:")
+
+
 def test_probe_ready_preserves_the_query_string() -> None:
     seen: list[str] = []
 
