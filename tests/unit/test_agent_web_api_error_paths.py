@@ -11,6 +11,7 @@ handler bodies.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -358,6 +359,26 @@ def test_cancel_a_missing_mission_is_a_404(app_client: Any) -> None:
     assert reply.json()["detail"] == "mission_not_found"
 
 
+def test_create_mission_translates_a_store_value_error_to_a_400(
+    app_client: Any, monkeypatch: Any
+) -> None:
+    """validate_mission passes, but create_mission itself can still reject the
+    request (e.g. a bound it enforces); that must read as a 400, not a 500."""
+    client, app = app_client
+    thread_id = _thread(client)
+
+    def _reject(*args: Any, **kwargs: Any) -> Any:
+        raise ValueError("max_runs out of range")
+
+    monkeypatch.setattr(app.state.agent_store, "create_mission", _reject)
+    reply = client.post(
+        "/api/agent/missions",
+        json={"objective": "recover the key", "thread_id": thread_id},
+    )
+    assert reply.status_code == 400
+    assert "max_runs out of range" in reply.json()["detail"]
+
+
 # --- watchdog & autonomy ----------------------------------------------------
 
 
@@ -456,6 +477,41 @@ def test_probe_models_truncates_a_huge_provider_error(app_client: Any, monkeypat
     assert detail.startswith("provider_probe_failed:RuntimeError:")
     # 500-char body cap plus the fixed prefix; never the whole 5000-char blast.
     assert len(detail) < 600
+
+
+def test_probe_models_on_a_corrupt_profile_entry_is_a_404(
+    app_client: Any, tmp_path: Path
+) -> None:
+    """A providers.json whose entry is not an object makes get() raise KeyError.
+
+    That is a real state for a hand-edited or half-written config, and the probe
+    route must answer profile_not_found rather than 500. The store re-reads the
+    file on every get(), so writing it now takes effect on the next call.
+    """
+    client, _ = app_client
+    (tmp_path / "providers.json").write_text(
+        json.dumps({"profiles": {"corrupt": "not-an-object"}}), encoding="utf-8"
+    )
+    reply = client.post("/api/providers/corrupt/models")
+    assert reply.status_code == 404
+    assert reply.json()["detail"] == "profile_not_found"
+
+
+def test_saving_over_a_corrupt_profile_entry_recreates_it(
+    app_client: Any, tmp_path: Path
+) -> None:
+    """save must treat a get() that raises KeyError as 'no prior profile' and
+    build a fresh one from the body rather than propagating the error."""
+    client, _ = app_client
+    (tmp_path / "providers.json").write_text(
+        json.dumps({"profiles": {"corrupt": 12345}}), encoding="utf-8"
+    )
+    reply = client.put(
+        "/api/providers/corrupt",
+        json={"base_url": "https://example.invalid/v1", "model": "m"},
+    )
+    assert reply.status_code == 200
+    assert reply.json()["profile"]["id"] == "corrupt"
 
 
 def test_zerofall_import_requires_a_config_object(app_client: Any) -> None:
