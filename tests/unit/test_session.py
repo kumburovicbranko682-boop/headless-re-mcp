@@ -336,6 +336,31 @@ def test_hydrate_restores_an_elf_session_as_elf(tmp_path: Path) -> None:
     assert session.metadata.get("missing_file") is not True
 
 
+def test_hydrate_restores_a_web_session_from_its_url(tmp_path: Path) -> None:
+    """A persisted web row (a URL, not a file) must come back a web session.
+
+    A web session's stored "binary" is its URL locator; rehydration re-derives
+    the kind from that string. classify_target keys an http(s) URL to WEB, and
+    the WEB branch must keep binary None and NOT flag missing_file -- a URL has
+    no file on disk, so treating its absence as a missing file (the way a real
+    binary path would) is wrong and would mark every restored web session
+    unclean-with-a-gone-file. A regression that dropped the URL/WEB branch would
+    reclassify the URL as a PE path and mislabel the session.
+    """
+    session = session_from_store_row(
+        {
+            "id": "wb" * 16,
+            "binary": "https://example.com/app",
+            "state": "running",
+        }
+    )
+    assert session is not None
+    assert session.target == TargetKind.WEB
+    assert session.binary is None
+    assert session.locator == "https://example.com/app"
+    assert session.metadata.get("missing_file") is not True
+
+
 def test_store_row_survives_a_missing_file(tmp_path: Path) -> None:
     missing = tmp_path / "gone.exe"
     session = session_from_store_row(
