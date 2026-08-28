@@ -2404,6 +2404,76 @@ class TestHighEntropySections:
         assert facts["high_entropy_sections"] == []
 
 
+class TestDebugInfo:
+    """describe_native reports the DWARF debug-info census for ELF and Mach-O.
+
+    DWARF (``.debug_*`` / ``__debug_*``) is what a ``-g`` build ships and a
+    release build does not: the native pair to the PE and .NET PDB facts and
+    the WASM name section. ``present`` is false with an empty list for a
+    stripped or never-debug build -- a real answer, always reported when a
+    section table exists.
+    """
+
+    def test_elf_reads_the_dwarf_sections_and_their_size(self, tmp_path: Path) -> None:
+        data = _elf64_with_sections(
+            [
+                (".text", 1, b"\x90" * 32),
+                (".debug_info", 1, b"\x00" * 128),
+                (".debug_line", 1, b"\x00" * 64),
+                (".debug_abbrev", 1, b"\x00" * 48),
+            ]
+        )
+        facts = describe_native(_write(tmp_path, "g.elf", data))["native"]
+        assert facts["debug_info"] == {
+            "present": True,
+            "sections": ["debug_abbrev", "debug_info", "debug_line"],
+            "size": 240,
+        }
+
+    def test_elf_compressed_zdebug_folds_to_the_same_name(self, tmp_path: Path) -> None:
+        # The old GNU compressed spelling ``.zdebug_info`` names the same
+        # logical section as ``.debug_info``; the census folds them together.
+        data = _elf64_with_sections([(".zdebug_info", 1, b"\x00" * 100)])
+        facts = describe_native(_write(tmp_path, "z.elf", data))["native"]
+        assert facts["debug_info"] == {
+            "present": True,
+            "sections": ["debug_info"],
+            "size": 100,
+        }
+
+    def test_elf_without_debug_sections_reports_absent(self, tmp_path: Path) -> None:
+        data = _elf64_with_sections([(".text", 1, b"\x90" * 64), (".rodata", 1, b"hi" * 20)])
+        facts = describe_native(_write(tmp_path, "rel.elf", data))["native"]
+        assert facts["debug_info"] == {"present": False, "sections": [], "size": 0}
+
+    def test_a_section_merely_named_debugger_is_not_dwarf(self, tmp_path: Path) -> None:
+        # DWARF sections are ``debug_<unit>``; a section called ``.debugger``
+        # (no underscore after ``debug``) is not one.
+        data = _elf64_with_sections([(".debugger", 1, b"\x00" * 300)])
+        facts = describe_native(_write(tmp_path, "trap.elf", data))["native"]
+        assert facts["debug_info"] == {"present": False, "sections": [], "size": 0}
+
+    def test_macho_reads_its_dwarf_segment_sections(self, tmp_path: Path) -> None:
+        data = _macho64_with_section_payloads(
+            [
+                ("__text", b"\x90" * 32),
+                ("__debug_info", b"\x00" * 96),
+                ("__debug_line", b"\x00" * 40),
+            ]
+        )
+        facts = describe_native(_write(tmp_path, "g.macho", data))["native"]
+        assert facts["debug_info"] == {
+            "present": True,
+            "sections": ["debug_info", "debug_line"],
+            "size": 136,
+        }
+
+    def test_macho_without_dwarf_reports_absent(self, tmp_path: Path) -> None:
+        data = _macho64_with_section_payloads([("__text", b"\x90" * 64)])
+        facts = describe_native(_write(tmp_path, "rel.macho", data))["native"]
+        assert facts["debug_info"] == {"present": False, "sections": [], "size": 0}
+
+
 class TestElfToolchain:
     """describe_native reports .comment compiler records -- the ELF toolchain.
 

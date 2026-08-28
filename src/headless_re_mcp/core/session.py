@@ -5267,6 +5267,10 @@ def _elf_layout_facts(
         section_payloads, section_count = _elf_section_payloads(stream, sections)
         facts["section_payloads"] = section_payloads
         facts["section_payload_count"] = section_count
+        # DWARF debug sections -- the native pair to the PE/.NET PDB facts:
+        # what a -g build ships and a release build does not. Empty is a real
+        # "no debug info" answer.
+        facts["debug_info"] = _debug_info_facts([(n, size) for n, _t, _o, size in sections])
         # Compiler records out of .comment -- the toolchain provenance, the
         # pair to the WASM producers section; absent stays absent.
         toolchain = _elf_toolchain(stream, sections)
@@ -6030,6 +6034,42 @@ def _entropy_flags(
     return flagged
 
 
+def _dwarf_normalize(name: str) -> str:
+    """A DWARF section name stripped to its cross-format base, or "".
+
+    ELF names DWARF sections ``.debug_info``; Mach-O's ``__DWARF`` segment
+    names them ``__debug_info``; the old GNU compressed variant is
+    ``.zdebug_info``. All three describe the same logical section, so the
+    container prefix (``.``/``__``) is stripped and a ``zdebug_`` spelling is
+    folded to ``debug_`` -- exactly what llvm-dwarfdump reports. A name that is
+    not a DWARF section yields "".
+    """
+    base = name.lstrip(".")
+    if base.startswith("__"):
+        base = base[2:]
+    if base.startswith("zdebug_"):
+        base = "debug_" + base[len("zdebug_") :]
+    return base if base.startswith("debug_") else ""
+
+
+def _debug_info_facts(sections: list[tuple[str, int]]) -> dict[str, Any]:
+    """The DWARF debug-info census as ``{present, sections, size}``.
+
+    ``sections`` are (name, byte size) pairs from the image's section table.
+    DWARF (``.debug_*`` / ``__debug_*``) is what a ``-g`` build ships and a
+    release build does not: source lines, types and variable names that hand
+    the analyst the program in near-source form -- the native pair to the PE
+    and .NET PDB facts and the WASM name section. Reports the normalized
+    section names present and their total byte size; ``present`` is false with
+    an empty list for a stripped or never-debug build, a real answer, so the
+    census is symmetric with the entropy one (always reported when a section
+    table exists). Bounded: the section list is already capped by the caller.
+    """
+    named = sorted({base for name, _ in sections if (base := _dwarf_normalize(name))})
+    total = sum(size for name, size in sections if _dwarf_normalize(name))
+    return {"present": bool(named), "sections": named, "size": total}
+
+
 def _elf_toolchain(
     stream: BinaryIO,
     sections: list[tuple[str, int, int, int]],
@@ -6287,6 +6327,11 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         # Near-random sections -- the packed-payload flags, the Mach-O pair
         # to the ELF and PE entropy censuses. Empty is a real answer.
         facts["high_entropy_sections"] = _entropy_flags(stream, lc["sections"])
+        # DWARF sections in the __DWARF segment -- the Mach-O pair to the ELF
+        # debug_info census and the PE/.NET PDB facts. Empty is a real answer.
+        facts["debug_info"] = _debug_info_facts(
+            [(name, size) for name, _off, size in lc["sections"]]
+        )
     return facts
 
 
