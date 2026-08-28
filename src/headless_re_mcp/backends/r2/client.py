@@ -38,6 +38,11 @@ _ALLOWED = frozenset(
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 _AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+# /xj takes a hex-pair pattern only: no seek suffix, no shell metacharacters,
+# 1..128 bytes. The client validates the pattern too; this bounds the shape.
+_MAX_SEARCH_BYTES = 128
+_SEARCH_XJ_COMMAND = re.compile(r"/xj (?:[0-9a-fA-F]{2}){1,128}\Z")
+_HEX_PATTERN = re.compile(r"(?:[0-9a-fA-F]{2})+\Z")
 
 
 class R2Error(RuntimeError):
@@ -55,6 +60,8 @@ def _require_allowed_command(command: str) -> None:
     if pdj is not None and int(pdj.group(1)) <= 512:
         return
     if _AXJ_COMMAND.fullmatch(command) is not None:
+        return
+    if _SEARCH_XJ_COMMAND.fullmatch(command) is not None:
         return
     raise R2Error("invalid_params", "r2 command not whitelisted", command=command)
 
@@ -111,6 +118,38 @@ class R2Client:
         data = self.run(binary, ["aa", cmd], timeout=timeout)
         data = dict(data)
         data["address"] = address
+        return enrich_r2_payload(data, binary=binary)
+
+    def search_bytes(
+        self,
+        binary: Path,
+        pattern: str,
+        *,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """Find every occurrence of a hex byte ``pattern`` in ``binary`` (/xj).
+
+        No analysis pass: a byte search is a raw scan of the mapped image. The
+        pattern is normalised (whitespace stripped, lower-cased) and must be an
+        even-length hex string of at most 128 bytes; it is never a string or
+        regex, so nothing the caller passes can widen the whitelisted command.
+        """
+        if not isinstance(pattern, str):
+            raise R2Error("invalid_params", "pattern must be a hex byte string")
+        normalized = "".join(pattern.split()).lower()
+        if (
+            not normalized
+            or _HEX_PATTERN.fullmatch(normalized) is None
+            or len(normalized) > _MAX_SEARCH_BYTES * 2
+        ):
+            raise R2Error(
+                "invalid_params",
+                f"pattern must be an even-length hex string up to {_MAX_SEARCH_BYTES} bytes",
+            )
+        cmd = f"/xj {normalized}"
+        data = self.run(binary, [cmd], timeout=timeout)
+        data = dict(data)
+        data["pattern"] = normalized
         return enrich_r2_payload(data, binary=binary)
 
     def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:

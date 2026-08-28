@@ -130,4 +130,27 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         xrefs, truncated or has_more field.
         """
         return _dump(analysis.r2_xrefs(session_id, address, timeout=timeout))
+
+    @tools.tool(name="r2.search_bytes")
+    def r2_search_bytes(
+        session_id: str,
+        pattern: Annotated[str, Field(min_length=2, max_length=400)],
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Find every occurrence of a byte pattern in the binary (/xj).
+
+        The locate primitive that pairs with r2.read_bytes and r2.xrefs_to:
+        search for magic bytes, an opcode sequence, an embedded signature or a
+        constant, then read or cross-reference each hit. pattern is a hex byte
+        string -- "7f454c46" or space-separated "7f 45 4c 46", even length, up
+        to 128 bytes; it is not text or a regex, so encode any string to its
+        bytes first. Runs /xj with no analysis pass. Answers with items, each
+        carrying offset (the match VA), data (the matched hex) and address
+        (va/rva/module), plus count and pattern (the normalized hex searched).
+        Empty items means the pattern is absent. Read items_truncated,
+        items_total and items_limit when the list filled the cap (4096). There
+        is no integer address, matches, truncated or has_more field.
+        """
+        return _dump(analysis.r2_search_bytes(session_id, pattern, timeout=timeout))
+
     return tools.bindings

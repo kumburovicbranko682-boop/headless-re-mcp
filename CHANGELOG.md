@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（`r2.search_bytes`：全二进制字节模式定位）
+
+- r2 线此前无法在整个二进制里查找某段字节：找魔数、定位某条 opcode 序列、
+  嵌入签名或常量都无从下手。新工具 `r2.search_bytes` 跑 `/xj <hex>`（原始
+  扫描，无需分析 pass），与 `r2.read_bytes`（读该处字节）和 `r2.xrefs_to`
+  （谁引用该地址）构成"定位→查看/追引用"的闭环。pattern 是十六进制字节串
+  （"7f454c46" 或空格分隔的 "7f 45 4c 46"），偶数长度、至多 128 字节；它不是
+  文本也不是正则（要搜字符串请先编码成字节），客户端先归一化（去空白、转小写）
+  并校验为纯 hex 对，命令白名单再以正则全匹配 `/xj (?:[0-9a-fA-F]{2}){1,128}`
+  兜底，调用方无法借此扩大命令面。返回 items（每条含 offset 匹配 VA、data
+  匹配到的 hex、address 的 va/rva/module）、count 与 pattern（归一化后的 hex）。
+  真实 ELF 上搜 ELF 魔数命中 offset 0、搜 "hello" 字节命中 0x2004，与裸
+  `r2 -c '/xj ...'` 逐一致；不存在的模式返回 parsed=True 的空 items，非 hex
+  输入返回 invalid_params。工具计数 265 -> 266（只读）。
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
