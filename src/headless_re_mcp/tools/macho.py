@@ -70,4 +70,31 @@ def build_macho_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.macho_symbols(path, offset=offset, limit=limit))
 
+    @tools.tool(name="macho.signature")
+    def macho_signature(path: str) -> dict[str, Any]:
+        """Decode a Mach-O's embedded code signature with the stdlib.
+
+        macho.summary only says whether LC_CODE_SIGNATURE is present; this
+        opens the SuperBlob it points at and reads what an analyst asks first
+        about a macOS/iOS sample -- who signed it and under what rules -- with
+        no external tool: the offline codesign -dvv --entitlements view.
+
+        Answers with the CodeDirectory identity: identifier (the signing
+        identifier), team_id (the Apple Developer team -- the practical "who"),
+        cdhash (the truncated digest of the CodeDirectory, what notarization
+        and threat-intel lookups key on), hash_type/hash_size, code_limit,
+        page_size and the decoded flags (ADHOC, HARD, KILL, RESTRICT,
+        ENFORCEMENT, LIBRARY_VALIDATION, RUNTIME, LINKER_SIGNED). The verdicts
+        are stated directly: adhoc, hardened_runtime, linker_signed, plus
+        cms_signature_size (0 means no certificate chain -- ad-hoc; nonzero
+        means a real CMS signature is attached) and has_requirements /
+        has_der_entitlements. The entitlements XML plist is parsed into a
+        bounded dict -- get-task-allow, sandbox and keychain exceptions live
+        here. An unsigned image is signed=false with a warning; a fat binary
+        is read on its first architecture slice (arch and available_arches
+        reported). A file that is not a Mach-O is invalid_params, one over
+        128 MiB too_large.
+        """
+        return _dump(analysis.macho_signature(path))
+
     return tools.bindings

@@ -14,7 +14,10 @@ cryptid, the iOS store-encryption flag) and stripped (LC_SYMTAB).
 list_macho_symbols walks the LC_SYMTAB nlist array -- the import/export surface
 -- naming each symbol, saying whether it is imported (an undefined external,
 resolved to the dylib its library ordinal names) or exported (a defined
-external), and skipping debug stabs.
+external), and skipping debug stabs. read_macho_signature decodes the
+LC_CODE_SIGNATURE SuperBlob -- the CodeDirectory's signing identifier, team ID,
+flags (adhoc / hardened runtime / linker-signed) and cdhash, plus the
+entitlements plist -- the ``codesign -dvv`` view, offline.
 
 Universal ("fat") binaries are handled too: each architecture slice is listed
 with its CPU/offset/size and summarized in place, bounded by a slice cap. Both
@@ -27,6 +30,8 @@ files, so an implausible fat-arch count is refused with a message saying so.
 
 from __future__ import annotations
 
+import hashlib
+import plistlib
 import struct
 from typing import Any
 
@@ -155,6 +160,55 @@ _NTYPE_NAME = {
 # for an undefined external symbol; anything else is a 1-based index into the
 # ordered dylib dependency list.
 _SPECIAL_ORDINALS = {0x0: "self", 0xFE: "dynamic_lookup", 0xFF: "executable"}
+
+# Code-signature blob magics and superblob slot indices (cs_blobs.h). All the
+# fields inside the signature region are big-endian regardless of the image.
+_CSMAGIC_EMBEDDED_SIGNATURE = 0xFADE0CC0
+_CSMAGIC_CODEDIRECTORY = 0xFADE0C02
+_CSMAGIC_REQUIREMENTS = 0xFADE0C01
+_CSMAGIC_EMBEDDED_ENTITLEMENTS = 0xFADE7171
+_CSMAGIC_EMBEDDED_DER_ENTITLEMENTS = 0xFADE7172
+_CSMAGIC_BLOBWRAPPER = 0xFADE0B01
+
+_CSSLOT_CODEDIRECTORY = 0
+_CSSLOT_REQUIREMENTS = 2
+_CSSLOT_ENTITLEMENTS = 5
+_CSSLOT_DER_ENTITLEMENTS = 7
+_CSSLOT_ALTERNATE_CD_FIRST = 0x1000
+_CSSLOT_ALTERNATE_CD_LAST = 0x1005
+_CSSLOT_CMS_SIGNATURE = 0x10000
+_CSSLOT_NAME = {
+    0: "code_directory",
+    1: "info",
+    2: "requirements",
+    3: "resource_dir",
+    4: "application",
+    5: "entitlements",
+    6: "rep_specific",
+    7: "der_entitlements",
+    0x10000: "cms_signature",
+}
+
+_CD_FLAG_BITS = (
+    (0x2, "ADHOC"),
+    (0x100, "HARD"),
+    (0x200, "KILL"),
+    (0x800, "RESTRICT"),
+    (0x1000, "ENFORCEMENT"),
+    (0x2000, "LIBRARY_VALIDATION"),
+    (0x10000, "RUNTIME"),
+    (0x20000, "LINKER_SIGNED"),
+)
+_CS_ADHOC = 0x2
+_CS_RUNTIME = 0x10000
+_CS_LINKER_SIGNED = 0x20000
+
+_CD_HASH_TYPE = {1: "sha1", 2: "sha256", 3: "sha256_truncated", 4: "sha384"}
+_CDHASH_LEN = 20  # Apple truncates every cdhash to 20 bytes.
+
+_MAX_SIG_SLOTS = 64
+_MAX_ENTITLEMENT_KEYS = 128
+_MAX_ENTITLEMENT_DEPTH = 4
 
 
 class MachoParseError(ValueError):
@@ -574,6 +628,293 @@ def _list_fat_symbols(data: bytes, offset: int, limit: int) -> JsonObject:
     )
     if len(available) > 1:
         note = f"fat binary; listed the {available[0]} slice of {available}"
+        if len(result["warnings"]) < _MAX_WARNINGS:
+            result["warnings"] = [note, *result["warnings"]]
+    return result
+
+
+def _plist_safe(value: object, depth: int = 0) -> object:
+    """A plist value reduced to JSON-safe types, bounded in breadth and depth."""
+    if depth >= _MAX_ENTITLEMENT_DEPTH:
+        return str(value)
+    if isinstance(value, bool | int | float | str):
+        return value
+    if isinstance(value, bytes):
+        return value.hex()
+    if isinstance(value, list):
+        return [_plist_safe(item, depth + 1) for item in value[:_MAX_ENTITLEMENT_KEYS]]
+    if isinstance(value, dict):
+        return {
+            str(key): _plist_safe(item, depth + 1)
+            for key, item in list(value.items())[:_MAX_ENTITLEMENT_KEYS]
+        }
+    return str(value)
+
+
+def _read_code_directory(cd: bytes, warn: Any) -> JsonObject | None:
+    """The CodeDirectory blob decoded: identity, team, hash setup, flags, cdhash."""
+    if len(cd) < 44:
+        warn("code directory blob is truncated")
+        return None
+    (
+        magic,
+        length,
+        version,
+        flags,
+        _hash_offset,
+        ident_offset,
+        n_special_slots,
+        n_code_slots,
+        code_limit,
+        hash_size,
+        hash_type,
+        platform,
+        page_size_log2,
+        _spare2,
+    ) = struct.unpack_from(">IIIIIIIIIBBBBI", cd, 0)
+    if magic != _CSMAGIC_CODEDIRECTORY:
+        warn(f"code directory has wrong magic 0x{magic:x}")
+        return None
+    length = min(length, len(cd))
+
+    identifier = ""
+    if 0 < ident_offset < length:
+        end = cd.find(b"\x00", ident_offset, length)
+        raw = cd[ident_offset : end if end != -1 else length]
+        identifier = raw.decode("utf-8", errors="replace")[:_MAX_NAME]
+
+    team: str | None = None
+    if version >= 0x20200 and len(cd) >= 52:
+        (team_offset,) = struct.unpack_from(">I", cd, 48)
+        if 0 < team_offset < length:
+            end = cd.find(b"\x00", team_offset, length)
+            raw = cd[team_offset : end if end != -1 else length]
+            team = raw.decode("utf-8", errors="replace")[:_MAX_NAME]
+
+    # The cdhash names the signature itself: the digest (by the CD's own hash
+    # type) of the CodeDirectory blob, truncated to 20 bytes. It is what
+    # notarization tickets, kernel logs and threat-intel lookups key on.
+    hasher = {1: "sha1", 2: "sha256", 3: "sha256", 4: "sha384"}.get(hash_type)
+    cdhash: str | None = None
+    if hasher is not None:
+        cdhash = hashlib.new(hasher, cd[:length]).digest()[:_CDHASH_LEN].hex()
+
+    return {
+        "version": f"0x{version:x}",
+        "identifier": identifier,
+        "team_id": team,
+        "flags": [name for bit, name in _CD_FLAG_BITS if flags & bit],
+        "flags_raw": f"0x{flags:x}",
+        "hash_type": _CD_HASH_TYPE.get(hash_type, f"0x{hash_type:x}"),
+        "hash_size": hash_size,
+        "code_limit": code_limit,
+        "page_size": (1 << page_size_log2) if page_size_log2 else 0,
+        "code_slots": n_code_slots,
+        "special_slots": n_special_slots,
+        "platform": platform,
+        "cdhash": cdhash,
+        "flags_value": flags,
+    }
+
+
+def _read_signature_blob(blob: bytes, warn: Any) -> JsonObject:
+    """The embedded-signature SuperBlob decoded into its analyst-facing parts."""
+    out: JsonObject = {
+        "code_directory": None,
+        "entitlements": None,
+        "has_der_entitlements": False,
+        "has_requirements": False,
+        "cms_signature_size": 0,
+        "slots": [],
+    }
+    if len(blob) < 12:
+        warn("code signature region is too small for a superblob")
+        return out
+    magic, _length, count = struct.unpack_from(">III", blob, 0)
+    if magic != _CSMAGIC_EMBEDDED_SIGNATURE:
+        warn(f"code signature region has wrong magic 0x{magic:x}")
+        return out
+    if count > _MAX_SIG_SLOTS:
+        warn(f"superblob slot count {count} exceeds cap; walk truncated")
+
+    slots: list[JsonObject] = []
+    for index in range(min(count, _MAX_SIG_SLOTS)):
+        base = 12 + index * 8
+        if base + 8 > len(blob):
+            warn(f"superblob index entry {index} is past the region end")
+            break
+        slot_type, slot_offset = struct.unpack_from(">II", blob, base)
+        if _CSSLOT_ALTERNATE_CD_FIRST <= slot_type <= _CSSLOT_ALTERNATE_CD_LAST:
+            slot_name = "alternate_code_directory"
+        else:
+            slot_name = _CSSLOT_NAME.get(slot_type, f"0x{slot_type:x}")
+        slots.append({"slot": slot_name, "slot_raw": slot_type, "offset": slot_offset})
+        if slot_offset + 8 > len(blob):
+            warn(f"superblob slot {slot_name} points past the region end")
+            continue
+        sub = blob[slot_offset:]
+        sub_magic, sub_length = struct.unpack_from(">II", sub, 0)
+        sub_length = min(sub_length, len(sub))
+
+        if slot_type == _CSSLOT_CODEDIRECTORY or (
+            out["code_directory"] is None
+            and _CSSLOT_ALTERNATE_CD_FIRST <= slot_type <= _CSSLOT_ALTERNATE_CD_LAST
+        ):
+            # The primary CodeDirectory wins; an alternate only fills a gap.
+            out["code_directory"] = _read_code_directory(sub[:sub_length], warn)
+        elif slot_type == _CSSLOT_REQUIREMENTS:
+            out["has_requirements"] = sub_magic == _CSMAGIC_REQUIREMENTS and sub_length > 8
+        elif slot_type == _CSSLOT_ENTITLEMENTS:
+            if sub_magic == _CSMAGIC_EMBEDDED_ENTITLEMENTS and sub_length > 8:
+                try:
+                    parsed = plistlib.loads(sub[8:sub_length])
+                except Exception:
+                    warn("entitlements plist did not parse")
+                else:
+                    if isinstance(parsed, dict):
+                        out["entitlements"] = _plist_safe(parsed)
+                    else:
+                        warn("entitlements plist is not a dictionary")
+        elif slot_type == _CSSLOT_DER_ENTITLEMENTS:
+            out["has_der_entitlements"] = (
+                sub_magic == _CSMAGIC_EMBEDDED_DER_ENTITLEMENTS and sub_length > 8
+            )
+        elif slot_type == _CSSLOT_CMS_SIGNATURE and sub_magic == _CSMAGIC_BLOBWRAPPER:
+            out["cms_signature_size"] = max(0, sub_length - 8)
+    out["slots"] = slots
+    return out
+
+
+def _read_thin_signature(data: bytes, extra: JsonObject) -> JsonObject:
+    """The code signature of one thin image, or an unsigned verdict."""
+    magic = data[:4]
+    if magic not in _THIN_MAGICS:
+        raise MachoParseError("not a Mach-O image: unknown magic")
+    bits, endian, endian_name = _THIN_MAGICS[magic]
+    hdr_size = 32 if bits == 64 else 28
+    if len(data) < hdr_size:
+        raise MachoParseError("truncated Mach-O header")
+    cputype, _cpusubtype, _filetype, ncmds, _sizeofcmds, _flags = struct.unpack_from(
+        endian + "iiIIII", data, 4
+    )
+
+    warnings: list[str] = []
+
+    def warn(message: str) -> None:
+        if len(warnings) < _MAX_WARNINGS:
+            warnings.append(message)
+
+    dataoff = 0
+    datasize = 0
+    offset = hdr_size
+    for index in range(min(ncmds, _MAX_CMDS)):
+        if offset + 8 > len(data):
+            warn(f"load command {index} is past end of file")
+            break
+        cmd, cmdsize = struct.unpack_from(endian + "II", data, offset)
+        if cmdsize < 8 or offset + cmdsize > len(data):
+            warn(f"load command {index} has a bad size")
+            break
+        if cmd == _LC_CODE_SIGNATURE and cmdsize >= 16:
+            dataoff, datasize = struct.unpack_from(endian + "II", data, offset + 8)
+        offset += cmdsize
+
+    result: JsonObject = {
+        "format": "Mach-O",
+        "bits": bits,
+        "endianness": endian_name,
+        "cpu": _CPU.get(cputype, f"0x{cputype:x}"),
+        "signed": False,
+        "code_directory": None,
+        "adhoc": None,
+        "hardened_runtime": None,
+        "linker_signed": None,
+        "entitlements": None,
+        "has_der_entitlements": False,
+        "has_requirements": False,
+        "cms_signature_size": 0,
+        "slots": [],
+        "warnings": warnings,
+    }
+    result.update(extra)
+
+    if not datasize:
+        warn("no LC_CODE_SIGNATURE: the image is unsigned")
+        return result
+    if dataoff < 0 or dataoff + datasize > len(data):
+        warn("code signature region is past end of file")
+        return result
+
+    result["signed"] = True
+    parsed = _read_signature_blob(data[dataoff : dataoff + datasize], warn)
+    result.update(parsed)
+    directory = result["code_directory"]
+    if directory is not None:
+        flags_value = int(directory.pop("flags_value"))
+        result["adhoc"] = bool(flags_value & _CS_ADHOC)
+        result["hardened_runtime"] = bool(flags_value & _CS_RUNTIME)
+        result["linker_signed"] = bool(flags_value & _CS_LINKER_SIGNED)
+    return result
+
+
+def read_macho_signature(data: bytes) -> JsonObject:
+    """The embedded code signature, decoded: who signed it and under what rules.
+
+    LC_CODE_SIGNATURE points at a SuperBlob whose CodeDirectory is the identity
+    an analyst wants first: the signing identifier, the Apple Developer team ID
+    (the practical "who"), the hash type and page setup, the flags word decoded
+    (ADHOC, HARD, KILL, RESTRICT, ENFORCEMENT, LIBRARY_VALIDATION, RUNTIME --
+    the hardened runtime -- and LINKER_SIGNED), and the cdhash -- the truncated
+    digest of the CodeDirectory itself, the value notarization and threat-intel
+    lookups key on. The entitlements plist is parsed (stdlib plistlib) into a
+    bounded JSON-safe dict -- get-task-allow, sandbox exceptions and friends --
+    and the verdicts are stated directly: adhoc, hardened_runtime,
+    linker_signed, plus cms_signature_size (0 for an ad-hoc signature, the CMS
+    blob size when a certificate chain is attached).
+
+    Raises MachoParseError only when the bytes are not a Mach-O at all. An
+    unsigned image answers signed=false with a warning; a fat binary is read on
+    its first architecture slice (arch and the full slice list reported); a
+    corrupt superblob or slot warns and degrades instead of raising.
+    """
+    if len(data) < 8:
+        raise MachoParseError("not a Mach-O file: too short for any header")
+    magic = data[:4]
+    if magic in _THIN_MAGICS:
+        return _read_thin_signature(data, {"fat": False})
+    if magic not in (_FAT_MAGIC_32, _FAT_MAGIC_64):
+        raise MachoParseError("not a Mach-O file: unknown magic")
+
+    is64 = magic == _FAT_MAGIC_64
+    (nfat_arch,) = struct.unpack_from(">I", data, 4)
+    if nfat_arch == 0:
+        raise MachoParseError("fat binary with no architecture slices")
+    if nfat_arch > _MAX_SLICES:
+        raise MachoParseError(
+            f"implausible fat arch count {nfat_arch}"
+            " (a Java class file shares the 0xcafebabe magic)"
+        )
+    arch_fmt = ">iiQQII" if is64 else ">iiIII"
+    arch_size = struct.calcsize(arch_fmt)
+    available: list[str] = []
+    slices: list[tuple[int, int]] = []
+    for index in range(nfat_arch):
+        base = 8 + index * arch_size
+        if base + arch_size > len(data):
+            break
+        fields = struct.unpack_from(arch_fmt, data, base)
+        cputype, sliceoff, size = fields[0], fields[2], fields[3]
+        available.append(_CPU.get(cputype, f"0x{cputype:x}"))
+        slices.append((sliceoff, size))
+    if not slices:
+        raise MachoParseError("fat binary with no readable architecture slices")
+    sliceoff, size = slices[0]
+    if sliceoff < 0 or size < 0 or sliceoff + size > len(data):
+        raise MachoParseError("first fat slice extends past end of file")
+    extra: JsonObject = {"fat": True, "arch": available[0], "available_arches": available}
+    result = _read_thin_signature(data[sliceoff : sliceoff + size], extra)
+    if len(available) > 1:
+        note = f"fat binary; read the {available[0]} slice of {available}"
         if len(result["warnings"]) < _MAX_WARNINGS:
             result["warnings"] = [note, *result["warnings"]]
     return result
