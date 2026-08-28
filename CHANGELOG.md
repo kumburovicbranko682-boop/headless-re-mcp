@@ -33,6 +33,31 @@ skip（skip ≠ pass）。同时补两处单测护栏：`_find_analyze_headless`
 舍、以及 `ExportJson.py` 必须经 `getScriptArgs()` 取参并在读取前先给 `ARGS` 赋值。已在装有
 Ghidra 11.4.3 + JDK 21 的 Linux x86_64 上实跑通过（analyze≈5s，每个导出≈6s）。
 
+### 测试（Android 静态线首次真机跑通 jadx 反编译与 apktool 解包）
+
+`jadx` 与 `apktool` 两个后端子进程 mock 单测覆盖已满，但在任何平台上都从没有 Gate 真跑过
+它们的 CLI——也就是说「把 APK 反编译成 Java」「把 APK 解包成 smali+资源」这条 Android *静态*
+线整体从未端到端执行过。原有的 Android Gate（`test_android_re_gate.py`）只造了个「看着像 APK」
+的 zip（伪 AXML 清单、占位 classes.dex），够 stdlib 归类用，却不是任何真实工具能解析的东西，
+jadx/apktool 在那里根本没被触及。
+
+新增 `tests/integration/test_android_static_re_gate.py`，在测试时现造真实目标并驱动产品
+client：
+
+- **jadx**：反编译一个真实目标并读回某个类的 Java 源码。jadx 对 APK/DEX/JAR/.class 走同一套
+  反编译核心，而 client 只读 `<out>/sources`，所以在缺重型 APK 工具链时，用 JDK 现编的 JAR
+  走的是完全相同的读回路径——jadx Gate 因此在只有 JDK 的裸机上也能真跑，不必 skip。
+- **apktool**：解包一个真实 APK（真正的二进制 AXML 清单 + 由 smali 汇编出的 classes.dex），
+  得到 smali+清单，校验反汇编能往返。
+
+真实 APK 由 apktool 自带的 smali 汇编器加 aapt2、从手写清单与 smali 类在测试时装配而成——
+不落地任何二进制夹具，与 PE 线「现造夹具而非入库」的做法一致（`.gitignore` 本就忽略
+`artifacts/*`）。类计算的算式 `a * b + 7` 会在恢复出的 Java 与 smali 里被断言到，所以「通过」
+意味着工具确实重建出了代码，而不只是产出了某个文件。skip ≠ pass：仅当所需工具确实缺失
+（jadx/apktool 未配置、无 JDK 编 JAR、无 aapt2 链 APK）时干净 skip，绝不静默略过。已在装有
+jadx 1.5.1、apktool 2.10.0（配 smali v3.0.8）、aapt2 2.19 与 JDK 21 的 Linux x86_64 上实跑
+通过（jadx≈3s，apktool 解包≈2s）。
+
 ### 测试（让 Android/Web/portable 三条线的真机 Gate 在 Linux 上真正跑起来）
 
 PE 之外的 Android、Web 与可移植后端三条线，单测契约覆盖已满，但真机 Gate 过去只在
