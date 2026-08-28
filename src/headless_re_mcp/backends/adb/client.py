@@ -19,6 +19,7 @@ from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
 
+from headless_re_mcp.backends.common.paths import is_regular_file
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 
 JsonObject = dict[str, Any]
@@ -614,7 +615,7 @@ class AdbBackend:
         # as not_found instead of being masked by a device error when the server
         # or device is also unreachable.
         path = Path(apk_path).expanduser()
-        if not path.is_file():
+        if not is_regular_file(path):
             raise AdbError("not_found", "apk not found", path=str(path))
         _require_apk_zip(path)
         dev = self._device(serial)
@@ -867,7 +868,7 @@ class AdbBackend:
         # fail fast rather than after a device round-trip -- or be masked by a
         # device error when the adb server is unreachable.
         path = Path(local_path).expanduser()
-        if not path.is_file():
+        if not is_regular_file(path):
             raise AdbError("not_found", "local file not found", path=str(path))
         try:
             size = int(path.stat().st_size)
@@ -933,7 +934,7 @@ class AdbBackend:
         local_path: Path | None = None
         if server_binary:
             local_path = Path(server_binary).expanduser()
-            if not local_path.is_file():
+            if not is_regular_file(local_path):
                 raise AdbError(
                     "not_found", "frida-server binary not found", path=str(local_path)
                 )

@@ -19,6 +19,7 @@ from headless_re_mcp.backends.common.bounded_run import (
     clamp_cli_timeout,
     run_bounded,
 )
+from headless_re_mcp.backends.common.paths import is_regular_file
 from headless_re_mcp.backends.common.zip_guard import ZipExpansionError, check_zip_expansion
 
 JsonObject = dict[str, Any]
@@ -248,7 +249,7 @@ class JadxClient:
         # tool that would consume it is known present.
         if not self.available or self.executable is None:
             raise JadxError("capability_unavailable", "jadx is not configured")
-        if not apk.is_file():
+        if not is_regular_file(apk):
             raise JadxError("not_found", "apk not found", path=str(apk))
         # jadx extracts resources and writes decompiled sources with only the
         # timeout as a bound; a central directory declaring petabytes fills

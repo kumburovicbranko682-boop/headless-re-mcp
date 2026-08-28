@@ -20,6 +20,7 @@ from headless_re_mcp.backends.common.bounded_run import (
     clamp_cli_timeout,
     run_bounded,
 )
+from headless_re_mcp.backends.common.paths import is_regular_file
 from headless_re_mcp.core.limits import JSRE_UNPACK_MAX_BYTES, capped_file_size
 
 JsonObject = dict[str, Any]
@@ -81,7 +82,7 @@ class JsReError(RuntimeError):
 def _require_existing_file(path: Path, *, missing: str) -> Path:
     """Resolve a regular file, or refuse one that would bind the child unbounded."""
     resolved = path.expanduser()
-    if not resolved.is_file():
+    if not is_regular_file(resolved):
         raise JsReError("not_found", missing, path=str(resolved))
     try:
         size = int(resolved.stat().st_size)

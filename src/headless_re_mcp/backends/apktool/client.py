@@ -23,6 +23,7 @@ from headless_re_mcp.backends.common.bounded_run import (
     clamp_cli_timeout,
     run_bounded,
 )
+from headless_re_mcp.backends.common.paths import is_regular_file
 from headless_re_mcp.backends.common.zip_guard import ZipExpansionError, check_zip_expansion
 
 JsonObject = dict[str, Any]
@@ -132,7 +133,7 @@ class ApktoolClient:
         # zip-shape are resource facts that wait until the tool is known present.
         if not self.available or self.apktool is None:
             raise ApktoolError("capability_unavailable", "apktool is not configured (needs a JRE)")
-        if not apk.is_file():
+        if not is_regular_file(apk):
             raise ApktoolError("not_found", "apk not found", path=str(apk))
         _require_apk_zip(apk)
         # apktool inflates the archive onto disk with only the timeout as a
@@ -231,11 +232,11 @@ class ApktoolClient:
             raise ApktoolError(
                 "capability_unavailable", "apksigner is not configured (needs a JRE)"
             )
-        if not apk.is_file():
+        if not is_regular_file(apk):
             raise ApktoolError("not_found", "apk not found", path=str(apk))
         _require_apk_zip(apk)
         store = keystore or _DEBUG_KEYSTORE
-        if not store.is_file():
+        if not is_regular_file(store):
             raise ApktoolError(
                 "not_found",
                 "keystore not found; pass keystore or create the Android debug keystore",

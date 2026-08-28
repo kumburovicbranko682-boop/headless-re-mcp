@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.paths import is_regular_file
 from headless_re_mcp.backends.common.zip_guard import ZipExpansionError, check_zip_expansion
 
 JsonObject = dict[str, Any]
@@ -171,7 +172,7 @@ class ApkClient:
         if not self._available:
             raise ApkError("capability_unavailable", "androguard is not installed")
         resolved = path.expanduser().resolve()
-        if not resolved.is_file():
+        if not is_regular_file(resolved):
             raise ApkError("not_found", "apk not found", path=str(resolved))
         return resolved
 
