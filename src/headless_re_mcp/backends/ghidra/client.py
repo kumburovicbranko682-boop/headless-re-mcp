@@ -31,6 +31,27 @@ class GhidraError(RuntimeError):
         self.details = details
 
 
+def _clamp_limit(value: object, maximum: int) -> int:
+    """Clamp a caller row limit, refusing a value that cannot be an int.
+
+    functions/symbols/xrefs pass a caller ``limit`` through ``_export`` to
+    ``int(limit)``. The ghidra.* schemas type it as an integer, but the agent
+    and OpenAI-bridge transports call the handler with no pydantic coercion, so
+    a float (inf from a JSON 1e400), nan, null, or a non-numeric string reached
+    ``int(...)`` and raised OverflowError/ValueError/TypeError. None is a
+    GhidraError, so the service's ``except BaseException`` filed an
+    internal_error incident for what is only a bad row cap. A bool is an int
+    subclass but never a valid limit.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise GhidraError("invalid_params", "limit must be an integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise GhidraError("invalid_params", "limit must be an integer") from exc
+    return max(1, min(parsed, maximum))
+
+
 class GhidraClient:
     def __init__(self, home: Path | None = None, java: Path | None = None) -> None:
         self.home = home
@@ -187,6 +208,10 @@ class GhidraClient:
         timeout: float,
         max_heap: str,
     ) -> JsonObject:
+        # Validate the row cap before touching Ghidra: a bad limit is a caller
+        # error, not worth an analyzeHeadless run (or a capability probe) to
+        # discover, and it keeps the guard testable without Ghidra installed.
+        capped = _clamp_limit(limit, 1024)
         if not self.available or self.analyze is None:
             raise GhidraError("capability_unavailable", "Ghidra analyzeHeadless is not configured")
         if not binary.is_file():
@@ -198,7 +223,6 @@ class GhidraClient:
         if out_path.exists():
             out_path.unlink()
         addr = "" if address is None else (hex(address) if isinstance(address, int) else str(address))
-        capped = max(1, min(int(limit), 1024))
         extra = [
             "-scriptPath",
             str(_SCRIPT_DIR),
