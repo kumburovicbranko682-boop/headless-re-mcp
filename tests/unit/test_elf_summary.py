@@ -20,7 +20,12 @@ from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.backends.common.elf import ElfParseError, list_elf_symbols, summarize_elf
+from headless_re_mcp.backends.common.elf import (
+    ElfParseError,
+    list_elf_segments,
+    list_elf_symbols,
+    summarize_elf,
+)
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 
@@ -302,6 +307,169 @@ def test_list_symbols_rejects_non_elf() -> None:
         list_elf_symbols(b"MZ\x00\x00" + b"\x00" * 60)
 
 
+# --- program headers (segments) -----------------------------------------------
+
+_PT = {
+    "NULL": 0,
+    "LOAD": 1,
+    "DYNAMIC": 2,
+    "INTERP": 3,
+    "NOTE": 4,
+    "PHDR": 6,
+    "TLS": 7,
+    "GNU_EH_FRAME": 0x6474E550,
+    "GNU_STACK": 0x6474E551,
+    "GNU_RELRO": 0x6474E552,
+}
+_PF = {"r": 4, "w": 2, "x": 1}
+
+
+def _pflags(spec: str) -> int:
+    return sum(_PF[c] for c in spec if c in _PF)
+
+
+def _build_elf_segments(
+    *,
+    entries: list[tuple[str, str]],
+    interp: str | None = "/lib64/ld-linux-x86-64.so.2",
+    bits: int = 64,
+    endian: str = "<",
+) -> bytes:
+    """A minimal ELF carrying only a program header table (no sections).
+
+    ``entries`` is a list of (type, flags) like ("LOAD", "r-x"). A PT_INTERP
+    entry gets its offset/filesz wired to the interp string appended after the
+    table; every other segment points at the table's own bytes (in bounds).
+    """
+    ehdr_size = 64 if bits == 64 else 52
+    phentsize = 56 if bits == 64 else 32
+    phoff = ehdr_size
+    phnum = len(entries)
+    interp_off = phoff + phnum * phentsize
+    interp_bytes = (interp.encode() + b"\x00") if interp else b""
+
+    phdrs = b""
+    for tname, fstr in entries:
+        ptype = _PT[tname]
+        pflags = _pflags(fstr)
+        if tname == "INTERP" and interp:
+            poff, pfilesz = interp_off, len(interp_bytes)
+        else:
+            poff, pfilesz = phoff, phentsize
+        if bits == 64:
+            phdrs += struct.pack(
+                endian + "IIQQQQQQ", ptype, pflags, poff, poff, poff, pfilesz, pfilesz, 0x1000
+            )
+        else:
+            phdrs += struct.pack(
+                endian + "IIIIIIII", ptype, poff, poff, poff, pfilesz, pfilesz, pflags, 0x1000
+            )
+
+    if bits == 64:
+        ehdr = struct.pack(
+            endian + "HHIQQQIHHHHHH",
+            2, 62, 1, 0x1000, phoff, 0, 0, ehdr_size, phentsize, phnum, 0, 0, 0,
+        )
+    else:
+        ehdr = struct.pack(
+            endian + "HHIIIIIHHHHHH",
+            2, 40, 1, 0x1000, phoff, 0, 0, ehdr_size, phentsize, phnum, 0, 0, 0,
+        )
+    body = _elf_ident(bits, endian) + ehdr
+    assert len(body) == phoff
+    return body + phdrs + interp_bytes
+
+
+def test_segments_full_with_interp_nx_relro() -> None:
+    out = list_elf_segments(
+        _build_elf_segments(
+            entries=[
+                ("PHDR", "r--"),
+                ("INTERP", "r--"),
+                ("LOAD", "r-x"),
+                ("LOAD", "rw-"),
+                ("DYNAMIC", "rw-"),
+                ("GNU_STACK", "rw-"),
+                ("GNU_RELRO", "r--"),
+            ]
+        )
+    )
+    assert out["class"] == "ELF64"
+    assert out["segment_count"] == 7
+    assert out["segments_listed"] == 7
+    types = [s["type"] for s in out["segments"]]
+    assert types == ["PHDR", "INTERP", "LOAD", "LOAD", "DYNAMIC", "GNU_STACK", "GNU_RELRO"]
+    load_x = next(s for s in out["segments"] if s["type"] == "LOAD" and s["flags"] == "r-x")
+    assert load_x["flags"] == "r-x"
+    assert out["interp"] == "/lib64/ld-linux-x86-64.so.2"
+    assert out["nx"] is True
+    assert out["relro"] is True
+    assert out["writable_executable"] is False
+    assert out["warnings"] == []
+
+
+def test_writable_executable_load_is_flagged() -> None:
+    out = list_elf_segments(_build_elf_segments(entries=[("LOAD", "rwx"), ("GNU_STACK", "rw-")]))
+    assert out["writable_executable"] is True
+
+
+def test_executable_stack_sets_nx_false() -> None:
+    out = list_elf_segments(_build_elf_segments(entries=[("LOAD", "r-x"), ("GNU_STACK", "rwx")]))
+    assert out["nx"] is False
+
+
+def test_no_gnu_stack_leaves_nx_unknown() -> None:
+    out = list_elf_segments(_build_elf_segments(entries=[("LOAD", "r-x")], interp=None))
+    assert out["nx"] is None
+    assert out["interp"] is None
+    assert out["relro"] is False
+
+
+def test_segments_32bit_field_order() -> None:
+    out = list_elf_segments(
+        _build_elf_segments(
+            entries=[("INTERP", "r--"), ("LOAD", "r-x"), ("GNU_STACK", "rw-")],
+            interp="/lib/ld-linux.so.2",
+            bits=32,
+        )
+    )
+    assert out["class"] == "ELF32"
+    assert out["interp"] == "/lib/ld-linux.so.2"
+    load = next(s for s in out["segments"] if s["type"] == "LOAD")
+    assert load["flags"] == "r-x"  # proves p_flags read from the 32-bit slot
+    assert out["nx"] is True
+
+
+def test_segments_big_endian() -> None:
+    out = list_elf_segments(
+        _build_elf_segments(
+            entries=[("LOAD", "r-x"), ("GNU_STACK", "rw-")], interp=None, endian=">"
+        )
+    )
+    assert out["endianness"] == "big"
+    assert [s["type"] for s in out["segments"]] == ["LOAD", "GNU_STACK"]
+
+
+def test_no_program_headers_is_a_warning() -> None:
+    out = list_elf_segments(_build_elf_header_only())
+    assert out["segments"] == []
+    assert out["segment_count"] == 0
+    assert any("no program header table" in w for w in out["warnings"])
+
+
+def test_a_program_header_past_eof_is_a_warning() -> None:
+    data = bytearray(_build_elf_segments(entries=[("LOAD", "r-x")], interp=None))
+    struct.pack_into("<Q", data, 32, 0xFFFFFF00)  # e_phoff at byte 32 in ELF64 -> past EOF
+    out = list_elf_segments(bytes(data))
+    assert out["segments"] == []
+    assert any("past end of file" in w for w in out["warnings"])
+
+
+def test_list_segments_rejects_non_elf() -> None:
+    with pytest.raises(ElfParseError):
+        list_elf_segments(b"MZ\x00\x00" + b"\x00" * 60)
+
+
 # --- service routing ----------------------------------------------------------
 
 
@@ -362,5 +530,28 @@ def test_service_symbols_refuses_a_non_elf(tmp_path: Path) -> None:
 
 def test_service_symbols_reports_missing_file(tmp_path: Path) -> None:
     result = _service(tmp_path).elf_symbols(str(tmp_path / "nope.so"))
+    assert not result.ok
+    assert result.error.code == "not_found"
+
+
+def test_service_lists_segments(tmp_path: Path) -> None:
+    binary = tmp_path / "prog"
+    binary.write_bytes(_build_elf_segments(entries=[("INTERP", "r--"), ("LOAD", "r-x")]))
+    result = _service(tmp_path).elf_segments(str(binary))
+    assert result.ok, result.model_dump(mode="json")
+    assert result.data["interp"] == "/lib64/ld-linux-x86-64.so.2"
+    assert [s["type"] for s in result.data["segments"]] == ["INTERP", "LOAD"]
+
+
+def test_service_segments_refuses_a_non_elf(tmp_path: Path) -> None:
+    junk = tmp_path / "not.so"
+    junk.write_bytes(b"this is not an ELF binary")
+    result = _service(tmp_path).elf_segments(str(junk))
+    assert not result.ok
+    assert result.error.code == "invalid_params"
+
+
+def test_service_segments_reports_missing_file(tmp_path: Path) -> None:
+    result = _service(tmp_path).elf_segments(str(tmp_path / "nope.so"))
     assert not result.ok
     assert result.error.code == "not_found"

@@ -44,6 +44,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 新增（原生 ELF 离线速览，无需 r2/Ghidra）
 
+- 新增 `elf.segments`：纯 stdlib 读取程序头表——即离线 `readelf -l`。`elf.summary` 读的是节表（链接器视图），
+  这里读的是程序头（**内核实际映射的可加载视图**），互补:逐段给出类型（LOAD/DYNAMIC/INTERP/GNU_STACK/
+  GNU_RELRO/GNU_EH_FRAME/TLS/PHDR/NOTE…）、rwx 权限、文件偏移、vaddr/paddr、filesz/memsz 与对齐;并抽出
+  分析者最先看的安全态势——`interp`（PT_INTERP 里的动态链接器路径，如 `/lib64/ld-linux-x86-64.so.2`）、
+  `nx`（栈是否不可执行，来自 PT_GNU_STACK;无该段时为 null 表示未指定）、`relro`（PT_GNU_RELRO 是否在场）、
+  以及 `writable_executable`（是否存在同时可写可执行的 LOAD 段，即 W^X 违规，值得标红）。32/64 位程序头的
+  字段顺序不同（64 位把 `p_flags` 提到 `p_type` 之后，32 位放在尾部），两种布局各自精确解析，大小端都支持;
+  程序头越界记 warning 停步。已对真实系统二进制验证:`/usr/bin/ls`、`libc.so.6` 的段列表、解释器路径、
+  nx/relro 与 `readelf -l` 完全一致。工具为**核心、按路径、只读**，各工作方向均可见。新增可移植的手工汇编
+  夹具单测（完整段列表含 interp/nx/relro、W^X 检测、可执行栈、无 GNU_STACK、32 位字段顺序、大端、无程序头、
+  程序头越界、非 ELF 拒绝、服务三类信封）;既有 ELF MCP stdio Gate 扩到同时打 `elf.segments`。
 - 新增 `elf.symbols`：纯 stdlib 分页读取动态符号表 `.dynsym`——即离线 `nm -D`。动态符号是二进制的链接面：
   它从共享库**导入**的函数（undefined 项）与它**导出**给别人调用的函数/对象（defined 的 GLOBAL/WEAK 项），
   且与 `.symtab` 不同，strip 之后依然存在。每条符号给出名字（经 `sh_link` 指向的字符串表解引用，缺失时
@@ -138,7 +149,7 @@ until 1.0 the tool surface may still change between minor versions.
   先例：去掉 POSIX-only 前置断言，只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **272（155 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **273（156 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
