@@ -58,9 +58,9 @@ class _CancelOnEventStore(AgentStore):
     """Requests cancellation the instant a chosen run event is recorded.
 
     This models a user who cancels at an exact point in the tool lifecycle --
-    as the call is proposed, or as the approval prompt appears -- without any
-    real timing. It lets a direct _handle_tool_call call land the cancel in the
-    narrow window each re-check guards, deterministically.
+    as the call is proposed, as the approval prompt appears, or as the result
+    lands -- without any real timing. It lets a direct orchestrator call land
+    the cancel in the narrow window each re-check guards, deterministically.
     """
 
     def __init__(self, path: Path, *, cancel_on: str) -> None:
@@ -231,6 +231,95 @@ async def test_a_cancel_while_awaiting_approval_aborts_before_the_tool_runs(tmp_
         await runner._handle_tool_call(run.id, "w1", "test.write", {})
 
     assert invoked == []
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_landing_as_a_tool_finishes_ends_the_run_before_the_next_round(
+    tmp_path: Path,
+) -> None:
+    """The run loop re-checks cancellation after each tool result is recorded.
+
+    The tool itself completed before the cancel arrived, so every check inside
+    _handle_tool_call has already passed; only the loop's own re-check stands
+    between a cancelled run and another provider round. The tool.completed
+    event is the last write of a successful call, so cancelling on it lands in
+    exactly that window.
+    """
+    store = _CancelOnEventStore(tmp_path / "afterresult.db", cancel_on="tool.completed")
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "do one read")
+    run = store.create_run(thread.id, provider_profile="default", model=None, deadline_seconds=60)
+
+    invoked: list[str] = []
+
+    def readonly() -> JsonObject:
+        invoked.append("ran")
+        return {"ok": True}
+
+    provider = FakeProvider([(ProviderToolCall("r1", "test.read", {}),), ()])
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_spec("test.read", readonly)]),
+        _configs(tmp_path),
+        provider_factory=lambda _: provider,
+        autonomy=AutonomyPolicy(),
+    )
+
+    await runner._run_loop(run.id)
+
+    assert invoked == ["ran"], "the tool that finished before the cancel keeps its result"
+    assert provider.round == 1, "a cancelled run must not start another provider round"
+    final = store.get_run(run.id)
+    assert final is not None
+    assert final.status is RunStatus.CANCELLED
+    assert any(event.type == "run.cancelled" for event in store.list_events(run.id))
+
+
+@pytest.mark.asyncio
+async def test_a_result_finishing_alongside_a_cancel_is_discarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancel that lands while the worker computes its value must win.
+
+    The bounded invoker polls for cancellation while the tool runs, but a value
+    can be produced in the same beat the cancel is written. Its final check
+    catches exactly that: the finished value is dropped and the call aborts
+    instead of handing a result to a run the user already stopped.
+
+    Running the worker inline on the event loop makes the beat exact: the
+    cancel write and the work finishing happen atomically between two polls,
+    with no worker-thread timing involved.
+    """
+    store = AgentStore(tmp_path / "landed.db")
+    thread = store.create_thread()
+    run = store.create_run(thread.id, provider_profile="default", model=None, deadline_seconds=60)
+    store.transition(run.id, RunStatus.STREAMING)
+
+    invoked: list[str] = []
+
+    def cancel_then_finish() -> JsonObject:
+        invoked.append("ran")
+        store.request_cancel(run.id)
+        return {"ok": True, "data": {"note": "finished after the user cancelled"}}
+
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_spec("test.selfcancel", cancel_then_finish)]),
+        _configs(tmp_path),
+        provider_factory=lambda _: FakeProvider([]),
+        autonomy=AutonomyPolicy(),
+    )
+
+    async def _inline_run_sync(func: Any, *args: Any, **kwargs: Any) -> Any:
+        del kwargs  # abandon_on_cancel and limiter only matter for real threads
+        return func(*args)
+
+    monkeypatch.setattr("anyio.to_thread.run_sync", _inline_run_sync)
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner._invoke_tool_bounded(run.id, "test.selfcancel", {}, 5.0)
+
+    assert invoked == ["ran"], "the worker really produced a value before the abort"
 
 
 @pytest.mark.asyncio
