@@ -228,6 +228,23 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_cookies(session_id))
 
+    @tools.tool(name="web.forms")
+    def web_forms(session_id: str) -> dict[str, Any]:
+        """List the page's HTML forms and their input fields.
+
+        The auth/exfil triage view: where does this page POST, and what does it
+        collect. Answers with url, forms, count, total and truncated. Each form
+        carries name, id, action (the resolved absolute submit URL),
+        action_external (the action posts to a different host than the page --
+        worth a look), method, enctype, field_count, has_password, has_file, a
+        fields list and fields_truncated. Each field carries tag, type, name,
+        required and value -- value is captured only for hidden and submit
+        inputs (CSRF tokens, action markers), never for password or text inputs,
+        which come back with an empty value. Read truncated: a page with many
+        forms is capped.
+        """
+        return _dump(analysis.web_forms(session_id))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.

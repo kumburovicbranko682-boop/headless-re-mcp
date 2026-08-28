@@ -53,6 +53,11 @@ _MAX_STORAGE_VALUE_CHARS = 8192
 # signed token, so both the list and each value are bounded.
 _MAX_COOKIES = 500
 _MAX_COOKIE_VALUE_CHARS = 4096
+# web.forms caps: a page can carry many forms with many fields each; bound the
+# form list, the fields per form, and each captured (hidden/submit) value.
+_MAX_FORMS = 200
+_MAX_FORM_FIELDS = 100
+_MAX_FIELD_VALUE_CHARS = 2048
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -157,6 +162,102 @@ def _fold_storage(part: object) -> tuple[list[JsonObject], int, str | None]:
         entries.append({"key": key, "value": value, "value_truncated": truncated})
     error_text = error if isinstance(error, str) and error else None
     return entries, total, error_text
+
+
+# Enumerate the page's forms in one hop. Field values are captured only for
+# hidden and submit inputs (CSRF tokens, action markers) -- never for password
+# or text inputs -- and every list and value is bounded in-page.
+_FORMS_SCRIPT = """(cfg) => {
+  const out = [];
+  const list = document.forms;
+  const total = list.length;
+  for (let i = 0; i < total && out.length < cfg.maxForms; i++) {
+    const f = list[i];
+    let action = "";
+    try { action = String(f.action || ""); } catch (e) { action = ""; }
+    const fields = [];
+    const elements = f.elements;
+    const fieldTotal = elements.length;
+    let fieldCut = false;
+    for (let j = 0; j < fieldTotal; j++) {
+      if (fields.length >= cfg.maxFields) { fieldCut = true; break; }
+      const el = elements[j];
+      const tag = String(el.tagName || "").toLowerCase();
+      const type = String(el.type || "").toLowerCase();
+      let value = "";
+      if (type === "hidden" || type === "submit") {
+        try { value = String(el.value || "").slice(0, cfg.maxValueChars); }
+        catch (e) { value = ""; }
+      }
+      fields.push({
+        tag: tag,
+        type: type,
+        name: String(el.name || ""),
+        value: value,
+        required: !!el.required
+      });
+    }
+    out.push({
+      name: String(f.name || ""),
+      id: String(f.id || ""),
+      action: action,
+      method: String(f.method || "get").toLowerCase(),
+      enctype: String(f.enctype || ""),
+      field_count: fieldTotal,
+      fields: fields,
+      fields_truncated: fieldCut
+    });
+  }
+  return { forms: out, total: total };
+}"""
+
+
+def _fold_form(raw: object, page_host: str) -> JsonObject:
+    """Normalise one page-side form dump into a bounded, triage-friendly row."""
+    form = raw if isinstance(raw, dict) else {}
+    fields: list[JsonObject] = []
+    has_password = False
+    has_file = False
+    for item in form.get("fields") or []:
+        if not isinstance(item, dict):
+            continue
+        field_type = _bounded_metadata(item.get("type"), _MAX_METADATA_BYTES)[0]
+        if field_type == "password":
+            has_password = True
+        if field_type == "file":
+            has_file = True
+        value = item.get("value")
+        value = value if isinstance(value, str) else ""
+        fields.append(
+            {
+                "tag": _bounded_metadata(item.get("tag"), _MAX_METADATA_BYTES)[0],
+                "type": field_type,
+                "name": _bounded_metadata(item.get("name"), _MAX_METADATA_BYTES)[0],
+                "value": value[:_MAX_FIELD_VALUE_CHARS],
+                "required": bool(item.get("required")),
+            }
+        )
+    action = _bounded_metadata(form.get("action"), _MAX_URL_BYTES)[0]
+    action_host = ""
+    if action:
+        try:
+            action_host = urlsplit(action).netloc
+        except ValueError:
+            action_host = ""
+    field_count = form.get("field_count")
+    return {
+        "name": _bounded_metadata(form.get("name"), _MAX_METADATA_BYTES)[0],
+        "id": _bounded_metadata(form.get("id"), _MAX_METADATA_BYTES)[0],
+        "action": action,
+        "action_external": bool(action_host) and action_host != page_host,
+        "method": _bounded_metadata(form.get("method"), _MAX_METADATA_BYTES)[0],
+        "enctype": _bounded_metadata(form.get("enctype"), _MAX_METADATA_BYTES)[0],
+        "field_count": int(field_count) if isinstance(field_count, int) else len(fields),
+        "fields": fields,
+        "fields_truncated": bool(form.get("fields_truncated")),
+        "has_password": has_password,
+        "has_file": has_file,
+    }
 
 
 def summarize_requests(
@@ -1010,6 +1111,40 @@ class WebBackend:
                 "count": len(cookies),
                 "total": len(rows),
                 "truncated": truncated,
+            }
+
+        return self._runner(handle).call(work)
+
+    def forms(self, session_id: str) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            cfg = {
+                "maxForms": _MAX_FORMS,
+                "maxFields": _MAX_FORM_FIELDS,
+                "maxValueChars": _MAX_FIELD_VALUE_CHARS,
+            }
+            try:
+                raw = handle.page.evaluate(_FORMS_SCRIPT, cfg)
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"form read failed: {exc}") from exc
+            if not isinstance(raw, dict):
+                raise WebError("backend_error", "form read returned no data")
+            page_url = _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0]
+            try:
+                page_host = urlsplit(page_url).netloc
+            except ValueError:
+                page_host = ""
+            rows = raw.get("forms") or []
+            forms = [_fold_form(item, page_host) for item in rows]
+            total = raw.get("total")
+            total_int = int(total) if isinstance(total, int) else len(forms)
+            return {
+                "url": page_url,
+                "forms": forms,
+                "count": len(forms),
+                "total": total_int,
+                "truncated": total_int > len(forms),
             }
 
         return self._runner(handle).call(work)

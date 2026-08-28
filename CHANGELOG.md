@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **280（163 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **281（164 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -445,6 +445,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   抢先执行的落点)以及 `min_sdk` / `target_sdk`。清单里未声明的布尔位回 `null`(「未设置」,
   不等于 false),调用方据此套用对应目标 SDK 的平台默认,而不是想当然;androguard 版本差异
   以逐属性 `try` 兜底,`is_debuggable()` 不可用时退回读 `debuggable` 属性。
+
+### 新增（浏览器表单）
+
+- 新增 `web.forms`:列出页面的 HTML 表单及其输入字段——认证/外泄三连的核心视图:这页往哪 POST、
+  收集什么。回 `url`、`forms`、`count`、`total`、`truncated`。每个表单带 `name`/`id`、`action`
+  (解析后的绝对提交 URL)、`action_external`(action 提交到与页面不同的主机,值得看)、`method`、
+  `enctype`、`field_count`、`has_password`、`has_file`、`fields` 列表与 `fields_truncated`。
+  每个字段带 `tag`/`type`/`name`/`required`/`value`——`value` 只对 hidden 与 submit 输入抓取
+  (CSRF token、动作标记),password/text 一律空值。表单多时按 200 个封顶,读 `truncated`。
 
 ### 新增（浏览器 Cookie 罐）
 
