@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（APK 面板迟到的旧会话解析结果粘在新会话上且不自愈）
+
+- `ApkMonitor` 由 Inspector 以普通 prop 传 `sessionId`（不带 key），切会话不重挂载；
+  「打开 APK」在 `await` 之后无条件 `setInfo`，而这个面板没有任何轮询来纠偏。用户在
+  会话 A 解析途中切到 B，A 的包名/版本会迟到落地并**长期粘**在 B 的面板上，直到用户手动
+  重新解析——比轮询型监视面板（1~2s 自愈）更糟。修法与 WebMonitor/虚拟桌面同族：加
+  `currentSession` ref 追踪最新会话，`await` 后（含 catch 分支）发现闭包里的 `sessionId`
+  已过期就丢弃 UI 写入；但「关闭会话」在确认成功后仍照常回调 `onSessionClosed(A)`——A 确实
+  被关了，父组件必须知道，只有本面板自身的展示需要留在当前会话。新增两个回归测试：一个证明
+  A 的迟到元数据不再盖到 B（旧代码 `com.stale.a` 会粘住），一个证明切会话后被关的 A 仍会
+  通知父组件。SPA 产物同步重建。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

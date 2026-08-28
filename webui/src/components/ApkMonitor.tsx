@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { asChildText } from "../lib/textChild";
 
@@ -16,6 +16,14 @@ export function ApkMonitor({ sessionId, locator, live, onSessionClosed }: Props)
   const [info, setInfo] = useState<ApkInfo | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The panel swaps sessionId without remounting (Inspector renders it with a
+  // plain prop, not a key). "打开 APK" applies its parsed metadata with an
+  // unconditional setState after the await, and there is no poll to correct it:
+  // switch sessions while A is parsing and A's package/version lands late and
+  // sticks on B's panel until the user manually re-parses. Track the latest
+  // sessionId and drop UI writes whose captured id is no longer current.
+  const currentSession = useRef(sessionId);
+  currentSession.current = sessionId;
 
   useEffect(() => { setInfo(null); setError(null); }, [sessionId]);
 
@@ -25,9 +33,13 @@ export function ApkMonitor({ sessionId, locator, live, onSessionClosed }: Props)
     try {
       const result = await api<Envelope<ApkInfo>>(path, { method: "POST", body: JSON.stringify({}) });
       if (result.ok === false) throw new Error(result.error?.message ?? `${label}失败`);
-      if (label === "打开 APK") setInfo(result.data ?? {});
+      // A close genuinely happened, so tell the parent regardless of the
+      // current selection; only this panel's own display must stay on-session.
       if (label === "关闭会话") onSessionClosed?.(sessionId);
+      if (currentSession.current !== sessionId) return;
+      if (label === "打开 APK") setInfo(result.data ?? {});
     } catch (reason) {
+      if (currentSession.current !== sessionId) return;
       setError(String(reason));
     } finally {
       setBusy(null);
