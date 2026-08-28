@@ -1006,3 +1006,191 @@ def list_wasm_exports(path: Path, *, contains: str | None = None) -> JsonObject:
     except OSError as exc:
         raise JsReError("backend_error", f"wasm unreadable: {exc}", path=str(resolved)) from exc
     return list_wasm_exports_bytes(data, contains=contains)
+
+
+def _read_import_limits(cursor: _Cursor) -> JsonObject:
+    """A limits record for an import, keeping the shared-memory flag visible.
+
+    Same wire format as ``_read_limits`` (flags, minimum, maximum when bit 0 is
+    set), but bit 1 -- the threads proposal's shared-memory marker -- is
+    surfaced as ``shared`` because an imported shared memory is a real signal
+    (the module expects a SharedArrayBuffer-backed memory).
+    """
+    flags = cursor.byte()
+    limits: JsonObject = {"initial": cursor.uleb()}
+    if flags & 0x01:
+        limits["maximum"] = cursor.uleb()
+    if flags & 0x02:
+        limits["shared"] = True
+    return limits
+
+
+def _parse_imports_described(body: _Cursor) -> tuple[list[JsonObject], int, dict[str, int]]:
+    """Import section (id 2) with every import's descriptor fully decoded.
+
+    Returns (collected, total, per-kind totals). Unlike ``_parse_imports`` (which
+    only names each import) and ``_parse_import_funcs`` (which keeps only the
+    functions), this decodes each kind's descriptor tail into fields: a func's
+    type index, a table's reftype and limits, a memory's limits (with the shared
+    flag), a global's value type and mutability. ``index`` is the slot the import
+    occupies in its kind's own index space -- imports fill the low indices, so a
+    func import's index is its global function index. Collection is capped at
+    ``_MAX_ITEMS`` but the whole section is still walked, so the per-kind totals
+    are exact and a malformed descriptor past the cap still raises.
+    """
+    total = body.uleb()
+    collected: list[JsonObject] = []
+    kind_totals = {"func": 0, "table": 0, "memory": 0, "global": 0}
+    for index in range(total):
+        module = body.name()
+        field = body.name()
+        kind_byte = body.byte()
+        record: JsonObject = {"module": module, "name": field}
+        if kind_byte == 0:
+            record["kind"] = "func"
+            record["index"] = kind_totals["func"]
+            record["type_index"] = body.uleb()
+            kind_totals["func"] += 1
+        elif kind_byte == 1:
+            record["kind"] = "table"
+            record["index"] = kind_totals["table"]
+            reftype = body.byte()
+            record["reftype"] = _VALTYPE.get(reftype, f"type 0x{reftype:02x}")
+            record.update(_read_import_limits(body))
+            kind_totals["table"] += 1
+        elif kind_byte == 2:
+            record["kind"] = "memory"
+            record["index"] = kind_totals["memory"]
+            record.update(_read_import_limits(body))
+            kind_totals["memory"] += 1
+        elif kind_byte == 3:
+            record["kind"] = "global"
+            record["index"] = kind_totals["global"]
+            record["valtype"] = _valtype(body)
+            record["mutable"] = bool(body.byte() & 0x01)
+            kind_totals["global"] += 1
+        else:
+            raise JsReError("invalid_params", "wasm import has an unknown external kind")
+        if index < _MAX_ITEMS:
+            collected.append(record)
+    return collected, total, kind_totals
+
+
+# The distinct source modules are a small identity list ("env" vs
+# "wasi_snapshot_preview1" tells the runtime story in one line), kept apart
+# from the 4096 import cap so it stays readable.
+_MAX_IMPORT_MODULES = 64
+
+
+def list_wasm_imports_bytes(data: bytes, *, contains: str | None = None) -> JsonObject:
+    """List a module's imports -- what it requires from the host -- decoded.
+
+    The import section is the module's host boundary: every function, memory,
+    table and global it cannot run without. wasm.summary names imports coarsely
+    (module/name/kind) and wasm.functions resolves only the imported functions;
+    neither decodes the non-func descriptors. This decodes all four kinds: a
+    func import's resolved params/results (joined through the type section), a
+    memory import's page limits and shared flag, a table import's reftype and
+    limits, a global import's value type and mutability. It is the mirror of
+    wasm.exports (what the module provides) and reads like a native binary's
+    import table.
+
+    Each entry carries module (the host-side namespace, e.g. env or
+    wasi_snapshot_preview1), name, kind, and index (the slot in that kind's
+    index space -- imports fill the low indices, so a func import's index is
+    its global function index). A func entry adds type_index, params and
+    results (signature_unknown when unresolvable); a table entry reftype plus
+    initial/maximum; a memory entry initial/maximum in 64 KiB pages plus shared
+    when the threads flag is set; a global entry valtype and mutable. Also
+    count, total, scan_capped, per-kind func_count/table_count/memory_count/
+    global_count (exact even past the cap), and the distinct source modules as
+    modules/module_count. Only the type/import sections are read; every other
+    section is skipped by its declared length. Bad magic raises invalid_params.
+    """
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        raise JsReError("invalid_params", "not a WebAssembly module: bad magic")
+    needle = contains.casefold() if contains else None
+    cursor = _Cursor(data)
+    cursor.pos = 8
+
+    types: list[tuple[list[str], list[str]] | None] = []
+    imports_raw: list[JsonObject] = []
+    imports_total = 0
+    kind_totals = {"func": 0, "table": 0, "memory": 0, "global": 0}
+    while not cursor.eof:
+        section_id = cursor.byte()
+        section_len = cursor.uleb()
+        body = _Cursor(cursor.take(section_len))
+        if section_id == 1:  # type
+            types = _parse_functypes(body)
+        elif section_id == 2:  # import
+            imports_raw, imports_total, kind_totals = _parse_imports_described(body)
+        # Every other section is skipped by its declared length.
+
+    imports: list[JsonObject] = []
+    modules: set[str] = set()
+    matched = 0
+    emission_capped = False
+    for record in imports_raw:
+        module = str(record.get("module", ""))
+        name = str(record.get("name", ""))
+        kind = str(record.get("kind", ""))
+        modules.add(module)
+        if needle is not None and needle not in f"{module} {name} {kind}".casefold():
+            continue
+        matched += 1
+        if len(imports) >= _MAX_ITEMS:
+            emission_capped = True
+            continue
+        entry = dict(record)
+        if kind == "func":
+            type_index = int(entry.get("type_index", -1))
+            signature = types[type_index] if 0 <= type_index < len(types) else None
+            if signature is None:
+                entry["params"] = []
+                entry["results"] = []
+                entry["signature_unknown"] = True
+            else:
+                entry["params"] = list(signature[0])
+                entry["results"] = list(signature[1])
+        imports.append(entry)
+
+    # imports_raw is already capped at _MAX_ITEMS by the parser, with the true
+    # count in imports_total. Unfiltered, total is the structural count and
+    # scan_capped means more existed than were listed. Filtered, total is the
+    # matches seen in the scanned head, and scan_capped also fires when imports
+    # past the cap could not be examined.
+    not_all_scanned = imports_total > len(imports_raw)
+    if needle is None:
+        total = imports_total
+        scan_capped = imports_total > len(imports)
+    else:
+        total = matched
+        scan_capped = emission_capped or not_all_scanned
+
+    result: JsonObject = {
+        "imports": imports,
+        "count": len(imports),
+        "total": total,
+        "scan_capped": scan_capped,
+        "func_count": kind_totals["func"],
+        "table_count": kind_totals["table"],
+        "memory_count": kind_totals["memory"],
+        "global_count": kind_totals["global"],
+        "modules": sorted(modules)[:_MAX_IMPORT_MODULES],
+        "module_count": len(modules),
+    }
+    if needle is not None:
+        result["filtered"] = True
+        result["query"] = contains
+    return result
+
+
+def list_wasm_imports(path: Path, *, contains: str | None = None) -> JsonObject:
+    """List the imports of the module at ``path`` (applies the shared 16 MiB cap)."""
+    resolved = _require_existing_file(path, missing="wasm file not found")
+    try:
+        data = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError("backend_error", f"wasm unreadable: {exc}", path=str(resolved)) from exc
+    return list_wasm_imports_bytes(data, contains=contains)

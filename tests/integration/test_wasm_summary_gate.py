@@ -652,6 +652,149 @@ def test_wasm_exports_reads_a_wat2wasm_built_module(tmp_path: Path) -> None:
         service.close_all()
 
 
+def _module_with_import_surface() -> bytes:
+    """A module importing one of each kind: func, shared memory, table, global."""
+    magic = b"\x00asm\x01\x00\x00\x00"
+    # type0 = () -> (); type1 = (i32) -> (i32)
+    type_sec = _section(1, _vec([b"\x60\x00\x00", b"\x60\x01\x7f\x01\x7f"]))
+    import_sec = _section(
+        2,
+        _vec(
+            [
+                _name("env") + _name("log") + b"\x00" + _leb128(1),  # func, type1
+                _name("wasi_snapshot_preview1") + _name("proc_exit") + b"\x00" + _leb128(0),
+                # shared memory: flags 0x03 = has-maximum | shared, 2..4 pages
+                _name("env") + _name("memory") + b"\x02" + b"\x03" + _leb128(2) + _leb128(4),
+                # funcref table with a maximum, 1..8 entries
+                _name("env") + _name("tbl") + b"\x01" + b"\x70" + b"\x01"
+                + _leb128(1) + _leb128(8),
+                # mutable i32 global
+                _name("env") + _name("stack_ptr") + b"\x03" + b"\x7f" + b"\x01",
+            ]
+        ),
+    )
+    return magic + type_sec + import_sec
+
+
+@pytest.mark.integration
+def test_wasm_imports_drives_the_service_end_to_end(tmp_path: Path) -> None:
+    """wasm.imports must decode the host boundary through the real service.
+
+    The module imports one of each kind. Driving AnalysisService.wasm_imports
+    end to end must join the func imports to their signatures, decode the
+    shared-memory page limits, the table's reftype and the global's mutability,
+    roll up the distinct source modules, and keep each kind's index space
+    numbered from zero -- and a non-module must come back as an invalid_params
+    envelope, not an internal error.
+    """
+    module = tmp_path / "imports.wasm"
+    module.write_bytes(_module_with_import_surface())
+
+    service = AnalysisService()
+    try:
+        result = service.wasm_imports(str(module))
+        assert result.ok, result.error
+        data = result.data
+        assert data is not None
+        assert data["count"] == data["total"] == 5
+        assert data["func_count"] == 2
+        assert data["memory_count"] == data["table_count"] == data["global_count"] == 1
+        assert data["modules"] == ["env", "wasi_snapshot_preview1"]
+        assert data["module_count"] == 2
+
+        log = _find(data["imports"], name="log", kind="func")
+        assert log is not None
+        assert log["module"] == "env"
+        assert log["index"] == 0
+        assert log["params"] == ["i32"] and log["results"] == ["i32"]
+
+        proc_exit = _find(data["imports"], name="proc_exit", kind="func")
+        assert proc_exit is not None
+        assert proc_exit["module"] == "wasi_snapshot_preview1"
+        assert proc_exit["index"] == 1  # same function index space as env.log
+
+        mem = _find(data["imports"], name="memory", kind="memory")
+        assert mem is not None
+        assert mem["index"] == 0  # the memory space numbers from zero again
+        assert mem["initial"] == 2 and mem["maximum"] == 4
+        assert mem["shared"] is True
+
+        tbl = _find(data["imports"], name="tbl", kind="table")
+        assert tbl is not None
+        assert tbl["reftype"] == "funcref"
+        assert tbl["initial"] == 1 and tbl["maximum"] == 8
+
+        glob = _find(data["imports"], name="stack_ptr", kind="global")
+        assert glob is not None
+        assert glob["valtype"] == "i32"
+        assert glob["mutable"] is True
+
+        filtered = service.wasm_imports(str(module), contains="wasi")
+        assert filtered.ok, filtered.error
+        assert [e["name"] for e in filtered.data["imports"]] == ["proc_exit"]
+        assert filtered.data["filtered"] is True
+
+        bogus = tmp_path / "not.wasm"
+        bogus.write_bytes(b"\x7fELF this is an ELF, not wasm")
+        failed = service.wasm_imports(str(bogus))
+        assert failed.ok is False
+        assert failed.error is not None
+        assert failed.error.code == "invalid_params"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_imports_reads_a_wat2wasm_built_module(tmp_path: Path) -> None:
+    """Cross-check the import decoding against a toolchain-built module."""
+    wat2wasm = shutil.which("wat2wasm")
+    if wat2wasm is None:
+        pytest.skip("wat2wasm (wabt) not installed — toolchain gate not run (skip != pass)")
+    wat = tmp_path / "imp.wat"
+    wat.write_text(
+        "(module\n"
+        '  (import "env" "log" (func $log (param i32 i32)))\n'
+        '  (import "env" "memory" (memory 1 2))\n'
+        '  (import "js" "flag" (global $flag (mut i32)))\n'
+        "  (func $init))\n",
+        encoding="utf-8",
+    )
+    module = tmp_path / "imp.wasm"
+    built = subprocess.run(  # noqa: S603 - fixed argv, tool discovered on PATH
+        [wat2wasm, str(wat), "-o", str(module)],
+        capture_output=True,
+        timeout=60,
+    )
+    if built.returncode != 0 or not module.is_file():
+        detail = built.stderr.decode("utf-8", "replace")[:200]
+        pytest.skip(f"wat2wasm could not build the fixture ({detail}) — skip != pass")
+
+    service = AnalysisService()
+    try:
+        result = service.wasm_imports(str(module))
+        assert result.ok, result.error
+        data = result.data
+        assert data is not None
+        assert data["func_count"] == 1
+        assert data["memory_count"] == data["global_count"] == 1
+        assert data["modules"] == ["env", "js"]
+
+        log = _find(data["imports"], name="log", kind="func")
+        assert log is not None
+        assert log["params"] == ["i32", "i32"] and log["results"] == []
+
+        mem = _find(data["imports"], name="memory", kind="memory")
+        assert mem is not None
+        assert mem["initial"] == 1 and mem["maximum"] == 2
+        assert "shared" not in mem
+
+        flag = _find(data["imports"], name="flag", kind="global")
+        assert flag is not None
+        assert flag["valtype"] == "i32" and flag["mutable"] is True
+    finally:
+        service.close_all()
+
+
 @pytest.mark.integration
 def test_wasm_summary_reads_a_wat2wasm_built_module(tmp_path: Path) -> None:
     """Cross-check the parser against a module a real toolchain produced."""

@@ -246,4 +246,34 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_exports(path, contains=contains))
 
+    @tools.tool(name="wasm.imports")
+    def wasm_imports(path: str, contains: str | None = None) -> dict[str, Any]:
+        """The module's import table -- what it requires from the host -- decoded.
+
+        The import section is the module's host boundary: every function,
+        memory, table and global it cannot run without. wasm.summary names
+        imports coarsely (module/name/kind) and wasm.functions resolves only the
+        imported functions; neither decodes the non-func descriptors. This
+        decodes all four kinds and is the mirror of wasm.exports: exports say
+        what the module provides, imports say what it demands. Parsed in
+        pure Python, so it answers even when wasm2wat/wasm-objdump are absent.
+
+        Answers with imports, each carrying module (the host-side namespace,
+        e.g. env or wasi_snapshot_preview1), name, kind and index (the slot in
+        that kind's index space -- imports fill the low indices, so a func
+        import's index is its global function index). A func entry adds
+        type_index, params and results (value-type names), with
+        signature_unknown when unresolvable; a table entry reftype plus
+        initial/maximum; a memory entry initial/maximum in 64 KiB pages plus
+        shared when the threads flag is set; a global entry valtype and mutable.
+        Also count, total, scan_capped (more imports exist than the 4096
+        listed), exact per-kind func_count/table_count/memory_count/
+        global_count, and the distinct source modules as modules/module_count.
+        Pass contains to keep only imports whose module/name/kind holds a
+        case-insensitive substring; the reply then also carries filtered true
+        and query. An input over 16 MiB is refused as too_large and a non-module
+        as invalid_params.
+        """
+        return _dump(analysis.wasm_imports(path, contains=contains))
+
     return tools.bindings

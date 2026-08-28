@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **295（175 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **296（176 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -666,6 +666,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不移动函数索引空间，故转导出的导入在索引 0 仍解析为导入函数类型）、内部名挂接与非函数导出无签名字段，并另有 wat2wasm
   交叉校验（缺 wabt 时 skip≠pass）；单测另覆盖过滤、`signature_unknown`、空导出、4096 截断与非模块拒绝。该工具计入读效果，
   工具面因此 292→293。
+- **看得到模块给宿主什么（wasm.exports），看不到它管宿主要什么**。import 段是模块的宿主边界——没有这些函数/内存/表/全局它
+  跑不起来，可 `wasm.summary` 只报 module/name/kind 三元组，`wasm.functions` 只解析函数导入，非函数导入的描述符（内存页限、
+  表的 reftype、全局的可变性）谁都不解。新增只读的 `wasm.imports`：四种 kind 全解码，纯 Python（无需 wabt），与
+  `wasm.exports` 互为镜像。回 `imports`，每条带 `module`（宿主侧命名空间——`env` 还是 `wasi_snapshot_preview1` 一眼定运行时）、
+  `name`、`kind` 与 `index`（该 kind 自己的索引空间内的槽位——导入占低位，函数导入的 index 就是其全局函数索引）；函数导入另带
+  `type_index`、`params`/`results`（经 type 段联表的真签名，解不出置 `signature_unknown`）；表导入带 `reftype` 与
+  `initial`/`maximum`；内存导入带 `initial`/`maximum`（64 KiB 页数）且线程旗标置位时带 `shared`（模块要 SharedArrayBuffer
+  背书的共享内存——真信号）；全局导入带 `valtype` 与 `mutable`。外加 `count`/`total`/`scan_capped`（超 4096 未全列）、逐 kind
+  的 `func_count`/`table_count`/`memory_count`/`global_count`（整段仍走完，超 cap 也精确）与去重的 `modules`/`module_count`。
+  传 `contains` 按 module/name/kind 大小写不敏感子串过滤，回包另带 `filtered` 与 `query`。超 16 MiB 报 `too_large`、非模块报
+  `invalid_params`。活体门经真服务用手搓模块（func+WASI func+shared memory+funcref table+mut global 各一）断言签名联表、
+  共享页限、reftype、可变性、模块卷积与逐 kind 索引空间从零起数，并另有 wat2wasm 交叉校验（缺 wabt 时 skip≠pass）；单测另
+  覆盖不可解签名、过滤、空导入、4096 截断（结构计数仍精确）、未知 external kind 拒绝与 docstring 形状。该工具计入读效果，
+  工具面因此 295→296。
 - **页面 head 里的身份信号只能靠 dom.query 一条条拼**。`<base href>`（悄悄改写全页相对 URL 的解析基准）、
   `http-equiv=refresh`（客户端跳转——钓鱼页最爱）、`og:url`（页面自称的品牌身份）与 `rel=canonical/manifest` 各要一次
   `web.dom.query` 再自行组装；`web.dom.snapshot` 只给生 HTML。新增只读的 `web.meta`：一次拿齐页面 head 的情报。回

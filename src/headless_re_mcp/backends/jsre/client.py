@@ -317,6 +317,19 @@ class WasmClient:
 
         return list_wasm_exports(path, contains=contains)
 
+    def imports(self, path: Path, *, contains: str | None = None) -> JsonObject:
+        """The module's import table -- what it requires from the host -- decoded.
+
+        Needs no wabt tool: the import section's descriptors are decoded
+        directly (func signatures joined through the type section, memory/table
+        limits, global mutability), so the host boundary -- env vs WASI, shared
+        memory, mutable globals -- is readable even when wasm2wat/wasm-objdump
+        are absent.
+        """
+        from headless_re_mcp.backends.jsre.wasm_summary import list_wasm_imports
+
+        return list_wasm_imports(path, contains=contains)
+
     def info(
         self, path: Path, *, timeout: float = 120.0, spill_path: Path | None = None
     ) -> JsonObject:

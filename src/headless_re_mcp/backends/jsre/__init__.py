@@ -16,6 +16,8 @@ from headless_re_mcp.backends.jsre.wasm_summary import (
     list_wasm_exports_bytes,
     list_wasm_functions,
     list_wasm_functions_bytes,
+    list_wasm_imports,
+    list_wasm_imports_bytes,
     summarize_wasm,
     summarize_wasm_bytes,
 )
@@ -36,4 +38,6 @@ __all__ = [
     "list_wasm_functions_bytes",
     "list_wasm_exports",
     "list_wasm_exports_bytes",
+    "list_wasm_imports",
+    "list_wasm_imports_bytes",
 ]
