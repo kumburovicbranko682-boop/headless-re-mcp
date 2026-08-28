@@ -45,6 +45,18 @@ def test_frame_parser_rejects_garbage(blob: bytes) -> None:
         parse_rpc_frame(blob)
 
 
+def test_frame_parser_rejects_a_deeply_nested_body() -> None:
+    """A well-framed body nested past the interpreter limit makes json.loads
+    raise RecursionError, not JSONDecodeError. The frame comes from the
+    debugger process, so it must become an XdbgRpcError like any other
+    malformed frame rather than escaping this fuzz target. A few thousand '['
+    fit easily inside the 8 MiB frame limit."""
+    body = b"[" * 40000
+    frame = len(body).to_bytes(4, "little") + body
+    with pytest.raises(XdbgRpcError, match="nested too deeply"):
+        parse_rpc_frame(frame)
+
+
 def test_frame_fuzz_random_lengths() -> None:
     # Deterministic pseudo-fuzz: many length prefixes and bodies.
     for size in list(range(0, 40)) + [1024, MAX_FRAME_BYTES, MAX_FRAME_BYTES + 1]:

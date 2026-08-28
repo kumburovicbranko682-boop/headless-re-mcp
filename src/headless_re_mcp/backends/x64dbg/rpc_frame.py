@@ -38,6 +38,15 @@ def parse_rpc_frame(data: bytes) -> dict[str, Any]:
         raise XdbgRpcError(
             "rpc_protocol_error", "RPC response is not valid UTF-8 JSON"
         ) from exc
+    except RecursionError as exc:
+        # json.loads raises RecursionError, not JSONDecodeError, on a body
+        # nested past the interpreter limit -- a few thousand '[' fit easily
+        # inside an 8 MiB frame. This is a fuzz target and the frame comes from
+        # the debugger process, so that malformed input has to become the same
+        # rpc_protocol_error as any other, not escape as an internal_error.
+        raise XdbgRpcError(
+            "rpc_protocol_error", "RPC response JSON is nested too deeply"
+        ) from exc
     if not isinstance(response, dict):
         raise XdbgRpcError("rpc_protocol_error", "RPC response must be an object")
     return response

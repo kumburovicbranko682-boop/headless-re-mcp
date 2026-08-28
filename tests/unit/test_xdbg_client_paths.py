@@ -850,6 +850,16 @@ def test_request_rejects_non_utf8_json_body() -> None:
         client._request("debug.state", {}, timeout=1)
 
 
+def test_request_rejects_a_deeply_nested_json_body() -> None:
+    # json.loads raises RecursionError (not JSONDecodeError) on a body nested
+    # past the interpreter limit; a few thousand '[' fit inside the frame. It
+    # must become an rpc_protocol_error like any other malformed response, not
+    # escape the client as an internal_error.
+    client = _raw_client(b"[" * 40000)
+    with pytest.raises(XdbgRpcError, match="nested too deeply"):
+        client._request("debug.state", {}, timeout=1)
+
+
 def test_request_rejects_a_non_object_response() -> None:
     client = _raw_client(b"[]")
     with pytest.raises(XdbgRpcError, match="must be an object"):
