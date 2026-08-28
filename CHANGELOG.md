@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（apk.components / apk.permissions 先截断后排序，超过 256 项的清单不是真正的字母序头部）
+
+- 与刚修的 jadx / device.packages 同一类缺陷：`_cap_names`（`apk.components` 的
+  activities/services/receivers/providers 与 `apk.permissions` 的 declared/requested 都用它）按
+  androguard 返回的清单声明顺序取前 `limit`（`_MAX_COMPONENT_NAMES=256` / `_MAX_PERMISSIONS=256`）个
+  再对这几个 `items.sort()`，于是当某类组件超过 256（大应用动辄数百个 activity）时，返回的列表看着是
+  字母序的，实则是"声明顺序前 256 个再排序"——声明顺序里排在 cap 之后、但字母序靠前的组件被悄悄丢掉，
+  `has_more=True` 又让人以为"后面的都排在已显示的最后一个之后"（错的）。androguard 的这些列表本就一次性
+  materialize 成 list，先收集全部再排序不花额外代价；末尾那句 `items.sort()` 也表明本意就是有序列表，只是
+  排晚了。现改为 `sorted(全部) [:limit]`、`has_more = 总数 > limit`，页即真正的字母序头部（与 apk.classes /
+  adb.packages 一致）。新增回归测试：清单以倒序交回 300 个零填充 activity（A000..A299）、cap 256，断言页从
+  A000 起（真正的头部）而非 A044（倒序前缀排序后的头），旧实现即失败。
+
 ### 修复（jadx export_sources 的 java_files 预览先截断后排序，超过 2000 文件时不是真正的字母序头部）
 
 - 与刚修的 device.packages 同一类缺陷：`_capped_java_listing`（`apk.export_sources` 用来列反编译出的

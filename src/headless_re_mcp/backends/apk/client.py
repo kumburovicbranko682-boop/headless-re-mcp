@@ -45,15 +45,16 @@ class ApkError(RuntimeError):
 
 
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
-    items: list[str] = []
-    has_more = False
-    for item in values or []:
-        if len(items) >= limit:
-            has_more = True
-            break
-        items.append(str(item))
-    items.sort()
-    return items, has_more
+    # Sort the whole list before windowing, not the page after. Capping first and
+    # sorting only those returned the declaration-order-first `limit` alphabetized
+    # -- a page that looked like the alphabetical head but silently dropped
+    # alphabetically-early names declared past the cap (a large manifest can hold
+    # >256 activities). androguard already hands these lists back fully
+    # materialized, so collecting all to sort costs nothing; has_more then means
+    # "more sort after these", the same sort-before-window apk.classes/adb.packages
+    # keep. The trailing items.sort() showed the intent was a sorted list anyway.
+    names = sorted(str(item) for item in (values or []))
+    return names[:limit], len(names) > limit
 
 
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:

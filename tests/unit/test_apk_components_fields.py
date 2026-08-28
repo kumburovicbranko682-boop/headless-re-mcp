@@ -45,6 +45,51 @@ class _FakeApk:
         return "A0"
 
 
+class _ReverseOrderApk:
+    """A manifest that declares 300 activities in reverse-sorted order.
+
+    Names are zero-padded so lexicographic order matches numeric order, and the
+    list is handed back A299-first, so the alphabetically-early activities sit
+    past the 256 cap in declaration order -- exactly the case the sort-before-cap
+    fix is about.
+    """
+
+    def get_activities(self) -> list[str]:
+        return [f"A{index:03d}" for index in range(299, -1, -1)]
+
+    def get_services(self) -> list[str]:
+        return []
+
+    def get_receivers(self) -> list[str]:
+        return []
+
+    def get_providers(self) -> list[str]:
+        return []
+
+    def get_main_activity(self) -> str:
+        return "A000"
+
+
+def test_apk_components_returns_the_alphabetical_head_not_the_declaration_head() -> None:
+    """A manifest past the cap returns the alphabetically-first names, not decl order.
+
+    androguard hands the component lists back fully materialized in manifest
+    declaration order. The old code capped to the first 256 in that order and
+    sorted only those, so a large manifest (>256 activities) returned the
+    declaration-order-first 256 alphabetized -- silently dropping alphabetically-
+    early activities declared past the cap. Here activities arrive reverse-sorted,
+    so the 256-item page must start at A000 (the true head), not A044 (the head of
+    the reverse-order prefix alphabetized). Same sort-before-window contract
+    apk.classes and adb.packages keep.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _ReverseOrderApk()  # type: ignore[method-assign]
+    payload = client.components(Path("dummy.apk"))
+    assert len(payload["activities"]) == 256
+    assert payload["has_more"] is True
+    assert payload["activities"] == [f"A{index:03d}" for index in range(256)]
+
+
 def test_apk_components_names_the_four_lists_not_components() -> None:
     """The catalog never named the payload or the cap.
 
