@@ -10,6 +10,8 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
+MCP 传输层容错契约新增经真实 stdio 服务的端到端 Gate（`tests/integration/test_mcp_fault_contract_gate.py`）。既有 `tests/unit/test_tool_fault_contract.py` 直连绑定 handler 证过全工具在敌意输入下恒回信封，但没覆盖传输边界——FastMCP 夹在客户端与 handler 之间，会把一类失败变成 handler 根本看不到的东西。自主 Agent 就在这条线上驱动服务，故回来的东西是承重面：Agent 要读懂失败并自我纠正，而一次坏调用绝不能拖垮承载其余所有调用的连接。本 gate 钉住两层截然不同、对调用方要求也不同的行为：**形状正确但操作失败**（文件缺失、会话不存在、id 解析不到）由 handler 的错误边界收敛为结构化信封——`isError` 为假、`structuredContent` 带 `ok=False` 与具名 `error.code`（`file_not_found` / `session_not_found` / `not_found`）及 `retryable` 布尔，模型据码分支；**调用畸形**（缺必填参、参数类型错、工具不存在）在 handler 运行前就被 FastMCP 的 schema 校验拒掉，无法产出信封，回成 MCP 协议错——`isError` 为真、无 structured content、文本里给可读的校验消息，这只有在**被收敛**（连接幸存、下一次调用照常）时才可接受。第三条把两者绑在一起:经两类失败轮番轰炸后，同一会话仍能开出真实 PE 会话并正常关闭——一个第一个坏参数就断掉的传输，对会在长跑里发出许多坏调用的 Agent 毫无用处。纯 stdlib、stdio 回环、无后端、任意平台。
+
 新增 Linux x86_64 核心支持：wheel/sdist 与 `scripts/install-linux.sh` 可安装，`doctor --strict` 以平台动态必需项判断就绪，`serve` / `serve-web`、会话、制品和可移植后端可在 Linux 加载。doctor 与 `/readyz` 现在报告 `full`（Windows）或 `core`（Linux）支持级别。
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
