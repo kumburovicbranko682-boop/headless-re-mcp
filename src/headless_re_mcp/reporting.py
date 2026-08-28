@@ -71,7 +71,14 @@ def _summarize_value(value: object) -> str:
 
             return "—"
 
-        return ", ".join(f"{key}={_flatten(item)}" for key, item in list(value.items())[:4])
+        items = list(value.items())
+        summary = ", ".join(f"{key}={_flatten(item)}" for key, item in items[:4])
+        if len(items) > 4:
+            # Same rule as _note_if_partial: a summary that silently drops
+            # keys reads as the whole value, and a key it never mentions is
+            # indistinguishable from one that was never recorded.
+            summary += ", …"
+        return summary
 
     return _flatten(value)
 

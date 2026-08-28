@@ -21,3 +21,12 @@ def test_nonempty_dict_summarizes_key_value_pairs() -> None:
 
 def test_scalar_summarizes_through_the_cell_formatter() -> None:
     assert _summarize_value("plain") == "plain"
+
+
+def test_a_dict_with_more_than_four_keys_says_it_was_cut() -> None:
+    """Four keys shown out of six used to read as the whole value."""
+    full = _summarize_value({"a": 1, "b": 2, "c": 3, "d": 4})
+    assert not full.endswith("…")
+    cut = _summarize_value({"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6})
+    assert cut.endswith(", …")
+    assert "e=" not in cut
