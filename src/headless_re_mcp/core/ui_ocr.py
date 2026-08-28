@@ -244,6 +244,30 @@ def ocr_bmp_tesseract(path: str | Path, *, tesseract: Path | None = None) -> Jso
     }
 
 
+def _ocr_backend_key(backend: Any) -> str:
+    """Normalize an OCR backend selector to its casefolded key (default ``auto``).
+
+    ``backend`` is typed ``str`` at the ui.ocr tool boundary, but the agent and
+    OpenAI-bridge transports bind it from model output with no pydantic
+    coercion. The old ``(backend or "auto").strip().casefold()`` returned the raw
+    value for a *truthy* non-string (an int, list or dict), so ``.strip()`` raised
+    an AttributeError that the UI boundary filed as an internal_error incident.
+    Reject a non-string here so ui.ocr sees the invalid_params caller fault it is,
+    while ``None`` and an empty/blank string still fall back to ``auto`` exactly as
+    before. An unknown but well-formed string still passes through so ocr_hwnd can
+    report it as capability_unavailable the way it always has.
+    """
+    if backend is None:
+        return "auto"
+    if not isinstance(backend, str):
+        raise UiPidBoundaryError(
+            "invalid_params",
+            "backend must be a string",
+            got=type(backend).__name__,
+        )
+    return backend.strip().casefold() or "auto"
+
+
 def ocr_hwnd(
     hwnd: int,
     allowed_pids: frozenset[int],
@@ -256,6 +280,10 @@ def ocr_hwnd(
 ) -> JsonObject:
     """Capture a PID-bounded hwnd screenshot then OCR it."""
     require_allowed_hwnd(hwnd, allowed_pids)
+    # Validate the backend selector before the screenshot: a malformed one is a
+    # caller fault, and capturing first would waste a PID-bounded screenshot on a
+    # request that can only be refused.
+    key = _ocr_backend_key(backend)
     shot = capture_hwnd_screenshot(
         hwnd,
         allowed_pids,
@@ -269,7 +297,6 @@ def ocr_hwnd(
             "screenshot artifact missing after capture",
             shot=shot,
         )
-    key = (backend or "auto").strip().casefold()
     errors: list[str] = []
     if key in {"windows", "windows_ocr", "winrt", "auto"} and (
         windows_ocr_available() or key != "auto"

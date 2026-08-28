@@ -22,6 +22,7 @@ import pytest
 import headless_re_mcp.core.ui_ocr as ocr
 from headless_re_mcp.backends.common.bounded_run import Completed, TimedOut
 from headless_re_mcp.core.ui_ocr import (
+    _ocr_backend_key,
     _OcrOutput,
     _read_bounded_bmp,
     _run_async,
@@ -572,3 +573,52 @@ def test_ocr_hwnd_auto_reports_when_all_backends_fail(
     tried = info.value.details["tried"]
     assert isinstance(tried, list)
     assert len(tried) == 2
+
+
+# --------------------------------------------------------------------------
+# _ocr_backend_key (OCR backend selector normalization)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, "auto"),
+        ("", "auto"),
+        ("   ", "auto"),
+        ("auto", "auto"),
+        ("Windows", "windows"),
+        ("  Tesseract  ", "tesseract"),
+        ("WINRT", "winrt"),
+        ("bogus", "bogus"),
+    ],
+)
+def test_ocr_backend_key_normalizes_strings(value: Any, expected: str) -> None:
+    assert _ocr_backend_key(value) == expected
+
+
+@pytest.mark.parametrize("value", [0, 1, 5, 1.5, [1], {"a": 1}, (), b"auto", True, False])
+def test_ocr_backend_key_rejects_non_strings(value: Any) -> None:
+    with pytest.raises(UiPidBoundaryError) as info:
+        _ocr_backend_key(value)
+    assert info.value.code == "invalid_params"
+    assert info.value.details["got"] == type(value).__name__
+
+
+@pytest.mark.parametrize("bad", [5, 1.5, [1], {"a": 1}, b"auto", True])
+def test_ocr_hwnd_refuses_a_non_string_backend_before_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: Any
+) -> None:
+    # A malformed backend must be refused as a caller fault without ever taking
+    # the PID-bounded screenshot; the old raw ``.strip()`` crashed *after* the
+    # capture and surfaced as an internal_error incident instead.
+    monkeypatch.setattr(ocr, "require_allowed_hwnd", lambda hwnd, allowed: None)
+
+    def forbidden_capture(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("capture must not run for a malformed backend")
+
+    monkeypatch.setattr(ocr, "capture_hwnd_screenshot", forbidden_capture)
+    with pytest.raises(UiPidBoundaryError) as info:
+        ocr_hwnd(5, frozenset({7}), tmp_path / "o.bmp", backend=bad)
+    assert info.value.code == "invalid_params"
+    assert info.value.details["got"] == type(bad).__name__
