@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.agent.redaction import redact
+from headless_re_mcp.agent.redaction import is_secret_key, redact
 
 ANALYSIS_THAT_MUST_SURVIVE: list[tuple[str, dict[str, Any]]] = [
     ("dotnet il call graph", {"call_tokens": [100663297, 167772161], "instructions": 12}),
@@ -53,6 +53,64 @@ def test_a_credential_is_still_hidden(label: str, payload: dict[str, Any]) -> No
     redacted = redact(payload)
     assert redacted != payload, label
     assert "***REDACTED***" in str(redacted), label
+
+
+# Every alternative _SECRET_KEY claims to match, each paired with a string value
+# a real credential would live in. The list above only ever exercised
+# token / api_key / password / credential / authorization, so dropping
+# private_key, access_key, secret, passwd or providerApiKeys from the regex --
+# the kind of thing a "tidy up the pattern" refactor does -- would silently
+# shrink the credential net with every test still green. Pin the whole declared
+# set so removing any one alternative fails its own row here. The `[_-]?` and
+# case-insensitive `search` are pinned too (apiKey, x-api-key, access-key), so a
+# regex tightened to word boundaries or exact case cannot quietly stop matching
+# the header/camelCase spellings that actually appear in provider payloads.
+DECLARED_SECRET_KEYS: list[tuple[str, str]] = [
+    ("api_key", "sk-live-abcdef"),
+    ("apiKey", "sk-live-abcdef"),
+    ("x-api-key", "sk-live-abcdef"),
+    ("private_key", "-----BEGIN PRIVATE KEY-----"),
+    ("access_key", "AKIAEXAMPLE"),
+    ("access-key", "AKIAEXAMPLE"),
+    ("authorization", "Bearer abc.def"),
+    ("token", "eyJhbGciOiJIUzI1NiJ9.abc.def"),
+    ("refresh_token", "rt_abcdef"),
+    ("secret", "shhh"),
+    ("client_secret", "cs_abcdef"),
+    ("password", "hunter2"),
+    ("passwd", "hunter2"),
+    ("credential", "cred-abcdef"),
+    ("providerApiKeys", "sk-abcdef"),
+]
+
+
+@pytest.mark.parametrize(
+    ("key", "value"), DECLARED_SECRET_KEYS, ids=[k for k, _ in DECLARED_SECRET_KEYS]
+)
+def test_every_declared_secret_key_is_redacted(key: str, value: str) -> None:
+    """A string value under any declared secret key is fully masked."""
+    assert is_secret_key(key), f"{key} should be recognised as a secret key"
+    assert redact({key: value}) == {key: "***REDACTED***"}, key
+
+
+def test_cookie_is_deliberately_not_treated_as_secret() -> None:
+    """``cookie`` is kept OUT of the secret-key set on purpose.
+
+    ``__security_cookie`` is the stack-canary global in almost every Windows
+    binary, and ``cookie`` appears in countless other real symbols and fields;
+    matching it would blank genuine analysis output (the same reason ``token``
+    leans on the numeric guard rather than a blanket mask). The exclusion lived
+    only in this file's module docstring -- so a well-meaning "add cookie to the
+    credential net" change would corrupt RE output for every PE while every test
+    above stayed green. Pin the exclusion here in both directions: the key is not
+    classified secret, and a string value under it survives redaction untouched.
+    """
+    assert is_secret_key("cookie") is False
+    assert is_secret_key("__security_cookie") is False
+    assert redact({"cookie": "GS_HANDLER_CHECK"}) == {"cookie": "GS_HANDLER_CHECK"}
+    assert redact({"__security_cookie": "0x140001000"}) == {
+        "__security_cookie": "0x140001000"
+    }
 
 
 def test_a_bearer_inside_a_string_is_still_masked() -> None:
