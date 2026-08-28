@@ -22,6 +22,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 
@@ -130,5 +132,49 @@ def test_only_the_spilled_side_is_registered(tmp_path: Path) -> None:
         assert "artifact_id" not in result.data["request"]
         assert result.data["request"]["body"] == "small"
         assert isinstance(result.data["response"].get("artifact_id"), str)
+    finally:
+        service.close_all()
+
+
+def test_a_body_that_cannot_be_registered_degrades_to_an_error_not_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store hiccup while registering a body must not sink the flow fetch.
+
+    Registering a spilled body writes to the artifact store, and that write can
+    fail on a full or locked database. _register_capture is deliberately built to
+    report such a failure in the payload rather than raise, so proxy.flow.get
+    still returns the flow and the affected side carries artifact_error instead of
+    artifact_id while keeping its body_path -- the capture degrades, it is not
+    lost, and the caller is told which side could not be registered. Nothing
+    proved the service actually threads that artifact_error onto the part: drop
+    the branch and a store hiccup would either sink an otherwise-good capture or
+    silently strip the body with no trace. Force _record_artifact to raise (the
+    body file itself still exists, so this is the failed-registration path, not
+    the missing-file one) and prove the flow still comes back, marked on both
+    sides.
+    """
+    from headless_re_mcp.core import service_ext
+
+    service = _service(tmp_path)
+    try:
+        session_id = _web_session(service)
+        service._proxy_backend = _FakeProxy()  # type: ignore[assignment]
+
+        def _boom(*args: Any, **kwargs: Any) -> JsonObject:
+            raise RuntimeError("artifact store is locked")
+
+        monkeypatch.setattr(service_ext, "_record_artifact", _boom)
+
+        result = service.proxy_flow_get(session_id, "f1")
+
+        assert result.ok and result.data is not None, result.error
+        for side in ("request", "response"):
+            part = result.data[side]
+            assert "artifact_id" not in part, f"{side}: a failed registration must not mint an id"
+            assert "artifact store is locked" in str(part.get("artifact_error")), part
+            # The body is still on disk (body_path survives) even though it never
+            # became a registered artifact: the fetch degraded, it did not drop data.
+            assert part.get("body_path"), f"{side}: body_path must survive the degrade"
     finally:
         service.close_all()

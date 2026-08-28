@@ -165,6 +165,10 @@ def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypa
     doc = _tool_docstring("proxy.flow.get")
     assert "body_path" in doc
     assert "response" in doc
+    # A spilled body normally carries artifact_id, but registration can fail and
+    # then the side carries artifact_error instead -- the doc must name that
+    # fallback so an agent expecting an id knows to read body_path on a miss.
+    assert "artifact_error" in doc
 
 
 def test_proxy_status_names_flow_count_and_retained_max() -> None:
