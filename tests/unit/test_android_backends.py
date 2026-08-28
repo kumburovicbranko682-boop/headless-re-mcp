@@ -353,9 +353,80 @@ class TestApkClassification:
 
     def test_describe_apk_reads_abis_without_androguard(self, tmp_path: Path) -> None:
         info = describe_apk(_apk(tmp_path / "app.apk"))["apk"]
+        assert info["format"] == "apk"
         assert info["native_abis"] == ["arm64-v8a"]
         assert info["dex_count"] == 1
         assert info["signed_v1"] is True
+
+    def test_describe_apk_ignores_lib_segments_that_are_not_real_abis(
+        self, tmp_path: Path
+    ) -> None:
+        """A lib/ path under assets must not be read as a native ABI.
+
+        native_abis now matches a lib segment anywhere (an app bundle keeps
+        libs at base/lib/...), so it is scoped to Android's known ABI names to
+        keep an assets/lib/<not-an-abi>/ path from inventing an architecture.
+        """
+        path = tmp_path / "app.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("lib/arm64-v8a/libx.so", b"\x7fELF")
+            archive.writestr("assets/lib/plugins/thing.bin", b"data")
+        info = describe_apk(path)["apk"]
+        assert info["native_abis"] == ["arm64-v8a"]
+
+    def test_describe_app_bundle_yields_identity_not_a_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """An .aab classifies as APK but keeps its manifest under base/manifest.
+
+        Measured: describe_apk required AndroidManifest.xml at the root, so a
+        valid app bundle -- an advertised suffix -- failed session creation
+        with "archive has no AndroidManifest.xml", which reads as a corrupt
+        file rather than a different, supported packaging.
+        """
+        path = tmp_path / "app.aab"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("BundleConfig.pb", b"\x08\x01")
+            archive.writestr("base/manifest/AndroidManifest.xml", b"proto")
+            archive.writestr("base/dex/classes.dex", b"dex\n035\x00")
+            archive.writestr("base/lib/arm64-v8a/libnative.so", b"\x7fELF")
+            archive.writestr("base/lib/x86_64/libnative.so", b"\x7fELF")
+            archive.writestr("META-INF/BNDLTOOL.RSA", b"sig")
+        info = describe_apk(path)["apk"]
+        assert info["format"] == "aab"
+        assert set(info["native_abis"]) == {"arm64-v8a", "x86_64"}
+        assert info["dex_count"] == 1
+        assert info["signed_v1"] is True
+
+    def test_describe_apk_container_reports_embedded_count_not_false_abis(
+        self, tmp_path: Path
+    ) -> None:
+        """.apks / .xapk are containers of real APKs, not APKs themselves.
+
+        Their ABIs and signatures live inside the bundled splits, so the outer
+        archive reports how many APKs it holds and does not claim native code
+        or a signature it cannot see without opening them.
+        """
+        apks = tmp_path / "app.apks"
+        with zipfile.ZipFile(apks, "w") as archive:
+            archive.writestr("toc.pb", b"\x08\x01")
+            archive.writestr("splits/base-master.apk", b"PK\x03\x04")
+            archive.writestr("splits/base-arm64_v8a.apk", b"PK\x03\x04")
+        info = describe_apk(apks)["apk"]
+        assert info["format"] == "apks"
+        assert info["apk_count"] == 2
+        assert info["native_abis"] == []
+        assert info["signed_v1"] is False
+
+        xapk = tmp_path / "app.xapk"
+        with zipfile.ZipFile(xapk, "w") as archive:
+            archive.writestr("manifest.json", b'{"package_name":"com.x"}')
+            archive.writestr("com.x.apk", b"PK\x03\x04")
+            archive.writestr("config.arm64_v8a.apk", b"PK\x03\x04")
+        info = describe_apk(xapk)["apk"]
+        assert info["format"] == "xapk"
+        assert info["apk_count"] == 2
 
     def test_describe_apk_rejects_archive_without_manifest(self, tmp_path: Path) -> None:
         plain = tmp_path / "archive.zip"

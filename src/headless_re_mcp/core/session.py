@@ -359,6 +359,12 @@ def file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
 _APK_SUFFIXES = frozenset({".apk", ".aab", ".apks", ".xapk"})
 _WEB_SUFFIXES = frozenset({".js", ".mjs", ".cjs", ".wasm", ".html", ".htm", ".har"})
 _APK_MANIFEST = "AndroidManifest.xml"
+# The ABI directory names Android recognises under lib/. Matching this set
+# rather than "any directory under lib/" keeps an assets/ path that happens to
+# contain a lib segment from being read as a native ABI.
+_ANDROID_ABIS = frozenset(
+    {"armeabi", "armeabi-v7a", "arm64-v8a", "x86", "x86_64", "mips", "mips64", "riscv64"}
+)
 # Enough for every magic number below without pulling a large header into memory.
 _MAGIC_BYTES = 8
 
@@ -406,12 +412,55 @@ def _is_android_package(path: Path) -> bool:
         return False
 
 
+def _android_abis(names: Iterable[str]) -> list[str]:
+    """Native ABI directories, wherever the format keeps lib/.
+
+    A plain APK stores them at ``lib/<abi>/``; an app bundle at
+    ``base/lib/<abi>/`` (and ``<feature>/lib/<abi>/``). Matching a ``lib``
+    path segment followed by a known ABI covers both without recursing into
+    nested archives.
+    """
+    abis: set[str] = set()
+    for name in names:
+        parts = name.split("/")
+        for index, segment in enumerate(parts):
+            if segment == "lib" and index + 2 < len(parts):
+                candidate = parts[index + 1]
+                if candidate in _ANDROID_ABIS:
+                    abis.add(candidate)
+    return sorted(abis)
+
+
+def _android_container_format(names: set[str], suffix: str) -> str | None:
+    """Which Android packaging this archive is, or None if it is not one.
+
+    ``apk`` has the manifest at the root; ``aab`` keeps it under a module's
+    ``manifest/`` directory (and carries ``BundleConfig.pb``); ``apks`` and
+    ``xapk`` are containers that bundle one or more real APKs.
+    """
+    if _APK_MANIFEST in names:
+        return "apk"
+    if "BundleConfig.pb" in names or any(
+        name.endswith("/manifest/AndroidManifest.xml") for name in names
+    ):
+        return "aab"
+    if any(name.endswith(".apk") for name in names):
+        return "xapk" if suffix == ".xapk" or "manifest.json" in names else "apks"
+    return None
+
+
 def describe_apk(path: Path) -> dict[str, Any]:
     """Read cheap identity facts from the package without a decompiler.
 
     Deliberately stdlib-only: session creation must not depend on androguard
     being installed, otherwise the whole Android surface becomes unavailable
     instead of degrading to "opened, but cannot decompile".
+
+    Handles the four packagings classify_target accepts, not just plain APK:
+    an app bundle (.aab) or a container (.apks/.xapk) still yields a session
+    with best-effort identity and a ``format`` marker, instead of failing
+    creation with a misleading "no AndroidManifest.xml" -- in those formats the
+    manifest simply lives elsewhere, or inside the bundled APKs.
     """
 
     try:
@@ -419,26 +468,29 @@ def describe_apk(path: Path) -> dict[str, Any]:
             names = archive.namelist()
     except (OSError, zipfile.BadZipFile) as exc:
         raise ValueError(f"not a readable Android package: {path}") from exc
-    if _APK_MANIFEST not in names:
-        raise ValueError(f"archive has no {_APK_MANIFEST}: {path}")
-    abis = sorted(
-        {
-            parts[1]
+    name_set = set(names)
+    fmt = _android_container_format(name_set, path.suffix.lower())
+    if fmt is None:
+        raise ValueError(
+            f"archive is not an Android package "
+            f"(no {_APK_MANIFEST}, app-bundle manifest, or embedded APK): {path}"
+        )
+    identity: dict[str, Any] = {
+        "format": fmt,
+        "native_abis": _android_abis(names),
+        "dex_count": sum(1 for name in names if name.endswith(".dex")),
+        "entry_count": len(names),
+        "signed_v1": any(
+            name.startswith("META-INF/") and name.endswith((".RSA", ".DSA", ".EC"))
             for name in names
-            if name.startswith("lib/") and len(parts := name.split("/")) >= 3 and parts[1]
-        }
-    )
-    return {
-        "apk": {
-            "native_abis": abis,
-            "dex_count": sum(1 for name in names if name.endswith(".dex")),
-            "entry_count": len(names),
-            "signed_v1": any(
-                name.startswith("META-INF/") and name.endswith((".RSA", ".DSA", ".EC"))
-                for name in names
-            ),
-        }
+        ),
     }
+    if fmt in {"apks", "xapk"}:
+        # The ABIs and signature of a container live inside the APKs it holds,
+        # not in the outer archive, so report how many it carries rather than
+        # implying the container itself is native or signed.
+        identity["apk_count"] = sum(1 for name in names if name.endswith(".apk"))
+    return {"apk": identity}
 
 
 def detect_pe_architecture(path: Path) -> Architecture:
