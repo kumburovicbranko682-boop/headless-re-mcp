@@ -430,6 +430,27 @@ class UnpackMixin:
         blocked = self._guard_unpack_active(session_id, stage="iat_scan")
         if blocked is not None:
             return blocked
+        # max_candidates is Field(ge=1, le=32) at the MCP boundary, but the agent
+        # and OpenAI-bridge transports bind it from model output with no pydantic
+        # coercion, and it is used in local arithmetic -- max(max_candidates * 3,
+        # 24) -- before imports_scan (which validates its own arguments) is even
+        # called. A str made "888" then crashed max() against an int, and a
+        # None/list/dict crashed the multiply: each raised a TypeError that
+        # escaped this method *uncaught*, with none of the invalid_params envelope
+        # imports_scan gives a bad module_base. A bool is an int subclass that
+        # slipped through and sliced the ranked pool to one. Refuse them here.
+        if (
+            isinstance(max_candidates, bool)
+            or type(max_candidates) is not int
+            or not 1 <= max_candidates <= 32
+        ):
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="max_candidates must be an integer in 1..32",
+                ),
+            )
         scanned = self.imports_scan(
             session_id,
             module_base,

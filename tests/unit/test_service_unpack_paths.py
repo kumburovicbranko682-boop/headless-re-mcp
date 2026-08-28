@@ -1382,6 +1382,60 @@ def test_iat_scan_tolerates_non_list_candidates(
     assert result.data["candidate_count"] == 0
 
 
+@pytest.mark.parametrize("bad", ["8", None, [1], {"a": 1}, True, 1.5, 0, 33, -1])
+def test_iat_scan_refuses_a_non_int_max_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: Any
+) -> None:
+    """max_candidates is Field(ge=1, le=32) at the MCP boundary and used in
+    local arithmetic -- max(max_candidates * 3, 24) -- before imports_scan runs.
+
+    On the pydantic-free agent transport a str made "888" then crashed max()
+    against an int, and a None/list/dict crashed the multiply: each raised a
+    TypeError that escaped unpack_iat_scan *uncaught*, unlike the invalid_params
+    imports_scan answers for a bad module_base. A bool slipped through and
+    sliced the ranked pool to one. All must be refused before the scan.
+    """
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+
+    def _boom(*_a: Any, **_k: Any) -> Result[dict[str, Any]]:
+        raise AssertionError("imports_scan must not run for a bad max_candidates")
+
+    monkeypatch.setattr(service, "imports_scan", _boom)
+
+    result = service.unpack_iat_scan(session_id, _MODULE_BASE, max_candidates=bad)  # type: ignore[arg-type]
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
+
+
+@pytest.mark.parametrize("good", [1, 8, 32])
+def test_iat_scan_accepts_in_range_max_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, good: int
+) -> None:
+    """An in-range int passes the guard and drives the widened native pool."""
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    seen: list[int] = []
+
+    def _capture(*_a: Any, max_candidates: int = 0, **_k: Any) -> Result[dict[str, Any]]:
+        seen.append(max_candidates)
+        return Result[dict[str, Any]](
+            ok=True, data={"candidates": [], "module_size": 0x1000}
+        )
+
+    monkeypatch.setattr(service, "imports_scan", _capture)
+
+    result = service.unpack_iat_scan(session_id, _MODULE_BASE, max_candidates=good)
+
+    assert result.ok and result.data is not None
+    assert seen == [max(good * 3, 24)]
+
+
 def test_iat_validate_is_blocked_on_a_terminal_session(tmp_path: Path) -> None:
     service = _service(tmp_path)
     session_id, _dump = _cancelled_session(service, tmp_path)
