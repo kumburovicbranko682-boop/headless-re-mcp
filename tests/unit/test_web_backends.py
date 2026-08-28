@@ -307,7 +307,9 @@ class TestWebNavTimeoutIsBounded:
     def test_bound_nav_timeout_rejects_nonpositive_and_caps_the_rest(self) -> None:
         assert _bound_nav_timeout(30.0) == 30.0
         assert _bound_nav_timeout(10**9) == _MAX_NAV_TIMEOUT_S
-        for bad in (0.0, -1.0, -100.0):
+        # NaN is refused with the non-positive values: min(nan, cap) is nan, and
+        # a NaN deadline reaching Future.result would neither return nor bound.
+        for bad in (0.0, -1.0, -100.0, float("nan")):
             with pytest.raises(WebError) as info:
                 _bound_nav_timeout(bad)
             assert info.value.code == "invalid_params"

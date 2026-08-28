@@ -71,9 +71,15 @@ def _bound_nav_timeout(timeout: float) -> float:
     while a huge one would park the session thread and a pool worker for as long
     as the page took. Reject the first and cap the second before any work is
     queued, so a stray timeout can never wedge a live browser.
+
+    NaN is refused with the non-positive case (``value != value``): ``min(nan,
+    cap)`` returns nan, and ``Future.result(nan)`` neither returns nor bounds the
+    wait -- parking the session thread and a pool worker, worse than the
+    non-positive case. The schema's ``gt=0`` already excludes NaN, but the agent
+    transport bypasses it, the same reason ``clamp_cli_timeout`` rejects it.
     """
     value = float(timeout)
-    if value <= 0:
+    if value != value or value <= 0:
         raise WebError("invalid_params", "timeout must be positive")
     return min(value, _MAX_NAV_TIMEOUT_S)
 

@@ -174,6 +174,16 @@ def test_bound_timeout_rejects_a_non_positive_deadline() -> None:
     assert caught.value.code == "invalid_params"
 
 
+def test_bound_timeout_rejects_nan_and_caps_a_huge_deadline() -> None:
+    # NaN slips past a bare `<= 0` check (every NaN comparison is False) and
+    # min(nan, cap) returns nan, so a NaN deadline would reach a frida wait as a
+    # bound that neither elapses nor limits. It must be refused like <= 0.
+    with pytest.raises(FridaError) as caught:
+        frida_mod._bound_timeout(float("nan"))
+    assert caught.value.code == "invalid_params"
+    assert frida_mod._bound_timeout(10**9) == frida_mod.MAX_WORKFLOW_TIMEOUT
+
+
 def test_invoke_passes_a_timeout_only_when_the_callable_names_it() -> None:
     def with_timeout(value: int, timeout: float) -> tuple[int, float]:
         return value, timeout

@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（frida/web 的超时边界守卫漏掉 NaN,一个 NaN 截止时限会溜进等待逻辑)
+
+- `clamp_cli_timeout`(CLI 适配器共用)对非正值和 NaN 都拒绝,但 frida 的 `_bound_timeout` 和 web 的 `_bound_nav_timeout` 这两个
+  平行守卫只判 `value <= 0`。NaN 的所有比较都为假,故 `value <= 0` 放它通过;而 `min(nan, cap)` 因 nan 是首参、后者不严格更小
+  而返回 nan——于是一个 NaN 截止时限直穿到等待逻辑:web 端到 `Future.result(nan)`(既不返回也不设界,把会话线程与一个线程池
+  worker 一起挂住,比它已防的非正值更糟),frida 端到 `_run_deadline`/frida 调用的等待。MCP 路径的 schema `gt=0` 本会拒绝 NaN,
+  但 agent/OpenAI 传输绕过它——正是这两个守卫存在的理由。两者现在都以 `value != value or value <= 0` 连 NaN 一并拒绝,与
+  `clamp_cli_timeout` 对齐;有限的 +inf 仍照旧被 `min` 封顶到上限,无需特判。扩展测试:`_bound_nav_timeout` 与 `_bound_timeout`
+  对 NaN 都抛 `invalid_params`,超大值仍分别封顶到各自上限。纯边界输入校验对齐,不改成功路径。
+
 ### 修复（ghidra analyzeHeadless 把调用方 timeout 直接喂给 run_bounded,绕过 schema 边界不设防)
 
 - 继 windbg 之后,ghidra 是 `run_bounded` 兄弟适配器里最后一个未在边界收口 timeout 的:jadx/apktool/jsre/radare2/windbg 都经

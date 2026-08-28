@@ -257,8 +257,12 @@ def _accepts_timeout(func: Any) -> bool:
 
 
 def _bound_timeout(timeout: float) -> float:
+    # Reject NaN with the non-positive case (value != value): min(nan, cap)
+    # returns nan, and a NaN deadline handed to a frida wait neither elapses nor
+    # bounds it. The tool schema's gt=0 excludes NaN, but the agent/OpenAI
+    # transports bypass that -- the same reason clamp_cli_timeout rejects it.
     value = float(timeout)
-    if value <= 0:
+    if value != value or value <= 0:
         raise FridaError("invalid_params", "timeout must be positive")
     return min(value, MAX_WORKFLOW_TIMEOUT)
 
