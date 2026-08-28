@@ -42,10 +42,13 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Functions Ghidra found.
 
         Answers with items, each carrying name, entry and body_size, plus count
-        and has_more so a page that filled the limit is not read as the whole list.
-        The raw export is kept: the reply also carries export_path, project_dir
-        and artifact_id, so the JSON can be reopened with artifacts.read.
-        A failed export is an error, not a binary with no functions.
+        and has_more so a page that filled the limit is not read as the whole
+        list. entry is the function's entry-point address; pass it to
+        ghidra.decompile or ghidra.xrefs as their address (both take an address,
+        not a function name). The raw export is kept: the reply also carries
+        export_path, project_dir and artifact_id, so the JSON can be reopened
+        with artifacts.read. A failed export is an error, not a binary with no
+        functions.
         """
         return _dump(analysis.ghidra_functions(session_id, limit=limit, timeout=timeout))
 

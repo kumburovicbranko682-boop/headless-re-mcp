@@ -104,3 +104,19 @@ def test_ghidra_decompile_names_the_resolved_function() -> None:
 
     doc = _tool_docstring("ghidra.decompile")
     assert "function and entry" in doc
+
+
+def test_ghidra_functions_names_entry_as_the_address_for_decompile_and_xrefs() -> None:
+    """entry is the join key from functions to the address-scoped tools.
+
+    ghidra.functions rows carry entry (a function's entry-point address), and
+    ghidra.decompile / ghidra.xrefs both take an address -- but the field is
+    named entry and the parameter is named address, so an agent has no signal
+    that entry is what to feed them (and neither takes a function name). Name
+    the join on the producing side, the same way frida.applications points its
+    identifier at frida.spawn and r2.functions points its offset at r2.disasm.
+    """
+    doc = _tool_docstring("ghidra.functions")
+    assert "entry" in doc
+    assert "ghidra.decompile" in doc
+    assert "ghidra.xrefs" in doc
