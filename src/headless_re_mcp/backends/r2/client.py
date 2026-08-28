@@ -86,6 +86,11 @@ _AXREF_COMMAND = re.compile(r"ax[tf]?j @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 # address-emitting readers (xrefs/relocations/search/read/disasm).
 _AFIJ_COMMAND = re.compile(r"afij @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 _FDJ_COMMAND = re.compile(r"fdj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+# afbj @ addr: the basic blocks of the function containing addr (start, size,
+# jump/fail successors, instruction count). r2.cfg runs it beside afij to build
+# a function's control-flow graph -- nodes and branch edges, the native twin of
+# static.cfg.
+_AFBJ_COMMAND = re.compile(r"afbj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 
 
 def _is_invalid_op(item: JsonObject) -> bool:
@@ -127,6 +132,8 @@ def _require_allowed_command(command: str) -> None:
     if _AFIJ_COMMAND.fullmatch(command) is not None:
         return
     if _FDJ_COMMAND.fullmatch(command) is not None:
+        return
+    if _AFBJ_COMMAND.fullmatch(command) is not None:
         return
     raise R2Error("invalid_params", "r2 command not whitelisted", command=command)
 
@@ -232,6 +239,32 @@ def _resolve_flag(
     else:
         flag["delta"] = 0
     return flag
+
+
+def _switch_targets(switch_op: Any) -> list[tuple[int, str]]:
+    """Case (and default) targets of a jump table, from a block's ``switch_op``.
+
+    r2 tags a jump-table block with ``switch_op`` carrying the table's cases; the
+    plain ``jump``/``fail`` pair cannot express a fan-out, so without this a
+    ``switch`` on many values would lose every arm but one. The structure drifts
+    across versions, so read each case's target under any of the keys r2 has
+    used and skip anything unshaped rather than guess.
+    """
+    if not isinstance(switch_op, dict):
+        return []
+    out: list[tuple[int, str]] = []
+    cases = switch_op.get("cases")
+    if isinstance(cases, list):
+        for case in cases:
+            if not isinstance(case, dict):
+                continue
+            dst = _item_va(case, ("jump", "addr", "offset"))
+            if dst is not None:
+                out.append((dst, "switch"))
+    default = _item_va(switch_op, ("def", "default"))
+    if default is not None:
+        out.append((default, "switch_default"))
+    return out
 
 
 class R2Client:
@@ -801,6 +834,154 @@ class R2Client:
             )
             if site_mapped is not None:
                 item["call_site"] = site_mapped
+        return item
+
+    def cfg(
+        self,
+        binary: Path,
+        address: int,
+        *,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """The control-flow graph of the function at ``address``.
+
+        Where r2.disasm_function reads a function as a flat op list, this reads
+        its shape: the basic blocks (nodes) and the branch edges between them, so
+        loops, conditionals and fall-through are legible without walking every
+        instruction. It is the native twin of static.cfg -- the seam from
+        r2.functions or r2.disasm_function to "how does control move through this
+        routine". ``address`` may sit anywhere inside the function, not only on
+        its entry.
+
+        Runs ``aa`` then ``afij`` (the function bounds) and ``afbj`` (its basic
+        blocks) in one pass. Each block becomes a node; r2's per-block ``jump``
+        (branch-taken / unconditional successor) and ``fail`` (branch-not-taken
+        fall-through) become directed edges, and a jump table's ``switch_op``
+        cases become switch edges. An address not inside any analysed function is
+        a clean empty graph, not an error.
+        """
+        if type(address) is not int or address < 0:
+            raise R2Error("invalid_params", "address must be a non-negative int")
+        afij = f"afij @ {address}"
+        afbj = f"afbj @ {address}"
+        data = self.run(binary, ["aa", afij, afbj], timeout=timeout)
+        arrays = parse_r2_arrays(str(data.get("raw") or ""))
+        func_arr = arrays[0] if len(arrays) >= 1 else []
+        blocks = arrays[1] if len(arrays) >= 2 else []
+        arch, image_base = pe_preferred_base(binary)
+
+        result: JsonObject = {
+            "commands": ["aa", afij, afbj],
+            "module": binary.name,
+            "address_va": address,
+            "parsed": bool(arrays),
+        }
+        if image_base is not None:
+            result["image_base"] = image_base
+        if arch is not None:
+            result["architecture"] = arch.value
+        mapped = address_dict(
+            address, module=binary.name, image_base=image_base, architecture=arch
+        )
+        if mapped is not None:
+            result["address"] = mapped
+
+        func = func_arr[0] if isinstance(func_arr, list) and func_arr else None
+        if isinstance(func, dict):
+            func_start = _item_va(func, ("offset", "addr"))
+            func_entry: JsonObject = {"name": str(func.get("name") or "")}
+            if func_start is not None:
+                func_entry["addr"] = func_start
+                func_mapped = address_dict(
+                    func_start, module=binary.name, image_base=image_base, architecture=arch
+                )
+                if func_mapped is not None:
+                    func_entry["address"] = func_mapped
+            if isinstance(func.get("size"), int):
+                func_entry["size"] = func["size"]
+            if isinstance(func.get("nbbs"), int):
+                func_entry["nbbs"] = func["nbbs"]
+            result["function"] = func_entry
+        else:
+            # afbj/afij at a non-function address print empty arrays; report an
+            # empty graph rather than raising, matching r2.disasm_function.
+            result["function"] = None
+
+        nodes: list[JsonObject] = []
+        # (src, dst, kind) -- a set so a block that lists the same successor twice
+        # (a conditional whose arms coincide) collapses to one edge.
+        edge_set: set[tuple[int, int, str]] = set()
+        available = len(blocks) if isinstance(blocks, list) else 0
+        for block in (blocks or [])[:_MAX_ITEMS]:
+            if not isinstance(block, dict):
+                continue
+            start = _item_va(block, ("addr", "offset"))
+            if start is None:
+                continue
+            size = block.get("size")
+            size = size if isinstance(size, int) and size >= 0 else 0
+            node: JsonObject = {"addr": start, "size": size, "end": start + size}
+            if isinstance(block.get("ninstr"), int):
+                node["ninstr"] = block["ninstr"]
+            node_mapped = address_dict(
+                start, module=binary.name, image_base=image_base, architecture=arch
+            )
+            if node_mapped is not None:
+                node["address"] = node_mapped
+            nodes.append(node)
+
+            jump = _item_va(block, ("jump",))
+            fail = _item_va(block, ("fail",))
+            # jump is the branch-taken / unconditional successor; fail is the
+            # fall-through when the branch is not taken. A block with both is a
+            # conditional; a block with only jump flows unconditionally.
+            if jump is not None:
+                edge_set.add((start, jump, "jump"))
+            if fail is not None:
+                edge_set.add((start, fail, "fail"))
+            for dst, kind in _switch_targets(block.get("switch_op")):
+                edge_set.add((start, dst, kind))
+
+        edges: list[JsonObject] = [
+            self._cfg_edge(
+                src, dst, kind, module=binary.name, image_base=image_base, architecture=arch
+            )
+            for src, dst, kind in sorted(edge_set)
+        ]
+        result["nodes"] = nodes
+        result["edges"] = edges
+        result["node_count"] = len(nodes)
+        result["edge_count"] = len(edges)
+        if available > _MAX_ITEMS:
+            # A function with more blocks than the cap is trimmed; say so, like
+            # the other r2 readers, so "this is the whole CFG" is never a wrong
+            # read. Edges are built only from the included nodes.
+            result["nodes_truncated"] = True
+            result["nodes_total"] = available
+            result["nodes_limit"] = _MAX_ITEMS
+        return result
+
+    @staticmethod
+    def _cfg_edge(
+        src: int,
+        dst: int,
+        kind: str,
+        *,
+        module: str,
+        image_base: int | None,
+        architecture: Any,
+    ) -> JsonObject:
+        item: JsonObject = {"src": src, "dst": dst, "kind": kind}
+        src_mapped = address_dict(
+            src, module=module, image_base=image_base, architecture=architecture
+        )
+        if src_mapped is not None:
+            item["src_address"] = src_mapped
+        dst_mapped = address_dict(
+            dst, module=module, image_base=image_base, architecture=architecture
+        )
+        if dst_mapped is not None:
+            item["dst_address"] = dst_mapped
         return item
 
     def libs(self, binary: Path, *, timeout: float = 30.0) -> JsonObject:

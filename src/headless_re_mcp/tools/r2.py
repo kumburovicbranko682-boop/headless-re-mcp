@@ -376,6 +376,38 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="r2.cfg")
+    def r2_cfg(
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Control-flow graph of the function at an address.
+
+        Where r2.disasm_function reads a function as a flat op list, this reads
+        its shape: the basic blocks (nodes) and the branch edges between them, so
+        loops, conditionals and fall-through are legible without walking every
+        instruction. It is the native twin of static.cfg -- the seam from
+        r2.functions or r2.disasm_function to "how does control move through this
+        routine". address may sit anywhere inside the function, not only on its
+        entry.
+
+        Runs ``aa`` then ``afij`` (function bounds) and ``afbj`` (basic blocks) in
+        one pass. Answers with function ({name, addr, size, nbbs, address} of the
+        containing function, or null when address is inside no analysed
+        function), nodes and edges. Each node carries addr, size, end, ninstr
+        (instruction count) and address (va/rva/module). Each edge carries src,
+        dst, kind and the mapped src_address/dst_address; kind is "jump"
+        (branch-taken or unconditional successor), "fail" (branch-not-taken
+        fall-through), or "switch"/"switch_default" for a jump table's arms. Edges
+        are deduplicated and sorted; node_count and edge_count summarise the
+        graph, and nodes_truncated/nodes_total/nodes_limit disclose a function
+        larger than the 4096-block cap (edges are built only from the kept
+        nodes). An address outside every function is a clean empty graph, not an
+        error.
+        """
+        return _dump(analysis.r2_cfg(session_id, address, timeout=timeout))
+
     @tools.tool(name="r2.libs")
     def r2_libs(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
