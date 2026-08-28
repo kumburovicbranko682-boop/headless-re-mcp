@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, ClassVar, TypeVar
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.secret_scan import iter_secret_matches
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 
 JsonObject = dict[str, Any]
@@ -36,6 +37,16 @@ _MAX_XREFS_COLLECT = 5000
 # fragment that hit several strings; clip that echo so a page of callers to a
 # long (up to _MAX_STRING_LEN) URL cannot bloat the answer.
 _MAX_XREF_STRING_ECHO = 256
+# apk.secrets aggregation bounds. Distinct findings are capped (scan_capped when
+# hit) so a pathological pool cannot grow the answer without bound; the matched
+# credential (value) and the containing DEX constant it is echoed from (source,
+# the apk.string_xrefs pivot) are each clipped. A scan budget bounds how many
+# pool constants are examined even when almost none match, so a giant string
+# pool cannot park the worker.
+_MAX_SECRET_FINDINGS = 20000
+_MAX_SECRET_VALUE = 512
+_MAX_SECRET_SOURCE = 256
+_MAX_SECRET_SCAN_STRINGS = 200_000
 _MAX_NATIVE_LIBS = 256
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
@@ -1093,6 +1104,80 @@ class ApkClient:
             "offset": start,
             "has_more": start + len(window) < len(values),
             "scan_capped": scan_more,
+        }
+
+    def secrets(
+        self,
+        path: Path,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        include_generic: bool = False,
+    ) -> JsonObject:
+        """Detect embedded credentials in the DEX string pool.
+
+        The apk analogue of js.secrets: the same shared detector table run over
+        every DEX string constant. Where apk.strings dumps the whole pool for a
+        human to grep, this returns only the credential hits, each carrying the
+        containing constant as ``source`` so apk.string_xrefs can pivot straight
+        to where the key is used. Deduplicated by (detector, value), paged, with
+        a distinct-findings ceiling and a scan budget (scan_capped when either is
+        hit).
+        """
+        parsed = self._parsed(path)
+        needle = name_filter.strip() if isinstance(name_filter, str) else ""
+        aggregates: dict[tuple[str, str], JsonObject] = {}
+        scan_capped = False
+        stop = False
+        for scanned, item in enumerate(parsed.analysis.get_strings()):
+            if scanned >= _MAX_SECRET_SCAN_STRINGS:
+                scan_capped = True
+                break
+            source = str(item.get_value())[:_MAX_STRING_LEN]
+            for detector, matched in iter_secret_matches(source, include_generic=include_generic):
+                key = (detector, matched)
+                current = aggregates.get(key)
+                if current is None:
+                    if len(aggregates) >= _MAX_SECRET_FINDINGS:
+                        scan_capped = True
+                        stop = True
+                        break
+                    row: JsonObject = {
+                        "detector": detector,
+                        "value": matched[:_MAX_SECRET_VALUE],
+                        "source": source[:_MAX_SECRET_SOURCE],
+                        "count": 1,
+                    }
+                    if len(matched) > _MAX_SECRET_VALUE:
+                        row["value_truncated"] = True
+                    if len(source) > _MAX_SECRET_SOURCE:
+                        row["source_truncated"] = True
+                    aggregates[key] = row
+                else:
+                    current["count"] = int(current["count"]) + 1
+            if stop:
+                break
+        secrets = list(aggregates.values())
+        if needle:
+            low = needle.lower()
+            secrets = [
+                s
+                for s in secrets
+                if low in str(s["detector"]).lower() or low in str(s["value"]).lower()
+            ]
+        secrets.sort(key=lambda s: (str(s["detector"]), -int(s["count"]), str(s["value"])))
+        detectors = sorted({str(s["detector"]) for s in secrets})
+        start, capped = _page_bounds(offset, limit, cap=_MAX_STRINGS_PAGE)
+        window = secrets[start : start + capped]
+        return {
+            "secrets": window,
+            "count": len(window),
+            "total": len(secrets),
+            "offset": start,
+            "has_more": start + len(window) < len(secrets),
+            "detectors": detectors,
+            "scan_capped": scan_capped,
         }
 
     def xrefs(

@@ -21,9 +21,10 @@ bounded, and each returned string is length-clipped.
 
 from __future__ import annotations
 
-import math
 import re
 from typing import Any
+
+from headless_re_mcp.backends.common.secret_scan import iter_secret_matches
 
 JsonObject = dict[str, Any]
 
@@ -47,13 +48,6 @@ _MAX_SECRETS_COLLECT = 20000
 # A matched secret value is clipped (value_truncated) so a PEM body or an
 # oversized token cannot bloat a row; count/first_offset still report the hit.
 _MAX_SECRET_VALUE = 512
-# include_generic gate: a whole-literal token at least this long, all
-# base64/hex-ish and high-entropy, is reported as a generic secret. Below this
-# it is too short to be a credible key and too likely an ordinary identifier.
-_GENERIC_TOKEN_RE = re.compile(r"^[A-Za-z0-9+/=_-]{32,}$")
-# Shannon entropy floor (bits/char) for a generic token: random base64/hex sits
-# near 4-6; a repetitive or word-like blob falls below and is not flagged.
-_GENERIC_ENTROPY_MIN = 3.5
 
 # A scheme'd URL inside a string literal. The character class stops at anything
 # that cannot sit unencoded in a URL (whitespace, quotes, backtick, backslash,
@@ -498,64 +492,6 @@ def extract_endpoints(
     return endpoints, host_set[:_MAX_HOSTS], hosts_truncated, scan_capped
 
 
-# High-precision credential detectors, each anchored so an ordinary word or
-# identifier does not trip it: a secrets pass is only useful with a low
-# false-positive rate, so a generic "long random-looking string" is *not* folded
-# in here -- it is gated behind include_generic below. Patterns are all linear
-# (bounded character classes) so a hostile literal cannot cause backtracking.
-_SECRET_DETECTORS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    # AWS key ids carry a fixed 4-char resource prefix + 16 base32 chars.
-    (
-        "aws_access_key_id",
-        re.compile(
-            r"\b(?:AKIA|ASIA|AGPA|AIDA|AIPA|ANPA|ANVA|AROA|APKA|ABIA|ACCA|ASCA)[0-9A-Z]{16}\b"
-        ),
-    ),
-    ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
-    ("google_oauth_token", re.compile(r"\bya29\.[0-9A-Za-z_\-]{20,}")),
-    ("github_token", re.compile(r"\bgh[pousr]_[0-9A-Za-z]{36,251}\b")),
-    ("github_fine_grained_pat", re.compile(r"\bgithub_pat_[0-9A-Za-z_]{22,}")),
-    ("slack_token", re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{10,72}\b")),
-    (
-        "slack_webhook",
-        re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9_/\-]+", re.IGNORECASE),
-    ),
-    ("stripe_secret_key", re.compile(r"\b[sr]k_(?:live|test)_[0-9A-Za-z]{16,99}\b")),
-    ("twilio_api_key", re.compile(r"\bSK[0-9a-fA-F]{32}\b")),
-    ("twilio_account_sid", re.compile(r"\bAC[0-9a-fA-F]{32}\b")),
-    ("sendgrid_api_key", re.compile(r"\bSG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}\b")),
-    ("mailgun_api_key", re.compile(r"\bkey-[0-9a-zA-Z]{32}\b")),
-    ("npm_token", re.compile(r"\bnpm_[0-9A-Za-z]{36}\b")),
-    (
-        "jwt",
-        re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b"),
-    ),
-    (
-        "private_key",
-        re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----"),
-    ),
-    # A URL that carries userinfo (user:pass@host) is a leaked credential.
-    (
-        "basic_auth_url",
-        re.compile(
-            r"(?:https?|ftp)://[^\s:@/]{1,64}:[^\s:@/]{1,64}@[^\s/\"'`<>]{1,255}",
-            re.IGNORECASE,
-        ),
-    ),
-)
-
-
-def _shannon_entropy(text: str) -> float:
-    """Bits/char Shannon entropy of ``text`` (0.0 for empty)."""
-    if not text:
-        return 0.0
-    counts: dict[str, int] = {}
-    for ch in text:
-        counts[ch] = counts.get(ch, 0) + 1
-    n = len(text)
-    return -sum((c / n) * math.log2(c / n) for c in counts.values())
-
-
 def extract_secrets(
     source: str, *, name_filter: str = "", include_generic: bool = False
 ) -> tuple[list[JsonObject], list[str], bool]:
@@ -608,25 +544,12 @@ def extract_secrets(
     for row in rows:
         text = str(row.get("text", ""))
         offset = int(row.get("offset", 0))
-        literal_hit = False
-        for detector, pattern in _SECRET_DETECTORS:
-            for match in pattern.finditer(text):
-                literal_hit = True
-                if not add(detector, match.group(0), offset):
-                    stop = True
-                    break
-            if stop:
+        for detector, value in iter_secret_matches(text, include_generic=include_generic):
+            if not add(detector, value, offset):
+                stop = True
                 break
         if stop:
             break
-        if include_generic and not literal_hit:
-            token = text.strip()
-            if (
-                _GENERIC_TOKEN_RE.match(token)
-                and _shannon_entropy(token) >= _GENERIC_ENTROPY_MIN
-                and not add("generic_high_entropy", token, offset)
-            ):
-                break
 
     needle = name_filter.strip().lower() if isinstance(name_filter, str) else ""
     secrets = list(aggregates.values())

@@ -294,6 +294,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **移动逆向和前端一样，最先要问的两问之一是「这个 app 把哪些凭据写死进去了」；`apk.strings` 能倒出整个 DEX 字符串池，但要不要肉眼在成千上万条里挑
+  key**。新增只读工具 `apk.secrets`：把 `js.secrets` 用的同一套高精度凭据探测器（现已抽到共享模块 `backends/common/secret_scan.py`，JS 与 APK
+  两条线共用一份规则）跑在每一条 DEX 字符串常量上，只返回命中——AWS access-key id、Google API key 与 OAuth token、GitHub token（classic 与
+  fine-grained）、Slack token 与 webhook、Stripe secret key、Twilio SID/key、SendGrid 与 Mailgun key、npm token、JWT、PEM 私钥头、带
+  `user:pass@` 的 URL。答复带 `secrets`（每行 `{detector, value（命中的凭据，过长置 value_truncated）, source（命中所在的 DEX 常量，过长置
+  source_truncated——把它丢进 apk.string_xrefs 就能定位到用它的代码）, count（含它的不同常量数）}`，按 detector 再 count 再 value 排序）、
+  `count`/`total`/`offset`/`has_more`、`detectors`（命中的探测器种类集合），以及命中数超上限或扫描预算耗尽时的 `scan_capped`。探测器均加锚以压低
+  误报，故普通长随机串不会被报，除非置 `include_generic`（对整条即为高熵 base64/hex 的常量补一个 `generic_high_entropy`，仅对没被具体探测器命中的
+  常量生效）。`name_filter` 对 detector 或 value 做大小写不敏感子串匹配、分页前应用，故 `total` 是命中数。列表字段是 `secrets`；原始池仍用
+  `apk.strings`，定位用法用 `apk.string_xrefs`。只读，工具总数 288→289（171 只读 / 118 写）。
 - **`js.strings` 倒出全部字面量、`js.endpoints` 给出网络面，但静态 bundle 分析价值最高的一问是「前端到底把哪些凭据写死进去了」——AWS/Google/GitHub
   key、JWT、私钥……以前得肉眼在字面量里翻**。新增只读工具 `js.secrets`：复用 `js.strings`/`js.endpoints` 的同一词法器（故注释与正则里的引号不误判、
   `\x`/`\u` 转义的 key 先解码再匹配），对字符串字面量跑一组高精度凭据探测器——AWS access-key id、Google API key 与 OAuth token、GitHub token

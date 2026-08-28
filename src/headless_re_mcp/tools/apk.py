@@ -246,6 +246,53 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="apk.secrets")
+    def apk_secrets(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        name_filter: str = "",
+        include_generic: bool = False,
+    ) -> dict[str, Any]:
+        """Detect embedded credentials (API keys, tokens, private keys) in the DEX pool.
+
+        The credential cut of apk.strings, and the mobile analogue of js.secrets:
+        where apk.strings dumps the whole DEX string pool for a human to grep,
+        this runs a set of high-precision credential detectors (the same shared
+        table js.secrets uses) over each string constant and returns only the
+        hits -- the fastest read on "what did this app hardcode". Detectors cover
+        AWS access-key ids, Google API keys and OAuth tokens, GitHub tokens
+        (classic and fine-grained), Slack tokens and webhooks, Stripe secret
+        keys, Twilio SIDs/keys, SendGrid and Mailgun keys, npm tokens, JWTs, PEM
+        PRIVATE KEY headers, and user:pass@ URLs. Answers with secrets (each
+        {detector, value (the matched credential, clipped with value_truncated
+        when long), source (the containing DEX constant, clipped with
+        source_truncated when long -- copy it into apk.string_xrefs to find where
+        the key is used), count (how many distinct constants held it)}, sorted by
+        detector then count then value), count, total, offset, has_more,
+        detectors (the distinct detector set present, the at-a-glance "what kinds
+        leaked"), and scan_capped when the distinct-findings ceiling or the pool
+        scan budget was hit. The detectors are anchored to keep false positives
+        low, so an ordinary long random-looking string is not reported unless
+        include_generic is set -- which adds a generic_high_entropy detector for a
+        whole-constant base64/hex token with high Shannon entropy (only for a
+        constant no specific detector already claimed). name_filter keeps only
+        findings whose detector or value contains that substring (case-insensitive),
+        applied before paging so total is the match count -- the way to pull just
+        the aws or jwt hits. The list field is secrets; for the raw pool use
+        apk.strings, and to locate a finding in code use apk.string_xrefs on its
+        source.
+        """
+        return _dump(
+            analysis.apk_secrets(
+                session_id,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_generic=include_generic,
+            )
+        )
+
     @tools.tool(name="apk.xrefs")
     def apk_xrefs(
         session_id: str,
