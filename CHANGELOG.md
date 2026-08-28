@@ -294,6 +294,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **`web.network.list` 只能告诉你页面「实际打过」哪些请求，但逆向真正想问的是「这页 JS 里配置了哪些后端」——那些被 feature flag / 角色门控、只在管理台或
+  懒加载 chunk 里出现、正常会话根本不会触发的端点，网络日志里永远看不到**。新增只读工具 `web.endpoints`：`js.endpoints` 的动态页对应物、`web.network.list`
+  的静态补充。它抓取页面已解析的每个脚本源码——包括壳/加载器在内存里 eval 出来、从不落盘的运行时脚本——用共享 JS 词法器（`\x`/`\u` 转义 URL 先解码、注释与
+  正则里的引号不误判）提取带协议的 URL（http/https/ws/wss/ftp）以及（`include_paths` 时）请求路径（`/api/...`）。按 value 跨脚本去重，每行
+  `{value, kind（url|path）, scheme, host, count（整页出现次数）, first_script（{script_id, url}，可直接丢给 web.script.source 的脚本）}`，按 count 降序再
+  value 排序。答复另带 `hosts`（URL 端点的去重 host 集，过多置 hosts_truncated）、`scanned_scripts`、`scripts_dropped`（已解析脚本表环形逐出）与 `scan_capped`
+  （脚本数、单源字节、总扫描字节或去重端点数任一触及上限——上限与 web.secrets 相同：最多 200 脚本、单源 4 MiB、总 64 MiB）。`url_filter`/`dynamic_only`
+  先收窄扫哪些脚本（`dynamic_only` 专挑 eval/壳载荷）；WASM 脚本跳过。`include_paths=False` 只留绝对 URL、滤掉相对路径噪声。`name_filter` 再对 value 或 host
+  做大小写不敏感子串匹配、在 host 汇总与分页前应用，故 `total` 是命中数。列表字段是 `endpoints`。只读，工具总数 295→296（178 只读 / 118 写）。
 - **`js.secrets` 扫的是磁盘上的文件，但一个跑起来的页面里最值钱的一问是「这页 JS 里到底写死了哪些凭据」——尤其是壳/加载器在内存里 eval 出来、从不落盘的那些脚本，
   静态分析根本看不到**。新增只读工具 `web.secrets`：把 `js.secrets` 用的同一套检测（共享的 JS 词法器 + 共享 `secret_scan.py` 探测器，故 `\x`/`\u` 转义的 key
   先解码、注释与正则里的引号不误判）跑在页面已解析的每个脚本源码上——包括 `dynamic=True` 的运行时脚本（eval / new Function / document.write 注入的壳载荷）。

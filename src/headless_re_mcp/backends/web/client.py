@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
+from headless_re_mcp.backends.jsre.js_strings import extract_endpoints as extract_js_endpoints
 from headless_re_mcp.backends.jsre.js_strings import extract_secrets as extract_js_secrets
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
@@ -47,6 +48,15 @@ _MAX_WEB_SECRET_SOURCE_BYTES = 4 * 1024 * 1024
 _MAX_WEB_SECRET_SCAN_BYTES = 64 * 1024 * 1024
 _MAX_WEB_SECRET_FINDINGS = 20000
 _WEB_SECRET_SCAN_TIMEOUT = 120.0
+# web.endpoints scans the same parsed-script sources for URLs/API paths (the JS
+# js.endpoints detectors, reused) with the same ceilings as web.secrets, plus a
+# cap on the distinct-host summary (hosts_truncated when over).
+_MAX_WEB_ENDPOINT_SCRIPTS = 200
+_MAX_WEB_ENDPOINT_SOURCE_BYTES = 4 * 1024 * 1024
+_MAX_WEB_ENDPOINT_SCAN_BYTES = 64 * 1024 * 1024
+_MAX_WEB_ENDPOINT_FINDINGS = 20000
+_MAX_WEB_ENDPOINT_HOSTS = 512
+_WEB_ENDPOINT_SCAN_TIMEOUT = 120.0
 # web.frames flattens Page.getFrameTree; a hostile page can insert or deeply
 # nest many iframes, so cap the tree walked (frames_truncated when hit) and page
 # the flattened list the same way the other web reads do.
@@ -1863,6 +1873,136 @@ class WebBackend:
             }
 
         return self._runner(handle).call(work, timeout=_WEB_SECRET_SCAN_TIMEOUT)
+
+    def endpoints(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        name_filter: str = "",
+        include_paths: bool = True,
+        url_filter: str = "",
+        dynamic_only: bool = False,
+    ) -> JsonObject:
+        """Extract the network endpoints baked into the live page's scripts.
+
+        The dynamic-page counterpart to js.endpoints, and the static complement to
+        web.network.list: that shows the endpoints the page actually hit, this
+        fetches the source of every script the running page parsed -- including the
+        runtime/eval/new-Function scripts (dynamic=True) a packer unpacks in memory
+        and never writes to disk -- and pulls the scheme'd URLs (http/https/ws/wss/
+        ftp) and, when include_paths is set, the request paths ('/api/...') out of
+        each via the shared JS lexer (so \\x/\\u-escaped URLs are decoded and quotes
+        in comments/regex are not mistaken for strings). This surfaces the
+        configured-but-not-yet-called endpoints -- feature-gated, admin, or
+        lazy-chunk backends -- that never appear in the network log. Endpoints are
+        deduplicated across scripts by value: each row is {value, kind (url|path),
+        scheme, host, count (occurrences across the page), first_script
+        ({script_id, url}, the script to hand web.script.source)}. Answers also
+        carry hosts (the distinct host set of the URL endpoints, hosts_truncated
+        when capped), scanned_scripts, scripts_dropped and scan_capped (a script-
+        count, per-source-byte, total-scan-byte or distinct-endpoint ceiling was
+        hit). url_filter and dynamic_only pre-narrow which scripts are scanned;
+        WASM scripts are skipped. name_filter then keeps only endpoints whose value
+        or host contains that substring (case-insensitive), applied before the host
+        summary and paging so total is the match count.
+        """
+        handle = self._get(session_id)
+        with handle.lock:
+            script_list = list(handle.scripts.values())
+            dropped = handle.scripts_dropped
+        if dynamic_only:
+            script_list = [s for s in script_list if s.get("dynamic")]
+        url_needle = url_filter.strip().lower() if isinstance(url_filter, str) else ""
+        if url_needle:
+            script_list = [s for s in script_list if url_needle in str(s.get("url", "")).lower()]
+        script_list = [
+            s for s in script_list if str(s.get("language", "")).lower() != "webassembly"
+        ]
+
+        def work() -> JsonObject:
+            aggregates: dict[str, JsonObject] = {}
+            scanned_bytes = 0
+            scanned_scripts = 0
+            scan_capped = False
+            stop = False
+            for script in script_list:
+                if scanned_scripts >= _MAX_WEB_ENDPOINT_SCRIPTS:
+                    scan_capped = True
+                    break
+                script_id = str(script.get("scriptId"))
+                try:
+                    resp = handle.cdp.send(
+                        "Debugger.getScriptSource", {"scriptId": script_id}
+                    )
+                except Exception:  # noqa: BLE001
+                    continue
+                source = resp.get("scriptSource", "") if isinstance(resp, dict) else ""
+                if not isinstance(source, str):
+                    source = str(source)
+                source = source[:_MAX_WEB_ENDPOINT_SOURCE_BYTES]
+                scanned_bytes += len(source)
+                scanned_scripts += 1
+                url = _bounded_metadata(script.get("url"), _MAX_URL_BYTES)[0]
+                per, _hosts, _hosts_trunc, per_capped = extract_js_endpoints(
+                    source, include_paths=include_paths
+                )
+                if per_capped:
+                    scan_capped = True
+                for finding in per:
+                    value = str(finding["value"])
+                    current = aggregates.get(value)
+                    if current is None:
+                        if len(aggregates) >= _MAX_WEB_ENDPOINT_FINDINGS:
+                            scan_capped = True
+                            stop = True
+                            break
+                        aggregates[value] = {
+                            "value": finding["value"],
+                            "kind": finding["kind"],
+                            "scheme": finding["scheme"],
+                            "host": finding["host"],
+                            "count": int(finding["count"]),
+                            "first_script": {"script_id": script_id, "url": url},
+                        }
+                    else:
+                        current["count"] = int(current["count"]) + int(finding["count"])
+                if stop:
+                    break
+                if scanned_bytes >= _MAX_WEB_ENDPOINT_SCAN_BYTES:
+                    scan_capped = True
+                    break
+
+            needle = name_filter.strip().lower() if isinstance(name_filter, str) else ""
+            endpoints = list(aggregates.values())
+            if needle:
+                endpoints = [
+                    e
+                    for e in endpoints
+                    if needle in str(e["value"]).lower() or needle in str(e["host"]).lower()
+                ]
+            endpoints.sort(key=lambda e: (-int(e["count"]), str(e["value"])))
+            all_hosts = sorted({str(e["host"]) for e in endpoints if e.get("host")})
+            hosts_truncated = len(all_hosts) > _MAX_WEB_ENDPOINT_HOSTS
+            host_list = all_hosts[:_MAX_WEB_ENDPOINT_HOSTS]
+            start = max(0, int(offset))
+            cap = max(1, min(int(limit), 1000))
+            window = endpoints[start : start + cap]
+            return {
+                "endpoints": window,
+                "count": len(window),
+                "total": len(endpoints),
+                "offset": start,
+                "has_more": start + len(window) < len(endpoints),
+                "hosts": host_list,
+                "hosts_truncated": hosts_truncated,
+                "scanned_scripts": scanned_scripts,
+                "scripts_dropped": dropped,
+                "scan_capped": scan_capped,
+            }
+
+        return self._runner(handle).call(work, timeout=_WEB_ENDPOINT_SCAN_TIMEOUT)
 
     def wasm_get(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
         """Write a live WebAssembly module's raw bytes to a .wasm artifact.

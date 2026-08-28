@@ -260,6 +260,28 @@ class WebAnalysisMixin:
             dynamic_only=dynamic_only,
         )
 
+    def web_endpoints(
+        self,
+        session_id: str,
+        offset: int = 0,
+        limit: int = 100,
+        name_filter: str = "",
+        include_paths: bool = True,
+        url_filter: str = "",
+        dynamic_only: bool = False,
+    ) -> Result[JsonObject]:
+        return self._web_wrap(
+            session_id,
+            "endpoints",
+            session_id,
+            offset=offset,
+            limit=limit,
+            name_filter=name_filter,
+            include_paths=include_paths,
+            url_filter=url_filter,
+            dynamic_only=dynamic_only,
+        )
+
     def web_frames(
         self,
         session_id: str,

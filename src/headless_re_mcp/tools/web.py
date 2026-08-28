@@ -397,6 +397,58 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="web.endpoints")
+    def web_endpoints(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        name_filter: str = "",
+        include_paths: bool = True,
+        url_filter: str = "",
+        dynamic_only: bool = False,
+    ) -> dict[str, Any]:
+        """Extract the network endpoints baked into the live page's JavaScript.
+
+        The dynamic-page counterpart to js.endpoints, and the static complement to
+        web.network.list: that shows the endpoints the page actually hit, this
+        fetches the source of every script the running page parsed -- crucially
+        including the runtime eval/new-Function scripts a packer unpacks in memory
+        and never writes to disk -- and pulls the scheme'd URLs (http/https/ws/wss/
+        ftp) and (when include_paths) request paths ('/api/...') out of each via the
+        shared JS lexer, so \\x/\\u-escaped URLs are decoded and quotes in
+        comments/regex are not mistaken for strings. This surfaces the
+        configured-but-not-yet-called backends -- feature-gated, admin, or lazy-chunk
+        endpoints -- that never show up in the network log. Deduplicated across
+        scripts by value. Answers with endpoints, count, total (distinct endpoints
+        after name_filter), offset, has_more, hosts (the distinct host set of the
+        URL endpoints, hosts_truncated when capped), scanned_scripts (how many
+        script sources were fetched and scanned), scripts_dropped (ring eviction of
+        the parsed-script list) and scan_capped (the script-count, per-source-byte,
+        total-scan-byte or distinct-endpoint ceiling was hit). Each endpoints row is
+        {value, kind ('url' or 'path'), scheme, host, count (occurrences across the
+        page), first_script ({script_id, url}, the script to hand
+        web.script.source)}. url_filter and dynamic_only pre-narrow which scripts
+        are scanned (dynamic_only isolates the eval/packer payloads that carry no
+        url); WASM scripts are skipped. include_paths=False restricts results to
+        absolute URLs when the relative-path noise is unwanted. name_filter then
+        keeps only endpoints whose value or host contains that substring
+        (case-insensitive), applied before the host summary and paging so total is
+        the match count. Rows are ordered by occurrence count (descending) then
+        value. The list field is endpoints; to read a matched script in full use
+        web.script.source with a finding's first_script.script_id. Read-only.
+        """
+        return _dump(
+            analysis.web_endpoints(
+                session_id,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_paths=include_paths,
+                url_filter=url_filter,
+                dynamic_only=dynamic_only,
+            )
+        )
+
     @tools.tool(name="web.wasm.list")
     def web_wasm_list(
         session_id: str,

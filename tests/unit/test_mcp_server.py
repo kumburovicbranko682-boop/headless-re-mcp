@@ -327,6 +327,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "web.network.get",
         "web.console",
         "web.cookies",
+        "web.endpoints",
         "web.storage",
         "web.indexed_db",
         "web.frames",
