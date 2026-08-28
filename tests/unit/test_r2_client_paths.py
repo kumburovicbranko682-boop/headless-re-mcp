@@ -99,8 +99,17 @@ def test_xrefs_enriches_run_payload(tmp_path: Path) -> None:
     assert out["items"][0]["from_address"]["va"] == 0x140002000
 
 
-def test_run_reports_capability_unavailable_without_executable(tmp_path: Path) -> None:
+def test_run_reports_capability_unavailable_without_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # executable=None means "discover from PATH", so on a host that actually has
+    # radare2 installed the constructor finds it and this asserts not_found
+    # instead -- the test flips on the ambient toolchain. Force discovery to find
+    # nothing so the capability_unavailable branch is exercised deterministically,
+    # matching this file's "without a real radare2" contract.
+    monkeypatch.setattr(r2client, "_discover", lambda: None)
     client = R2Client(executable=None)
+    assert client.available is False
     with pytest.raises(R2Error) as caught:
         client.run(tmp_path / "any.exe", ["i"])
     assert caught.value.code == "capability_unavailable"

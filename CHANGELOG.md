@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（修非-PE 单测的环境泄漏：装了 radare2 的机器上不再假失败）
+
+- 单测 `test_run_reports_capability_unavailable_without_executable` 名义上验证"没有
+  radare2 时 r2.run 报 capability_unavailable"，却非幂等：`R2Client(executable=None)`
+  的构造器会 `executable or _discover()` 从 PATH 自动发现 r2，所以只在宿主"恰好没装
+  radare2"时才过——一旦 CI runner 或开发机装了 radare2（linux-integration 正是要装
+  radare2 跑 r2 live gate），它就断言 `not_found == capability_unavailable` 失败。这类
+  "依赖环境里工具恰好缺席"的单测正是"Linux 上诚实 CI/test"要根除的。本机装上 radare2
+  5.5.0 后先复现该失败，再把 `_discover` monkeypatch 成返回 None，让该分支不管 PATH 上有
+  没有 r2 都确定性执行；与本文件里 jsre webcrack/wabt 退化单测早已采用的同一套路对齐
+  （那两条早有注释点明"仍会从 PATH 自动发现"的坑，r2 这条只是当初漏了）。
+- 系统排查同类泄漏：只有 `executable or _discover()`（构造器自动发现）这一形状会中招。
+  逐一核实——jadx/apktool/apksigner 构造器不自动发现（None 即不可用，幂等）；ghidra 以
+  home 定可用且不回落环境变量；jsre 的 webcrack/wabt 两条退化单测已 monkeypatch 发现函数；
+  adb 以能否 import adbutils 定可用（另一套模块形状）。装 radare2+JDK 后跑全量单测 6605
+  passed / 55 skipped，确认再无第二条随环境翻转。
+
 ### 测试（r2 live gate 补齐 ELF xrefs；本机实跑验证 gate 执行而非跳过）
 
 - 用真实 radare2 5.5.0（apt 装）在 Linux 上实跑 `test_m11_r2_live_gate.py`，两条用例
