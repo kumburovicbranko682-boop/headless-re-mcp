@@ -117,7 +117,9 @@ def build_uia_tree(
 
     def walk(ctrl: Any, depth: int) -> JsonObject | None:
         nonlocal nodes, truncated
-        if nodes >= max_nodes:
+        # The sibling loop below guards every recursive call with the same
+        # budget check, so walk is never entered once the budget is reached.
+        if nodes >= max_nodes:  # pragma: no cover - guarded by the caller's budget check
             truncated = True
             return None
         pid = int(getattr(ctrl, "ProcessId", 0) or 0)
