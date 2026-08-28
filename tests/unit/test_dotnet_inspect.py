@@ -146,7 +146,9 @@ def test_service_dotnet_inspect(tmp_path: Path) -> None:
             artifact_root=tmp_path / "artifacts",
         )
     )
-    session_id = service.create_session(str(path)).data["session"]["id"]
+    created = service.create_session(str(path))
+    assert created.data is not None
+    session_id = created.data["session"]["id"]
     result = service.dotnet_inspect(session_id, require_verified=True)
     assert result.ok and result.data is not None
     assert result.data["verified_clr"] is True
