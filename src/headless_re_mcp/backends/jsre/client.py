@@ -269,6 +269,144 @@ def _parse_wasm_summary(data: bytes) -> JsonObject:
     return result
 
 
+_MIN_WASM_STRING_LEN = 4
+
+
+def _read_sleb(data: bytes, pos: int, end: int) -> tuple[int, int]:
+    """Decode one signed LEB128 from data[pos:end]; return (value, new_pos)."""
+    result = 0
+    shift = 0
+    while True:
+        if pos >= end:
+            raise _WasmParseError("truncated SLEB128")
+        byte = data[pos]
+        pos += 1
+        result |= (byte & 0x7F) << shift
+        shift += 7
+        if not byte & 0x80:
+            if shift < 64 and byte & 0x40:
+                result |= -(1 << shift)
+            return result, pos
+        if shift > 63:
+            raise _WasmParseError("SLEB128 too long")
+
+
+def _read_const_offset(data: bytes, pos: int, end: int) -> tuple[int | None, int]:
+    """A data segment's offset init-expr; return (base or None, pos past the end op).
+
+    Only constant forms appear as data offsets. i32.const gives a concrete base;
+    i64.const (memory64) or global.get (relocatable/PIC modules) leave it None.
+    """
+    if pos >= end:
+        raise _WasmParseError("truncated offset expr")
+    opcode = data[pos]
+    pos += 1
+    base: int | None = None
+    if opcode == 0x41:  # i32.const
+        value, pos = _read_sleb(data, pos, end)
+        base = value if value >= 0 else None
+    elif opcode == 0x42:  # i64.const
+        _value, pos = _read_sleb(data, pos, end)
+    elif opcode == 0x23:  # global.get
+        _global, pos = _read_uleb(data, pos, end)
+    else:
+        raise _WasmParseError(f"unsupported offset opcode {opcode:#x}")
+    if pos >= end or data[pos] != 0x0B:
+        raise _WasmParseError("offset expr missing end")
+    return base, pos + 1
+
+
+def _emit_printable(
+    buf: bytes, base: int | None, min_length: int, sink: list[JsonObject], cap: int
+) -> int:
+    """Append printable-ASCII runs in buf (>= min_length) to sink; return run count.
+
+    The cap is on sink globally, so runs keep being counted for items_total even
+    after the stored list is full. When base is known, each run also carries its
+    linear-memory offset (base + position in the segment).
+    """
+    found = 0
+    start = 0
+    run = 0
+    length = len(buf)
+    for idx in range(length + 1):
+        printable = idx < length and 0x20 <= buf[idx] < 0x7F
+        if printable:
+            if run == 0:
+                start = idx
+            run += 1
+            continue
+        if run >= min_length:
+            found += 1
+            if len(sink) < cap:
+                item: JsonObject = {"string": buf[start : start + run].decode("ascii")}
+                if base is not None:
+                    item["offset"] = base + start
+                sink.append(item)
+        run = 0
+    return found
+
+
+def _parse_wasm_data_strings(data: bytes, *, min_length: int) -> JsonObject:
+    """Extract printable strings from a WASM module's data segments, wabt-free.
+
+    Best-effort like the summary walk: a segment whose framing cannot be decoded
+    stops the data section and sets ``truncated`` rather than raising.
+    """
+    items: list[JsonObject] = []
+    total_found = 0
+    truncated = False
+    pos = 8
+    total = len(data)
+    try:
+        while pos < total:
+            section_id = data[pos]
+            pos += 1
+            size, pos = _read_uleb(data, pos, total)
+            body_start = pos
+            body_end = pos + size
+            if body_end > total:
+                truncated = True
+                break
+            if section_id == 11:
+                count, cursor = _read_uleb(data, body_start, body_end)
+                for _ in range(count):
+                    flags, cursor = _read_uleb(data, cursor, body_end)
+                    base: int | None = None
+                    if flags == 0:
+                        base, cursor = _read_const_offset(data, cursor, body_end)
+                    elif flags == 1:
+                        base = None  # passive segment: no memory offset
+                    elif flags == 2:
+                        _memidx, cursor = _read_uleb(data, cursor, body_end)
+                        base, cursor = _read_const_offset(data, cursor, body_end)
+                    else:
+                        raise _WasmParseError(f"unknown data segment flags {flags}")
+                    seg_size, cursor = _read_uleb(data, cursor, body_end)
+                    seg_end = cursor + seg_size
+                    if seg_end > body_end:
+                        raise _WasmParseError("data segment overruns section")
+                    total_found += _emit_printable(
+                        data[cursor:seg_end], base, min_length, items, _MAX_WASM_ITEMS
+                    )
+                    cursor = seg_end
+            pos = body_end
+    except _WasmParseError:
+        truncated = True
+    result: JsonObject = {
+        "items": items,
+        "count": len(items),
+        "min_length": min_length,
+    }
+    if total_found > len(items):
+        result["items_truncated"] = True
+        result["items_total"] = total_found
+        result["items_limit"] = _MAX_WASM_ITEMS
+    if truncated:
+        result["truncated"] = True
+    return result
+
+
 def _run(
     cmd: list[str], *, timeout: float, maximum: float = _MAX_TIMEOUT_S
 ) -> tuple[str, str, int]:
@@ -454,6 +592,29 @@ class WasmClient:
                 "backend_error", f"input unreadable: {exc}", path=str(resolved)
             ) from exc
         return _parse_wasm_summary(data)
+
+    def strings(self, path: Path, *, min_length: int = _MIN_WASM_STRING_LEN) -> JsonObject:
+        """Printable strings from the module's data segments, parsed in-process.
+
+        Like summary this needs no wabt: it walks the data section and scans each
+        segment's bytes for printable-ASCII runs, tagging each with its
+        linear-memory offset when the segment's base is a constant.
+        """
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        if not _looks_like_wasm(resolved):
+            raise JsReError(
+                "invalid_params",
+                "not a WebAssembly module: missing the \\0asm magic",
+                path=str(resolved),
+            )
+        try:
+            data = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        bounded = max(1, min(int(min_length), 64))
+        return _parse_wasm_data_strings(data, min_length=bounded)
 
     def info(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path, self._objdump, "wasm-objdump")

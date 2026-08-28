@@ -100,6 +100,23 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_summary(path))
 
+    @tools.tool(name="wasm.strings")
+    def wasm_strings(
+        path: str, min_length: Annotated[int, Field(ge=1, le=64)] = 4
+    ) -> dict[str, Any]:
+        """Printable strings from a .wasm module's data segments (no wabt).
+
+        Answers with items, each carrying string and (when the segment's base
+        is a constant) offset, its linear-memory address -- the WASM analog of
+        r2.strings, useful for the URLs, keys and messages a module embeds.
+        Also count and min_length (the run length below which a string is
+        dropped, default 4). Reads items_truncated, items_total and items_limit
+        when the list filled the cap (4096), and truncated when a data segment
+        could not be decoded. A file that is not a WebAssembly module is
+        invalid_params. Parsed in-process, so no wabt is required.
+        """
+        return _dump(analysis.wasm_strings(path, min_length=min_length))
+
     @tools.tool(name="wasm.info")
     def wasm_info(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0

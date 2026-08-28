@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（wasm.strings：纯 Python 抽取 WASM 数据段字符串，带内存偏移，无需 wabt，工具面 266→267）
+
+- 新增只读工具 `wasm.strings`：走 WASM 的数据段（data section）抽取内嵌的可打印字符串——`items`
+  每条给 `string` 以及（当该段基址是常量时）`offset`，即它在线性内存里的地址；这是 `r2.strings` 在
+  WASM 上的对应物，用来快速捞出模块里硬编码的 URL、密钥、报文等。与 `wasm.summary` 一样纯 Python 解析、
+  **不依赖 wabt**：按数据段逐个扫描其字节里的可打印 ASCII 连续段（长度 ≥ `min_length`，默认 4，
+  可传 1..64）。偏移取自段的初始化表达式：`i32.const` 给出确定基址，`i64.const`（memory64）或
+  `global.get`（PIC/可重定位模块）则基址未知、只给 `string` 不给 `offset`；被动段（passive）本无内存
+  偏移，同样只给 `string`。尽力而为：某个数据段的框架无法解析时停在该处并置 `truncated`，不因畸形
+  （可能敌意）输入崩溃；`items` 满 4096 时置 `items_truncated`/`items_total`/`items_limit`；非 WASM
+  报 `invalid_params`。已与真 wabt 1.0.34 交叉核验：用 `wat2wasm` 现编、含两个 `(data (i32.const …) …)`
+  段的模块，`wasm.strings` 抽出的字符串与各自内存偏移（1024、2048、2070）同 `wasm-objdump -s -j data`
+  的落址逐一吻合。单测另以手工构造的模块字节钉住带偏移抽取、`min_length` 过滤、被动段无偏移、无 wabt
+  亦可、非 WASM 报错与畸形截断（均不依赖 wabt）。README 与工具计数同步更新为 267（150 只读 / 117 写）。
+
 ### 新增（wasm.summary：纯 Python 解析 WASM 结构，无需 wabt，工具面 265→266）
 
 - 新增只读工具 `wasm.summary`：直接走 WASM 二进制的段头解析出模块结构——`imports`（每条
