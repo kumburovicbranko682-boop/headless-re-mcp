@@ -188,10 +188,26 @@ class ProviderConfigStore:
             data = self._read()
         profiles_value = data.get("profiles")
         profiles: dict[str, Any] = profiles_value if isinstance(profiles_value, dict) else {}
-        return {
-            "current": data.get("current"),
-            "profiles": [self._profile_from_raw(key, value).public(source="file") for key, value in profiles.items() if isinstance(value, dict)],
-        }
+        public: list[dict[str, Any]] = []
+        for key, value in profiles.items():
+            if not isinstance(value, dict):
+                continue
+            try:
+                public.append(self._profile_from_raw(key, value).public(source="file"))
+            except (ValueError, TypeError):
+                # One unusable profile must not sink the whole listing.
+                # _profile_from_raw runs ProviderProfile.__post_init__, which
+                # rejects a base_url that is not http(s) (including one an env
+                # override supplied), a threshold stored out of range, or an
+                # api_key bound to plaintext http on a non-loopback host; a
+                # non-numeric stored threshold makes int() raise too. Built
+                # inline in a comprehension, any one of those turned
+                # GET /api/providers into a 500 that hid every good profile and
+                # the current pointer. The sibling persona store skips malformed
+                # entries the same way, and get()/save() still fail loudly when
+                # the bad profile is actually selected.
+                continue
+        return {"current": data.get("current"), "profiles": public}
 
     def _profile_from_raw(self, profile_id: str, raw: dict[str, Any]) -> ProviderProfile:
         env_prefix = f"HEADLESS_RE_PROVIDER_{profile_id.upper().replace('-', '_')}_"

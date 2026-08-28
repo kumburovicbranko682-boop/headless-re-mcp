@@ -73,6 +73,44 @@ def test_read_rejects_a_non_object_root(tmp_path: Path) -> None:
         store.list_public()
 
 
+def test_list_public_skips_an_unusable_profile(tmp_path: Path) -> None:
+    """One broken profile must not sink the whole listing.
+
+    ``_profile_from_raw`` runs ``ProviderProfile.__post_init__``, which rejects a
+    base_url that is not http(s), a threshold out of range, or an api_key on
+    plaintext http to a non-loopback host. Built inline in a list comprehension,
+    one such profile turned ``list_public`` (and so ``GET /api/providers``) into
+    a hard failure that hid every good profile and the current pointer. The
+    sibling persona store skips malformed entries; this store now does too, while
+    ``get`` still fails loudly when the bad profile is actually selected.
+    """
+    path = tmp_path / "cfg.json"
+    path.write_text(
+        json.dumps(
+            {
+                "profiles": {
+                    "good": {"base_url": _LOOPBACK, "model": "gpt"},
+                    "broken": {"base_url": "ftp://nope", "model": "gpt"},
+                    "not-a-dict": [1, 2],
+                },
+                "current": "broken",
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = ProviderConfigStore(path)
+
+    listed = store.list_public()
+
+    assert {item["id"] for item in listed["profiles"]} == {"good"}
+    # The pointer is preserved even though it names a now-unlisted profile,
+    # matching the persona store, so the operator can see what it points at.
+    assert listed["current"] == "broken"
+    # The broken profile still fails loudly at the point of use.
+    with pytest.raises(ValueError):
+        store.get("broken")
+
+
 def test_get_rejects_a_non_dict_profile(tmp_path: Path) -> None:
     path = tmp_path / "cfg.json"
     path.write_text('{"profiles": {"bad": [1, 2]}, "current": "bad"}', encoding="utf-8")

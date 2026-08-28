@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（一个损坏的 provider 配置不再拖垮整份列表）
+
+- `agent/config.py` 的 `ProviderConfigStore.list_public` 此前在列表推导里内联构造每个
+  `ProviderProfile`，任何一个存档 profile 无法构造就让整个方法抛错：
+  `ProviderProfile.__post_init__` 会拒绝非 http(s) 的 `base_url`（含被环境变量覆盖成非法
+  的）、越界的压缩阈值、以及绑定在非环回主机明文 http 上的 api_key；存成非数字的阈值还会
+  让 `int()` 抛错。于是单个坏 profile（或单个坏环境覆盖）就把 `GET /api/providers` 变成
+  500，连带隐藏所有正常 profile 和 `current` 指针——运营者既看不到也无从在 UI 里修。
+  兄弟模块 persona store 早已按「跳过畸形条目」加固（见其 `list_public` 与
+  `test_list_public_skips_malformed_and_invalid_entries`），本次让 provider 配置对齐：逐个
+  profile 构造，构造失败者跳过，`current` 指针照常返回；`get()`/`save()` 在真正选用坏
+  profile 时仍会大声报错。新增
+  `test_agent_provider_config_guards.py::test_list_public_skips_an_unusable_profile`
+  钉死该行为（去掉修复即因坏 `base_url` 抛错，非空覆盖）。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
