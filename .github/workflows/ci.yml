@@ -14,8 +14,10 @@ jobs:
   quality:
     runs-on: windows-latest
     # A hung backend probe used to burn the full six-hour default before anyone
-    # noticed the job was not going to finish.
-    timeout-minutes: 30
+    # noticed the job was not going to finish. The ceiling is generous because
+    # the unit suite keeps growing and Windows is the slowest runner; the step
+    # timeout below fails first so a genuine hang still names itself.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -73,8 +75,11 @@ jobs:
         # the 30-minute job deadline erases the useful per-test context.
         # The step timeout exists because the job timeout has been observed to
         # cancel the whole job with its logs unrecoverable; failing the step
-        # instead keeps the transcript and still uploads coverage.
-        timeout-minutes: 25
+        # instead keeps the transcript and still uploads coverage. It sits below
+        # the job ceiling so a stuck test fails here (with context) rather than
+        # tripping the job deadline; raised as the growing suite pushed Windows
+        # 3.11 past the old 25-minute wall.
+        timeout-minutes: 38
         run: python -m pytest tests/unit -q -rs --tb=short --timeout=120 --cov --cov-report=term --cov-report=xml
 
       - name: Upload coverage
