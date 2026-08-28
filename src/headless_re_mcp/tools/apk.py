@@ -497,6 +497,32 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_urls(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.secrets")
+    def apk_secrets(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Scan the DEX string pool for hard-coded credentials and keys.
+
+        The security-triage capstone over the same string constants apk.strings
+        and apk.urls read: it matches each string against a fixed, high-precision
+        catalog of vendor-prefixed secret shapes -- AWS access-key ids (AKIA...),
+        Google API keys (AIza...), Google OAuth (ya29....), GitHub tokens (ghp_
+        ...), Slack tokens and webhooks, Stripe live keys (sk_live_...), a
+        three-part JWT, PEM private-key headers, Twilio SK/AC ids and Firebase DB
+        URLs. It trades recall for precision -- a match is meaningful, but a custom
+        or obfuscated secret is missed rather than guessed, and a secret built at
+        runtime or split across strings is invisible since the pool holds only
+        literal fragments. Each row is kind (which pattern) and match (the matched
+        token, capped at 256 chars). Rows are de-duplicated by (kind, match) and
+        sorted. Needs the full DEX analysis (like apk.strings).
+        Answers with secrets rows, kinds (the sorted distinct kinds hit), count,
+        total, offset, has_more so a filled page is not read as every finding, and
+        scan_capped when the string-scan or secret-collect ceiling was hit.
+        """
+        return _dump(analysis.apk_secrets(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.decompile")
     def apk_decompile(
         session_id: str,

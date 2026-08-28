@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **305（188 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **306（189 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -624,6 +624,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   片段)。每行含 `url`、`host`(`://` 之后到首个 /?# 的 authority、去掉 userinfo)与 `scheme`(小写)。按 `url`
   去重并排序。需要全量 DEX 分析(同 `apk.strings`)。输出 `urls`、`count`、`total`、`offset`、`has_more`,以及
   命中字符串扫描或 URL 收集上限时的 `scan_capped`。
+- **`apk.secrets`**：`apk.strings`/`apk.urls` 之上的安全排查收尾——把每条 DEX 字符串对一张固定的高精度凭据
+  形状表做匹配:AWS access-key id(AKIA...)、Google API key(AIza...)、Google OAuth(ya29....)、GitHub token
+  (ghp_...)、Slack token 与 webhook、Stripe live key(sk_live_...)、三段式 JWT、PEM 私钥头、Twilio SK/AC id、
+  Firebase 数据库 URL。以召回换精度:命中即有意义,但自定义或混淆过的密钥直接漏掉、不猜,运行时拼出或跨字符串
+  拼接的密钥也看不到(字符串池只有字面片段)。每行含 `kind`(命中哪条)与 `match`(匹配到的 token、上限 256 字符)。
+  按 `(kind, match)` 去重并排序。需要全量 DEX 分析(同 `apk.strings`)。输出 `secrets`、`kinds`(命中的去重种类)、
+  `count`、`total`、`offset`、`has_more`,以及命中字符串扫描或密钥收集上限时的 `scan_capped`。
 - **`apk.files`**：`apk.native_libs`(只看 lib/)给不了的整包清单——遍历 zip,报每个文件的解压/压缩大小
   与按路径判定的类型:`dex`(多出的 classesN.dex 提示多 dex 或动态加载代码)、`native_lib`、`resource`、
   `asset`(内嵌配置、JS bundle、ML 模型常藏在这)、`arsc` 与 `manifest` 单例、META-INF 下的 v1 签名文件,

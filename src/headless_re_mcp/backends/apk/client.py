@@ -78,6 +78,40 @@ _MAX_URLS_PAGE = 1000
 _APK_URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]{0,31}://[^\s\"'`<>\\)\]}]{1,2048}")
 # Punctuation that commonly trails a URL rather than belonging to it.
 _APK_URL_TRAILING = ".,;:!?)]}'\""
+# apk.secrets: string-scan bound, distinct-secret collect bound, page ceiling and
+# the cap on a reported match (a matched header/token, never a whole key blob).
+_MAX_SECRET_STRINGS_SCAN = 50000
+_MAX_SECRETS_COLLECT = 5000
+_MAX_SECRETS_PAGE = 1000
+_MAX_SECRET_MATCH_LEN = 256
+# High-precision credential patterns: each is (kind, compiled regex). Kept to
+# vendor-prefixed shapes (AKIA..., AIza..., ghp_..., sk_live_..., a PEM header, a
+# three-part JWT) so a hit is meaningful rather than an entropy guess. This trades
+# recall for precision -- a custom or obfuscated secret is simply missed, never
+# reported as a maybe -- which is the honest contract for a fixed pattern set.
+_APK_SECRET_CATALOG: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "aws_access_key_id",
+        re.compile(r"\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA)[0-9A-Z]{16}\b"),
+    ),
+    ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
+    ("google_oauth_token", re.compile(r"\bya29\.[0-9A-Za-z_\-]{20,}")),
+    ("github_token", re.compile(r"\bgh[pousr]_[0-9A-Za-z]{36,}\b")),
+    ("slack_token", re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b")),
+    ("slack_webhook", re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9/_\-]+")),
+    ("stripe_secret_key", re.compile(r"\b[sr]k_live_[0-9A-Za-z]{20,}\b")),
+    (
+        "jwt",
+        re.compile(r"\beyJ[0-9A-Za-z_\-]{8,}\.eyJ[0-9A-Za-z_\-]{8,}\.[0-9A-Za-z_\-]{8,}"),
+    ),
+    (
+        "private_key",
+        re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"),
+    ),
+    ("twilio_api_key", re.compile(r"\bSK[0-9a-fA-F]{32}\b")),
+    ("twilio_account_sid", re.compile(r"\bAC[0-9a-fA-F]{32}\b")),
+    ("firebase_db", re.compile(r"https://[a-z0-9\-]+\.firebaseio\.com")),
+)
 # The security-relevant platform APIs apk.capabilities fingerprints: each row is
 # (category, label, class-name regex, method-name regex). The regexes are matched
 # with re.match (start-anchored) exactly as androguard's find_methods does, so a
@@ -1587,6 +1621,63 @@ class ApkClient:
         window = rows[start : start + cap]
         return {
             "urls": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_more,
+        }
+
+    def secrets(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """Scan the DEX string pool for hard-coded credentials and keys.
+
+        The security-triage capstone over the same string constants apk.strings
+        and apk.urls read: it matches each string against a fixed, high-precision
+        catalog of vendor-prefixed secret shapes -- AWS access-key ids (AKIA...),
+        Google API keys (AIza...), Google OAuth (ya29....), GitHub tokens (ghp_
+        ...), Slack tokens and webhooks, Stripe live keys (sk_live_...), a
+        three-part JWT, PEM private-key headers, Twilio SK/AC ids and Firebase DB
+        URLs. It trades recall for precision: a match is meaningful, but a custom
+        or obfuscated secret is simply missed rather than reported as a maybe, and
+        a secret built at runtime or split across strings is invisible (the pool
+        holds only literal fragments). Each row is kind (which pattern) and match
+        (the matched token, capped at 256 chars). Rows are de-duplicated by (kind,
+        match) and sorted. Needs the full DEX analysis (like apk.strings). Answers
+        with secrets rows, kinds (the sorted distinct kinds hit), count, total,
+        offset, has_more so a filled page is not read as every finding, and scan
+        _capped when the string-scan or secret-collect ceiling was hit.
+        """
+        parsed = self._parsed(path)
+        seen: set[tuple[str, str]] = set()
+        rows: list[JsonObject] = []
+        scan_more = False
+        scanned = 0
+        for item in parsed.analysis.get_strings():
+            if len(rows) >= _MAX_SECRETS_COLLECT or scanned >= _MAX_SECRET_STRINGS_SCAN:
+                scan_more = True
+                break
+            scanned += 1
+            value = str(item.get_value())
+            for kind, pattern in _APK_SECRET_CATALOG:
+                if scan_more:
+                    break
+                for match in pattern.finditer(value):
+                    token = match.group()[:_MAX_SECRET_MATCH_LEN]
+                    key = (kind, token)
+                    if key in seen:
+                        continue
+                    if len(rows) >= _MAX_SECRETS_COLLECT:
+                        scan_more = True
+                        break
+                    seen.add(key)
+                    rows.append({"kind": kind, "match": token})
+        rows.sort(key=lambda row: (str(row["kind"]), str(row["match"])))
+        kinds = sorted({str(row["kind"]) for row in rows})
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_SECRETS_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "secrets": window,
+            "kinds": kinds,
             "count": len(window),
             "total": len(rows),
             "offset": start,
