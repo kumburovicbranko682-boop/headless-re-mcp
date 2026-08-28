@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **282（164 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **283（165 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -330,6 +330,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   同样的 `offset`/`limit` 分页与 `total`/`has_more`，成员数超 `_MAX_FILES_COLLECT`（10000）采集上限时置 `scan_capped`；
   `name_filter` 对成员路径做大小写敏感子串匹配、在采集上限前应用，故超上限的 `assets/` 载荷仍可按名找到。加密/损坏的成员
   仍按元数据列出、`kind` 留空。只读，工具总数 273→274（156 只读 / 118 写）。
+- **锁定了包/进程，仍不知道"该拉哪个文件"——设备线能列进程、列 APK 路径，却没法浏览设备文件系统**。分析者拿到包
+  （`device.package_paths`）或进程后，下一步往往要拉一个具体文件：sqlite 库、shared_prefs 的 xml、令牌缓存、`/sdcard` 或
+  `/data/local/tmp` 下的日志，但此前没有工具能列目录，只能靠猜完整路径喂给 `device.pull`。新增只读工具 `device.ls`：走 adb
+  文件同步协议的 LIST/STAT 通道（不是设备 shell，故 path 绝不会被当命令解释）列一个目录。答复带 `path`、`is_dir`、`entries`、
+  `count`、`total`、`offset`、`has_more`，目录条目超 4096 上限时置 `collection_truncated`。每行 `{name, type（dir/file/symlink/other）,
+  size, mode（八进制权限位，如 0644）}`，设备给出 mtime 时再带 `mtime`（epoch 秒）；条目按"目录在前、再按名字"排序。传入文件路径就
+  只列该文件自身（等价 `ls <file>`）。adbd 读不到的目录（无 root 的 app 私有 `/data/data/<pkg>`）返回空而非报错——同步协议对此报的
+  是"无条目"而非权限故障。于是 `device.package_paths`/`device.processes`→`device.ls`→`device.pull` 把"哪个 app/进程"接到"该拉哪个
+  文件"。path 必须绝对；只读，工具总数 282→283（165 只读 / 118 写）。
 - **frida 线只能列已安装应用（`frida.applications`），列不出"正在跑的进程"，而 `frida.attach` 要的恰是运行进程的 pid**。
   `frida.applications` 给的是安装清单（运行时才带 pid），但要附加到一个非 app 的进程——系统守护、原生 helper、已 fork 的组件——
   就得有 frida 自己的进程枚举，此前 frida 线没有。新增只读工具 `frida.processes`：走 frida 的 `enumerate_processes` 列出该会话所连

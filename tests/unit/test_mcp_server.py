@@ -287,6 +287,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "device.force_stop",
         "device.current_activity",
         "device.logcat",
+        "device.ls",
         "device.screenshot",
         "device.pull",
         "device.push",

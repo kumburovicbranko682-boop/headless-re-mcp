@@ -44,6 +44,12 @@ _MAX_PACKAGE_PATHS = 64
 # the answer without bound (collection_truncated when hit).
 _MAX_PROCESSES = 8192
 _MAX_PROCESSES_PAGE = 2000
+# device.ls lists a directory over the adb sync protocol. A real directory holds
+# at most a few hundred entries; cap the collection so a pathological one cannot
+# grow the answer without bound (collection_truncated when hit), and page it.
+_MAX_LS_ENTRIES = 4096
+_MAX_LS_PAGE = 1000
+_REMOTE_PATH_MAX = 4096
 _MAX_DEVICES = 64
 # Only the head of AndroidManifest.xml is scanned for a package id, and it is
 # read as a bounded stream so a decompression-bomb manifest cannot OOM install().
@@ -331,6 +337,51 @@ def _parse_ps(raw: str) -> tuple[list[JsonObject], bool]:
     return rows, truncated
 
 
+def _check_remote_path(path: str) -> str:
+    """Validate an on-device absolute path for the sync (LIST/STAT) protocol.
+
+    The path travels over the adb file-sync channel, not a device shell, so it
+    is not a shell-injection vector; still, an absolute POSIX path with no
+    control characters is required so a relative or malformed value fails here
+    with invalid_params rather than confusing adbd.
+    """
+    if not isinstance(path, str) or not path.strip():
+        raise AdbError("invalid_params", "path is required")
+    p = path.strip()
+    if not p.startswith("/"):
+        raise AdbError("invalid_params", "path must be absolute (start with /)", path=p)
+    if any(ord(ch) < 0x20 for ch in p):
+        raise AdbError("invalid_params", "path contains control characters")
+    if len(p) > _REMOTE_PATH_MAX:
+        raise AdbError("invalid_params", "path is too long", cap=_REMOTE_PATH_MAX)
+    return p
+
+
+def _ls_entry_kind(mode: int) -> str:
+    if stat.S_ISDIR(mode):
+        return "dir"
+    if stat.S_ISREG(mode):
+        return "file"
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    return "other"
+
+
+def _shape_ls_entry(mode: int, size: int, mtime: Any, name: str) -> JsonObject:
+    row: JsonObject = {
+        "name": name,
+        "type": _ls_entry_kind(mode),
+        "size": int(size),
+        # Permission bits only (drop the S_IF* type bits); an octal string the
+        # way ls -l's mode reads, so 0644/0755 are recognisable at a glance.
+        "mode": format(mode & 0o7777, "04o"),
+    }
+    if mtime is not None:
+        with suppress(OSError, OverflowError, ValueError, AttributeError):
+            row["mtime"] = int(mtime.timestamp())
+    return row
+
+
 def _file_mode_size(info: Any) -> tuple[int, int]:
     mode = int(getattr(info, "mode", 0) or 0)
     size = int(getattr(info, "size", 0) or 0)
@@ -566,6 +617,104 @@ class AdbBackend:
             "total": len(rows),
             "offset": start,
             "has_more": start + len(window) < len(rows),
+        }
+        if collection_truncated:
+            result["collection_truncated"] = True
+        return result
+
+    def ls(
+        self,
+        serial: str,
+        path: str,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+    ) -> JsonObject:
+        """List a directory on the device over the adb sync protocol.
+
+        The bridge from "which app / which process" to device.pull: an analyst
+        who has a package (device.package_paths) or a process still has to find
+        the file worth pulling -- the sqlite db, the shared_prefs xml, the token
+        cache, the log under /sdcard or /data/local/tmp. This lists a directory's
+        entries with type/size/mode/mtime so device.pull can then fetch one, and
+        it reads them over the adb file-sync LIST/STAT channel, not a device
+        shell, so the path is never interpreted as a command. A file path lists
+        just that file (its own stat), like ``ls <file>``. A directory adbd
+        cannot read (an app-private /data/data/<pkg> without root) comes back
+        empty rather than as an error, since the sync protocol reports no entries
+        rather than a permission fault. Entries are ordered directories-first
+        then by name; the collection is bounded (collection_truncated when hit)
+        and paged.
+        """
+        p = _check_remote_path(path)
+        dev = self._device(serial)
+        sync = getattr(dev, "sync", None)
+        if sync is None:
+            raise AdbError("capability_unavailable", "adb sync is unavailable")
+        try:
+            info = _call(sync.stat, p, timeout=_ADB_PROBE_TIMEOUT_S)
+        except AdbError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise AdbError("backend_error", f"cannot stat path: {exc}", path=p) from exc
+        mode = int(getattr(info, "mode", 0) or 0)
+        if mode == 0:
+            # sync STAT reports mode 0 for a path that does not exist (or that
+            # adbd cannot stat at all); either way there is nothing to list.
+            raise AdbError(
+                "not_found", "path does not exist or is not accessible", path=p
+            )
+        is_dir = bool(stat.S_ISDIR(mode))
+        rows: list[JsonObject] = []
+        collection_truncated = False
+        if is_dir:
+            try:
+                listed = _call(sync.list, p, timeout=_ADB_SHELL_TIMEOUT_S)
+            except AdbError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise AdbError(
+                    "backend_error", f"cannot list directory: {exc}", path=p
+                ) from exc
+            for entry in listed:
+                name = str(getattr(entry, "path", "") or "")
+                if name in ("", ".", ".."):
+                    continue
+                if len(rows) >= _MAX_LS_ENTRIES:
+                    collection_truncated = True
+                    break
+                rows.append(
+                    _shape_ls_entry(
+                        int(getattr(entry, "mode", 0) or 0),
+                        int(getattr(entry, "size", 0) or 0),
+                        getattr(entry, "mtime", None),
+                        name,
+                    )
+                )
+            # Directories first, then by name, so the tree reads top-down and
+            # paging is stable across calls.
+            rows.sort(key=lambda row: (row["type"] != "dir", str(row["name"])))
+        else:
+            rows.append(
+                _shape_ls_entry(
+                    mode,
+                    int(getattr(info, "size", 0) or 0),
+                    getattr(info, "mtime", None),
+                    p.rsplit("/", 1)[-1] or p,
+                )
+            )
+        total = len(rows)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_LS_PAGE))
+        window = rows[start : start + cap]
+        result: JsonObject = {
+            "path": p,
+            "is_dir": is_dir,
+            "entries": window,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
         }
         if collection_truncated:
             result["collection_truncated"] = True

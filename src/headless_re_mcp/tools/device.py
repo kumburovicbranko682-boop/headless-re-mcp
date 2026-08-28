@@ -116,6 +116,37 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_package_paths(serial, package))
 
+    @tools.tool(name="device.ls")
+    def device_ls(
+        serial: str,
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+    ) -> dict[str, Any]:
+        """List a directory on the device, to find the file worth pulling.
+
+        The bridge from "which app/process" to device.pull: knowing a package
+        (device.package_paths) or a process is not the same as knowing which file
+        holds the sqlite db, the shared_prefs xml, the token cache or the log --
+        this lists a directory so you can pick one, then device.pull fetches it.
+        It reads over the adb file-sync LIST/STAT channel, not a device shell, so
+        path is never interpreted as a command; path must be absolute. Answers
+        with path, is_dir, entries, count, total, offset, has_more, and
+        collection_truncated when the directory held more than the 4096-entry
+        cap. Each entries row is {name, type (dir/file/symlink/other), size, mode
+        (octal permission bits, e.g. 0644)} plus mtime (epoch seconds) when the
+        device reported it. Entries are ordered directories-first then by name.
+        A file path lists just that file (its own stat), like ls of a file. A
+        directory adbd cannot read -- an app-private /data/data/<pkg> without
+        root -- comes back empty, not as an error, because the sync protocol
+        reports no entries rather than a permission fault; pull such files by
+        exact path or use root. The list field is entries, and the name to hand
+        device.pull is path + '/' + the row's name. Read-only.
+        """
+        return _dump(
+            analysis.device_ls(serial, path, offset=offset, limit=limit)
+        )
+
     @tools.tool(name="device.processes")
     def device_processes(
         serial: str,
