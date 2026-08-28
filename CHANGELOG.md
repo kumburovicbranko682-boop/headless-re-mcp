@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（r2.disasm 补地址作用域 live gate：pdj 必须在请求地址处反汇编）
+
+- 缺口：r2 live gate 只验过 `aflj`（函数列表），从没验过 `disasm`——r2 后端唯一"吃地址、
+  shell out"的已 gate 方法一个都没有。这不是假想风险：兄弟方法 `xrefs` 曾以 `axj @ addr`
+  发货，而现代 r2 对 axj 无视 seek、直接倾倒全库交叉引用，按地址查询静默返回全局结果。
+  disasm 的 `pdj N @ addr` 若同样漂移（seek 失效、或按文件偏移而非 VA 解释地址），
+  没有任何真工具覆盖能发现。
+- 补法：新增 `test_r2_disasm_gate.py`。测试时用系统 `cc` 现编一个带两个已知函数的最小
+  ELF（不向仓库提交任何二进制），`aflj` 取 `sym.addtwo`/`sym.mulmix` 两个入口 VA，分别
+  disasm 并断言**首条指令的 va 恰等于请求地址**、且两处结果互异——地址是真参数，不是
+  axj 那样的摆设。r2 或 C 编译器缺席时按 skip != pass 惯例显式跳过。
+- 实测（真 radare2 5.5.0）：先探后写——0x401130（addtwo）与 0x401150（mulmix）处
+  disasm 首条指令 va 均与请求地址一致，确认 main 上 disasm 本身无 bug，本条为纯 gate
+  补强。变异验证：把客户端命令的 `@ {address}` 换成固定地址后 gate 立即失败于
+  `first_va == address` 断言，证明 gate 抓得住"地址被无视"这类回归。仅加测试、不改源码。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
