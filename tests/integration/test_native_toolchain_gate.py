@@ -53,6 +53,13 @@ Two triage themes the other native gates cannot cover from system binaries:
   from readelf's header/section decode (ELF) and llvm-objdump's segment and
   symtab decode (Mach-O), a pristine binary must report none, and a copy with
   bytes appended must report exactly those bytes at exactly that offset.
+- The FORTIFY_SOURCE posture (ELF __*_chk wrapper imports) -- the checksec
+  column beside nx/relro/canary/pie: a -D_FORTIFY_SOURCE build routes bounded
+  libc calls through fortified wrappers, each named __<func>_chk and imported
+  from libc. gcc compiles the same source at -D_FORTIFY_SOURCE=2 and at =0,
+  and the reader's fortify_source / fortified_functions must match the
+  __*_chk set readelf --dyn-syms shows in each build -- present in the
+  fortified one, empty in the plain one.
 - The weak imports (ELF .dynsym STB_WEAK + SHN_UNDEF) -- optional capability
   the loader leaves null when unresolved rather than failing to start, the
   ELF pair to a Mach-O weak dylib and a PE delay import. A library with a
@@ -157,6 +164,23 @@ _WEAK_C = (
     "int weak_run(void){\n"
     "    if (optional_probe) return optional_probe(1);\n"
     '    return puts("fallback");\n'
+    "}\n"
+)
+
+# A library whose bounded string calls route through libc's fortified wrappers
+# under -D_FORTIFY_SOURCE: strcpy/memcpy/sprintf into a fixed buffer become
+# __strcpy_chk / __memcpy_chk / __sprintf_chk imports. Compiled at =0 the same
+# source imports the plain functions instead, so the two builds bracket the
+# FORTIFY posture the reader must tell apart.
+_FORTIFY_C = (
+    "#include <string.h>\n"
+    "#include <stdio.h>\n"
+    "int fort_run(const char *s, const char *t){\n"
+    "    char buf[64];\n"
+    "    strcpy(buf, s);\n"
+    "    memcpy(buf + 8, t, 8);\n"
+    '    sprintf(buf + 16, "%s", t);\n'
+    "    return puts(buf);\n"
     "}\n"
 )
 # readelf -W --dyn-syms rows: "Num: Value Size Type Bind Vis Ndx Name".
@@ -341,6 +365,31 @@ def _readelf_dyn_symbols(readelf: str, binary: Path) -> tuple[set[str], set[str]
         elif ndx == "UND":
             imports.add(name.split("@")[0])
     return exports, imports
+
+
+def _readelf_fortified(readelf: str, binary: Path) -> set[str]:
+    """The __*_chk fortified-wrapper imports readelf --dyn-syms shows as UND.
+
+    The same set checksec's FORTIFY column counts: an undefined dynamic symbol
+    named ``__<func>_chk``. The ``__`` prefix keeps a user symbol that merely
+    ends in _chk out, matching the reader's rule.
+    """
+    result = subprocess.run(
+        [readelf, "-W", "--dyn-syms", str(binary)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    fortified: set[str] = set()
+    for line in result.stdout.splitlines():
+        match = _READELF_DYNSYM_RE.match(line)
+        if not match:
+            continue
+        ndx, name = match.group(2), match.group(3).split("@")[0]
+        if ndx == "UND" and name.startswith("__") and name.endswith("_chk"):
+            fortified.add(name)
+    return fortified
 
 
 def _readelf_weak_imports(readelf: str, binary: Path) -> set[str]:
@@ -664,6 +713,74 @@ def test_elf_exported_symbols_agree_with_readelf(tmp_path: Path) -> None:
         assert reader_imports >= _KNOWN_IMPORTS
     finally:
         if session_id is not None:
+            service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_elf_fortify_source_agrees_with_readelf(tmp_path: Path) -> None:
+    """The FORTIFY posture against readelf, at -D_FORTIFY_SOURCE=2 and =0.
+
+    The fortified build routes its bounded string calls through __*_chk
+    wrappers; the plain build imports the ordinary functions. The reader's
+    fortify_source / fortified_functions must match readelf's __*_chk set in
+    each -- non-empty and True for the fortified library, empty and False for
+    the plain one, so the gate proves both directions on real toolchain output.
+    """
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    if gcc is None:
+        pytest.skip("no C compiler installed — fortify gate not run (skip != pass)")
+    readelf = shutil.which("readelf")
+    if readelf is None:
+        pytest.skip("readelf (binutils) not installed — fortify gate not run (skip != pass)")
+
+    source = tmp_path / "fortify.c"
+    source.write_text(_FORTIFY_C)
+
+    def build(level: int, name: str) -> Path:
+        out = tmp_path / name
+        result = subprocess.run(
+            # -O2 is required for glibc to expand the calls into _chk wrappers.
+            [
+                gcc, "-O2", f"-D_FORTIFY_SOURCE={level}", "-shared", "-fPIC",
+                "-o", str(out), str(source),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
+        return out
+
+    fortified_lib = build(2, "libfort2.so")
+    plain_lib = build(0, "libfort0.so")
+
+    truth_fortified = _readelf_fortified(readelf, fortified_lib)
+    truth_plain = _readelf_fortified(readelf, plain_lib)
+    # The fortified build really pulls in wrappers and the plain one really
+    # does not, so readelf is a genuine second opinion in both directions.
+    assert truth_fortified, "fortified build imported no __*_chk wrappers"
+    assert truth_plain == set()
+
+    service = AnalysisService()
+    sessions: list[str] = []
+    try:
+        session_id, fortified_facts = _session_native(service, fortified_lib)
+        sessions.append(session_id)
+        # The tool-free import walk and readelf name the same wrapper set, and
+        # the reader flags the posture on.
+        assert set(fortified_facts["fortified_functions"]) == truth_fortified
+        assert fortified_facts["fortify_source"] is True
+        # And the wrappers really are in there (strcpy is the reliable one;
+        # the optimiser may fold the others).
+        assert "__strcpy_chk" in fortified_facts["fortified_functions"]
+
+        session_id, plain_facts = _session_native(service, plain_lib)
+        sessions.append(session_id)
+        # The plain build reads a definitive negative, not a missing fact.
+        assert plain_facts["fortify_source"] is False
+        assert plain_facts["fortified_functions"] == []
+    finally:
+        for session_id in sessions:
             service.close_session(session_id)
 
 
