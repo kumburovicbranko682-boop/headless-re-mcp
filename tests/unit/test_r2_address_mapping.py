@@ -326,6 +326,52 @@ def test_pe_preferred_base_degrades_on_a_malformed_or_unknown_header(tmp_path: P
     assert pe_preferred_base(_pe(image_base=0)) == (Architecture.X64, None)
 
 
+def test_pe_preferred_base_reads_a_32_bit_image_base_from_its_own_offset(tmp_path: Path) -> None:
+    """A PE32 (magic 0x10B) carries ImageBase at optional[28:32], not [24:32].
+
+    Every other mapping test builds an x64 image (0x20B, an 8-byte base at
+    [24:32]); the 32-bit path reads a 4-byte base from a different offset and a
+    different architecture, and 32-bit PEs are the bulk of what r2 sees for
+    legacy and packed samples. A regression that reused the x64 offset -- or
+    mislabelled the architecture -- would shift every RVA this backend maps for a
+    32-bit target, so the x86 branch is pinned as its own case rather than left
+    to the x64 fixture the rest of the file uses.
+    """
+    binary = _minimal_pe(tmp_path, x64=False)
+    assert pe_preferred_base(binary) == (Architecture.X86, 0x400000)
+
+
+def test_pe_preferred_base_rereads_when_the_header_straddles_the_first_window(
+    tmp_path: Path,
+) -> None:
+    """A header ending past the 64 KiB probe window is re-read, not dropped.
+
+    pe_preferred_base first reads only a 64 KiB window -- slurping a 200 MB
+    target to read one field cost 200 MB of RSS per call. When the PE signature
+    sits inside that window but the optional header runs past it, the first slice
+    is too short to hold the ImageBase, and the parser must seek back and read
+    the whole header. Placing the signature just below 64 KiB forces exactly that
+    second pass; without it this binary -- a real shape for a bloated or oddly
+    linked image -- would silently report no base instead of its true one.
+    """
+    from headless_re_mcp.backends.r2.mapping import _HEADER_WINDOW
+
+    pe_offset = _HEADER_WINDOW - 8  # signature readable in pass one; optional header is not
+    optional_size = 0xF0
+    optional_off = pe_offset + 24
+    data = bytearray(optional_off + optional_size)
+    data[0:2] = b"MZ"
+    data[0x3C:0x40] = pe_offset.to_bytes(4, "little")
+    data[pe_offset : pe_offset + 4] = b"PE\0\0"
+    data[pe_offset + 20 : pe_offset + 22] = optional_size.to_bytes(2, "little")
+    data[optional_off : optional_off + 2] = (0x20B).to_bytes(2, "little")
+    data[optional_off + 24 : optional_off + 32] = (0x140000000).to_bytes(8, "little")
+    binary = tmp_path / "straddle.exe"
+    binary.write_bytes(bytes(data))
+
+    assert pe_preferred_base(binary) == (Architecture.X64, 0x140000000)
+
+
 def test_r2_open_only_asks_for_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
