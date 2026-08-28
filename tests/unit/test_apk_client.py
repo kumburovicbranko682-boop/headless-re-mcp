@@ -381,12 +381,15 @@ def test_apk_returns_a_cached_parse_without_reparsing(
     # Fail loudly if the parser is touched: a cache hit must not reach androguard.
     monkeypatch.setattr("androguard.core.apk.APK", _boom_apk("light cache was missed"))
     client = ApkClient()
-    resolved = client._require(_apk_file(tmp_path))
+    # Build the APK once and reuse the path: rewriting it would bump st_mtime_ns
+    # and so change the cache key, turning this into a flaky miss.
+    apk = _apk_file(tmp_path)
+    resolved = client._require(apk)
     key = client._key(resolved)
     sentinel = object()
     ApkClient._light_cache[key] = sentinel
 
-    assert client._apk(_apk_file(tmp_path)) is sentinel
+    assert client._apk(apk) is sentinel
 
 
 def test_apk_parses_once_then_inserts_and_evicts_the_oldest(
@@ -399,10 +402,11 @@ def test_apk_parses_once_then_inserts_and_evicts_the_oldest(
     for index in range(_CACHE_LIMIT):
         ApkClient._light_cache[(f"/prefill/{index}", 0)] = object()
     client = ApkClient()
-    resolved = client._require(_apk_file(tmp_path))
+    apk = _apk_file(tmp_path)
+    resolved = client._require(apk)
     key = client._key(resolved)
 
-    result = client._apk(_apk_file(tmp_path))
+    result = client._apk(apk)
 
     assert result is made
     assert ApkClient._light_cache[key] is made
@@ -428,12 +432,13 @@ def test_parsed_returns_a_cached_analysis_without_reanalyzing(
     _fresh_caches(monkeypatch)
     monkeypatch.setattr("androguard.misc.AnalyzeAPK", _boom_apk("full cache was missed"))
     client = ApkClient()
-    resolved = client._require(_apk_file(tmp_path))
+    apk = _apk_file(tmp_path)
+    resolved = client._require(apk)
     key = client._key(resolved)
     cached = _ParsedApk("a", "b", "c")
     ApkClient._full_cache[key] = cached
 
-    assert client._parsed(_apk_file(tmp_path)) is cached
+    assert client._parsed(apk) is cached
 
 
 def test_parsed_analyzes_once_then_inserts_and_evicts_the_oldest(
@@ -446,10 +451,11 @@ def test_parsed_analyzes_once_then_inserts_and_evicts_the_oldest(
     for index in range(_CACHE_LIMIT):
         ApkClient._full_cache[(f"/prefill/{index}", 0)] = _ParsedApk("x", "y", "z")
     client = ApkClient()
-    resolved = client._require(_apk_file(tmp_path))
+    apk = _apk_file(tmp_path)
+    resolved = client._require(apk)
     key = client._key(resolved)
 
-    parsed = client._parsed(_apk_file(tmp_path))
+    parsed = client._parsed(apk)
 
     assert parsed.apk == "APK"
     assert parsed.analysis == "ANALYSIS"
