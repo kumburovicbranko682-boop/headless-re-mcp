@@ -498,6 +498,40 @@ def test_zerofall_import_rejects_a_wrongly_typed_field_with_a_400(
     assert reply.status_code == 400
 
 
+def test_a_corrupt_stored_profile_can_be_repaired_with_a_put(
+    app_client: Any, tmp_path: Path
+) -> None:
+    """A hand-edited providers.json must not wedge the profile forever.
+
+    Loading the corrupt entry raises TypeError, which save_provider used to
+    surface as a 400 about the *old* profile -- and with no DELETE route the
+    only recovery was editing the file by hand. A PUT carries replacement
+    values, so an unparseable existing profile must act like a missing one.
+    """
+    client, _ = app_client
+    (tmp_path / "providers.json").write_text(
+        '{"current": "default", "profiles": {"default": '
+        '{"base_url": "https://x/v1", "model": "m", '
+        '"context_compression_threshold_percent": null}}}',
+        encoding="utf-8",
+    )
+    # While the corrupt entry is on disk the listing is a 500 envelope; the
+    # TestClient surfaces that by re-raising the underlying error.
+    with pytest.raises(TypeError):
+        client.get("/api/providers")
+
+    repair = client.put(
+        "/api/providers/default",
+        json={"base_url": "https://api.example/v1", "model": "gpt-x", "api_key": "k"},
+    )
+    assert repair.status_code == 200, repair.text
+
+    healed = client.get("/api/providers")
+    assert healed.status_code == 200
+    profiles = {p["id"]: p for p in healed.json()["profiles"]}
+    assert profiles["default"]["base_url"] == "https://api.example/v1"
+
+
 def test_zerofall_import_saves_a_confirmed_profile(app_client: Any) -> None:
     client, _ = app_client
     reply = client.post(

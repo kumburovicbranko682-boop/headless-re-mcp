@@ -564,7 +564,13 @@ def register_agent_routes(
         try:
             try:
                 existing = configs.get(profile_id)
-            except KeyError:
+            except (KeyError, TypeError, ValueError):
+                # An unparseable stored profile (hand-edited file, bad type in
+                # a field) must act like a missing one here: this PUT carries
+                # replacement values, and with no DELETE route it is the only
+                # way to repair the entry. When only KeyError was caught, the
+                # load failure turned a valid repair request into a 400 about
+                # the old profile, wedging it forever.
                 existing = None
             incoming_key = body.get("api_key")
             api_key = str(incoming_key) if isinstance(incoming_key, str) and incoming_key.strip() else (existing.api_key if existing else None)
