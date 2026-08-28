@@ -1512,6 +1512,59 @@ def test_js_imports_maps_the_dependency_surface_without_webcrack(tmp_path: Path)
 
 
 @pytest.mark.integration
+def test_js_exports_inventories_the_export_surface_without_webcrack(tmp_path: Path) -> None:
+    """The mirror of js.imports: what a module exposes, straight from source.
+
+    A written module carries every mechanism -- an anonymous default, a
+    declaration export, a named re-export with `from`, a star re-export and a
+    CommonJS member -- and js.exports must recover each with the right kind and
+    name (the exposed alias for re-exports). The obfuscated fixture exports
+    nothing, so it must yield zero edges and has_default False: ordinary bracket
+    member access like ["push"] must not be mistaken for an export.
+    """
+    module = tmp_path / "surface.js"
+    module.write_text(
+        "export default {};\n"
+        "export const VERSION = '1.0';\n"
+        'export { Button as Btn } from "./ui.js";\n'
+        'export * from "./aggregate.js";\n'
+        "module.exports.legacy = legacy;\n"
+        "// export const decoy = 1\n",
+        encoding="utf-8",
+    )
+    service = AnalysisService()
+    try:
+        result = service.js_exports(str(module))
+        assert result.ok and result.data is not None, result.error
+        data = result.data
+        assert data["kind_counts"] == {
+            "commonjs": 1,
+            "default": 1,
+            "named": 1,
+            "re_export": 1,
+            "star": 1,
+        }
+        assert data["has_default"] is True
+        assert data["names"] == ["Btn", "VERSION", "default", "legacy"]
+        by_name = {e.get("name"): e for e in data["exports"]}
+        assert by_name["Btn"]["kind"] == "re_export"
+        assert by_name["Btn"]["from"] == "./ui.js"
+        assert by_name["VERSION"]["kind"] == "named"
+        assert by_name["legacy"]["kind"] == "commonjs"
+        star = [e for e in data["exports"] if e["kind"] == "star"]
+        assert star and star[0]["from"] == "./aggregate.js" and "name" not in star[0]
+
+        # A real obfuscated bundle that exports nothing must produce no edges.
+        assert _JS_FIXTURE.is_file(), f"fixture missing: {_JS_FIXTURE}"
+        obf = service.js_exports(str(_JS_FIXTURE))
+        assert obf.ok and obf.data is not None, obf.error
+        assert obf.data["distinct"] == 0
+        assert obf.data["has_default"] is False
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_wasm_summary_reads_the_module_surface_without_wabt() -> None:
     """The structured import/export surface must come straight from the bytes.
 
