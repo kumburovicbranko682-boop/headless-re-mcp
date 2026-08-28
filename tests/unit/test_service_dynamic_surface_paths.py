@@ -435,3 +435,60 @@ def test_stealth_set_armadillo_with_only_x64_configured_has_no_target(
     assert result.error is not None
     assert result.error.code == "invalid_params"
     assert "x86-only" in result.error.message
+
+
+def test_stealth_status_for_an_unknown_session_is_a_structured_failure(
+    tmp_path: Path,
+) -> None:
+    # The session lookup at the end of the try raises SessionNotFound, which
+    # the method's BaseException arm turns into a Result failure rather than
+    # letting it escape.
+    service, _ = _dynamic_session(tmp_path, FakeDynamicWorker())
+
+    result = service.dynamic_stealth_status("not-a-real-session")
+
+    assert not result.ok
+    assert result.error is not None
+
+
+# --- address-translation argument guards ----------------------------------------
+
+
+def test_resolve_runtime_address_rejects_a_negative_address(tmp_path: Path) -> None:
+    service, session_id = _dynamic_session(tmp_path, FakeDynamicWorker())
+
+    result = service.resolve_runtime_address(session_id, -1)
+
+    assert not result.ok
+    assert result.error is not None
+    assert "non-negative integer" in result.error.message
+
+
+def test_resolve_runtime_address_rejects_an_unknown_source(tmp_path: Path) -> None:
+    service, session_id = _dynamic_session(tmp_path, FakeDynamicWorker())
+
+    result = service.resolve_runtime_address(session_id, 0x1000, source="galaxy")
+
+    assert not result.ok
+    assert result.error is not None
+    assert "static, rva, runtime" in result.error.message
+
+
+def test_analyze_function_dynamic_rejects_a_non_numeric_timeout(tmp_path: Path) -> None:
+    service, session_id = _dynamic_session(tmp_path, FakeDynamicWorker())
+
+    result = service.analyze_function_dynamic(session_id, 0x1000, timeout="soon")
+
+    assert not result.ok
+    assert result.error is not None
+    assert "timeout must be a number" in result.error.message
+
+
+def test_analyze_function_dynamic_rejects_an_out_of_range_timeout(tmp_path: Path) -> None:
+    service, session_id = _dynamic_session(tmp_path, FakeDynamicWorker())
+
+    result = service.analyze_function_dynamic(session_id, 0x1000, timeout=0.0)
+
+    assert not result.ok
+    assert result.error is not None
+    assert "timeout must be >" in result.error.message
