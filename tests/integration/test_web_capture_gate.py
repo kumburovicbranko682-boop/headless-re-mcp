@@ -51,6 +51,11 @@ _APP_JS = (
     "const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes));\n"
     "console.log('wasm-answer:' + inst.exports.answer());\n"
     "fetch('/data.json').then(r => r.json()).then(d => console.log('data:' + d.secret));\n"
+    # A fetch the browser cannot complete, so CDP fires Network.loadingFailed:
+    # port 1 is an unsafe port Chromium refuses, giving a deterministic
+    # net::ERR_ failure the capture must record as a failed request.
+    "fetch('http://127.0.0.1:1/unreachable').catch(() => "
+    "console.log('fetch-failed'));\n"
     "// capture-gate-script-marker\n"
 )
 
@@ -206,6 +211,28 @@ def test_web_capture_chain_records_real_traffic(site: str) -> None:
             assert har_timings["receive"] == -1, har_timings
             measured = [v for v in har_timings.values() if v >= 0]
             assert by_url[site + "/data.json"]["time"] == round(sum(measured), 3)
+
+            # A request the browser could not complete must be recorded as a
+            # failed row (CDP's loadingFailed), not left indistinguishable from
+            # one still in flight -- the same observability the proxy gives an
+            # errored flow. The page fetches an unsafe port, so a net::ERR_ row
+            # for that URL must appear carrying error=true and a null status.
+            def find_failed_row() -> dict[str, Any] | None:
+                listing = service.web_network_list(session_id)
+                assert listing.ok, listing.error
+                for row in listing.data["requests"]:
+                    if row.get("url", "").startswith("http://127.0.0.1:1/") and row.get("error"):
+                        return dict(row)
+                return None
+
+            failed = _poll(
+                find_failed_row, message="the unreachable fetch was never recorded as failed"
+            )
+            assert failed["error"] is True
+            assert isinstance(failed["error_msg"], str) and failed["error_msg"].startswith(
+                "net::ERR_"
+            ), failed
+            assert failed["status"] is None, failed
 
             # screenshot must be a real PNG, not merely a file that exists.
             shot = service.web_screenshot(session_id)
