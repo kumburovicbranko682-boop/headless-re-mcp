@@ -53,11 +53,18 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.certificates")
     def apk_certificates(session_id: str) -> dict[str, Any]:
-        """List signing certificates and v1 signature files.
+        """List signing certificates and which signature schemes verified.
 
         Answers with certificates (subject, issuer, serial, sha256),
-        signature_files, v1_signed, and has_more so a list that filled the
-        cap is not read as every signer. There is no certs or signatures field.
+        signature_files, and has_more so a list that filled the cap is not
+        read as every signer. Signing is reported by scheme: v1_signed (the
+        v1 JAR signatures listed in signature_files), v2_signed and v3_signed
+        (APK Signature Scheme v2/v3, which leave no signature_files), and
+        signed -- true when any of v1/v2/v3 verified. Check signed, not
+        v1_signed: an APK signed only with v2/v3 (the norm since Android 7)
+        has an empty signature_files and v1_signed false yet is validly
+        signed, its signers still listed in certificates. There is no certs
+        or signatures field.
         """
         return _dump(analysis.apk_certificates(session_id))
 

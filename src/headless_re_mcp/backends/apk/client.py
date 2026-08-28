@@ -44,6 +44,26 @@ class ApkError(RuntimeError):
         self.details = details
 
 
+def _scheme_flag(apk: Any, method_name: str) -> bool:
+    """Whether one APK signature scheme verified, tolerant of version drift.
+
+    androguard grew ``is_signed_v2``/``is_signed_v3`` over time and each parses
+    the APK Signing Block, which a hostile APK can malform. A missing method (an
+    older androguard) or a raise while probing one scheme must not sink the whole
+    ``certificates`` read, so an undetectable scheme degrades to False -- the same
+    tolerant posture ``get_signature_names`` already takes for v1. The authoritative
+    "there are signers" evidence stays the parsed ``certificates`` list beside these
+    flags; the flags only say which schemes verified.
+    """
+    check = getattr(apk, method_name, None)
+    if check is None:
+        return False
+    try:
+        return bool(check())
+    except Exception:  # noqa: BLE001 - scheme parsing raises many types on hostile input
+        return False
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -295,10 +315,22 @@ class ApkClient:
                 )
             except Exception:  # noqa: BLE001 - certificate objects vary by version
                 continue
+        # v1_signed stays the "v1 JAR signature files are present" signal that
+        # pairs with signature_files. v2/v3 leave no META-INF entry, so before
+        # these flags a modern APK -- signed only with APK Signature Scheme v2/v3,
+        # the norm since Android 7 -- came back v1_signed False with an empty
+        # signature_files and read as unsigned, even though get_certificates()
+        # above already returns its v2/v3 certificates. signed is the honest
+        # aggregate an agent checks for "is this signed at all".
+        v2_signed = _scheme_flag(apk, "is_signed_v2")
+        v3_signed = _scheme_flag(apk, "is_signed_v3")
         return {
             "signature_files": sig_files,
             "certificates": items,
             "v1_signed": bool(names),
+            "v2_signed": v2_signed,
+            "v3_signed": v3_signed,
+            "signed": bool(names) or v2_signed or v3_signed,
             "has_more": certs_more or files_more,
         }
 

@@ -64,10 +64,60 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert len(payload["signature_files"]) == 32
     assert payload["has_more"] is True
     assert payload["v1_signed"] is True
+    # This fixture has v1 files and no v2/v3 methods, so the scheme flags read
+    # False and signed collapses to the v1 evidence -- the flags are additive
+    # and never fabricate a scheme this APK did not carry.
+    assert payload["v2_signed"] is False
+    assert payload["v3_signed"] is False
+    assert payload["signed"] is True
     doc = _tool_docstring("apk.certificates")
     assert "Answers with certificates" in doc
     assert "signature_files" in doc
     assert "has_more" in doc
+    assert "v2_signed" in doc
+    assert "v3_signed" in doc
+    assert "signed" in doc
+
+
+class _V2V3OnlyApk:
+    """A modern APK signed only with APK Signature Scheme v2/v3.
+
+    apksigner can disable v1, and Android has not required it since API 24, so a
+    contemporary release leaves no META-INF signature files at all: get_signature_names
+    returns nothing, yet the app is validly signed and get_certificates() still returns
+    its v2/v3 signers. This is the shape the scheme flags exist to report honestly.
+    """
+
+    def get_signature_names(self) -> list[str]:
+        return []
+
+    def get_certificates(self) -> list[_Cert]:
+        return [_Cert(0)]
+
+    def is_signed_v2(self) -> bool:
+        return True
+
+    def is_signed_v3(self) -> bool:
+        return True
+
+
+def test_apk_certificates_reports_a_v2_v3_only_apk_as_signed() -> None:
+    """A v2/v3-only APK must read as signed, not as an unsigned one with certs.
+
+    Before the scheme flags this exact shape -- no signature_files, v1_signed
+    False -- was the whole failure: an agent scanning v1_signed saw False and an
+    empty signature_files and concluded the APK was unsigned, even though its v2/v3
+    signers sat right there in certificates. signed now answers the real question.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _V2V3OnlyApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    assert payload["signature_files"] == []
+    assert payload["v1_signed"] is False
+    assert payload["v2_signed"] is True
+    assert payload["v3_signed"] is True
+    assert payload["signed"] is True
+    assert len(payload["certificates"]) == 1
 
 
 class _UnparsableCertApk:

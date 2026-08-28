@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import struct
+import subprocess
 import zipfile
 import zlib
 from pathlib import Path
@@ -468,6 +469,70 @@ def test_android_apksigner_signs_the_repacked_apk(tmp_path: Path) -> None:
         assert signed.data["signed"] is True
         assert signed.data["debug_keystore"] is True
         assert signed.data["size"] > 0
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_android_certificates_report_v2_v3_on_a_real_signature(tmp_path: Path) -> None:
+    """apk.certificates must read an apksigner-signed APK as signed via v2/v3.
+
+    The hand-built fixture carries only a placeholder v1 entry, so every other
+    test here exercises the unsigned path; the scheme flags -- v2_signed,
+    v3_signed and the aggregate signed -- had no coverage against a real
+    signature. apksigner signs v1+v2+v3 by default, which is exactly the modern
+    APK whose v2/v3 signature leaves no META-INF file: before these flags such
+    an APK read as v1_signed False with an empty signature_files and looked
+    unsigned. Sign the fixture with the real apksigner, open a session on the
+    signed file, and assert androguard reports the v2/v3 schemes through the
+    tool. skip != pass: skips when apksigner or the debug keystore is absent.
+    """
+    settings = Settings.load()
+    if settings.apksigner is None:
+        pytest.skip("apksigner not installed — live Gate not run (skip != pass)")
+    debug_keystore = Path.home() / ".android" / "debug.keystore"
+    if not debug_keystore.is_file():
+        pytest.skip("no Android debug keystore to sign against (skip != pass)")
+
+    unsigned = _build_valid_apk(tmp_path / "unsigned.apk")
+    signed = tmp_path / "signed.apk"
+    result = subprocess.run(
+        [
+            str(settings.apksigner),
+            "sign",
+            "--ks",
+            str(debug_keystore),
+            "--ks-pass",
+            "pass:android",
+            "--key-pass",
+            "pass:android",
+            "--ks-key-alias",
+            "androiddebugkey",
+            "--out",
+            str(signed),
+            str(unsigned),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120.0,
+    )
+    if result.returncode != 0 or not signed.is_file():
+        pytest.skip(f"apksigner could not sign the fixture ({result.stderr.strip()[:200]})")
+
+    service = AnalysisService()
+    try:
+        session_id = service.create_session(str(signed)).data["session"]["id"]
+        certs = service.apk_certificates(session_id)
+        assert certs.ok, certs.error
+        data = certs.data
+        # apksigner writes all three schemes; the point of the flags is that a
+        # caller no longer has to read v1_signed to know the APK is signed.
+        assert data["v2_signed"] is True, data
+        assert data["v3_signed"] is True, data
+        assert data["signed"] is True, data
+        # The v2/v3 signers are real certificates androguard recovered, not an
+        # empty list beside a "signed" boolean.
+        assert len(data["certificates"]) >= 1, data
     finally:
         service.close_all()
 
