@@ -858,6 +858,19 @@ class ExtAnalysisMixin(UiDriveMixin):
         real analyser process, not a coroutine.
         """
         try:
+            # binaries is schema-typed as an array of strings, but the agent and
+            # OpenAI-bridge transports bind it straight from model output with no
+            # pydantic coercion, and the comprehension below iterates whatever
+            # arrives. A non-iterable (int, float, bool) raised a raw TypeError
+            # that _failure filed as a logged internal_error incident; a str was
+            # silently iterated per character, so binaries="a.exe" attempted five
+            # one-character sessions ('a', '.', 'e', 'x', 'e') and reported ok
+            # with five failed entries; a dict was iterated as its keys. Require
+            # the declared list (or tuple) so a wrong container is the
+            # invalid_request caller fault it is. Entries keep the deliberate
+            # str() coercion so Path objects from internal callers still work.
+            if not isinstance(binaries, (list, tuple)):
+                raise ValueError("binaries must be a list of paths")
             paths = [str(item).strip() for item in binaries if str(item).strip()]
             if not paths:
                 raise ValueError("binaries must contain at least one path")

@@ -713,3 +713,40 @@ def test_batch_analyze_rejects_an_out_of_range_worker_count(
 
     assert not result.ok and result.error is not None
     assert result.error.code == "invalid_request"
+
+
+@pytest.mark.parametrize(
+    "binaries",
+    [
+        5,  # non-iterable: raised a raw TypeError filed as internal_error
+        1.5,
+        True,
+        "a.exe",  # a str iterates per character into five one-char "paths"
+        b"a.exe",  # bytes iterate as ints, str()-ed into "97", "46", ...
+        {"a.exe": 1},  # a dict iterates as its keys
+    ],
+)
+def test_batch_analyze_rejects_a_non_list_binaries(tmp_path: Path, binaries: Any) -> None:
+    """A wrong binaries container is the caller's mistake, not an incident or a batch.
+
+    The path comprehension iterates whatever arrives: a non-iterable raised a
+    raw TypeError that _failure filed as a logged internal_error incident, and
+    binaries="a.exe" was silently exploded per character -- five sessions were
+    attempted for 'a', '.', 'e', 'x', 'e' and the batch reported ok with five
+    failed entries. Both must read as invalid_request before any session is
+    created.
+    """
+    service = _Service(tmp_path)
+    attempted: list[str] = []
+
+    def create_session(path: str) -> Result[JsonObject]:
+        attempted.append(path)
+        return Result[JsonObject](ok=False, error=RpcError(code="not_found", message="missing"))
+
+    service.create_session = create_session
+
+    result = service.batch_analyze(binaries)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_request"
+    assert attempted == []
