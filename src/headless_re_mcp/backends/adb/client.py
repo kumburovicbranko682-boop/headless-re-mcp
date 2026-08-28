@@ -41,6 +41,8 @@ _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
 _MAX_DEVICES = 64
+# /proc/net/protocols has one row per registered protocol handler; bound it.
+_MAX_PROTOCOLS = 256
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
@@ -476,6 +478,83 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read device info: {exc}") from exc
+
+    def protocols(self, serial: str, *, limit: int = 256) -> JsonObject:
+        """List registered protocol handlers from /proc/net/protocols.
+
+        Each row is a protocol the kernel exposes -- TCP, UDP, RAW, PING,
+        NETLINK, PACKET, UNIX and their v6 forms -- with the count of live
+        sockets it currently has allocated. That count is the dynamic signal: a
+        nonzero RAWv6 or PACKET corroborates the raw/packet socket readers, and
+        the presence of PING/PINGv6 shows unprivileged ICMP is available. Each
+        row reports name, size (per-socket struct bytes), sockets (allocated
+        count), memory (pages allocated, or -1 when the protocol does not track
+        it) and the owning module ("kernel" for built-ins).
+
+        Honesty contract: an adb host error (offline device) is a
+        ``backend_error``. Android Q+ SELinux commonly denies the shell user
+        ``/proc/net`` access, answering ``Permission denied`` (or ``No such
+        file``), reported as ``available: false`` with the reason rather than an
+        empty success. A readable file is ``available: true``.
+        """
+        dev = self._device(serial)
+        capped = max(1, min(int(limit), _MAX_PROTOCOLS))
+        text = _device_shell(dev, "cat /proc/net/protocols")
+        if _is_host_error_output(text):
+            raise AdbError(
+                "backend_error", "reading /proc/net/protocols failed", output=text[:800]
+            )
+        lowered = text.lower()
+        if any(marker in lowered for marker in ("no such file", "permission denied")):
+            return {
+                "available": False,
+                "reason": text.strip()[:200],
+                "protocols": [],
+                "count": 0,
+                "has_more": False,
+            }
+        header_seen = False
+        protocols: list[JsonObject] = []
+        has_more = False
+        for line in text.splitlines():
+            fields = line.split()
+            if not fields:
+                continue
+            if not header_seen:
+                # Header: protocol size sockets memory press maxhdr slab module ...
+                if fields[0].lower() == "protocol" and "sockets" in line.lower():
+                    header_seen = True
+                continue
+            if len(fields) < 8:
+                continue
+            try:
+                size = int(fields[1])
+                sockets = int(fields[2])
+                memory = int(fields[3])
+            except ValueError:
+                continue
+            if len(protocols) >= capped:
+                has_more = True
+                break
+            protocols.append(
+                {
+                    "name": fields[0],
+                    "size": size,
+                    "sockets": sockets,
+                    "memory": memory,
+                    "module": fields[7],
+                }
+            )
+        if not header_seen:
+            raise AdbError(
+                "backend_error", "unrecognized /proc/net/protocols output", output=text[:800]
+            )
+        return {
+            "available": True,
+            "protocols": protocols,
+            "count": len(protocols),
+            "has_more": has_more,
+        }
 
     def properties(self, serial: str, *, limit: int = 500) -> JsonObject:
         dev = self._device(serial)

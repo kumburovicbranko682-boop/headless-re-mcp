@@ -58,6 +58,26 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_info(serial))
 
+    @tools.tool(name="device.protocols")
+    def device_protocols(
+        serial: str, limit: Annotated[int, Field(ge=1, le=256)] = 256
+    ) -> dict[str, Any]:
+        """List registered protocol handlers from /proc/net/protocols.
+
+        Each row is a protocol the kernel exposes (TCP, UDP, RAW, PING,
+        NETLINK, PACKET, UNIX and their v6 forms) with the count of live
+        sockets it has allocated -- the dynamic signal that shows which stacks
+        are actually in use. Answers with available, protocols (each with name,
+        size, sockets, memory, module), count and has_more so a filled page is
+        not read as the whole set.
+
+        available is false with a reason when the device denies /proc/net access
+        (Android Q+ SELinux) or the file is absent -- not an empty success. A
+        readable file is available true. An adb host error (offline device) is a
+        failure, not an empty set.
+        """
+        return _dump(analysis.device_protocols(serial, limit=limit))
+
     @tools.tool(name="device.properties")
     def device_properties(
         serial: str, limit: Annotated[int, Field(ge=1, le=2000)] = 500
