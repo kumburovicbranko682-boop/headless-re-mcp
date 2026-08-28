@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **281（163 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **282（164 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -330,6 +330,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   同样的 `offset`/`limit` 分页与 `total`/`has_more`，成员数超 `_MAX_FILES_COLLECT`（10000）采集上限时置 `scan_capped`；
   `name_filter` 对成员路径做大小写敏感子串匹配、在采集上限前应用，故超上限的 `assets/` 载荷仍可按名找到。加密/损坏的成员
   仍按元数据列出、`kind` 留空。只读，工具总数 273→274（156 只读 / 118 写）。
+- **frida 线只能列已安装应用（`frida.applications`），列不出"正在跑的进程"，而 `frida.attach` 要的恰是运行进程的 pid**。
+  `frida.applications` 给的是安装清单（运行时才带 pid），但要附加到一个非 app 的进程——系统守护、原生 helper、已 fork 的组件——
+  就得有 frida 自己的进程枚举，此前 frida 线没有。新增只读工具 `frida.processes`：走 frida 的 `enumerate_processes` 列出该会话所连
+  设备上的每个活进程。答复带 `processes`、`count`、`total`、`has_more`（沿用 `frida.applications` 的"限量+`name_filter`、无 offset"
+  惯用式）。每行 `{pid, name}`、按 pid 排序；`name_filter` 对进程名做大小写不敏感子串匹配、在限量前应用，故 `total` 为匹配数。这里的
+  pid 是 frida 自己的 pid 空间（该会话所连设备），正是 `frida.attach` 与各 `frida.*_device` hook 直接取用的值——这也是它与
+  `device.processes`（读 adb `ps`、仅 Android、adb-serial 的 pid）的区别：一个喂给 frida、一个喂给 apk/pull 线。只读，
+  工具总数 281→282（164 只读 / 118 写）。
 - **`device.packages` 报的是"装了什么"，拿不到"此刻在跑什么"，装好的包名与可附加的运行目标之间断了一截**。一个 app id 在 zygote
   fork 出进程前并不是可附加的目标，而 `frida.attach`/`frida.spawn` 要的是进程 pid（或进程名），此前设备线没有任何工具能把运行中的
   进程连同 pid 列出来。新增只读工具 `device.processes`：跑 `ps -A`，按表头列名（而非固定列序）定位 PID/USER/PPID/NAME 列，逐行整形成

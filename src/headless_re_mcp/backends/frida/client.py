@@ -746,6 +746,50 @@ class FridaClient:
             "has_more": len(rows) > capped,
         }
 
+    def processes(
+        self, device_id: str | None, *, limit: int = 256, name_filter: str = ""
+    ) -> JsonObject:
+        """Running processes on the device, in frida's own pid namespace.
+
+        frida.applications lists what is *installed*; this lists what is
+        *running* -- every live process, not just the app ones -- via frida's
+        own ``enumerate_processes``, so a system daemon, a native helper or an
+        already-forked app becomes an attachable target. The pid returned is the
+        one frida.attach/hook consume directly (frida's pid space, the same
+        device this session is bound to), which is why this lives on the frida
+        line rather than only device.processes (adb ``ps``, Android-only, an
+        adb-serial pid).
+        """
+        device = self._resolve_device(device_id)
+        try:
+            procs = _run_deadline(device.enumerate_processes, timeout=30.0)
+        except Exception as exc:  # noqa: BLE001
+            raise FridaError("backend_error", f"failed to enumerate processes: {exc}") from exc
+        capped = max(1, min(int(limit), 1000))
+        rows: list[JsonObject] = [
+            {
+                "pid": int(getattr(proc, "pid", 0) or 0),
+                "name": str(getattr(proc, "name", "")),
+            }
+            for proc in procs
+        ]
+        # A case-insensitive substring over the process name, applied before the
+        # cap so a target past the first `limit` on a busy device is reachable
+        # (there is no offset, matching frida.applications). total then reflects
+        # the match count. Python-side like applications, not an in-agent filter.
+        needle = name_filter.strip().lower() if isinstance(name_filter, str) else ""
+        if needle:
+            rows = [row for row in rows if needle in str(row["name"]).lower()]
+        # Ascending pid so the capped page is stable across calls.
+        rows.sort(key=lambda row: int(row["pid"]))
+        items = rows[:capped]
+        return {
+            "processes": items,
+            "count": len(items),
+            "total": len(rows),
+            "has_more": len(rows) > capped,
+        }
+
     def spawn(
         self,
         device_id: str | None,

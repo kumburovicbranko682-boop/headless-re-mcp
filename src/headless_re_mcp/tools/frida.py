@@ -191,6 +191,32 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.frida_applications(session_id, limit=limit, name_filter=name_filter)
         )
 
+    @tools.tool(name="frida.processes")
+    def frida_processes(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 256,
+        name_filter: str = "",
+    ) -> dict[str, Any]:
+        """List running processes on the session's connected device (frida).
+
+        frida.applications lists what is installed; this lists what is running --
+        every live process, not just the app ones -- so an app id becomes an
+        attachable target. The pid here is frida's own (the device this session
+        is bound to), the value frida.attach and the frida.*_device hooks take
+        directly; that is the difference from device.processes, which reads adb
+        ps and is Android-only. Answers with processes, count, total, and
+        has_more so a page that filled the limit is not read as the whole device.
+        Each processes row is {pid, name}; rows are ordered by pid. The list
+        field is processes, not procs or tasks, and the field to hand frida is
+        pid. name_filter keeps only processes whose name contains that substring
+        (case-insensitive), applied before the cap so a target past the first
+        `limit` on a busy device is findable (there is no offset); total is then
+        the match count. Read-only: it only enumerates.
+        """
+        return _dump(
+            analysis.frida_processes(session_id, limit=limit, name_filter=name_filter)
+        )
+
     @tools.tool(name="frida.spawn")
     def frida_spawn(session_id: str, package: str) -> dict[str, Any]:
         """Spawn and resume a package on the device, authorizing its pid for this session.

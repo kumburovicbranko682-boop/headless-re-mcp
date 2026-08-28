@@ -153,6 +153,20 @@ class FridaDeviceMixin:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def frida_processes(
+        self, session_id: str, limit: int = 256, name_filter: str = ""
+    ) -> Result[JsonObject]:
+        try:
+            auth = self._frida_auth(session_id)
+            data = FridaClient().processes(
+                auth.get("device_id"), limit=limit, name_filter=name_filter
+            )
+            return _success(data, session_id=session_id, backend="frida")
+        except (FridaError, AdbError) as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
     def frida_spawn(self, session_id: str, package: str) -> Result[JsonObject]:
         try:
             auth = self._frida_auth(session_id)

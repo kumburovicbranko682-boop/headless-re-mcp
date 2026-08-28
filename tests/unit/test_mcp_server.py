@@ -298,6 +298,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "frida.device.connect",
         "frida.server.ensure",
         "frida.applications",
+        "frida.processes",
         "frida.spawn",
         "frida.java.classes",
         "frida.java.methods",
