@@ -128,7 +128,16 @@ def register_agent_routes(
     @app.get("/api/agent/threads")
     def list_threads(authorization: str | None = Header(default=None)) -> JSONResponse:
         authorize(authorization)
-        return JSONResponse({"ok": True, "threads": [item.dump() for item in store.list_threads()]})
+        threads = store.list_threads()
+        payload: JsonObject = {"ok": True, "threads": [item.dump() for item in threads]}
+        # The store retains up to 2,000 finished threads but this page holds
+        # 100. Without a marker the sidebar reads as the complete set and the
+        # threads past the cap are simply unfindable.
+        total = store.count_threads()
+        if total > len(threads):
+            payload["threads_total"] = total
+            payload["threads_truncated"] = True
+        return JSONResponse(payload)
 
     @app.post("/api/agent/threads", status_code=201)
     def create_thread(body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:
@@ -149,14 +158,29 @@ def register_agent_routes(
         item = store.get_thread(thread_id)
         if item is None:
             raise HTTPException(status_code=404, detail="thread_not_found")
-        return JSONResponse(
-            {
-                "ok": True,
-                "thread": item.dump(),
-                "messages": [message.dump() for message in store.list_messages(thread_id)],
-                "events": [event.dump() for event in store.list_thread_events(thread_id)],
-            }
-        )
+        messages = store.list_messages(thread_id)
+        events = store.list_thread_events(thread_id)
+        payload: JsonObject = {
+            "ok": True,
+            "thread": item.dump(),
+            "messages": [message.dump() for message in messages],
+            "events": [event.dump() for event in events],
+        }
+        # Both listings are newest-capped windows (500 messages / 8 MiB;
+        # 4,000 events / 8 MiB) over retention that goes much further (2,000
+        # messages / 64 MiB; 5,000 events per retained run). Returned bare,
+        # the window reads as the whole history: an operator auditing an
+        # unattended agent sees a conversation that silently starts mid-way
+        # and has no way to tell that from a thread that began there.
+        messages_total = store.count_messages(thread_id)
+        if messages_total > len(messages):
+            payload["messages_total"] = messages_total
+            payload["messages_truncated"] = True
+        events_total = store.count_thread_events(thread_id)
+        if events_total > len(events):
+            payload["events_total"] = events_total
+            payload["events_truncated"] = True
+        return JSONResponse(payload)
 
     @app.patch("/api/agent/threads/{thread_id}")
     def bind_thread(thread_id: str, body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:
@@ -407,9 +431,18 @@ def register_agent_routes(
         authorize(authorization)
         if store.get_run(run_id) is None:
             raise HTTPException(status_code=404, detail="run_not_found")
-        return JSONResponse(
-            {"ok": True, "events": [event.dump() for event in store.list_events(run_id, after=after)]}
-        )
+        events = store.list_events(run_id, after=after)
+        payload: JsonObject = {"ok": True, "events": [event.dump() for event in events]}
+        # One cursor page, cut at 1,000 events or 8 MiB -- and a streamed run
+        # is deltas, so it routinely holds more. Returned bare, a full page
+        # read as "everything after `after`": a client rebuilding history saw
+        # a run that just stops mid-way, with nothing saying to come back with
+        # the cursor advanced. The SSE stream loops and self-heals; this
+        # one-shot endpoint is where the cut needs saying.
+        if events and store.list_events(run_id, after=events[-1].seq, limit=1):
+            payload["has_more"] = True
+            payload["next_after"] = events[-1].seq
+        return JSONResponse(payload)
 
     @app.post("/api/agent/missions", status_code=201)
     def create_mission(body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:
@@ -464,9 +497,20 @@ def register_agent_routes(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="invalid_status") from exc
         items = [item.dump() for item in store.list_missions(status=wanted, limit=limit)]
-        return JSONResponse(
-            {"ok": True, "missions": items, "count": len(items), "scheduler_running": scheduler.running}
-        )
+        payload: JsonObject = {
+            "ok": True,
+            "missions": items,
+            "count": len(items),
+            "scheduler_running": scheduler.running,
+        }
+        # "count" is the page length, which read as the number of missions
+        # matching the filter; past the cap the two silently diverge. Same
+        # disclosure as the thread listing above.
+        total = store.count_missions(status=wanted)
+        if total > len(items):
+            payload["missions_total"] = total
+            payload["missions_truncated"] = True
+        return JSONResponse(payload)
 
     @app.get("/api/agent/missions/{mission_id}")
     def get_mission(mission_id: str, authorization: str | None = Header(default=None)) -> JSONResponse:

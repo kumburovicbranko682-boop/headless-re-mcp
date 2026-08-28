@@ -24,6 +24,27 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+++ b/CHANGELOG.md
+### 修复（Agent 线程 Web 视图把最新窗口当完整历史返回）
+
+- `GET /api/agent/threads/{id}` 直接返回 `store.list_messages` / `store.list_thread_events` 的结果，
+  而这两个读取器给的都是"最新窗口"（消息 500 条 / 8 MiB，事件 4000 条 / 8 MiB），保留量却远不止
+  （每线程 2000 条消息 / 64 MiB，每保留 run 5000 条事件）。窗口裸着返回就读成了全部历史：审计一个
+  无人值守 agent 的操作者看到的对话是从半路开始的，却无从与真正从那里开始的线程区分。现在页面小于
+  存量时附上 `messages_total`/`messages_truncated`、`events_total`/`events_truncated`；完整时字段
+  不出现，响应不变。`GET /api/agent/threads` 同理——列表页 100 条、线程保留上限 2000，超出时附
+  `threads_total`/`threads_truncated`，否则侧栏之外的线程根本无从得知存在。`GET /api/agent/missions`
+  也一样：响应里的 `count` 是页长，超过 limit（至多 500）后与实际匹配的任务数无声分岔，现超出时附
+  `missions_total`/`missions_truncated`（与列表同一 status 过滤口径）。store 补 `count_messages` /
+  `count_thread_events` / `count_threads` / `count_missions` 四个直数方法供路由对账。
+  `GET /api/agent/runs/{id}/events/history` 是单发游标页（1000 条 / 8 MiB 截断），流式 run 的事件
+  以 delta 计常常超页；满页裸返回读成"`after` 之后的全部"，重建历史的客户端看到一个中途戛然而止
+  的 run。现页未到尾时附 `has_more`/`next_after`（SSE 流自带循环游标不受影响）。回归测试钉住：
+  字节上限压到 1024 时消息/事件页带 total 与 truncated 且页长小于 total；102 个线程的列表带
+  `threads_total=102`；3 个任务 `limit=1` 时带 `missions_total=3`；history 满页带 `has_more` 且沿
+  `next_after` 翻到尾能不重不漏取全、末页不带该字段；未截断的视图与列表不带任何新字段；直数方法按
+  各自列表的口径计数（任务按 status 过滤、事件只算本线程的 run）。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

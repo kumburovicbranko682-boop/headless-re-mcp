@@ -308,6 +308,39 @@ def test_every_capped_list_keeps_the_end_it_says_it_keeps(tmp_path: Path) -> Non
     second_page = store.list_events(run.id, after=first_page[-1].seq, limit=5)
     assert second_page[0].seq > first_page[-1].seq, "a cursor page must not repeat itself"
 
+
+def test_count_methods_report_the_store_not_the_page(tmp_path: Path) -> None:
+    """The counts exist so a capped page can say it is capped.
+
+    Each one must count what its listing would have returned uncapped --
+    count_missions under the same status filter, count_thread_events only the
+    thread's own runs -- or the disclosure built on them would lie in the other
+    direction.
+    """
+    store = AgentStore(tmp_path / "counts.db")
+    thread = store.create_thread()
+    other = store.create_thread()
+    assert store.count_threads() == 2
+
+    for index in range(3):
+        store.add_message(thread.id, "user", f"message {index}")
+    store.add_message(other.id, "user", "not mine")
+    assert store.count_messages(thread.id) == 3
+
+    run = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+    foreign = store.create_run(other.id, provider_profile="p", model=None, deadline_seconds=60)
+    store.append_event(run.id, "message.delta", {"n": 1})
+    store.append_event(foreign.id, "message.delta", {"n": 2})
+    # create_run writes run.started, so the thread holds 1 + 1 events.
+    assert store.count_thread_events(thread.id) == 2
+
+    pending = [store.create_mission(thread.id, f"objective {index}") for index in range(3)]
+    store.set_mission_status(pending[0].id, MissionStatus.COMPLETED)
+    assert store.count_missions() == 3
+    assert store.count_missions(status=MissionStatus.PENDING) == 2
+    assert store.count_missions(status=MissionStatus.COMPLETED) == 1
+
+
 def test_a_failed_transaction_reports_what_failed_not_the_cleanup(tmp_path: Path) -> None:
     """The rollback must not become the error report.
 

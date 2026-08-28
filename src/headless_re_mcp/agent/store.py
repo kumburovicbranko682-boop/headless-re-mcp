@@ -325,6 +325,16 @@ class AgentStore:
             rows = con.execute("SELECT * FROM threads ORDER BY updated_at DESC LIMIT ?", (max(1, min(limit, 500)),)).fetchall()
         return [AgentThread(**dict(row)) for row in rows]
 
+    def count_threads(self) -> int:
+        """How many threads exist, so a capped listing can say it is capped.
+
+        The finished-thread trim retains up to 2,000 threads while list_threads
+        pages 100 by default, so the sidebar's page is routinely a subset.
+        """
+        with self._reading() as con:
+            row = con.execute("SELECT COUNT(*) AS n FROM threads").fetchone()
+        return int(row["n"])
+
     def get_thread(self, thread_id: str) -> AgentThread | None:
         with self._reading() as con:
             row = con.execute("SELECT * FROM threads WHERE id=?", (thread_id,)).fetchone()
@@ -424,6 +434,20 @@ class AgentStore:
                 (thread_id, capped, byte_limit),
             ).fetchall()
         return [AgentMessage(**dict(row)) for row in rows]
+
+    def count_messages(self, thread_id: str) -> int:
+        """How many messages the thread actually retains.
+
+        list_messages returns a newest-capped window (count and bytes), so its
+        length alone cannot say whether the window is the whole history. The
+        web thread view compares this count against the page it got and
+        discloses the difference instead of presenting the window as complete.
+        """
+        with self._reading() as con:
+            row = con.execute(
+                "SELECT COUNT(*) AS n FROM messages WHERE thread_id=?", (thread_id,)
+            ).fetchone()
+        return int(row["n"])
 
     def create_run(self, thread_id: str, *, provider_profile: str, model: str | None, deadline_seconds: float) -> AgentRun:
         if self.get_thread(thread_id) is None:
@@ -587,6 +611,20 @@ class AgentStore:
                 (thread_id, bounded, byte_limit),
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
+
+    def count_thread_events(self, thread_id: str) -> int:
+        """How many run events the thread's retained runs actually hold.
+
+        The companion to count_messages for list_thread_events, which pages the
+        newest window under the same count-and-bytes caps.
+        """
+        with self._reading() as con:
+            row = con.execute(
+                "SELECT COUNT(*) AS n FROM run_events e"
+                " JOIN runs r ON r.id = e.run_id WHERE r.thread_id=?",
+                (thread_id,),
+            ).fetchone()
+        return int(row["n"])
 
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> RunEvent:
@@ -823,6 +861,21 @@ class AgentStore:
             else:
                 rows = con.execute("SELECT * FROM missions WHERE status=? ORDER BY created_at DESC, id DESC LIMIT ?", (status.value, bounded)).fetchall()
         return [self._mission_from_row(row) for row in rows]
+
+    def count_missions(self, *, status: MissionStatus | None = None) -> int:
+        """How many missions match, so a capped listing can say it is capped.
+
+        The companion to count_messages/count_threads for list_missions, under
+        the same status filter the listing used.
+        """
+        with self._reading() as con:
+            if status is None:
+                row = con.execute("SELECT COUNT(*) AS n FROM missions").fetchone()
+            else:
+                row = con.execute(
+                    "SELECT COUNT(*) AS n FROM missions WHERE status=?", (status.value,)
+                ).fetchone()
+        return int(row["n"])
 
     def claim_next_mission(self) -> AgentMission | None:
         """Take the oldest pending mission, atomically.
