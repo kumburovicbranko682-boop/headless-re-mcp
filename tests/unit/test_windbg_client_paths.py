@@ -7,6 +7,7 @@ is driven entirely by environment variables and directories on disk.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -226,7 +227,7 @@ def test_discovery_prefers_the_verified_project_runtime(
 ) -> None:
     """The project tools path outranks PATH and the Windows Kits scan."""
     monkeypatch.delenv("HEADLESS_RE_CDB", raising=False)
-    monkeypatch.setattr(windbg_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
     root = Path(windbg_module.__file__).resolve().parents[4]
     tools = root / "artifacts" / "tools" / "cdb-amd64" / "cdb.exe"
     if tools.is_file():
@@ -254,7 +255,7 @@ def test_discovery_accepts_a_path_hit_outside_a_store_package(
     found.parent.mkdir()
     found.write_bytes(b"MZ")
     monkeypatch.delenv("HEADLESS_RE_CDB", raising=False)
-    monkeypatch.setattr(windbg_module.shutil, "which", lambda _name: str(found))
+    monkeypatch.setattr(shutil, "which", lambda _name: str(found))
 
     assert windbg_module._discover_cdb() == found
 
@@ -264,7 +265,7 @@ def test_discovery_scans_windows_kits_and_skips_store_packages(
 ) -> None:
     """The Kits glob skips a store-flavoured hit and an empty root entirely."""
     monkeypatch.delenv("HEADLESS_RE_CDB", raising=False)
-    monkeypatch.setattr(windbg_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
     # First root exists but only holds a store-package match the launchable
     # filter must reject; the second root holds the real debugger.
     store_root = tmp_path / "pf" / "Windows Kits"
@@ -285,7 +286,7 @@ def test_discovery_moves_past_a_kits_root_without_any_match(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("HEADLESS_RE_CDB", raising=False)
-    monkeypatch.setattr(windbg_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
     empty_root = tmp_path / "pf" / "Windows Kits"
     empty_root.mkdir(parents=True)
     sdk_root = tmp_path / "pf86" / "Windows Kits"
