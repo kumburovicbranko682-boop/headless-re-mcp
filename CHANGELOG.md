@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 安全（incident 文本脱敏漏掉 dict/JSON repr 形态的密钥——异常消息里最常见的形态恰好全部绕过）
+
+- 缺陷：`error_boundary._redact_text` 守着最后一道防线——它的输出直达磁盘 incident 日志、
+  Web 的 HTTP 500 响应体、CLI stderr 信封、以及 agent `run.failed` 事件（入库并回放给 UI）。
+  但两个模式都要求密钥关键词后**紧跟** `:` 或 `=`，而异常文本携带密钥的最常见形态恰恰是
+  插值映射或回显 JSON 的 repr——`{'Authorization': 'Bearer sk-…'}`、`{"api_key": "sk-…"}`——
+  key 名后跟的是引号，全部失配。实测三种形态完整泄漏明文密钥；裸 `Bearer sk-…`（无
+  authorization 前缀）也漏——结构化 redactor（`redaction.py` 的 `_BEARER`）反而能兜住，
+  与注释宣称的「与结构化 redactor 保持同步」相悖。
+- 改法：Bearer 模式泛化为无前缀形态（与 `_BEARER` 对齐，且必须先跑，让关键词遍历到的是
+  它的输出）；关键词模式允许 key 名后可选引号，值部分改为三选一——完整单引号串、完整双引号串
+  （空格不截断，`"Basic dXNlcjpwYXNz"` 整体遮蔽）、或无空白裸值；并补上结构化侧已有而这里
+  缺失的 `authorization` 关键词（兜住 `'Authorization': 'Basic …'`）。刻意保留 `[:=]` 硬边界：
+  `tokenized=false`、`max_tokens=4096` 这类常见诊断依旧可读。
+- 测试：关键词矩阵新增 5 个引号/裸 Bearer 形态（修复前逐一验证过确实泄漏）；新增
+  端到端用例证明 dict-repr 头部经 `guard_tool_handler` 后信封与磁盘日志均不含明文；
+  新增可读性回归钉住 `max_tokens=4096` 不被误伤。全量单元套件 6050 通过，
+  `ruff` / `mypy --strict` 干净。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

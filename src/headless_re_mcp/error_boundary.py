@@ -37,13 +37,23 @@ _LOG_PATH: Path | None = None
 # ``redaction.py``: a value masked when it sits under a dict key must also be
 # masked when it appears inline in an exception message, because that message is
 # what reaches the on-disk incident log, the HTTP 500 body and the CLI stderr
-# envelope. The strict ``[:=]`` boundary (rather than a trailing ``\w*``) is
-# deliberate -- it keeps "tokenized=false" and similar diagnostics readable.
+# envelope. Exception text usually carries secrets in dict-repr or JSON form --
+# ``{'Authorization': 'Bearer x'}`` from an interpolated header mapping,
+# ``{"api_key": "x"}`` from an echoed request body -- where a quote sits between
+# the key name and the separator, so the boundary admits an optional quote after
+# the key name, and a quoted value is consumed whole (spaces included: think
+# ``"Basic dXNlcjpwYXNz extra"``) rather than stopping at the first space. The
+# strict ``[:=]`` boundary itself (rather than a trailing ``\w*``) is still
+# deliberate -- it keeps "tokenized=false" and "max_tokens=4096" readable.
+# Bearer values are masked wherever they appear, prefixed by "Authorization" or
+# not, matching ``redaction.py``'s ``_BEARER``; this pattern must run first so
+# the keyword pass sees its output, not the raw token.
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+"),
+    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+"),
     re.compile(
-        r"(?i)((?:api[_-]?key|private[_-]?key|access[_-]?key|token|secret"
-        r"|password|passwd|credential)\s*[:=]\s*)[^\s,;]+"
+        r"(?i)((?:api[_-]?key|private[_-]?key|access[_-]?key|authorization"
+        r"|token|secret|password|passwd|credential)['\"]?\s*[:=]\s*)"
+        r"(?:'[^']*'|\"[^\"]*\"|[^\s,;'\"]+)"
     ),
 )
 

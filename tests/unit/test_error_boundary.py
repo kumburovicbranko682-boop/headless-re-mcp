@@ -43,6 +43,34 @@ def test_tool_exception_returns_ai_envelope_and_logs(
     assert "[REDACTED]" in logged
 
 
+def test_interpolated_header_mapping_does_not_leak_into_envelope_or_log(
+    incident_log: Path,
+) -> None:
+    """A dict-repr of auth headers inside an exception must stay masked end to end.
+
+    ``raise RuntimeError(f"... {headers}")`` is the natural way provider glue
+    reports a failed request, and the repr form ``{'Authorization': 'Bearer x'}``
+    is exactly what the old authorization-anchored pattern missed: the quote
+    after the header name broke the match, so the raw token reached the
+    incident log, the envelope details, and the HTTP 500 body (verified before
+    the fix). Pin the whole chain, not just ``_redact_text``.
+    """
+    headers = {"Authorization": "Bearer sk-live-4eC39HqLyjWDarjtT1zdp7dc"}
+
+    def call_provider() -> dict[str, object]:
+        raise RuntimeError(f"provider request failed, headers={headers}")
+
+    guarded = boundary.guard_tool_handler(call_provider, tool_name="agent.provider")
+    result = guarded()
+
+    encoded = json.dumps(result)
+    assert "sk-live-4eC39HqLyjWDarjtT1zdp7dc" not in encoded
+    assert "[REDACTED]" in json.dumps(result["error"])  # type: ignore[index]
+    logged = incident_log.read_text(encoding="utf-8")
+    assert "sk-live-4eC39HqLyjWDarjtT1zdp7dc" not in logged
+    assert "[REDACTED]" in logged
+
+
 @pytest.mark.parametrize(
     "marker",
     [
@@ -63,6 +91,19 @@ def test_tool_exception_returns_ai_envelope_and_logs(
         "access_key=sk-DEADBEEFsecret",
         "passwd=sk-DEADBEEFsecret",
         "credential: sk-DEADBEEFsecret",
+        # Quoted forms: what an interpolated mapping ("headers={...}") or an
+        # echoed JSON body puts into an exception message. The quote between
+        # the key name and the separator defeated the old bare-[:=] boundary,
+        # so exactly these shapes reached the incident log and the 500 body in
+        # the clear (verified before the fix).
+        "{'Authorization': 'Bearer sk-DEADBEEFsecret'}",
+        "{'api_key': 'sk-DEADBEEFsecret'}",
+        '{"token": "sk-DEADBEEFsecret"}',
+        '{"authorization": "Basic sk-DEADBEEFsecret"}',
+        # A bearer value with no "Authorization" prefix at all; the structured
+        # redactor's _BEARER already masks this inside stored payloads, and the
+        # inline scrubber must not be weaker than it.
+        "Bearer sk-DEADBEEFsecret",
     ],
 )
 def test_every_sensitive_keyword_form_is_redacted(marker: str) -> None:
@@ -83,6 +124,19 @@ def test_every_sensitive_keyword_form_is_redacted(marker: str) -> None:
 def test_redaction_leaves_ordinary_diagnostics_intact() -> None:
     """Over-redaction would blind an operator; only secret keywords are touched."""
     text = "read 4096 bytes at offset=1234 for session id=abc (retryable=false)"
+
+    assert boundary._redact_text(text) == text
+
+
+def test_redaction_keeps_token_count_diagnostics_readable() -> None:
+    """The [:=] boundary is deliberate: *token-shaped words* are not secrets.
+
+    "max_tokens=4096" and "tokenized=false" are routine provider diagnostics;
+    masking them would blind an operator to the actual failure. The quoted-form
+    support added for dict-repr secrets must not loosen this: the optional
+    quote sits between the key name and the separator, never inside the name.
+    """
+    text = "request rejected: max_tokens=4096 exceeds limit (tokenized=false)"
 
     assert boundary._redact_text(text) == text
 
