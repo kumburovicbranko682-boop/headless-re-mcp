@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -242,3 +243,180 @@ def test_run_reports_a_missing_apk_before_launching(tmp_path: Path) -> None:
         client._run(tmp_path / "missing.apk", [], tmp_path / "out", timeout=1.0)
     assert caught.value.code == "not_found"
     assert caught.value.details["path"] == str(tmp_path / "missing.apk")
+
+
+# --- _capped_java_listing hard ceiling -----------------------------------
+
+
+def test_listing_stops_counting_at_the_hard_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The listing cap bounds what is returned; a second, higher ceiling bounds
+    # how many files are even counted, so an app with millions of classes cannot
+    # turn a summary into an unbounded walk. Shrink it to observe the break.
+    monkeypatch.setattr(jadx_client, "_MAX_COUNTED_FILES", 2)
+    for name in ("a", "b", "c"):
+        _write(tmp_path / "sources" / f"{name}.java")
+    names, total, has_more = _capped_java_listing(tmp_path, cap=100)
+    assert total == 2  # stopped at the ceiling rather than counting all three
+    assert has_more is True
+    assert len(names) == 2
+
+
+# --- decompile resolution: defensive branches ----------------------------
+
+
+def test_decompile_reports_not_found_when_no_sources_dir_was_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # jadx wrote output but nothing under sources/, so the sources tree is not a
+    # directory: the class cannot be resolved and the result is not_found, not a
+    # crash reaching into a missing directory.
+    client = JadxClient(tmp_path / "jadx")
+    _stub_tree(client, monkeypatch, {"resources/AndroidManifest.xml": b"<manifest/>"})
+    with pytest.raises(JadxError) as caught:
+        client.decompile(tmp_path / "app.apk", tmp_path / "out", "com.example.App")
+    assert caught.value.code == "not_found"
+
+
+def test_decompile_skips_a_basename_match_that_is_a_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A directory in the tree happens to be named like the class file. The
+    # basename walk must skip it (it is not a file) and report the class absent
+    # rather than hand back a directory.
+    def _fake_run(apk: Path, extra: list[str], out_dir: Path, *, timeout: float) -> Any:
+        del apk, extra, timeout
+        (Path(out_dir) / "sources" / "pkg" / "Widget.java").mkdir(parents=True)
+        return "", "", 0
+
+    client = JadxClient(tmp_path / "jadx")
+    monkeypatch.setattr(client, "_run", _fake_run)
+    with pytest.raises(JadxError) as caught:
+        client.decompile(tmp_path / "app.apk", tmp_path / "out", "Widget")
+    assert caught.value.code == "not_found"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink loop needs POSIX symlinks")
+def test_decompile_ignores_a_basename_match_whose_path_cannot_resolve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A self-referential symlink shares the basename but resolve() raises on it
+    # (ELOOP). The walk must swallow that and keep looking, not let the OSError
+    # escape the tool -- here there is no other match, so it is not_found.
+    def _fake_run(apk: Path, extra: list[str], out_dir: Path, *, timeout: float) -> Any:
+        del apk, extra, timeout
+        pkg = Path(out_dir) / "sources" / "pkg"
+        pkg.mkdir(parents=True)
+        loop = pkg / "Loop.java"
+        loop.symlink_to(loop)  # points at itself -> resolve() raises
+        return "", "", 0
+
+    client = JadxClient(tmp_path / "jadx")
+    monkeypatch.setattr(client, "_run", _fake_run)
+    with pytest.raises(JadxError) as caught:
+        client.decompile(tmp_path / "app.apk", tmp_path / "out", "Loop")
+    assert caught.value.code == "not_found"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="chmod 000 does not block reads on Windows")
+def test_decompile_maps_an_unreadable_source_to_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root bypasses file permissions")
+
+    def _fake_run(apk: Path, extra: list[str], out_dir: Path, *, timeout: float) -> Any:
+        del apk, extra, timeout
+        src = Path(out_dir) / "sources" / "com" / "example" / "App.java"
+        src.parent.mkdir(parents=True)
+        src.write_bytes(b"class App {}\n")
+        src.chmod(0o000)  # exists (is_file true) but open('rb') raises PermissionError
+        return "", "", 0
+
+    client = JadxClient(tmp_path / "jadx")
+    monkeypatch.setattr(client, "_run", _fake_run)
+    with pytest.raises(JadxError) as caught:
+        client.decompile(tmp_path / "app.apk", tmp_path / "out", "com.example.App")
+    assert caught.value.code == "backend_error"
+    assert "failed to read source" in caught.value.message
+
+
+# --- _run subprocess body (real stub executable, no jadx/JRE) ------------
+
+
+def _script(tmp_path: Path, name: str, body: str) -> Path:
+    exe = tmp_path / name
+    exe.write_text(body, encoding="utf-8")
+    exe.chmod(0o755)
+    return exe
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell stub executable")
+def test_run_returns_output_and_code_on_a_clean_exit(tmp_path: Path) -> None:
+    exe = _script(tmp_path, "jadx", "#!/bin/sh\necho hello-stdout\nexit 0\n")
+    apk = _write(tmp_path / "app.apk", b"PK\x03\x04")
+    out = tmp_path / "out"
+    client = JadxClient(exe)
+    stdout, stderr, code = client._run(apk, ["--output-dir", str(out)], out, timeout=10.0)
+    assert code == 0
+    assert "hello-stdout" in stdout
+    assert out.is_dir()  # _run created the output directory before launching
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell stub executable")
+def test_run_fails_hard_when_a_nonzero_exit_wrote_no_sources(tmp_path: Path) -> None:
+    exe = _script(tmp_path, "jadx", "#!/bin/sh\necho boom >&2\nexit 3\n")
+    apk = _write(tmp_path / "app.apk", b"PK\x03\x04")
+    out = tmp_path / "out"
+    client = JadxClient(exe)
+    with pytest.raises(JadxError) as caught:
+        client._run(apk, ["--output-dir", str(out)], out, timeout=10.0)
+    assert caught.value.code == "backend_error"
+    assert caught.value.details["exit_code"] == 3
+    assert "boom" in caught.value.details["stderr"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell stub executable")
+def test_run_tolerates_a_nonzero_exit_that_still_wrote_sources(tmp_path: Path) -> None:
+    # jadx exits non-zero on partial failures but leaves usable .java behind;
+    # that must be returned, not treated as a hard failure.
+    exe = _script(
+        tmp_path,
+        "jadx",
+        '#!/bin/sh\nout=""\nwhile [ $# -gt 0 ]; do\n'
+        '  if [ "$1" = "--output-dir" ]; then out="$2"; fi\n'
+        '  shift\ndone\nmkdir -p "$out"\n: > "$out/Partial.java"\nexit 1\n',
+    )
+    apk = _write(tmp_path / "app.apk", b"PK\x03\x04")
+    out = tmp_path / "out"
+    client = JadxClient(exe)
+    _stdout, _stderr, code = client._run(apk, ["--output-dir", str(out)], out, timeout=10.0)
+    assert code == 1
+    assert (out / "Partial.java").is_file()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell stub executable")
+def test_run_maps_a_deadline_overrun_to_timeout(tmp_path: Path) -> None:
+    exe = _script(tmp_path, "jadx", "#!/bin/sh\nsleep 5\n")
+    apk = _write(tmp_path / "app.apk", b"PK\x03\x04")
+    out = tmp_path / "out"
+    client = JadxClient(exe)
+    with pytest.raises(JadxError) as caught:
+        client._run(apk, ["--output-dir", str(out)], out, timeout=0.3)
+    assert caught.value.code == "timeout"
+    assert caught.value.details["timeout"] == 0.3
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX exec-permission semantics")
+def test_run_maps_a_launch_failure_to_backend_error(tmp_path: Path) -> None:
+    # A regular file that is not executable: available is True (it is a file),
+    # but launching it raises OSError, which must surface as backend_error.
+    exe = _write(tmp_path / "jadx", b"not an executable")  # no +x bit
+    apk = _write(tmp_path / "app.apk", b"PK\x03\x04")
+    out = tmp_path / "out"
+    client = JadxClient(exe)
+    with pytest.raises(JadxError) as caught:
+        client._run(apk, ["--output-dir", str(out)], out, timeout=10.0)
+    assert caught.value.code == "backend_error"
+    assert "failed to launch jadx" in caught.value.message
