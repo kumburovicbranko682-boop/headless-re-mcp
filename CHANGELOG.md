@@ -19,6 +19,12 @@ until 1.0 the tool surface may still change between minor versions.
   die、web.setup、web.app)视野内的 `os` 换成钉住 `name` 的转发代理。六文件
   132 例在 3.11 与 3.12 下均过,全库不再有进程级 os.name 补丁。
 
+- 加绊线测试 `test_no_process_wide_platform_fakes.py` 使清理自我强制:扫描
+  tests/ 下所有文件,发现 `setattr(os, "name", ...)` 即失败并指名文件行号、
+  给出 `_OsProxy` 惯例的修法。动机:对 135 个待合 cover-* 分支的预审发现
+  15 个分支会重新引入该模式;有绊线后这些分支落地即在全平台明确失败,
+  而非以 3.11 专属、不点名肇事者的 INTERNALERROR 形式炸掉整个会话。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
