@@ -30,6 +30,7 @@ _JS_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "obfuscated_sample.js"
 _WASM_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "add_module.wasm"
 _WASM_GLOBALS_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "globals_module.wasm"
 _WASM_TABLE_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "table_module.wasm"
+_WASM_MEMORY_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "memory_module.wasm"
 
 _DATA_URL = (
     "data:text/html,"
@@ -1829,6 +1830,62 @@ def test_wasm_elements_resolves_the_table_to_call_targets_without_wabt() -> None
         # Every active segment reports its base offset in the segment map.
         offsets = sorted(seg["offset"] for seg in data["segments"])
         assert offsets == [1, 5]
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_memory_maps_linear_memory_and_placement_without_wabt() -> None:
+    """The linear-memory map must come straight from the bytes too.
+
+    The fixture is a real wabt artifact (memory_module.wat compiled with
+    --debug-names): one exported, named memory declared 2..16 pages, two active
+    data segments placed at 1024 ("hello") and 2048 ("world!!"), and one passive
+    segment. wasm.memory parses the module binary itself, so it must recover the
+    memory's page limits and their byte sizes, its export/name-section names, and
+    fold the Data section into the placement map + occupied span -- the range the
+    static image covers -- with no wabt in the loop.
+    """
+    assert _WASM_MEMORY_FIXTURE.is_file(), f"fixture missing: {_WASM_MEMORY_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.wasm_memory(str(_WASM_MEMORY_FIXTURE))
+        assert result.ok and result.data is not None, result.error
+        data = result.data
+        assert data["page_size"] == 65536
+        assert data["memory_count"] == 1
+        assert data["imported_count"] == 0
+        assert data["defined_count"] == 1
+        assert data["has_name_section"] is True
+        (mem,) = data["memories"]
+        assert mem["index"] == 0
+        assert mem["kind"] == "defined"
+        assert mem["min_pages"] == 2
+        assert mem["max_pages"] == 16
+        assert mem["min_bytes"] == 2 * 65536
+        assert mem["max_bytes"] == 16 * 65536
+        assert mem["shared"] is False
+        assert mem["index_type"] == "i32"
+        assert mem["name"] == "mem"
+        assert mem["exported_as"] == ["memory"]
+        # The Data section folds into a placement map: two active, one passive.
+        assert data["segment_count"] == 3
+        assert data["active_segments"] == 2
+        assert data["passive_segments"] == 1
+        by_index = {s["index"]: s for s in data["segments"]}
+        assert by_index[0]["mode"] == "active"
+        assert by_index[0]["memory_index"] == 0
+        assert by_index[0]["offset"] == 1024
+        assert by_index[0]["size"] == 5
+        assert by_index[0]["end"] == 1029
+        assert by_index[1]["offset"] == 2048
+        assert by_index[1]["end"] == 2055
+        assert by_index[2]["mode"] == "passive"
+        assert by_index[2]["offset"] is None
+        # occupied is the union span the active segments cover in linear memory.
+        assert data["occupied"] == {"start": 1024, "end": 2055, "size": 1031}
+        # wabt emits no DataCount section here (no bulk-memory op references it).
+        assert data["data_count"] is None
     finally:
         service.close_all()
 
