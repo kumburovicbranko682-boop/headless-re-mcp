@@ -1235,23 +1235,46 @@ class AnalysisService(
                         "error": result.error.model_dump(mode="json"),
                     }
                 )
-        self._health.stop()
+        # Shutdown cleanup must be best-effort and independent. A wedged browser
+        # driver that raises while being reaped must not strand the mitmproxy
+        # subprocess or the adb port forwards queued behind it -- the old
+        # straight-line calls skipped every step after the first failure and let
+        # the exception escape close_all, which the run_stdio and web shutdown
+        # paths call without expecting it to raise. Run each step in isolation
+        # and record, rather than silently swallow, any failure so the caller
+        # (and an operator reading the envelope) can see which resource may have
+        # been left behind instead of a clean {"closed": n}.
+        def _cleanup(component: str, action: Callable[[], object]) -> None:
+            # The action is a thunk, not a bound method resolved by the caller:
+            # a backend missing the method (or whose attribute access itself
+            # raises) must be caught here too, not escape as the argument is
+            # evaluated -- the same AttributeError the old suppress() absorbed.
+            try:
+                action()
+            except BaseException as exc:  # noqa: BLE001 - shutdown attempts every backend
+                errors.append(
+                    {
+                        "component": component,
+                        "error": {"type": type(exc).__name__, "message": str(exc)},
+                    }
+                )
+
+        _cleanup("health_monitor", lambda: self._health.stop())
         web_backend = getattr(self, "_web_backend", None)
         if web_backend is not None:
-            web_backend.close_all()
+            _cleanup("web_backend", lambda: web_backend.close_all())
         proxy_backend = getattr(self, "_proxy_backend", None)
         if proxy_backend is not None:
-            proxy_backend.close_all()
+            _cleanup("proxy_backend", lambda: proxy_backend.close_all())
         adb_backend = getattr(self, "_adb_backend", None)
         if adb_backend is not None:
-            with suppress(BaseException):
-                adb_backend.release_forwards()
+            _cleanup("adb_backend", lambda: adb_backend.release_forwards())
         if errors:
             return Result[JsonObject](
                 ok=False,
                 error=RpcError(
                     code="close_all_failed",
-                    message="one or more sessions failed to close cleanly",
+                    message="one or more sessions or backends failed to close cleanly",
                     details={"closed": closed, "errors": errors},
                 ),
             )
