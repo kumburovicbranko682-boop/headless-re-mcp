@@ -5,6 +5,27 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（非-PE 共享基座与服务层的剩余退化/边界分支，只加测试、不改源码）
+
+- 继续按"退化温和、分类诚实、绝不泄漏"排查非-PE 依赖的共享基座与服务层仅剩的语句/
+  分支缺口，每条都以变异测试确认可承重：
+- `r2/mapping.py`：`elf_preferred_base` 的程序头表解析边界此前只测了单个 PT_LOAD。新增
+  灵活的多程序头 ELF 构造器，覆盖：跳过非-PT_LOAD 段（PT_INTERP）、多个 PT_LOAD 取最低
+  vaddr（后一个更高的 load 不得改写 base）、phnum 超出文件长度时在半个表项处停下（不把
+  残字节当 p_vaddr 读出个伪 base）、以及 PN_XNUM/损坏的 phnum 使表超上限时带已知 arch、
+  空 base 放弃——都是 ELF 地址映射（va/rva）的正确性合同。
+- `common/bounded_run.py`：`run_bounded` 的 finally 兜底回收——Popen 之后、正常返回/超时/
+  取消抛出之前若发生意外错误且子进程仍活着，必须杀掉进程树而非把它留到会话结束。所有
+  CLI 后端（r2/ghidra/jsre/apktool/jadx）都靠它不泄漏。让紧随 Popen 的
+  `assign_to_process_group` 抛错复现该意外，断言注入的异常原样上抛且 sleeper 已死。
+- `core/service_web.py` / `core/service_proxy.py`：`web_navigate` 与 `proxy_replay` 此前
+  只有 happy-path，缺"后端抛出非领域异常"的兜底臂（其余同族方法都有这对用例）。补上
+  WebError/ProxyError→领域码、意外异常→`invalid_request` 信封两面；`proxy_replay` 是会改变
+  上游状态的动作，异常逃逸比只读更糟。
+- `core/store/timeline.py`：`list_session_timeline` 的 OSError 读失败臂——文件存在但
+  `is_file()` 与 open 之间被另一进程/Windows trim 顶替或锁住时，必须退化为 `read_failed`
+  信封而非内部错误（超限臂此前已测，读失败臂未测）。
+
 ### 测试（非-PE 后端退化/合同分支覆盖，只加测试、不改源码）
 
 - 系统排查四个非-PE 后端客户端仅剩的语句/分支缺口——都是"退化必须温和、分类必须
