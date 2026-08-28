@@ -24,6 +24,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（报告标题脱敏漂移守卫:同一“把 caller/finding 文本直插进 ATX 标题、绕过 `_cell`”的注入类先后修了两处——H1 标题与发现分组 `### {kind}`。既已复发两次,冻结该面以防第三处再直出）
+
+- 新增 `test_report_heading_sanitization_guard.py`:AST 解析 `reporting.py`,对每个“字面量以 Markdown `#` 起头”的 f-string 标题,要求其每个插值槽要么是 `_inline`/`_heading`(脱敏器)调用、要么是 `len(...)`(计数,恒为 int)——可直接写出,也可经局部 `name = _heading(...)` 一次赋值解析(覆盖 `f"# {heading}"` 这种间接)。标题槽里出现裸名/属性/下标——正是两处旧 bug 的形状——即在报告渲染层报错。
+- 含非空性(须扫到 H1 与 `###` 两个标题、且确有插值槽)。带外验证:把 `### {_inline(kind)}` 回退成 `### {kind}` → 守卫精确点名 `slot 'kind'`(而 `len(items)` 不误报);把 `heading = _heading(...)` 回退成 `title or ...` → 经赋值解析点名 `slot 'heading'`。两条 name 解析/直调路径均证明有牙。
+
 ### 修复（报告里的发现分组标题 `### {kind}` 与上一条标题同类,也绕过 `_cell`:`knowledge_record` 只 `strip` 了 `kind`,内部换行会存活,于是 `kind="note\n## 注入段"` 在报告里渲染成 `### note` 后跟一行独立的 `## 注入段`——又一处标题注入。此前的标题修复只堵了 H1,分组标题 `### {kind}` 仍直出)
 
 - 抽出共享的 `_inline(value, *, limit)`(把 `\n`/`\r` 换空格、按 limit 裁剪加省略号——与 `_cell` 同法,但标题无列故不转义 `|`),`_heading` 改为复用它,`### {kind}` 也改走 `_inline(kind)`。至此纯渲染器里所有动态标题(H1 标题、发现分组 `###`)都统一折成一行有界文本,无论 finding/caller 塞了什么。
