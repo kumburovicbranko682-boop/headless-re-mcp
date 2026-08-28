@@ -171,6 +171,34 @@ def test_wasm_info_raises_when_nonzero_and_nothing_printed(tmp_path: Path) -> No
     assert caught.value.details.get("stderr") == "fatal: bad magic"
 
 
+def test_wasm_validates_the_input_before_the_wabt_gate(tmp_path: Path) -> None:
+    """A caller's file error reads precisely even when wabt is not configured.
+
+    ``_require_input`` used to check ``tool is None`` (the wabt capability gate)
+    before it looked at the file, so on a host without wabt a missing file or a
+    non-module surfaced as ``capability_unavailable`` ("configure wabt") rather
+    than the ``not_found`` / ``invalid_params`` it is -- the same masking
+    web.open, adb._device and frida.spawn reject. The file-existence and
+    \\0asm-magic checks are pure, so they now run first; the wabt gate only fires
+    once the input is a real module. With both tools forced unconfigured (so the
+    gate would fire if reached first), a missing path reads as not_found and a
+    non-module as invalid_params, not capability_unavailable.
+    """
+    client = WasmClient()
+    client._wasm2wat = None
+    client._objdump = None
+
+    with pytest.raises(JsReError) as missing:
+        client.wat(tmp_path / "absent.wasm")
+    assert missing.value.code == "not_found"
+
+    junk = tmp_path / "notwasm.wasm"
+    junk.write_bytes(b"MZ this is not a WebAssembly module")
+    with pytest.raises(JsReError) as bad_magic:
+        client.info(junk)
+    assert bad_magic.value.code == "invalid_params"
+
+
 def test_unpack_bundle_surfaces_a_nonzero_exit_when_files_were_written(tmp_path: Path) -> None:
     tool = tmp_path / "webcrack.exe"
     tool.write_bytes(b"")
