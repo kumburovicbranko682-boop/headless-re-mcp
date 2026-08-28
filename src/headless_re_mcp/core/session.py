@@ -489,8 +489,18 @@ _NATIVE_SECTION_SNIFF = 0x40
 _NATIVE_MAX_SECTION_PAYLOADS = 64
 _NATIVE_MAX_MACHO_SECTIONS = 4096
 _SHT_NULL = 0
+_SHT_PROGBITS = 1
 _ELF_MAX_SHSTRTAB = 1024 * 1024
 _ELF_MAX_EXPORTS = 8192
+# The .comment section collects one NUL-terminated record per compiler that
+# touched the link ("GCC: (Ubuntu 13.2.0...)", "clang version ...") -- the ELF
+# toolchain provenance, the pair to the WASM producers section, a Mach-O
+# LC_BUILD_VERSION tool entry and a PE Rich header. readelf -p .comment prints
+# the same strings, so the native gate can cross-check them.
+_ELF_TOOLCHAIN_SECTION = ".comment"
+_ELF_MAX_COMMENT = 64 * 1024
+_ELF_MAX_TOOLCHAIN = 16
+_ELF_MAX_TOOLCHAIN_CHARS = 256
 _DT_NULL = 0
 _DT_NEEDED = 1
 _DT_STRTAB = 5
@@ -657,6 +667,12 @@ _MACHO_PLATFORMS = {
     11: "visionos",
     12: "visionos-simulator",
 }
+# LC_BUILD_VERSION's trailing ntools entries name the toolchain that produced
+# the image (clang/swift/ld and their versions) -- the Mach-O toolchain
+# provenance, the pair to an ELF .comment and the WASM producers section.
+# llvm-objdump --macho --all-headers prints the same tool/version rows.
+_MACHO_TOOLS = {1: "clang", 2: "swift", 3: "ld", 4: "lld"}
+_MACHO_MAX_TOOLS = 16
 _LC_SEGMENT = 0x01
 _LC_SEGMENT_64 = 0x19
 # The embedded code signature (a linkedit_data_command naming where the
@@ -4840,11 +4856,15 @@ def _elf_layout_facts(
     # empty census is then a real "nothing hidden in a section" answer, while a
     # header-only object with no section table omits the fact entirely.
     if shoff > 0 and 0 < shnum <= _ELF_MAX_SHNUM:
-        section_payloads, section_count = _elf_section_payloads(
-            stream, order, bits, shoff, shentsize, shnum, shstrndx
-        )
+        sections = _elf_named_sections(stream, order, bits, shoff, shentsize, shnum, shstrndx)
+        section_payloads, section_count = _elf_section_payloads(stream, sections)
         facts["section_payloads"] = section_payloads
         facts["section_payload_count"] = section_count
+        # Compiler records out of .comment -- the toolchain provenance, the
+        # pair to the WASM producers section; absent stays absent.
+        toolchain = _elf_toolchain(stream, sections)
+        if toolchain:
+            facts["toolchain"] = toolchain
 
 
 def _elf_program_headers(
@@ -5454,7 +5474,7 @@ def _native_sniff_kind(head: bytes) -> str | None:
     return None
 
 
-def _elf_section_payloads(
+def _elf_named_sections(
     stream: BinaryIO,
     order: str,
     bits: int,
@@ -5462,24 +5482,16 @@ def _elf_section_payloads(
     shentsize: int,
     shnum: int,
     shstrndx: int,
-) -> tuple[list[dict[str, Any]], int]:
-    """Sections whose bytes open with executable magic, and how many there are.
+) -> list[tuple[str, int, int, int]]:
+    """``(name, sh_type, sh_offset, sh_size)`` per section header, names resolved.
 
-    The ELF arm of the payload census: a dropper linked as an ELF hides its
-    stage two in a section it later writes out and runs (a nested ELF loader,
-    a PE for a Windows drop, a zipped bundle). This walks the section header
-    table, sniffs the first bytes of every section that occupies file bytes
-    (SHT_NOBITS and SHT_NULL hold none), and names each hit by its section
-    name -- the objcopy ``--dump-section`` view an analyst would reach for.
-    A census, not a verdict: a legitimate embedded blob lists here too.
-
-    Bounded and fail-closed: the section count is already capped by the caller
-    bounds, only the first 0x40 bytes of each section are read, the reported
-    list is capped (the count stays exact), and any structural surprise yields
-    whatever parsed cleanly.
+    The shared table walk under the section-payload census and the .comment
+    toolchain read: reads the header table once, resolves names through
+    e_shstrndx, and falls back to ``section_{index}`` when the string table is
+    missing or lying. Callers apply their own skip rules and bounds.
     """
     if shoff <= 0 or shnum <= 0 or shnum > _ELF_MAX_SHNUM:
-        return [], 0
+        return []
     want = 64 if bits == 64 else 40
     entsize = max(shentsize, want)
     try:
@@ -5487,7 +5499,7 @@ def _elf_section_payloads(
         stream.seek(shoff)
         table = stream.read(entsize * shnum)
     except OSError:
-        return [], 0
+        return []
 
     def sh_fields(entry: bytes) -> tuple[int, int, int, int]:
         name = int.from_bytes(entry[0:4], order)  # type: ignore[arg-type]
@@ -5501,7 +5513,7 @@ def _elf_section_payloads(
         return name, stype, off, size
 
     # The section-name string table, resolved through e_shstrndx; without it
-    # names fall back to their index, so the census still lists the hits.
+    # names fall back to their index, so callers still see every section.
     strtab = b""
     if 0 < shstrndx < shnum:
         entry = table[shstrndx * entsize : shstrndx * entsize + want]
@@ -5521,13 +5533,77 @@ def _elf_section_payloads(
                 return strtab[name_off:end].decode("utf-8", errors="replace")
         return f"section_{index}"
 
-    payloads: list[dict[str, Any]] = []
-    found = 0
+    sections: list[tuple[str, int, int, int]] = []
     for i in range(shnum):
         entry = table[i * entsize : i * entsize + want]
         if len(entry) < want:
             break
         name_off, stype, sh_offset, sh_size = sh_fields(entry)
+        sections.append((section_name(name_off, i), stype, sh_offset, sh_size))
+    return sections
+
+
+def _elf_toolchain(
+    stream: BinaryIO,
+    sections: list[tuple[str, int, int, int]],
+) -> list[str]:
+    """Compiler records out of ``.comment`` -- the ELF toolchain provenance.
+
+    Every compiler that contributed objects to the link appends one
+    NUL-terminated record ("GCC: (Ubuntu 13.2.0-4ubuntu3) 13.2.0", "clang
+    version 17.0.6") -- the pair to the WASM producers section, a Mach-O
+    LC_BUILD_VERSION tool entry and a PE Rich header, and the same strings
+    ``readelf -p .comment`` prints. Deduplicated in first-seen order, both the
+    list and each record bounded; a stripped or comment-less image yields an
+    empty list, which the caller reads as "no provenance recorded".
+    """
+    for name, stype, sh_offset, sh_size in sections:
+        if name != _ELF_TOOLCHAIN_SECTION or stype != _SHT_PROGBITS:
+            continue
+        if sh_offset <= 0 or sh_size <= 0:
+            return []
+        try:
+            stream.seek(sh_offset)
+            blob = stream.read(min(sh_size, _ELF_MAX_COMMENT))
+        except OSError:
+            return []
+        records: list[str] = []
+        for chunk in blob.split(b"\x00"):
+            text = chunk.decode("utf-8", errors="replace").strip()[:_ELF_MAX_TOOLCHAIN_CHARS]
+            if text and text not in records:
+                records.append(text)
+                if len(records) >= _ELF_MAX_TOOLCHAIN:
+                    break
+        return records
+    return []
+
+
+def _elf_section_payloads(
+    stream: BinaryIO,
+    sections: list[tuple[str, int, int, int]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Sections whose bytes open with executable magic, and how many there are.
+
+    The ELF arm of the payload census: a dropper linked as an ELF hides its
+    stage two in a section it later writes out and runs (a nested ELF loader,
+    a PE for a Windows drop, a zipped bundle). This sniffs the first bytes of
+    every section that occupies file bytes (SHT_NOBITS and SHT_NULL hold
+    none), naming each hit by its section name -- the objcopy
+    ``--dump-section`` view an analyst would reach for. A census, not a
+    verdict: a legitimate embedded blob lists here too.
+
+    Bounded and fail-closed: the section list is already capped by the header
+    walk, only the first 0x40 bytes of each section are read, the reported
+    list is capped (the count stays exact), and any structural surprise yields
+    whatever parsed cleanly.
+    """
+    try:
+        file_size = stream.seek(0, 2)
+    except OSError:
+        return [], 0
+    payloads: list[dict[str, Any]] = []
+    found = 0
+    for name, stype, sh_offset, sh_size in sections:
         if stype in (_SHT_NULL, _SHT_NOBITS):
             continue
         if sh_size < 4 or sh_offset <= 0 or sh_offset >= file_size:
@@ -5544,9 +5620,7 @@ def _elf_section_payloads(
             continue
         found += 1
         if len(payloads) < _NATIVE_MAX_SECTION_PAYLOADS:
-            payloads.append(
-                {"section": section_name(name_off, i), "kind": kind, "size": sh_size}
-            )
+            payloads.append({"section": name, "kind": kind, "size": sh_size})
     return payloads, found
 
 
@@ -5653,7 +5727,15 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         # LC_RPATH entries, the ELF rpath/runpath analogue; absent stays absent.
         if lc["rpaths"]:
             facts["rpath"] = lc["rpaths"]
-        for key in ("interpreter", "install_name", "uuid", "platform", "min_os", "sdk"):
+        for key in (
+            "interpreter",
+            "install_name",
+            "uuid",
+            "platform",
+            "min_os",
+            "sdk",
+            "build_tools",
+        ):
             if lc[key] is not None:
                 facts[key] = lc[key]
         entry = _macho_entry(lc["entryoff"], lc["segments"])
@@ -5997,6 +6079,8 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
         "platform": None,
         "min_os": None,
         "sdk": None,
+        # LC_BUILD_VERSION's ntools entries: the toolchain provenance.
+        "build_tools": None,
         # The load-time constructor surface off the segments' section headers:
         # how many init/term entries dyld runs around the entry point.
         "mod_init": 0,
@@ -6028,8 +6112,9 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
             if name:
                 names.append(name)
         elif cmd == _LC_BUILD_VERSION and result["platform"] is None and cmdsize >= 24:
-            # platform/minos/sdk as u32s after cmd/cmdsize; ntools entries follow
-            # but carry toolchain identity, not target identity.
+            # platform/minos/sdk as u32s after cmd/cmdsize, then ntools
+            # build_tool_version entries -- the toolchain provenance, the pair
+            # to an ELF .comment and the WASM producers section.
             plat = int.from_bytes(cmds[pos + 8 : pos + 12], order)  # type: ignore[arg-type]
             result["platform"] = _MACHO_PLATFORMS.get(plat, f"platform_{plat}")
             result["min_os"] = _macho_version(
@@ -6038,6 +6123,22 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
             sdk = int.from_bytes(cmds[pos + 16 : pos + 20], order)  # type: ignore[arg-type]
             if sdk:
                 result["sdk"] = _macho_version(sdk)
+            ntools = int.from_bytes(cmds[pos + 20 : pos + 24], order)  # type: ignore[arg-type]
+            tools: list[dict[str, str]] = []
+            for index in range(min(ntools, _MACHO_MAX_TOOLS)):
+                tool_off = pos + 24 + index * 8
+                if tool_off + 8 > pos + cmdsize:
+                    break  # a lying ntools must not read past its own command
+                tool_id = int.from_bytes(cmds[tool_off : tool_off + 4], order)  # type: ignore[arg-type]
+                tool_ver = int.from_bytes(cmds[tool_off + 4 : tool_off + 8], order)  # type: ignore[arg-type]
+                tools.append(
+                    {
+                        "tool": _MACHO_TOOLS.get(tool_id, f"tool_{tool_id}"),
+                        "version": _macho_version(tool_ver),
+                    }
+                )
+            if tools:
+                result["build_tools"] = tools
         elif cmd in _LC_VERSION_MIN_CMDS and result["platform"] is None and cmdsize >= 16:
             # version_min_command: version then sdk; the command kind itself
             # names the platform (the pre-LC_BUILD_VERSION encoding).
