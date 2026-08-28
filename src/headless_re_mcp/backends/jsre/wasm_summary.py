@@ -931,3 +931,116 @@ def list_wasm_globals(data: bytes, *, offset: int = 0, limit: int = 100) -> Json
     result["offset"] = start
     result["has_more"] = start + len(window) < len(parsed)
     return result
+
+
+_MAX_EXPORTS_COLLECT = 5000
+_MAX_EXPORTS_PAGE = 2000
+
+
+def _parse_export_entries(payload: bytes) -> tuple[list[JsonObject], bool]:
+    """Decode the export section into every {name, kind, index}, bounded."""
+    count, pos = _uleb(payload, 0)
+    entries: list[JsonObject] = []
+    capped = False
+    for _ in range(count):
+        if len(entries) >= _MAX_EXPORTS_COLLECT:
+            capped = True
+            break
+        field, pos = _name(payload, pos)
+        kind_byte, pos = _u8(payload, pos)
+        index, pos = _uleb(payload, pos)
+        entries.append(
+            {
+                "name": field,
+                "kind": _EXTERN_KINDS.get(kind_byte, f"0x{kind_byte:02x}"),
+                "index": index,
+            }
+        )
+    return entries, capped
+
+
+def list_wasm_exports(data: bytes, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """List a module's exports, resolving function exports to their signatures.
+
+    summary lists exports by name/kind/index; this resolves each function export
+    through the function index space (imports first, then defined) to its
+    params/results and marks whether it resolves to an imported or a defined
+    function, attaching the internal name from the name section when present.
+    Never raises: an unmodellable type section drops params/results and sets
+    types_resolved false.
+    """
+    result: JsonObject = {
+        "exports": [],
+        "count": 0,
+        "total": 0,
+        "offset": max(0, int(offset)),
+        "has_more": False,
+        "imported_func_count": 0,
+        "types_resolved": True,
+        "scan_capped": False,
+    }
+    sections, name_payload = _collect_sections(data)
+
+    types: list[tuple[list[str], list[str]]] | None = None
+    if 1 in sections:
+        try:
+            types = _parse_types(sections[1])
+        except (_WasmTruncated, _WasmMalformed):
+            types = None
+            result["types_resolved"] = False
+
+    func_imports: list[tuple[str, str, int]] = []
+    if 2 in sections:
+        try:
+            func_imports = _parse_func_imports(sections[2])
+        except (_WasmTruncated, _WasmMalformed):
+            func_imports = []
+    defined: list[int] = []
+    if 3 in sections:
+        try:
+            defined = _parse_function_section(sections[3])
+        except (_WasmTruncated, _WasmMalformed):
+            defined = []
+    func_type_index = [type_index for _, _, type_index in func_imports] + defined
+    imported_func_count = len(func_imports)
+    result["imported_func_count"] = imported_func_count
+
+    func_names: dict[int, str] = {}
+    if name_payload is not None:
+        try:
+            func_names = _parse_function_names(name_payload)
+        except (_WasmTruncated, _WasmMalformed):
+            func_names = {}
+
+    if 7 not in sections:
+        return result
+    try:
+        entries, capped = _parse_export_entries(sections[7])
+    except (_WasmTruncated, _WasmMalformed):
+        return result
+    result["scan_capped"] = capped
+
+    for entry in entries:
+        if entry["kind"] != "func":
+            continue
+        index = entry["index"]
+        entry["origin"] = "imported" if index < imported_func_count else "defined"
+        if 0 <= index < len(func_type_index):
+            type_index = func_type_index[index]
+            entry["type_index"] = type_index
+            if types is not None and 0 <= type_index < len(types):
+                params, results = types[type_index]
+                entry["params"] = list(params)
+                entry["results"] = list(results)
+        if index in func_names:
+            entry["internal_name"] = func_names[index]
+
+    result["total"] = len(entries)
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_EXPORTS_PAGE))
+    window = entries[start : start + cap]
+    result["exports"] = window
+    result["count"] = len(window)
+    result["offset"] = start
+    result["has_more"] = start + len(window) < len(entries)
+    return result

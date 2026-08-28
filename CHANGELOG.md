@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **278（161 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **279（162 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -384,6 +384,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `module_name` / `has_name_section` 暴露调试元数据。
 - 恶劣输入不抛异常:坏节记入 `malformed_sections` 后跳过继续走,提前结束的二进制置
   `truncated`;非模块报 `invalid_params`,超 16 MiB 报 `too_large`。
+- 新增 `wasm.exports`:纯 Python 列出模块导出并解析函数导出的签名。summary 只按 name/kind/index
+  列;这里是带类型的导出 API 面。分页回 `exports`、`count`/`total`/`offset`/`has_more`,加
+  `imported_func_count` 与 `types_resolved`(类型节解析不了时为 false)。每行带 `name`/`kind`
+  (func/table/memory/global)/`index`;函数导出另带 `origin`(re-export 导入函数则 imported,否则
+  defined)、`type_index`、`params`/`results`(类型未解析时缺省)与 `internal_name`(名字段命名了目标时)。
+  导出数触顶置 `scan_capped`。
 - 新增 `wasm.globals`:纯 Python 列出模块定义的全局变量(节 6)。summary 只给计数,这里逐个命名:
   每行带 `index`(全局索引空间里的位置,导入全局在前故作为偏移加上)、`value_type`、`mutable`
   (可变全局常是加壳器藏栈指针/解密 key 的地方),与 `init`——初始化表达式首指令的解码:`{op}` 加

@@ -208,4 +208,30 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_globals(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.exports")
+    def wasm_exports(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 100,
+    ) -> dict[str, Any]:
+        """List a .wasm module's exports, resolving function signatures. No wabt.
+
+        summary lists exports by name/kind/index; this is the exported API
+        surface with types. Answers with exports (paged), count, total, offset,
+        has_more, plus imported_func_count and types_resolved (false when the
+        type section could not be parsed).
+
+        Each row carries name (the exported name), kind (func/table/memory/
+        global) and index. A func export also carries origin (imported when it
+        re-exports an imported function, else defined), type_index, params and
+        results (value-type lists, absent when types did not resolve), and
+        internal_name when the name section named the target. scan_capped marks
+        a module whose export count hit the collect cap. Read has_more so a page
+        that filled the limit is not read as every export.
+
+        A file that is not a WebAssembly module is refused as invalid_params and
+        one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_exports(path, offset=offset, limit=limit))
+
     return tools.bindings
