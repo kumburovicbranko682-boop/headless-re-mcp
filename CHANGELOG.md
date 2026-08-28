@@ -5,6 +5,75 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
+
+- `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
+  `request_workflow_module_refresh` 对未跟踪的模块 key 必须拒绝（抛
+  `cannot refresh untracked modules`），而不是替它们静默下发刷新；`prepare_workflow_reset`
+  会禁用所有已启用的断点意图，并对本就禁用的意图跳过（循环里的 skip 分支）。
+- `workflows/executor.py` 的 `_remaining(deadline)` 在截止时间已过时抛 `TimeoutError`
+  （第 175 行），让多步工作流停下而不是拿非正的 timeout 去发调用；此前只覆盖了正常返回。
+- 新增 `tests/unit/test_workflow_engine_reset_refresh_guards.py` 与
+  `tests/unit/test_workflow_executor_remaining.py`：覆盖未跟踪 key 拒绝（含多 key 排序渲染）、
+  已跟踪 key 与空参刷新、重置时禁用/跳过的组合，以及 `_remaining` 的超时、恰好到点、
+  截止前返回三条路径。两个模块补齐至 100% 行覆盖，只加测试、不改源码。
+
+### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
+
+- main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
+  `_ProxyInstance.start()/_run()` 的串行化 bring-up 改造（`_STARTUP_LOCK` +
+  `_ReadyMarker` addon，防两个 DumpMaster 抢共享的 mitmproxy 全局 ctx）在合并树上
+  语义冲突：`test_instance_start_returns_once_the_port_accepts` 的假 `_run` 不会像真
+  `_run` 那样经 running() 钩子置位 `_ready`，start() 在新形态下等 `_ready` 而超时；
+  `test_instance_run_drives_a_master_to_completion` 钉死 `added == [recorder]`，而新
+  形态多挂一个 `_ReadyMarker`。两侧各自的树都绿，只有合并树红——与此前 .NET 元数据
+  API 的语义冲突同类。改法（两树兼容）：假 `_run` 若实例有 `_ready` 就置位；addon
+  断言改钉 `added[0] is recorder`（顺序而非全等）。两棵树上该文件 57 例均过。
+
+### 修复（audit trim 测试假设时钟每次调用严格递增）
+
+- main 新落的 `test_repository_inmemory_close_trim.py::test_audit_log_trims_to_the_newest_rows`
+  连续 6 次 `append_audit` 后断言 `list_audit` 按 `action-5,4,3` 返回。`list_audit`
+  只按 `at` 时间戳降序排（内存仓稳定排序、SQLite `ORDER BY at DESC`，平局序两侧都无契约）；
+  POSIX 上 `datetime.now()` 微秒级分辨率让 6 行时间戳严格递增，断言恰好成立，但 Windows
+  系统时钟 ~15.6 ms 一跳，6 次背靠背写入共享同一时间戳，稳定排序平局退回插入序，返回
+  `action-3,4,5`，双版本同点失败。产品的平局序本就未定义，是测试编码了"时钟严格递增"的
+  POSIX-only 前提。修复已落 main（monkeypatch 仓库模块的 `datetime` 为每次调用递增
+  1 秒的假时钟，平台无关地钉住 newest-first 序，也顺带让测试不再依赖真实时钟）。
+
+### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
+
+- main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
+  `_probe_run` 以 `creationflags=0` 调 `run_bounded`。但 `_probe_run` 用的
+  `_no_window_flags()` 在 Windows 上返回 `subprocess.CREATE_NO_WINDOW`（0x08000000 =
+  134217728，用来抑制探针子进程弹出的控制台窗口），只有 POSIX 才返回 0——产品行为正确，
+  是测试钉死了 POSIX 侧的值，于是在 Windows 3.12 上以
+  `assert seen == {... 'creationflags': 0}` 收到 134217728 而失败。改法：按平台用
+  `getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0` 独立派生期望值
+  （与 `_no_window_flags()` 同法），POSIX 行为不变，Windows 断言到正确的抑制窗口标志。
+
+### 修复（NETReactorSlayer 输出别名测试的同款 Windows-only 路径炸裂）
+
+- 与 de4dot 同批落地的 `test_net_reactor_slayer_paths.py::test_output_equal_to_input_is_refused`
+  是同一 dot-dot 模式的第三个实例：用 `tmp_path/nope/../managed.exe` 断言别名到输入的输出被
+  "differ from input" 拒绝。POSIX 下 `nope/` 无法遍历、exists() 为假，别名滑到 resolve 相等
+  守卫；Windows 在 stat 前词法折叠 `..`，同一拼法 stat 为已存在的 source，被更早的
+  "must not already exist" 守卫拒绝，钉死消息的断言必挂。修法与 Scylla、de4dot 两个先例
+  一致：只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。全套 dot-dot 构造
+  已排查（`rg '/ "\.\."' tests/unit/`），仅此一处残留；`test_web_console.py` 的用法断言
+  共享结果（403），不受守卫顺序影响。
+
+### 修复（de4dot 输出别名测试的 Windows-only 路径炸裂）
+
+- main 新落的 `test_dotnet_de4dot_run_paths.py::test_run_rejects_an_output_path_aliasing_the_input`
+  用 `tmp_path/missing/../input.exe` 这种 dot-dot 拼法验证输出别名到输入会被拒。前置断言
+  `assert not aliased.exists()` 与末尾钉死 `"differ from input_path"` 都编码了 POSIX-only 假设：
+  POSIX 下 `missing/` 无法遍历故 stat 为不存在、`resolve()` 才把它折叠回存在的 input，别名滑过
+  exists() 守卫、被 resolve 相等守卫（"differ from input_path"）捕获；Windows 在 stat 前就把
+  `..` 词法折叠，同一拼法 stat 为**存在**，于是前置断言直接失败、且会被更早的 exists() 守卫
+  以 "must not already exist" 拒绝。这与此前 Scylla 的 Windows 路径别名缺陷同源。改法照 Scylla
+  先例：去掉 POSIX-only 前置断言，只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
@@ -66,6 +135,42 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `startup_receive_remaining` / `IdaWorkerError.from_payload` 纯函数合同。该模块行
   覆盖 32% → 98%。
 
+### 测试（doctor 可选外部 CLI 探针）
+
+- `doctor.py` 里 de4dot、NETReactorSlayer、XVLKC、VMP dumper、Scylla 五个可选 CLI 探针
+  此前完全没有测试(x64dbg/IDA/upx 探针已有覆盖)。新增
+  `tests/unit/test_doctor_optional_tool_probes.py`,参数化验证它们统一的三态诚实契约:
+  未配置报 MISSING 且给出配置指引、配置了但文件缺失或底层 CLI 探针失败报 BLOCKED、只有
+  底层探针确认可运行才 READY(探针在源模块里以接缝形式打桩);并补上 `probe_upx` 里
+  `test_doctor` 未覆盖的两条分支(配置路径不存在、探针抛 OSError)。`doctor.py` 行覆盖
+  63% → 78%(余量为 IDA/x64dbg/native 工具链/ghidra 等平台相关探针)。
+### 测试（de4dot 适配器 fail-closed 合同）
+
+- `dotnet/de4dot.py` 的共享 `_capture_process` 已由跨适配器捕获测试覆盖,但核心
+  `run_de4dot` 的 argv 白名单、不覆盖输入规则、运行前后摘要校验与部分产物回收仍未测。
+  新增 `tests/unit/test_de4dot_adapter.py`:校验类错误在执行前抛出,故跨平台运行(缺可执行
+  文件、目录型输入、超过 `max_file_size`、输出已存在、运行前摘要变更);需要真实子进程的
+  诚实性检查用脚本化假 CLI(`#!/usr/bin/env python3`,POSIX 专属):干净运行返回带双摘要的
+  结果、工具篡改原始输入被 `INPUT_MUTATED` 拦截、stdout 洪泛触发 `OUTPUT_LIMIT` 并删除
+  部分产物、非零退出记 `PROCESS_FAILED` 且删除产物并标记 retryable、报成功却无产物文件记
+  `OUTPUT_MISSING`;`probe_de4dot_version` 覆盖缺文件、含 de4dot 横幅、无横幅的干净退出、
+  不可执行文件逐形态 OSError 兜底、所有 argv 形态都非 de4dot 时保持 fail-closed。行覆盖
+  66% → 92%(余量为 Windows 专有的创建标志/后代枚举与捕获内部边界分支)。
+### 测试（NETReactorSlayer 适配器 fail-closed 合同）
+
+- `dotnet/net_reactor_slayer.py` 的服务级测试用 mock runner 驱动 `dotnet.deobfuscate`,
+  因此 `run_net_reactor_slayer` 本体(argv 白名单、工作副本隔离、运行前后摘要校验、
+  `*_Slayed` 产物发布)与 `probe_net_reactor_slayer` 均未覆盖。新增
+  `tests/unit/test_net_reactor_slayer_adapter.py`:校验类错误在执行前抛出,跨平台运行
+  (缺可执行文件、目录型输入、超过 `max_file_size`、输出已存在、运行前摘要变更);诚实性
+  检查用脚本化假 CLI(`#!/usr/bin/env python3`,收到 `<work_input> --no-pause True` 并在
+  工作副本旁写结果,POSIX 专属):干净运行发布 `*_Slayed` 产物、异名 `*_Slayed*` 单候选经
+  glob 兜底接受、无产物记 `OUTPUT_MISSING`、两个候选歧义同样记 `OUTPUT_MISSING`、stdout
+  洪泛记 `OUTPUT_LIMIT` 不发布产物、非零退出记 `PROCESS_FAILED` 且 retryable、在摘要接缝
+  模拟工具回改原始被 `INPUT_MUTATED` 拦截;`probe_net_reactor_slayer` 覆盖缺文件、含产品
+  横幅、usage+容忍退出码、无标记但有输出的兜底、不可执行文件的 OSError 兜底。行覆盖
+  60% → 97%(余量为两处实践中不可达的防御分支)。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
@@ -110,7 +215,37 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `AttributeError`——被测代码从未跑到。产品代码本身无恙（Windows 走
   `GlobalMemoryStatusEx`，POSIX 分支也捕获 `AttributeError`），纯属测试脚手架在
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
-  创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
+    创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
+
+### 测试（地址同步层补齐失败关闭分支）
+
+- `core/addressing.py` 把 x64dbg 的模块快照和磁盘上的 PE 头翻译成静态/运行时地址映射，
+  三处输入都受攻击者影响（模块列表走 RPC、selector 来自模型、PE 字节来自被调试进程映射
+  的任意文件）。既有测试覆盖了主路径与常见拒绝，新增
+  `tests/unit/test_addressing_hostile_input.py` 钉住其余失败关闭分支：模块结果不是对象 /
+  没有 modules 数组 / 条目既无名也无路径一律 `module_list_invalid`；selector 命中某模块后
+  附带的 path/name 约束不符报 `module_identity_mismatch`（两处不符都如实回报）、命不中报
+  `module_not_found`、`\??\` 设备前缀被规整后仍可匹配；`ModuleAddressSpace` 的 RVA 越界报
+  `address_out_of_range`、负地址在做任何运算前即 `invalid_address`；运行时元数据架构非字符串
+  或不受支持报 `runtime_metadata_invalid`、同一会话路径命中多个模块报 `module_ambiguous`；
+  运行时模块无路径 / 指向目录报 `module_file_unavailable`、`\??\` 前缀路径能被解析读出；
+  非 PE / 截断的 COFF 头 / 截断的可选头 / 可选头 magic 不符 / 镜像基址为 0 分别报
+  `module_file_invalid`；并补 `RuntimeModuleCatalog` 与 `RebasedModuleMapping` 的 `to_dict`
+  序列化。模块覆盖率 88% → 99%。
+
+### 测试（cdb/WinDbg 客户端补齐输入守卫与错误映射）
+
+- `backends/windbg/client.py` 把模型给的地址、长度和 PID 直接交给 cdb 执行；命令白名单和
+  截断标注已有测试，但拒绝分支、错误映射与 cdb 发现的跨平台分支此前未覆盖（80%）。新增
+  `tests/unit/test_windbg_input_guards.py`（stub 掉 `run_bounded`，跨平台可跑）钉住：
+  `disasm`/`live_disasm` 的长度必须是 1..256 的整数、整数地址不得为负、字符串地址不得含
+  `; | &` 分隔符，合法整数地址被渲染成十六进制并折进白名单的 `u <addr> L<n>` 形式、合法
+  符号地址原样透传；PID 非正数在任何启动前即被拒、attach 到非会话调试目标报
+  `permission_denied` 且都不触发启动；活体探针无法启动 / 非零退出且无输出报 `backend_error`、
+  非零退出但仍有输出则如实返回；缺 dump 文件报 `not_found`、内核 dump 需显式放行、无 cdb
+  报 `capability_unavailable`；dump 与活体探针超时都把被杀的 pid 随 `timeout` 回报（避免
+  调试器悬在活体目标上）。cdb 发现覆盖环境变量优先、`which` 的非 Store 路径、Windows Kits
+  glob 布局、以及跳过不可启动的命中与全无安装时返回 None。模块覆盖率 80% → 99%。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
@@ -1119,6 +1254,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   返回 `None` 以中止回路(不按攻击者选定的字段发起数兆字节的整块读取)、对越窗但在上限内的偏移只索要
   “够到文件头”的 `e_lfanew + 24`;`address_dict` 在有 rva 却无模块名时把地址丢弃(`None`)而非放出一个
   无从归属的 rva、也不让 `ValueError` 冒出富化流程,无基址时则原样留作裸 VA。
+- **会话层对敌意与降级输入的 fail-closed 契约成套固定**（`core/session.py` 85%→99%）：
+  崩溃残留的 SQLite 行——带路径分隔符的 id(遍历企图)、空 locator、未知 state 列、
+  非法 architecture、天真/垃圾时间戳、`resolve()` 抛 OSError 的死挂载——一律安静跳过或
+  归一化恢复而不是让 hydration 崩掉;store 源本身抛异常或返回非 Mapping 行时启动照常。
+  注册表护栏直测:同态迁移是无副作用的 no-op(不更新 `updated_at`)、CLOSING/CLOSED
+  会话拒绝挂 backend、`remove_closed` 拒删活会话、重启后 adopt 进来的 closed 行可被
+  正常退休。目标分类直面伪造文件:PK 魔数但 zip 损坏回落 PE、无扩展名时按 wasm/带
+  manifest 的 zip 魔数识别、`.apk` 非 zip 或缺 `AndroidManifest.xml` 报结构化 ValueError、
+  伪造 MZ/PE 头与不支持的 machine 各自 fail-closed;本地 `.js` 资产建会话时哈希入册,
+  远程 URL 不碰磁盘。
+- **外部工具发现与校验的护栏成套固定**（`config.py` 82%→100%）：idalib/x64dbg 的发现逻辑
+  决定服务器会加载并执行哪个外部二进制,现在在临时目录里把宿主平台钉住后跨平台直测:
+  Windows 注册表指向的 IDA 目录若缺 idalib 运行时(GUI-only 安装)不会被交给加载器、
+  注册文件损坏安静回落文件系统扫描、Program Files 双根去重、POSIX 家目录扫描跳过
+  消失的根;`validate_ida_home` 四种结构化裁决(空路径/非目录/缺 idalib/可用)各自直测,
+  缺件裁决必须说出期望的文件名。x64dbg headless 只认 x86/x64 且大小写空白宽容;
+  已有 config.json 读不动时 `update_config_values` 报错并保证不覆写原文件。
+  `_as_int`/`_as_float` 对垃圾值回退而非炸掉启动,负值一律钳到 0;`_as_command`
+  的 env 覆盖默认、字符串默认按操作员写法切 argv、数组默认丢弃空片段。
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
   `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
   分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。
