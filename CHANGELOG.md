@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（`_table_row_size` 五处元数据表列宽按 ECMA-335 II.22 取错列类型）
+
+- `_table_row_size`（`dotnet/metadata_enum.py`,为 `_table_start` 累加各表行宽以定位待
+  枚举的表）有五处列宽与 ECMA-335 II.22 不符。行宽只要差一个字节,其后**每一张**表的起点
+  都会平移,枚举器就从上一张表的中段开始读:
+  - InterfaceImpl(0x09):`Interface` 应为 TypeDefOrRef 编码索引,却当成 MethodDef 简单索引;
+  - MethodSemantics(0x18):`Method` 应为 MethodDef 简单索引,却当成 MethodDefOrRef 编码索引;
+  - AssemblyRef(0x23):被当成 Assembly(0x20) 的副本,多了开头的 HashAlgId、少了结尾的
+    HashValue blob;应为 Major/Minor/Build/Rev(2×4)+Flags(4)+PublicKeyOrToken(blob)+
+    Name(str)+Culture(str)+HashValue(blob);
+  - File(0x26):`HashValue` 应为 blob 堆索引,却当成 Implementation 编码索引;
+  - NestedClass(0x29):`EnclosingClass` 应为 TypeDef 简单索引,却当成 Implementation 编码索引。
+  这些差异只在程序集大到能把某个编码索引撑到 4 字节时才显形,故真实程序集常常侥幸对齐;
+  新增 `test_metadata_table_row_widths_ecma.py` 用可区分正确/错误列宽的 `row_counts` 逐表
+  钉死,并以 `_table_start` 佐证一处错宽会平移其后所有表的起点。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
