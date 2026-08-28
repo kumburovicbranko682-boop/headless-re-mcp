@@ -108,6 +108,37 @@ def test_har_entry_tolerates_missing_status_and_url() -> None:
     assert entry["request"]["url"] == ""
     assert entry["request"]["queryString"] == []
     assert "_resourceType" not in entry
+    # A completed exchange has no failure, so no _error extension is emitted.
+    assert "_error" not in entry
+
+
+def test_har_entry_marks_a_failed_exchange_with_the_error_extension() -> None:
+    """A failed capture rides Chrome DevTools' _error extension, status 0.
+
+    Both exporters record why an exchange failed on the row (a proxy flow
+    mitmproxy could not complete, a browser request CDP fired loadingFailed
+    for), but a plain status-0 HAR entry is indistinguishable from a genuine
+    zero-status response and drops that reason. har_entry surfaces it as
+    _error, the same key DevTools and mitmproxy use, and the entry stays
+    spec-valid so a viewer still loads the whole log.
+    """
+    entry = har_entry(
+        method="GET",
+        url="https://example.com/gone",
+        status=None,
+        mime_type="",
+        error="net::ERR_NAME_NOT_RESOLVED",
+    )
+    _assert_valid_har(json.dumps(build_har([entry])))
+    assert entry["_error"] == "net::ERR_NAME_NOT_RESOLVED"
+    # A failed request has no response, so the null status stays the spec's 0 --
+    # the _error is what distinguishes it from a real zero-status response.
+    assert entry["response"]["status"] == 0
+
+    # An empty errorText (a block CDP reported without a message) still marks the
+    # entry as a failure rather than silently reading as a completed exchange.
+    blocked = har_entry(method="GET", url="https://x/", status=None, mime_type="", error="")
+    assert blocked["_error"] == ""
 
 
 def test_har_entry_parses_the_query_string_from_the_url() -> None:
@@ -363,6 +394,12 @@ def test_proxy_export_har_carries_real_phase_timings(tmp_path: Path) -> None:
     refused = entries["http://x/refused"]
     assert refused["timings"] == {"send": 2.0, "wait": -1, "receive": -1}
     assert refused["time"] == 2.0
+    # The failure reason recorded on the errored flow must survive into the HAR
+    # as Chrome DevTools' _error extension, with the null status the flow's
+    # missing response produces; a completed flow carries neither.
+    assert refused["_error"] == "connection refused"
+    assert refused["response"]["status"] == 0
+    assert "_error" not in ok
 
 
 def test_serialize_har_keeps_the_newest_entries_that_fit_the_cap() -> None:
@@ -430,6 +467,54 @@ def test_web_har_export_writes_a_valid_har_that_carries_every_request(
     assert urls == {"https://example.com/0", "https://example.com/1", "https://example.com/2"}
     resource_types = {entry.get("_resourceType") for entry in doc["log"]["entries"]}
     assert resource_types == {"Document", "Script"}
+
+
+def test_web_har_export_marks_a_failed_request_with_the_error_extension(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A request CDP fired loadingFailed for reaches the HAR as an _error entry.
+
+    on_failed records error/error_msg on the row; the export must thread the
+    reason into the entry's _error (DevTools' own key) with the null status the
+    failed request produces, so the artifact preserves the failure a plain
+    status-0 entry would hide. A completed request in the same export carries
+    neither.
+    """
+
+    class _Handle:
+        def __init__(self) -> None:
+            self.lock = Lock()
+            self.requests = {
+                "ok": {
+                    "requestId": "ok",
+                    "url": "https://example.com/ok",
+                    "method": "GET",
+                    "resourceType": "Fetch",
+                    "status": 200,
+                    "mimeType": "application/json",
+                },
+                "bad": {
+                    "requestId": "bad",
+                    "url": "https://example.com/blocked",
+                    "method": "GET",
+                    "resourceType": "Fetch",
+                    "status": None,
+                    "mimeType": None,
+                    "error": True,
+                    "error_msg": "net::ERR_BLOCKED_BY_CLIENT",
+                },
+            }
+
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _Handle())
+    out = tmp_path / "capture.har"
+    backend.har_export("s", out)
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    entries = {e["request"]["url"]: e for e in doc["log"]["entries"]}
+    bad = entries["https://example.com/blocked"]
+    assert bad["_error"] == "net::ERR_BLOCKED_BY_CLIENT"
+    assert bad["response"]["status"] == 0
+    assert "_error" not in entries["https://example.com/ok"]
 
 
 def test_web_har_export_uses_the_captured_request_time(

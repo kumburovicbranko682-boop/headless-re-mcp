@@ -978,6 +978,7 @@ class WebBackend:
                     resource_type=e.get("resourceType"),
                     started_date_time=iso_from_epoch(e.get("started_at")),
                     timings_ms=e.get("timings"),
+                    error=e.get("error_msg") if e.get("error") else None,
                 )
                 for e in handle.requests.values()
             ]

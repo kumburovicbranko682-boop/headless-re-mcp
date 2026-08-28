@@ -8,11 +8,13 @@ reported as a running capture.
 
 from __future__ import annotations
 
+import contextlib
 import http.server
 import json
 import socket
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -235,6 +237,35 @@ def test_proxy_records_a_real_request_and_exports_it_to_har(tmp_path: Path) -> N
         assert matched["time"] == round(sum(timings.values()), 3), (matched["time"], timings)
         row_timings = recorded[0].get("timings")
         assert row_timings and all(value >= 0 for value in row_timings.values()), recorded[0]
+
+        # A flow mitmproxy cannot complete must be captured as an errored flow
+        # and reach the HAR as an _error entry -- the symmetric proof to the web
+        # gate's loadingFailed check. Route the client at a closed upstream port
+        # through the proxy: mitmproxy's connect fails, firing its error hook.
+        dead_port = _free_port()
+        dead_target = f"http://127.0.0.1:{dead_port}/unreachable"
+        with contextlib.suppress(urllib.error.URLError):
+            opener.open(dead_target, timeout=10.0)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            errored = [f for f in backend.flows("capture")["flows"] if f.get("error")]
+            if errored:
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("proxy captured no errored flow for a refused upstream")
+        assert errored[0]["status"] is None, errored[0]
+        assert isinstance(errored[0]["error_msg"], str) and errored[0]["error_msg"], errored[0]
+
+        backend.export_har("capture", tmp_path / "capture-failed.har")
+        failed_doc = json.loads((tmp_path / "capture-failed.har").read_text(encoding="utf-8"))
+        failed_entries = {
+            e["request"]["url"]: e for e in failed_doc["log"]["entries"]
+        }
+        failed_entry = failed_entries.get(dead_target)
+        assert failed_entry is not None, failed_entries.keys()
+        assert failed_entry["_error"] == errored[0]["error_msg"], failed_entry
+        assert failed_entry["response"]["status"] == 0, failed_entry
     finally:
         backend.close_all()
         server.shutdown()

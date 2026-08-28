@@ -242,6 +242,22 @@ def test_web_capture_chain_records_real_traffic(site: str) -> None:
             ), failed
             assert failed["status"] is None, failed
 
+            # The failure must survive into the exported artifact, not just the
+            # live listing: a re-export now (the earlier one predated the failed
+            # fetch) must carry the failed URL as an _error entry -- DevTools'
+            # own extension -- with the null status HAR renders as 0, so an
+            # analyst opening the HAR still sees which request failed and why.
+            reexport = service.web_har_export(session_id)
+            assert reexport.ok, reexport.error
+            failed_har = json.loads(Path(reexport.data["path"]).read_text(encoding="utf-8"))
+            failed_entries = {
+                e["request"]["url"]: e for e in failed_har["log"]["entries"]
+            }
+            failed_entry = failed_entries.get(failed["url"])
+            assert failed_entry is not None, failed_entries.keys()
+            assert failed_entry["_error"] == failed["error_msg"], failed_entry
+            assert failed_entry["response"]["status"] == 0, failed_entry
+
             # screenshot must be a real PNG, not merely a file that exists.
             shot = service.web_screenshot(session_id)
             assert shot.ok, shot.error

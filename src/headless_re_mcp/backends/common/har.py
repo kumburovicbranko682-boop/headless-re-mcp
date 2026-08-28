@@ -119,6 +119,7 @@ def har_entry(
     resource_type: str | None = None,
     response_body_size: int | None = None,
     timings_ms: JsonObject | None = None,
+    error: str | None = None,
 ) -> JsonObject:
     """One spec-complete HAR 1.2 entry from the fields a summary actually has.
 
@@ -135,6 +136,16 @@ def har_entry(
     own definition of ``time`` -- so a HAR viewer's waterfall shows real
     durations instead of zero-width bars. A phase that is absent, negative, or
     not a finite number stays -1 rather than corrupting the total.
+
+    ``error`` marks an entry the capture could not complete (a proxy flow
+    mitmproxy failed, a browser request CDP reported ``loadingFailed`` for): the
+    reason rides along as Chrome DevTools' own ``_error`` extension, the same
+    convention DevTools and mitmproxy use so their HAR viewers surface it,
+    alongside the ``status: 0`` a null status already produces. Without it a
+    failed exchange exported as a plain status-0 entry is indistinguishable from
+    a genuine zero-status response, and the reason recorded on the row -- often
+    the finding -- is dropped from the artifact. ``None`` (a completed exchange)
+    emits no ``_error`` field at all.
     """
     status_code = int(status) if isinstance(status, int) else 0
     url_text = str(url or "")
@@ -179,6 +190,8 @@ def har_entry(
     }
     if resource_type:
         entry["_resourceType"] = str(resource_type)
+    if error is not None:
+        entry["_error"] = str(error)
     return entry
 
 

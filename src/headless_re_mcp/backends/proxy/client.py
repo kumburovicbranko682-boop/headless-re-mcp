@@ -782,6 +782,7 @@ class ProxyBackend:
                 response_body_size=f.get("response_size"),
                 started_date_time=iso_from_epoch(f.get("started_at")),
                 timings_ms=f.get("timings"),
+                error=f.get("error_msg") if f.get("error") else None,
             )
             for f in inst.recorder.snapshot()
         ]
