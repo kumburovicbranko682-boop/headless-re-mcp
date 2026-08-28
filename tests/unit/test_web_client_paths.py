@@ -13,6 +13,8 @@ calling thread, so no browser or node driver is ever launched.
 from __future__ import annotations
 
 import base64
+import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -101,6 +103,32 @@ def test_wasm_module_source_refuses_a_module_over_the_cap(
         backend._wasm_module_source("s1", bytecode, tmp_path)
     assert caught.value.code == "too_large"
     assert list(tmp_path.iterdir()) == []
+
+
+def test_spill_text_refuses_a_body_that_lands_over_the_cap_on_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The in-memory size passed the cap, but the file measured larger once
+    # written (encoding expansion, a racing writer). The on-disk recheck is the
+    # backstop that must still refuse it rather than hand back an over-cap spill.
+    monkeypatch.setattr(web_client, "capped_file_size", lambda path, cap: (cap + 1, True))
+    big = "z" * (_MAX_INLINE_BODY + 1)  # over the inline cap, so it spills to a file
+    with pytest.raises(WebError) as caught:
+        _spill_text(big, artifact_dir=tmp_path, filename="body.bin", kind="response body")
+    assert caught.value.code == "too_large"
+
+
+def test_wasm_module_source_refuses_a_file_that_lands_over_the_cap_on_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Same backstop for the wasm path: the decoded bytes fit, but the written
+    # .wasm measured over the cap, so it is refused after the write.
+    monkeypatch.setattr(web_client, "capped_file_size", lambda path, cap: (cap + 1, True))
+    backend = WebBackend()
+    bytecode = base64.b64encode(b"hello").decode("ascii")  # 5 bytes, under the cap
+    with pytest.raises(WebError) as caught:
+        backend._wasm_module_source("s1", bytecode, tmp_path)
+    assert caught.value.code == "too_large"
 
 
 # --- capability / status / runner guards ---------------------------------
@@ -425,6 +453,174 @@ def test_cdp_handlers_record_and_bound_page_telemetry(
         on_console({"type": "log", "args": [{"value": f"line {index}"}]})
     assert len(handle.console) == 2
     assert handle.console_dropped == 1
+
+
+def test_cdp_handlers_leave_short_metadata_untruncated() -> None:
+    # The bounds test drives the truncation branches with tiny caps; the mirror
+    # case -- short values under the default caps -- must NOT stamp the
+    # metadata_truncated flag on any of request, response, or script.
+    backend = WebBackend()
+    cdp = _RecordingCdp()
+    handle = _make_session(backend, cdp=cdp)
+    backend._wire_events(handle)
+
+    on_request = cdp.handlers["Network.requestWillBeSent"]
+    on_request(
+        {"requestId": "r1", "request": {"url": "http://x/", "method": "GET"}, "type": "Document"}
+    )
+    assert "metadata_truncated" not in handle.requests["r1"]
+
+    on_response = cdp.handlers["Network.responseReceived"]
+    on_response({"requestId": "r1", "response": {"status": 200, "mimeType": "text/html"}})
+    assert handle.requests["r1"]["status"] == 200
+    assert handle.requests["r1"]["mimeType"] == "text/html"
+    assert "metadata_truncated" not in handle.requests["r1"]
+
+    on_script = cdp.handlers["Debugger.scriptParsed"]
+    on_script({"scriptId": "s1", "url": "http://x/a.js", "scriptLanguage": "JavaScript"})
+    assert "metadata_truncated" not in handle.scripts["s1"]
+
+
+# --- open(): build, install, and rollback --------------------------------
+
+
+class _InlineNamedRunner:
+    """A _Runner replacement that runs build() inline on the calling thread.
+
+    open() constructs its own _Runner(name); swapping the class lets the whole
+    launch/install path run without a browser thread while still exercising the
+    real bookkeeping (reservation token, driver-pid reaping, session install).
+    """
+
+    last: _InlineNamedRunner | None = None
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.wedged = False
+        self.shutdowns = 0
+        _InlineNamedRunner.last = self
+
+    def call(self, work: Any, *, timeout: float = 0.0) -> Any:
+        del timeout
+        return work()
+
+    def shutdown(self) -> None:
+        self.shutdowns += 1
+
+
+def _install_fake_playwright(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    launch_error: BaseException | None = None,
+    driver_pid: int | None = 4321,
+    page_url: str = "http://x/loaded",
+    title: str = "Fake Title",
+) -> tuple[SimpleNamespace, _RecordingCdp, list[bool]]:
+    """Wire a fake ``playwright.sync_api`` and inline runner into the module.
+
+    Returns the fake page, the recording cdp, and a list that records whether
+    ``pw.stop()`` was called (the build-failure cleanup).
+    """
+    cdp = _RecordingCdp()
+    page = SimpleNamespace(
+        url=page_url,
+        title=lambda: title,
+        goto=lambda url, timeout=None, wait_until=None: None,
+    )
+    context = SimpleNamespace(
+        new_page=lambda: page,
+        new_cdp_session=lambda p: cdp,
+        close=lambda: None,
+    )
+
+    def launch(**kwargs: Any) -> Any:
+        if launch_error is not None:
+            raise launch_error
+        return SimpleNamespace(
+            new_context=lambda ignore_https_errors=False: context, close=lambda: None
+        )
+
+    stopped: list[bool] = []
+    pw = SimpleNamespace(
+        chromium=SimpleNamespace(launch=launch),
+        stop=lambda: stopped.append(True),
+    )
+    if driver_pid is not None:
+        proc = SimpleNamespace(pid=driver_pid)
+        pw._impl_obj = SimpleNamespace(  # type: ignore[attr-defined]
+            _connection=SimpleNamespace(_transport=SimpleNamespace(_proc=proc))
+        )
+
+    fake_module = types.ModuleType("playwright.sync_api")
+    fake_module.sync_playwright = lambda: SimpleNamespace(start=lambda: pw)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_module)
+    monkeypatch.setattr(web_client, "_Runner", _InlineNamedRunner)
+    return page, cdp, stopped
+
+
+def test_open_launches_installs_the_session_and_returns_a_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page, cdp, _ = _install_fake_playwright(monkeypatch)
+    backend = WebBackend()
+    backend._check_available = lambda: None  # type: ignore[method-assign]
+
+    summary = backend.open("s", "http://x/start", proxy="http://127.0.0.1:8080")
+
+    assert summary["opened"] is True
+    assert summary["url"] == page.url
+    assert summary["title"] == "Fake Title"
+    assert summary["headless"] is True
+    assert summary["proxy"] == "http://127.0.0.1:8080"
+    # The session is installed under its id and the CDP domains were enabled.
+    handle = backend._sessions["s"]
+    assert isinstance(handle, _WebSession)
+    assert handle.driver_pid == 4321
+    assert "Network.enable" in cdp.enabled
+
+
+def test_open_without_a_url_skips_navigation_and_still_installs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    goto_calls: list[str] = []
+    # driver_pid=None: the pid chain dead-ends, so the discovery returns None and
+    # open() must still install the session (just with nothing to reap later).
+    page, _, _ = _install_fake_playwright(monkeypatch, driver_pid=None)
+    page.goto = lambda url, timeout=None, wait_until=None: goto_calls.append(url)
+    backend = WebBackend()
+    backend._check_available = lambda: None  # type: ignore[method-assign]
+
+    summary = backend.open("s", "")
+
+    assert summary["opened"] is True
+    assert goto_calls == []  # no url -> no navigation
+    handle = backend._sessions["s"]
+    assert isinstance(handle, _WebSession)
+    assert handle.driver_pid is None
+
+
+def test_open_rolls_back_and_reaps_the_driver_when_launch_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    killed: list[int] = []
+    _install_fake_playwright(monkeypatch, launch_error=RuntimeError("no chromium here"))
+    # Keep the reap fully in-process: a driver image name so the reap fires, but
+    # a stubbed terminate so nothing real is signalled.
+    monkeypatch.setattr(web_client, "process_image_path", lambda pid: "/opt/ms-playwright/node")
+    monkeypatch.setattr(web_client, "terminate_pid_tree", lambda pid: killed.append(pid))
+
+    backend = WebBackend()
+    backend._check_available = lambda: None  # type: ignore[method-assign]
+
+    with pytest.raises(WebError) as caught:
+        backend.open("s", "http://x/start")
+    assert caught.value.code == "backend_error"
+    # The failed launch left no reservation behind and reaped the node driver.
+    assert backend._sessions == {}
+    assert _InlineNamedRunner.last is not None
+    assert _InlineNamedRunner.last.shutdowns == 1
+    assert killed == [4321]
 
 
 # --- close paths and process helpers -------------------------------------
