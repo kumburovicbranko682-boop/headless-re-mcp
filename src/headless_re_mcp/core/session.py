@@ -871,6 +871,9 @@ _ZIP64_SENTINEL = 0xFFFFFFFF
 _APK_SIG_BLOCK_MAX = 8 * 1024 * 1024
 # The platform itself accepts at most ten v2/v3 signers per APK.
 _APK_MAX_SIGNERS = 10
+# One META-INF signature member per v1 signer; no real package carries more
+# than a handful, so a hostile archive full of .RSA members walks this many.
+_APK_MAX_V1_SIG_MEMBERS = 8
 
 # AndroidManifest.xml ships as compiled binary XML (AXML), not text, so the
 # package name, versions, SDK levels and permissions -- the facts every triage
@@ -1163,7 +1166,9 @@ def describe_apk(path: Path) -> dict[str, Any]:
             "signed_v3": signed_v3,
             # Who signed it, not just that someone did: the SHA-256 of each
             # signer's certificate, per scheme -- the identity Android pins.
-            "signers": signers,
+            # v1 signers come from the META-INF PKCS#7 members, v2/v3 from
+            # the signing block, so a v1-only package names its signer too.
+            "signers": _apk_v1_signers(path) + signers,
             # Bytes glued on before the ZIP container (the Janus smuggling
             # shape): 0 for a clean archive, None when unmeasurable.
             "prepended_size": _apk_prepended_size(path),
@@ -2035,6 +2040,50 @@ def _apk_signer_cert_digests(value: bytes) -> list[str]:
                 digests.append(hashlib.sha256(cert).hexdigest())
         pos += 4 + signer_len
     return digests
+
+
+def _apk_v1_signers(path: Path) -> list[dict[str, Any]]:
+    """The v1 (JAR) signers' certificate digests -- who signed, per signer.
+
+    A v1-only package (still the norm below API 24, and what jarsigner
+    produces) previously answered only *that* it was signed: the identity the
+    v2/v3 census reads from the signing block lives, for v1, inside each
+    ``META-INF/*.RSA``/``.DSA``/``.EC`` member -- the same PKCS#7 SignedData
+    an Authenticode signature wraps, so the same DER walk resolves each
+    SignerInfo to its certificate. The SHA-256 of that certificate's DER is
+    the digest ``apksigner verify --print-certs`` prints for the v1 scheme.
+    One entry per resolved signer, ``{"scheme": "v1", "cert_sha256": ...}``,
+    matching the v2/v3 entries. Bounded and fail-closed: a capped member
+    count, a capped blob size, and a member the walk cannot account for
+    (jarsigner never wrote it) contributes nothing -- ``signed_v1`` presence
+    stays measured either way.
+    """
+    entries: list[dict[str, Any]] = []
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = sorted(
+                name
+                for name in archive.namelist()
+                if name.startswith("META-INF/") and name.endswith((".RSA", ".DSA", ".EC"))
+            )
+            for name in members[:_APK_MAX_V1_SIG_MEMBERS]:
+                try:
+                    with archive.open(name) as member:
+                        blob = member.read(_PE_MAX_CERT_BLOB + 1)
+                except (OSError, RuntimeError, NotImplementedError, zipfile.BadZipFile):
+                    continue
+                if len(blob) > _PE_MAX_CERT_BLOB:
+                    continue
+                census = _pkcs7_signer_census(blob)
+                if census is None:
+                    continue
+                digests, _cert_count = census
+                entries.extend(
+                    {"scheme": "v1", "cert_sha256": digest} for digest in digests
+                )
+    except (OSError, zipfile.BadZipFile):
+        return []
+    return entries
 
 
 def _apk_manifest_facts(data: bytes) -> dict[str, Any]:
@@ -4113,16 +4162,17 @@ def _der_signer_sid(data: bytes, pos: int) -> tuple[bytes, bytes] | None:
     return data[sid[1] : issuer[2]], data[serial[1] : serial[2]]
 
 
-def _pe_signer_census(blob: bytes) -> dict[str, Any] | None:
-    """The signer identities inside an Authenticode PKCS#7 blob, or None.
+def _pkcs7_signer_census(blob: bytes) -> tuple[list[str], int] | None:
+    """(signing-certificate SHA-256s, certificates embedded) of a PKCS#7, or None.
 
-    Walks ContentInfo -> SignedData, hashes every embedded certificate's DER
-    (``certificate_count`` counts them: the leaf plus whatever chain the
-    signer attached), then resolves each SignerInfo's issuer+serial to its
-    certificate -- ``signers`` carries the SHA-256 of each signing
-    certificate, the pinnable "who" the presence facts cannot answer. An
-    unresolvable signer contributes nothing; a malformed blob yields None so
-    a lying WIN_CERTIFICATE cannot invent an identity.
+    The same SignedData structure carries both a PE's Authenticode signature
+    and an APK's v1 (JAR) signature block, so one walk serves both: through
+    ContentInfo -> SignedData, hash every embedded certificate's DER (the
+    count is the leaf plus whatever chain the signer attached), then resolve
+    each SignerInfo's issuer+serial to its certificate -- the digests are the
+    pinnable "who" the presence facts cannot answer. An unresolvable signer
+    contributes nothing; a malformed blob yields None so a lying signature
+    member cannot invent an identity.
     """
     content_info = _der_tlv(blob, 0)
     if content_info is None or content_info[0] != _DER_SEQUENCE:
@@ -4176,10 +4226,7 @@ def _pe_signer_census(blob: bytes) -> dict[str, Any] | None:
                 child = info[2]
                 walked += 1
         cursor = end
-    return {
-        "signers": [{"certificate_sha256": digest} for digest in signers],
-        "certificate_count": len(certificates),
-    }
+    return signers, len(certificates)
 
 
 def _pe_authenticode(path: Path) -> dict[str, Any] | None:
@@ -4239,7 +4286,7 @@ def _pe_authenticode(path: Path) -> dict[str, Any] | None:
             within_file = cert_offset + cert_size <= file_size
             revision: int | None = None
             cert_type: int | None = None
-            census: dict[str, Any] | None = None
+            census: tuple[list[str], int] | None = None
             if within_file:
                 # WIN_CERTIFICATE: dwLength (u32), wRevision (u16), wCertificateType (u16).
                 stream.seek(cert_offset)
@@ -4248,7 +4295,7 @@ def _pe_authenticode(path: Path) -> dict[str, Any] | None:
                     revision = int.from_bytes(header[4:6], "little")
                     cert_type = int.from_bytes(header[6:8], "little")
                 if cert_type == _WIN_CERT_TYPE_PKCS_SIGNED_DATA and cert_size > 8:
-                    census = _pe_signer_census(
+                    census = _pkcs7_signer_census(
                         stream.read(min(cert_size - 8, _PE_MAX_CERT_BLOB))
                     )
     except OSError:
@@ -4265,7 +4312,9 @@ def _pe_authenticode(path: Path) -> dict[str, Any] | None:
     if revision is not None:
         result["revision"] = f"{revision >> 8}.{revision & 0xFF}"
     if census is not None:
-        result.update(census)
+        digests, cert_count = census
+        result["signers"] = [{"certificate_sha256": digest} for digest in digests]
+        result["certificate_count"] = cert_count
     return result
 
 

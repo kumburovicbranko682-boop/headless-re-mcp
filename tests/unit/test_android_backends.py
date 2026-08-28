@@ -2522,6 +2522,116 @@ class TestApkSignerIdentity:
             describe_apk(plain)
 
 
+def _der(tag: int, content: bytes) -> bytes:
+    if len(content) < 0x80:
+        return bytes([tag, len(content)]) + content
+    length = len(content).to_bytes((len(content).bit_length() + 7) // 8, "big")
+    return bytes([tag, 0x80 | len(length)]) + length + content
+
+
+def _der_name(cn: bytes) -> bytes:
+    atv = _der(0x30, _der(0x06, bytes.fromhex("550403")) + _der(0x13, cn))
+    return _der(0x30, _der(0x31, atv))
+
+
+def _der_cert(serial: int, issuer: bytes) -> bytes:
+    fields = _der(0x02, bytes([serial]))
+    fields += _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d01010b")))
+    fields += issuer
+    fields += _der(0x30, b"")
+    tbs = _der(0x30, fields)
+    algorithm = _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d01010b")))
+    return _der(0x30, tbs + algorithm + _der(0x03, b"\x00"))
+
+
+def _pkcs7_signature(certs: list[bytes], signer_sids: list[tuple[bytes, int]]) -> bytes:
+    """A minimal PKCS#7 SignedData: what a META-INF/*.RSA member holds."""
+    infos = b"".join(
+        _der(0x30, _der(0x02, b"\x01") + _der(0x30, issuer + _der(0x02, bytes([serial]))))
+        for issuer, serial in signer_sids
+    )
+    signed_data = _der(
+        0x30,
+        _der(0x02, b"\x01")
+        + _der(0x31, b"")
+        + _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d010701")))
+        + _der(0xA0, b"".join(certs))
+        + _der(0x31, infos),
+    )
+    return _der(
+        0x30, _der(0x06, bytes.fromhex("2a864886f70d010702")) + _der(0xA0, signed_data)
+    )
+
+
+class TestApkV1SignerIdentity:
+    """The signers fact names v1 (JAR) signers too, off META-INF's PKCS#7.
+
+    A v1-only package -- what jarsigner produces and the norm below API 24 --
+    used to answer only *that* it was signed; the certificate identity lives
+    inside each META-INF/*.RSA member, the same SignedData an Authenticode
+    signature wraps. The digest is what apksigner verify --print-certs prints,
+    and an opaque member claims nothing while signed_v1 presence stands.
+    """
+
+    def test_the_committed_fixtures_v1_signer_is_named(self) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        info = describe_apk(_APK_FIXTURE)["apk"]
+        assert info["signed_v1"] is True
+        # The digest apksigner verify --print-certs prints for this fixture:
+        # the SHA-256 of the signing certificate jarsigner embedded in FX.RSA.
+        assert info["signers"] == [
+            {
+                "scheme": "v1",
+                "cert_sha256": (
+                    "9873c0bc98dbaf11568e9b4e817a4d4c52c0466a02ecd7f1ea993d62e0619624"
+                ),
+            }
+        ]
+
+    def test_a_planted_pkcs7_member_names_its_signer(self, tmp_path: Path) -> None:
+        issuer = _der_name(b"Probe V1")
+        cert = _der_cert(7, issuer)
+        path = tmp_path / "v1.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("META-INF/CERT.RSA", _pkcs7_signature([cert], [(issuer, 7)]))
+        info = describe_apk(path)["apk"]
+        assert info["signers"] == [
+            {"scheme": "v1", "cert_sha256": hashlib.sha256(cert).hexdigest()}
+        ]
+
+    def test_an_opaque_signature_member_claims_no_identity(self, tmp_path: Path) -> None:
+        # The _apk builder's CERT.RSA is filler bytes: presence is a fact, the
+        # identity is not invented from a blob the DER walk cannot account for.
+        info = describe_apk(_apk(tmp_path / "opaque.apk"))["apk"]
+        assert info["signed_v1"] is True
+        assert info["signers"] == []
+
+    def test_an_ec_signature_member_is_walked_too(self, tmp_path: Path) -> None:
+        issuer = _der_name(b"Probe EC")
+        cert = _der_cert(3, issuer)
+        path = tmp_path / "ec.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("META-INF/CERT.EC", _pkcs7_signature([cert], [(issuer, 3)]))
+        info = describe_apk(path)["apk"]
+        assert [s["scheme"] for s in info["signers"]] == ["v1"]
+
+    def test_the_member_walk_is_bounded(self, tmp_path: Path) -> None:
+        issuer = _der_name(b"Probe Many")
+        cert = _der_cert(5, issuer)
+        blob = _pkcs7_signature([cert], [(issuer, 5)])
+        path = tmp_path / "many.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            for i in range(12):
+                archive.writestr(f"META-INF/CERT{i:02d}.RSA", blob)
+        info = describe_apk(path)["apk"]
+        # A hostile archive full of signature members walks the cap, no more.
+        assert len(info["signers"]) == 8
+
+
 class TestApkBundleAndSet:
     """.aab/.apks/.xapk carry .apk-family suffixes but have no root manifest.
 
