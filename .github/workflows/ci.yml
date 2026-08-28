@@ -3,7 +3,7 @@ name: ci
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, cursor/ci-checkpoint-gates-3986]
   pull_request:
 
 concurrency:
