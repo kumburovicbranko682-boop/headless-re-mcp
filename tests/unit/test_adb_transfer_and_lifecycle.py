@@ -378,3 +378,106 @@ def test_push_returns_the_size_on_success(tmp_path: Path) -> None:
     assert payload["size"] == 5
     assert payload["remote"] == "/sdcard/small.bin"
     assert sync.pushed == (str(small), "/sdcard/small.bin")
+
+
+class _TransferRaisingSync:
+    """A sync whose pre-stat passes but whose transfer raises a chosen error.
+
+    stat answers a small regular file so the pre-stat guards in ``pull`` accept
+    it; the transfer itself then raises, which is what drives the error-
+    classification arms both transfers share. push ignores stat, so the same
+    fake serves both.
+    """
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+        self.pushed: tuple[str, str] | None = None
+
+    def stat(self, remote: str, timeout: float | None = None) -> _StatResult:
+        del remote, timeout
+        return _StatResult(mode=stat.S_IFREG | 0o644, size=4)
+
+    def pull(self, remote: str, local: str, timeout: float | None = None) -> None:
+        del remote, local, timeout
+        raise self._exc
+
+    def push(self, local: str, remote: str, timeout: float | None = None) -> None:
+        del local, remote, timeout
+        raise self._exc
+
+
+def test_pull_transfer_failure_is_a_backend_error_not_an_incident(tmp_path: Path) -> None:
+    """A device that fails mid-pull is a backend outcome, not a server defect.
+
+    ``dev.sync.pull`` raising a non-timeout error is the device's problem -- a
+    reset transport, an unreadable remote file. Uncaught it would reach the
+    service envelope as an internal_error incident; the backend classifies it as
+    backend_error with the remote path, the same shape as every other adb device
+    failure.
+    """
+    dev = _FakeDev(sync=_TransferRaisingSync(RuntimeError("transport reset")))
+    with pytest.raises(AdbError) as excinfo:
+        _backend_with(dev).pull("emulator-5554", "/sdcard/ok.bin", tmp_path / "out.bin")
+    assert excinfo.value.code == "backend_error"
+    assert "pull failed" in excinfo.value.message
+    assert excinfo.value.details.get("remote") == "/sdcard/ok.bin"
+
+
+def test_pull_transfer_timeout_stays_a_timeout(tmp_path: Path) -> None:
+    """A transfer that times out keeps the timeout code, not backend_error.
+
+    ``_call`` promotes a timeout-named failure to AdbError('timeout'); pull's
+    ``except AdbError`` arm must let that through unchanged rather than fold it
+    into the generic backend_error, so a caller can tell "the device is slow"
+    from "the device refused".
+    """
+    dev = _FakeDev(sync=_TransferRaisingSync(RuntimeError("operation timed out")))
+    with pytest.raises(AdbError) as excinfo:
+        _backend_with(dev).pull("emulator-5554", "/sdcard/ok.bin", tmp_path / "out.bin")
+    assert excinfo.value.code == "timeout"
+
+
+def test_push_transfer_failure_is_a_backend_error_not_an_incident(tmp_path: Path) -> None:
+    """A device that fails mid-push is backend_error with the remote path."""
+    small = tmp_path / "small.bin"
+    small.write_bytes(b"hello")
+    dev = _FakeDev(sync=_TransferRaisingSync(RuntimeError("broken pipe")))
+    with pytest.raises(AdbError) as excinfo:
+        _backend_with(dev).push("emulator-5554", str(small), "/sdcard/small.bin")
+    assert excinfo.value.code == "backend_error"
+    assert "push failed" in excinfo.value.message
+    assert excinfo.value.details.get("remote") == "/sdcard/small.bin"
+
+
+def test_push_transfer_timeout_stays_a_timeout(tmp_path: Path) -> None:
+    """A push that times out keeps the timeout code through the passthrough arm."""
+    small = tmp_path / "small.bin"
+    small.write_bytes(b"hello")
+    dev = _FakeDev(sync=_TransferRaisingSync(RuntimeError("push timed out")))
+    with pytest.raises(AdbError) as excinfo:
+        _backend_with(dev).push("emulator-5554", str(small), "/sdcard/small.bin")
+    assert excinfo.value.code == "timeout"
+
+
+def test_push_reports_an_unstattable_local_file_as_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file that exists at the is_file check but cannot be stat'd is backend_error.
+
+    The size guard stats the file right after confirming it exists; a stat that
+    fails there -- a permission change or the file vanishing between the two
+    calls -- must be a structured backend_error, not an uncaught OSError that
+    becomes an internal_error incident. is_file is forced true so only the stat
+    failure is exercised.
+    """
+    monkeypatch.setattr(Path, "is_file", lambda self: True)
+
+    def _raise_stat(self: Path, *args: Any, **kwargs: Any) -> Any:
+        raise OSError("stat: permission denied")
+
+    monkeypatch.setattr(Path, "stat", _raise_stat)
+    dev = _FakeDev(sync=_Sync(stat_result=None))
+    with pytest.raises(AdbError) as excinfo:
+        _backend_with(dev).push("emulator-5554", str(tmp_path / "x.bin"), "/sdcard/x")
+    assert excinfo.value.code == "backend_error"
+    assert "cannot stat local file" in excinfo.value.message
