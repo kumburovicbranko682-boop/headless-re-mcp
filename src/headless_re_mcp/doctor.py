@@ -1323,16 +1323,34 @@ def _playwright_has_chromium() -> bool | None:
     when its location cannot be resolved (so the probe makes no claim). Never
     launches the driver: doctor must stay fast and cannot depend on spawning
     node to answer a readiness question.
+
+    ``chrome-headless-shell`` is checked alongside the full ``chrome`` because
+    modern Playwright ships the headless shell as its own build
+    (``chromium_headless_shell-*``) and drives *that* binary for a
+    ``headless=True`` launch -- which is exactly how ``web.*`` opens a page. Its
+    executable is ``chrome-headless-shell`` (hyphens), not the ``chrome`` or the
+    legacy ``headless_shell`` this looked for, so a host with only the headless
+    shell installed -- ``playwright install chromium-headless-shell``, or a
+    slimmed CI image -- reported "no browser build" while web.* worked fine. The
+    legacy ``headless_shell`` name stays for older Playwright installs.
     """
     root = _playwright_browsers_root()
     if root is None:
         return None
     if not root.is_dir():
         return False
+    names = (
+        "chrome",
+        "chrome.exe",
+        "chrome-headless-shell",
+        "chrome-headless-shell.exe",
+        "headless_shell",
+        "headless_shell.exe",
+    )
     for entry in root.glob("chromium*"):
         if not entry.is_dir():
             continue
-        for name in ("chrome", "chrome.exe", "headless_shell", "headless_shell.exe"):
+        for name in names:
             if next(entry.rglob(name), None) is not None:
                 return True
     return False

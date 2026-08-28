@@ -1237,6 +1237,32 @@ def test_playwright_browser_detection_reads_the_registry(
     assert doctor_module._playwright_has_chromium() is True
 
 
+def test_playwright_browser_detection_recognises_the_headless_shell_only_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A headless-shell-only install must read as present, not "no browser build".
+
+    Modern Playwright ships the headless shell as its own build
+    (chromium_headless_shell-*) whose executable is chrome-headless-shell -- and
+    drives exactly that binary for a headless=True launch, which is how web.*
+    opens a page. The probe looked only for chrome / headless_shell, so a host
+    with just the headless shell (playwright install chromium-headless-shell, or
+    a slimmed CI image) was told "no browser build" while web.* worked. Pin that
+    the real on-disk name is recognised so doctor stops contradicting the tool.
+    """
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+    shell = (
+        tmp_path
+        / "chromium_headless_shell-1234"
+        / "chrome-headless-shell-linux64"
+        / "chrome-headless-shell"
+    )
+    shell.parent.mkdir(parents=True)
+    shell.write_bytes(b"")
+
+    assert doctor_module._playwright_has_chromium() is True
+
+
 def test_playwright_browser_detection_is_unknown_for_the_package_local_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
