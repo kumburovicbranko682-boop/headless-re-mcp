@@ -197,11 +197,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             ),
         ),
         probe_ghidra(current),
-        probe_python_module(
-            "frida",
-            "frida",
-            install_hint="pip install 'headless-re-mcp[android]' (or pip install frida).",
-        ),
+        probe_frida(),
         probe_command("java", ("java",)),
         (
             probe_command("windbg", ("cdb", "windbg", "windbgx"))
@@ -1228,6 +1224,61 @@ def probe_python_module(name: str, module: str, *, install_hint: str | None = No
         ProbeStatus.DETECTED,
         f"Optional Python module {module} detected",
         {"origin": spec.origin},
+    )
+
+
+def _try_import(module: str) -> tuple[Any | None, Exception | None]:
+    """Actually import a module, returning it or the exception it raised.
+
+    Split out so a probe that must run the import (not just find its spec) stays
+    testable: a test can stand in a broken import without a real broken wheel.
+    """
+    try:
+        return importlib.import_module(module), None
+    except Exception as exc:  # noqa: BLE001 - report whatever the import raised
+        return None, exc
+
+
+def probe_frida() -> Probe:
+    """frida carries a native extension, so a findable spec does not mean it runs.
+
+    ``probe_python_module`` would call frida DETECTED on ``find_spec`` alone, but
+    the FridaClient decides availability by actually importing frida -- the only
+    way to know this host's native ``_frida`` extension loads. A wheel whose
+    native library does not match the running Python/arch/libc (a routine frida
+    failure: musl/Alpine, or a wheel a minor Python version off) has a findable
+    spec yet raises on import, so doctor would report DETECTED while every
+    ``frida.*`` call returned capability_unavailable -- the exact dishonest
+    readout doctor exists to prevent. Import it the way the client does so the
+    report matches what the tool will actually do.
+    """
+    install_hint = "pip install 'headless-re-mcp[android]' (or pip install frida)."
+    if importlib.util.find_spec("frida") is None:
+        return Probe(
+            "frida",
+            ProbeStatus.MISSING,
+            "Optional Python module frida is not installed",
+            remediation=install_hint,
+        )
+    module, error = _try_import("frida")
+    if error is not None:
+        return Probe(
+            "frida",
+            ProbeStatus.BLOCKED,
+            "frida is installed but its native extension failed to import",
+            {"error": f"{type(error).__name__}: {error}"},
+            "Reinstall a frida wheel matching this Python/arch/libc "
+            "(pip install --force-reinstall frida): the package is present but its "
+            "native _frida extension will not load here, so frida.* stays unavailable.",
+        )
+    return Probe(
+        "frida",
+        ProbeStatus.DETECTED,
+        "Optional Python module frida detected",
+        {
+            "origin": getattr(module, "__file__", None),
+            "version": getattr(module, "__version__", None),
+        },
     )
 
 

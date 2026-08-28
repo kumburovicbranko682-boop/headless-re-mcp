@@ -21,6 +21,7 @@ from headless_re_mcp.doctor import (
     format_report,
     probe_die,
     probe_exeinfope,
+    probe_frida,
     probe_ghidra,
     probe_optional_tool,
     probe_playwright,
@@ -1107,6 +1108,68 @@ def test_playwright_probe_makes_no_claim_when_the_registry_is_unresolvable(
 
     assert probe.status == ProbeStatus.DETECTED
     assert "browser_installed" not in probe.details
+    assert probe.remediation is None
+
+
+def test_frida_probe_is_missing_when_the_module_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(doctor_module.importlib.util, "find_spec", lambda _name: None)
+
+    probe = probe_frida()
+
+    assert probe.status == ProbeStatus.MISSING
+    assert probe.remediation
+    assert "pip install" in probe.remediation
+
+
+def test_frida_probe_is_blocked_when_the_native_extension_will_not_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A findable spec whose import raises must be BLOCKED, not DETECTED.
+
+    frida ships a native _frida extension; a wheel that does not match this
+    Python/arch/libc has a findable spec but raises on import (the musl/Alpine or
+    wrong-Python-version case). The FridaClient decides availability by actually
+    importing, so it would report capability_unavailable -- doctor must not
+    contradict that with a cheerful DETECTED read off find_spec alone. Stand in a
+    broken import and pin the honest BLOCKED read with a reinstall hint.
+    """
+    monkeypatch.setattr(
+        doctor_module.importlib.util,
+        "find_spec",
+        lambda _name: SimpleNamespace(origin="/site-packages/frida/__init__.py"),
+    )
+    monkeypatch.setattr(
+        doctor_module,
+        "_try_import",
+        lambda _name: (None, OSError("libc.so.6: version `GLIBC_2.38' not found")),
+    )
+
+    probe = probe_frida()
+
+    assert probe.status == ProbeStatus.BLOCKED
+    assert "native extension" in probe.summary
+    assert probe.remediation and "reinstall" in probe.remediation.lower()
+    assert "GLIBC" in probe.details["error"]
+
+
+def test_frida_probe_is_detected_when_it_actually_imports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spec found and import succeeds: DETECTED with the version it loaded."""
+    monkeypatch.setattr(
+        doctor_module.importlib.util,
+        "find_spec",
+        lambda _name: SimpleNamespace(origin="/site-packages/frida/__init__.py"),
+    )
+    fake = SimpleNamespace(__file__="/site-packages/frida/__init__.py", __version__="16.5.9")
+    monkeypatch.setattr(doctor_module, "_try_import", lambda _name: (fake, None))
+
+    probe = probe_frida()
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.details["version"] == "16.5.9"
     assert probe.remediation is None
 
 
