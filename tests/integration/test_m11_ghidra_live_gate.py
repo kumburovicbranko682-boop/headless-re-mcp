@@ -3,10 +3,11 @@
 Ghidra's analyzeHeadless backend is portable, so it analyses a PE the same way
 on Linux as on Windows -- through the Jython script provider on Ghidra <= 11.2
 and through PyGhidra on >= 11.3. These gates drive the real launcher end to
-end across all four export modes: the PE test lists functions, pages symbols
-and decompiles; the ELF test compiles a two-function fixture and resolves the
-cross-references to a callee, so the one ExportJson.py mode with no other live
-coverage (xrefs) runs against the real interpreter too. skip != pass: they
+end across every exposed ghidra tool: the PE test lists functions, pages
+symbols and decompiles; the ELF test compiles a two-function fixture, runs the
+analyze-only path, and resolves the cross-references to a callee, so the one
+ExportJson.py mode with no other live coverage (xrefs) runs against the real
+interpreter too. skip != pass: they
 skip only when HEADLESS_RE_GHIDRA_HOME is unset or names a missing directory,
 or the install is not runnable here (no java, or PyGhidra without its Python
 package) -- and the skip message says which.
@@ -108,19 +109,24 @@ def test_m11_ghidra_live_functions_and_decompile(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
-def test_m11_ghidra_live_elf_functions_and_xrefs(tmp_path: Path) -> None:
-    """Ghidra resolves an ELF's functions and the xrefs to a known callee.
+def test_m11_ghidra_live_elf_analyze_functions_and_xrefs(tmp_path: Path) -> None:
+    """Ghidra analyzes an ELF, lists its functions, and resolves callee xrefs.
 
-    Two gaps close here. First, xrefs was the one ExportJson.py mode no live
-    gate exercised, so an API drift in getReferencesTo -- the Ghidra twin of
-    the r2 key renames this suite already caught -- would have shipped silently.
-    Second, ELF is now a first-class session target whose portable backends are
-    r2 and Ghidra, and only r2 had an ELF gate. A compiled two-function fixture
-    makes the assertion deterministic: main calls greet, so the references to
-    greet's entry must include a CALL whose source lies inside main's body.
-    Measured against Ghidra 12.1.3, the same query also returns rows whose
-    `from` is not an address at all ("Entry Point", type EXTERNAL), so the gate
-    only requires hex of the row it hunts for, and pins `to` on every row.
+    Three gaps close here. First, ghidra.analyze was the one exposed tool no
+    gate drove, and on modern Ghidra it takes a launch branch of its own: with
+    no postScript to run, the adapter substitutes a throwaway export probe
+    (PyGhidra with no script drops into a REPL, which would hang headless) and
+    must then delete its private project subdirectory. Second, xrefs was the
+    one ExportJson.py mode no live gate exercised, so an API drift in
+    getReferencesTo -- the Ghidra twin of the r2 key renames this suite already
+    caught -- would have shipped silently. Third, ELF is now a first-class
+    session target whose portable backends are r2 and Ghidra, and only r2 had
+    an ELF gate. A compiled two-function fixture makes the assertion
+    deterministic: main calls greet, so the references to greet's entry must
+    include a CALL whose source lies inside main's body. Measured against
+    Ghidra 12.1.3, the same query also returns rows whose `from` is not an
+    address at all ("Entry Point", type EXTERNAL), so the gate only requires
+    hex of the row it hunts for, and pins `to` on every row.
     """
     client = GhidraClient(home=_ghidra_home())
     if not client.available:
@@ -148,6 +154,19 @@ def test_m11_ghidra_live_elf_functions_and_xrefs(tmp_path: Path) -> None:
         # build gcc PIE-only). That is a toolchain limitation, not a Ghidra
         # regression, so skip rather than fail.
         pytest.skip(f"could not build a non-PIE ELF ({build.stderr.strip()[:200]}) — skip≠pass")
+
+    # analyze-only: import + auto-analysis with nothing exported. The reply is
+    # the documented triple, and the run leaves no project behind -- on the
+    # PyGhidra path that cleanup is the adapter's own rmtree of its private
+    # subdirectory, which nothing else asserts (a leak here accretes a full
+    # Ghidra project per analyze call under the artifact root).
+    analyze_dir = tmp_path / "analyze"
+    analysis = client.analyze_binary(fixture, analyze_dir, timeout=_TIMEOUT)
+    assert analysis.get("project_dir") == str(analyze_dir)
+    assert "stdout_excerpt" in analysis and "note" in analysis
+    assert not (analyze_dir / "pyghidra_project").exists(), (
+        "the throwaway PyGhidra project survived analyze_binary"
+    )
 
     functions = client.functions(fixture, tmp_path / "funcs", limit=64, timeout=_TIMEOUT)
     assert functions.get("mode") == "functions"
