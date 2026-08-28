@@ -39,9 +39,19 @@ class EventPattern:
     fields: tuple[tuple[str, EventScalar], ...] = ()
 
     def __post_init__(self) -> None:
+        # kind and the field keys arrive straight from model output on the
+        # agent transport (no pydantic coercion), and every caller maps
+        # WorkflowInvariantError to invalid_request -- while the AttributeError
+        # a non-string raised out of .strip() was filed as a logged
+        # internal_error incident. Name the wrong type the way a blank kind is
+        # already named.
+        if not isinstance(self.kind, str):
+            raise WorkflowInvariantError("navigation event kind must be a string")
         if not self.kind.strip():
             raise WorkflowInvariantError("navigation event kind must not be blank")
         keys = tuple(key for key, _ in self.fields)
+        if any(not isinstance(key, str) for key in keys):
+            raise WorkflowInvariantError("navigation event field keys must be strings")
         if any(not key.strip() for key in keys):
             raise WorkflowInvariantError("navigation event field must not be blank")
         if len(keys) != len(set(keys)):
@@ -60,6 +70,15 @@ class EventPattern:
         kind: str,
         fields: Mapping[str, EventScalar] | None = None,
     ) -> EventPattern:
+        # A non-mapping fields (list, str, int) crashed (fields or {}).items()
+        # with AttributeError, and non-string keys crashed sorted() with
+        # TypeError when mixed with strings -- both before __post_init__ could
+        # name the problem. Check the shape first so every wrong fields reads
+        # as the same invalid_request a blank kind earns.
+        if fields is not None and not isinstance(fields, Mapping):
+            raise WorkflowInvariantError("navigation event fields must be a mapping")
+        if fields and any(not isinstance(key, str) for key in fields):
+            raise WorkflowInvariantError("navigation event field keys must be strings")
         return cls(
             kind=kind,
             fields=tuple(sorted((fields or {}).items())),

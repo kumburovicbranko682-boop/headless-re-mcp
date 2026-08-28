@@ -9,6 +9,7 @@ batch consumes exactly the remaining event budget without a match.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -78,6 +79,78 @@ def test_event_pattern_rejects_non_scalar_value() -> None:
     bad_value: Any = 1.5
     with pytest.raises(WorkflowInvariantError, match="strings, integers, or booleans"):
         EventPattern(kind="breakpoint.hit", fields=(("addr", bad_value),))
+
+
+@pytest.mark.parametrize("kind", [5, None, 1.5, ["k"], b"k"])
+def test_event_pattern_rejects_a_non_string_kind(kind: Any) -> None:
+    """kind arrives straight from model output on the agent transport.
+
+    A non-string hit kind.strip() with an AttributeError that every service
+    envelope filed as a logged internal_error incident, while the blank-kind
+    WorkflowInvariantError right next to it already read as invalid_request.
+    """
+    with pytest.raises(WorkflowInvariantError, match="kind must be a string"):
+        EventPattern.create(kind)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        [1],  # non-mapping: (fields or {}).items() raised AttributeError
+        "abc",
+        5,
+        {5: "v"},  # non-string keys crashed key.strip() in __post_init__
+        {"a": 1, 5: 2},  # ...and mixed-type keys crashed sorted() even earlier
+    ],
+)
+def test_event_pattern_rejects_wrong_shaped_fields(fields: Any) -> None:
+    """A wrong fields shape must read like the blank-kind caller fault.
+
+    A non-mapping escaped create() as AttributeError, and non-string keys
+    crashed either sorted() (TypeError, when mixed with strings) or
+    __post_init__'s key.strip() (AttributeError) -- all filed as
+    internal_error instead of the invalid_request the caller can fix.
+    """
+    with pytest.raises(
+        WorkflowInvariantError, match="fields must be a mapping|keys must be strings"
+    ):
+        EventPattern.create("breakpoint.hit", fields)
+
+
+def test_event_pattern_direct_construction_rejects_a_non_string_key() -> None:
+    """__post_init__ covers the direct constructor, not just create()."""
+    bad_fields: Any = ((5, "v"),)
+    with pytest.raises(WorkflowInvariantError, match="keys must be strings"):
+        EventPattern(kind="breakpoint.hit", fields=bad_fields)
+
+
+@pytest.mark.parametrize(
+    ("kind", "fields"),
+    [(5, None), (None, None), ("k", [1]), ("k", "abc"), ("k", {5: "v"})],
+)
+def test_a_wrong_shaped_drive_goal_is_refused_end_to_end(
+    tmp_path: Path, kind: Any, fields: Any
+) -> None:
+    """ui.drive_to_event validates the goal pattern before touching the session.
+
+    The MCP schema types kind/fields, but the agent transport binds them raw,
+    so a wrong shape used to surface as an internal_error incident out of
+    EventPattern instead of the invalid_request the caller can fix.
+    """
+    from dataclasses import replace
+
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.service import AnalysisService
+
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    try:
+        result = service.ui_drive_to_event("never-seen", kind, fields=fields)
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+    finally:
+        service.close_all()
 
 
 # --- NavigationState invariants ------------------------------------------
