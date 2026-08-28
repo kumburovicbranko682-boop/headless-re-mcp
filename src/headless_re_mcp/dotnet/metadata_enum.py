@@ -482,7 +482,14 @@ def table_row_size(
         0x06: 4 + 2 + 2 + s + b + _simple_index_size(rc, 0x08),  # MethodDef
         0x07: _simple_index_size(rc, 0x08),  # ParamPtr
         0x08: 2 + 2 + s,  # Param
-        0x09: _simple_index_size(rc, 0x02) + _simple_index_size(rc, 0x06),
+        # InterfaceImpl (II.22.23): Class is a TypeDef index but Interface is a
+        # TypeDefOrRef coded index, not a MethodDef index. The two only match
+        # while both are 2 bytes; once TypeDef/TypeRef/TypeSpec crosses 2^14 rows
+        # the coded index widens to 4 while a sub-65536 MethodDef stays 2, so the
+        # old sizing undercounted this row on large assemblies -- and 0x09 sits
+        # before Assembly (0x20), so that shifts every later table and defeats
+        # even the assembly_name walk.
+        0x09: _simple_index_size(rc, 0x02) + type_def_or_ref,  # InterfaceImpl
         0x0A: member_ref_parent + s + b,  # MemberRef
         0x0B: 2 + has_constant + b,  # Constant
         0x0C: has_custom_attribute + custom_attribute_type + b,
@@ -522,7 +529,12 @@ def table_row_size(
         0x26: 4 + s + b,
         0x27: 0,  # ExportedType; fixed below
         0x28: 4 + 4 + s + implementation,  # ManifestResource
-        0x29: _simple_index_size(rc, 0x02) + implementation,  # NestedClass
+        # NestedClass (II.22.32): both NestedClass and EnclosingClass are TypeDef
+        # indices; the second is not an Implementation coded index. They only
+        # match while both are 2 bytes -- once File/AssemblyRef/ExportedType
+        # crosses 2^14 rows the coded index widens to 4 while a sub-65536 TypeDef
+        # stays 2, oversizing this row and shifting GenericParam/MethodSpec after it.
+        0x29: _simple_index_size(rc, 0x02) + _simple_index_size(rc, 0x02),  # NestedClass
         0x2A: 0,  # GenericParam; fixed below
         0x2B: _simple_index_size(rc, 0x2A) + type_def_or_ref,
         0x2C: method_def_or_ref + b,  # MethodSpec
