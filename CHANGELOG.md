@@ -48,6 +48,8 @@ Android 线的包名校验现在跨 adb 与 frida 两后端锁定一致。`devic
 
 给 `web.har.read` 补上「docstring 如实点名返回字段」的钉子——这正是上一轮 HAR 键名大小写 bug 的类别：docstring 承诺一个后端并不返回的字段拼写（`mime_type` vs `mimeType`）。工具 docstring 是 agent 唯一的「答案形状」地图，全仓早有近乎每工具一份的 `_fields.py` 测试守着「描述点名真实字段、且不点名会误导的字段」这条纪律，但 `test_repository_hygiene.py` 只强制「每个工具有 docstring」、不强制「有字段测试」，于是上一轮新增的 `web.har.read` 恰好漏在这条纪律之外。新增 `test_the_docstring_names_every_field_read_har_actually_returns`：真实跑一次 `read_har`，把返回的每个顶层键与每个 entry 子键都断言必须逐字出现在 `web.har.read` 的 docstring 里——键从实时调用里读、而非硬编码清单，故后端新增或改名字段时该测试仍如实跟随；把 docstring 改回 snake_case（或任一侧丢字段）即转红（已验证：将 docstring 的 `mimeType` 改回 `mime_type` 后测试报「read_har entries carry 'mimeType' but the docstring never names it」）。
 
+补齐 `WebBackend.read_har` 两条 I/O 故障分支的测试。对全部非 PE 后端跑覆盖率（`backends/{adb,frida,apk,web,proxy,jsre,jadx,apktool,r2,ghidra,common}`，整体 99%）后发现 `web/client.py` 里唯二未覆盖的行正是上一轮新增的 `read_har` 里那两个 `except OSError`：`is_file()` 通过之后显式 `stat()` 出错（竞态删除、权限变更）与随后 `read_text()` 出错（IO 错误、权限竞态）。两处都把 `OSError` 收敛成 `backend_error`（message 含「har unreadable」）而非任由其逸出、被信封渲染成 `internal_error`+落一条 incident。现加 `test_backend_reports_backend_error_when_the_stat_faults`（patch `Path.is_file` 恒真、`Path.stat` 抛 `OSError`）与 `test_backend_reports_backend_error_when_the_read_faults`（真实小文件过 is_file/stat，仅 patch `Path.read_text` 抛 `OSError`），断言收到 `backend_error`；两者天然非空洞——去掉 try/except 后裸 `OSError` 逸出，`pytest.raises(WebError)` 即失败。至此非 PE 后端在这批模块上无未覆盖行。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、

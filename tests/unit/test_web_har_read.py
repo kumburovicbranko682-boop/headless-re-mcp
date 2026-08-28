@@ -299,6 +299,43 @@ def test_backend_clamps_a_negative_offset_and_zero_limit(tmp_path: Path) -> None
     assert page["entries"][0]["url"] == "https://a.test/0"
 
 
+def test_backend_reports_backend_error_when_the_stat_faults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """is_file passes but the explicit stat() then faults -- a race that unlinked
+    the file, or a permission change between the two calls. read_har turns the
+    OSError into a backend_error ("har unreadable") rather than letting it escape
+    as an uncaught exception the envelope would render as an internal_error."""
+    path = _write_har(tmp_path, _entries(1))
+
+    def boom(self: Path, *args: object, **kwargs: object) -> object:
+        raise OSError("stat exploded")
+
+    monkeypatch.setattr(Path, "is_file", lambda self, *a, **k: True)
+    monkeypatch.setattr(Path, "stat", boom)
+    with pytest.raises(WebError) as info:
+        WebBackend().read_har(str(path))
+    assert info.value.code == "backend_error"
+    assert "unreadable" in info.value.message
+
+
+def test_backend_reports_backend_error_when_the_read_faults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The file passes is_file and the size stat but the read itself faults (an
+    IO error, a permission race). Same contract: backend_error, not a crash."""
+    path = _write_har(tmp_path, _entries(1))
+
+    def boom(self: Path, *args: object, **kwargs: object) -> str:
+        raise OSError("read exploded")
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    with pytest.raises(WebError) as info:
+        WebBackend().read_har(str(path))
+    assert info.value.code == "backend_error"
+    assert "unreadable" in info.value.message
+
+
 # ---- AnalysisService.web_har_read: the mixin ------------------------------
 
 
