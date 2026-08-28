@@ -132,6 +132,21 @@ def test_config_update_refuses_a_file_it_could_not_read_back(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_config_update_wraps_an_unreadable_existing_config_as_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A config file that exists but cannot be read must name itself, not crash."""
+    path = tmp_path / "config.json"
+    path.write_text("{}", encoding="utf-8")
+
+    def denied(_path: Path) -> dict[str, object]:
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(config_module, "_read_json_object", denied)
+    with pytest.raises(OSError, match="could not read existing config"):
+        update_config_values({"k": "v"}, config_path=path)
+
+
 def test_config_update_restricts_permissions_on_posix(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     path.write_text('{"existing": true}', encoding="utf-8")
