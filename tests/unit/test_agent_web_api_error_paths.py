@@ -344,6 +344,26 @@ def test_create_mission_for_a_missing_thread_is_a_404(app_client: Any) -> None:
     assert reply.json()["detail"] == "thread_not_found"
 
 
+@pytest.mark.parametrize("literal", ["1e400", "-1e400", "Infinity", "-Infinity"])
+def test_create_mission_rejects_a_non_finite_max_runs(
+    app_client: Any, literal: str
+) -> None:
+    """A max_runs that parses to infinity is a 400, not a 500.
+
+    Starlette parses the body with json.loads, which turns 1e400/Infinity into
+    float("inf"); int(inf) then raises OverflowError, an ArithmeticError that the
+    route's ``except (TypeError, ValueError)`` did not catch, so it escaped as an
+    unhandled 500 instead of the 400 a "abc"/NaN max_runs already earns.
+    """
+    client, _ = app_client
+    reply = client.post(
+        "/api/agent/missions",
+        headers={"Content-Type": "application/json"},
+        content=f'{{"objective": "recover key", "max_runs": {literal}}}',
+    )
+    assert reply.status_code == 400
+
+
 def test_list_missions_rejects_an_unknown_status_filter(app_client: Any) -> None:
     client, _ = app_client
     reply = client.get("/api/agent/missions", params={"status": "napping"})
@@ -416,6 +436,28 @@ def test_save_provider_rejects_a_non_numeric_threshold(app_client: Any) -> None:
             "model": "m",
             "context_compression_threshold_percent": "lots",
         },
+    )
+    assert reply.status_code == 400
+
+
+@pytest.mark.parametrize("literal", ["1e400", "-1e400", "Infinity", "-Infinity"])
+def test_save_provider_rejects_a_non_finite_threshold(
+    app_client: Any, literal: str
+) -> None:
+    """A threshold that parses to infinity is a 400, not a 500.
+
+    Same fault as create_mission: json.loads yields float("inf"), int(inf) raises
+    OverflowError, and only ValueError/TypeError were caught -- so an infinite
+    context_compression_threshold_percent escaped as a 500 rather than a clean 400.
+    """
+    client, _ = app_client
+    reply = client.put(
+        "/api/providers/bad",
+        headers={"Content-Type": "application/json"},
+        content=(
+            '{"base_url": "https://example.invalid/v1", "model": "m", '
+            f'"context_compression_threshold_percent": {literal}}}'
+        ),
     )
     assert reply.status_code == 400
 

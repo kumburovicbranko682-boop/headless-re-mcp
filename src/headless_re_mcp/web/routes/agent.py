@@ -434,7 +434,12 @@ def register_agent_routes(
                 model=model,
                 max_runs=int(body.get("max_runs", 8)),
             )
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
+            # OverflowError joins the conversion faults: Starlette parses a JSON
+            # body with json.loads, which turns 1e400/Infinity into float("inf"),
+            # and int(inf) raises OverflowError -- an ArithmeticError, so neither
+            # ValueError nor TypeError caught it and a malformed max_runs surfaced
+            # as a 500 instead of the 400 a bad "abc"/[]/NaN already earns.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if thread_id is None:
             thread_id = store.create_thread(title=text[:80]).id
@@ -580,7 +585,11 @@ def register_agent_routes(
                 context_compression_threshold_percent=int(body.get("context_compression_threshold_percent", 75)),
             )
             public = configs.save(profile, make_current=body.get("make_current", True) is not False)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
+            # See create_mission: a JSON 1e400/Infinity parses to float("inf"), and
+            # int(inf) for context_compression_threshold_percent raises OverflowError,
+            # which is neither ValueError nor TypeError -- so a malformed number here
+            # became a 500 rather than the 400 a bad string/list value already earns.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return JSONResponse({"ok": True, "profile": public})
 
