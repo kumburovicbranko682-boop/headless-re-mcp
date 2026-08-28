@@ -313,6 +313,25 @@ def _read_uleb128(data: bytes, pos: int) -> tuple[int, int]:
             raise _WasmParseError("LEB128 too long")
 
 
+def _read_sleb128(data: bytes, pos: int) -> tuple[int, int]:
+    """Read a signed LEB128 (used by i32.const/i64.const in a data offset expr)."""
+    result = 0
+    shift = 0
+    while True:
+        if pos >= len(data):
+            raise _WasmParseError("truncated SLEB128")
+        byte = data[pos]
+        pos += 1
+        result |= (byte & 0x7F) << shift
+        shift += 7
+        if not (byte & 0x80):
+            if byte & 0x40:  # sign bit set: extend to a negative value
+                result |= -(1 << shift)
+            return result, pos
+        if shift > 63:
+            raise _WasmParseError("SLEB128 too long")
+
+
 def _read_wasm_name(data: bytes, pos: int, end: int) -> tuple[str, int]:
     length, pos = _read_uleb128(data, pos)
     if length < 0 or pos + length > end:
@@ -681,6 +700,208 @@ def _parse_wasm_names(data: bytes, *, module: str) -> JsonObject:
     return result
 
 
+# wasm.strings bounds: the shortest run reported, the longest kept per string,
+# how many strings one reply collects, and the default paging window.
+_MIN_WASM_STRING_LEN = 4
+_MAX_WASM_STRING_LEN = 4096
+_MAX_WASM_STRINGS_SCAN = 50_000
+_MAX_WASM_STRINGS_PAGE = 5000
+# The printable ASCII band a run must stay within to count as a string, matching
+# a classic `strings -a` pass; a high byte (UTF-8 lead/continuation, or binary)
+# breaks the run.
+_WASM_PRINTABLE = frozenset(range(0x20, 0x7F)) | {0x09}
+
+
+def _read_wasm_const_offset(data: bytes, pos: int, end: int) -> tuple[int | None, int]:
+    """Parse a data segment's offset const-expr, returning (offset, pos_after_end).
+
+    The active data segment's placement is a constant expression terminated by
+    ``end`` (0x0B). The overwhelmingly common form is ``i32.const N``, which
+    yields the memory offset N; ``global.get`` (an imported base) leaves the
+    offset unknown (None). The parser has to consume the whole expression exactly
+    -- not scan for 0x0B, whose byte can appear inside an SLEB immediate -- so it
+    can find the byte vector that follows; an opcode it cannot model raises so the
+    caller stops rather than misreading the following bytes as a string.
+    """
+    offset: int | None = None
+    while True:
+        if pos >= end:
+            raise _WasmParseError("const expr overruns data segment")
+        op = data[pos]
+        pos += 1
+        if op == 0x0B:  # end
+            return offset, pos
+        if op == 0x41:  # i32.const
+            offset, pos = _read_sleb128(data, pos)
+        elif op == 0x42:  # i64.const
+            _, pos = _read_sleb128(data, pos)
+        elif op == 0x43:  # f32.const
+            pos += 4
+        elif op == 0x44:  # f64.const
+            pos += 8
+        elif op == 0x23:  # global.get: an imported base, so the offset is unknown
+            _, pos = _read_uleb128(data, pos)
+            offset = None
+        else:
+            raise _WasmParseError(f"unsupported const-expr opcode 0x{op:02x}")
+
+
+def _extract_wasm_strings(
+    blob: bytes,
+    *,
+    segment: int,
+    base: int | None,
+    min_length: int,
+    out: list[JsonObject],
+    remaining: int,
+) -> int:
+    """Append printable runs from one data blob to ``out``; returns how many left.
+
+    ``base`` is the segment's memory offset when known, so each run reports its
+    absolute linear-memory address; a run longer than the per-string cap is cut
+    and flagged. Collection stops once ``remaining`` reaches zero.
+    """
+    run = bytearray()
+    run_start = 0
+    n = len(blob)
+    i = 0
+    while i <= n:
+        byte = blob[i] if i < n else None
+        if byte is not None and byte in _WASM_PRINTABLE:
+            if not run:
+                run_start = i
+            run.append(byte)
+            if len(run) >= _MAX_WASM_STRING_LEN:
+                # Emit the capped run and keep scanning from here so a huge blob
+                # of printable bytes cannot build one unbounded string.
+                remaining = _emit_wasm_string(
+                    run, run_start, segment, base, min_length, out, remaining, truncated=True
+                )
+                run = bytearray()
+                if remaining <= 0:
+                    return 0
+        else:
+            if run:
+                remaining = _emit_wasm_string(
+                    run, run_start, segment, base, min_length, out, remaining, truncated=False
+                )
+                run = bytearray()
+                if remaining <= 0:
+                    return 0
+        i += 1
+    return remaining
+
+
+def _emit_wasm_string(
+    run: bytearray,
+    run_start: int,
+    segment: int,
+    base: int | None,
+    min_length: int,
+    out: list[JsonObject],
+    remaining: int,
+    *,
+    truncated: bool,
+) -> int:
+    if len(run) < min_length:
+        return remaining
+    entry: JsonObject = {
+        "string": run.decode("ascii", "replace"),
+        "segment": segment,
+        "segment_offset": run_start,
+        "offset": (base + run_start) if base is not None else None,
+    }
+    if truncated:
+        entry["value_truncated"] = True
+    out.append(entry)
+    return remaining - 1
+
+
+def _parse_wasm_strings(data: bytes, *, module: str, min_length: int) -> JsonObject:
+    """Extract printable strings from a module's Data section.
+
+    A wasm module's string literals, URLs, format strings and embedded constants
+    live in its Data section's segments, exactly where a native binary keeps its
+    .rodata -- but no reader here surfaced them, so a wasm was the one target with
+    no ``strings`` pass. This walks the Data section, decodes each segment's
+    placement (an active segment's ``i32.const`` offset gives an absolute memory
+    address; a passive one has none) and scans the bytes for printable ASCII runs
+    at least ``min_length`` long, the wasm analogue of r2.strings / apk.strings.
+    Reads the bytes directly (no wabt); a malformed module faults cleanly.
+    """
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        raise JsReError("backend_error", "not a WebAssembly module (bad magic)")
+    version = int.from_bytes(data[4:8], "little")
+    pos = 8
+    n = len(data)
+    strings: list[JsonObject] = []
+    remaining = _MAX_WASM_STRINGS_SCAN
+    segments = 0
+    scanned_bytes = 0
+    scan_capped = False
+    try:
+        while pos < n:
+            sec_id = data[pos]
+            pos += 1
+            sec_size, pos = _read_uleb128(data, pos)
+            sec_end = pos + sec_size
+            if sec_size < 0 or sec_end > n:
+                raise _WasmParseError("section overruns module")
+            if sec_id != 11:  # only the Data section carries segment bytes
+                pos = sec_end
+                continue
+            count, p = _read_uleb128(data, pos)
+            for _ in range(count):
+                if p >= sec_end:
+                    raise _WasmParseError("data segment truncated")
+                flags, p = _read_uleb128(data, p)
+                base: int | None
+                if flags == 0:  # active, memory 0, offset const-expr
+                    base, p = _read_wasm_const_offset(data, p, sec_end)
+                elif flags == 1:  # passive: no placement
+                    base = None
+                elif flags == 2:  # active with explicit memory index
+                    _, p = _read_uleb128(data, p)  # memidx
+                    base, p = _read_wasm_const_offset(data, p, sec_end)
+                else:
+                    raise _WasmParseError(f"unknown data segment flags {flags}")
+                seg_len, p = _read_uleb128(data, p)
+                if seg_len < 0 or p + seg_len > sec_end:
+                    raise _WasmParseError("data segment bytes overrun section")
+                blob = data[p : p + seg_len]
+                p += seg_len
+                scanned_bytes += seg_len
+                if remaining > 0:
+                    remaining = _extract_wasm_strings(
+                        blob,
+                        segment=segments,
+                        base=base,
+                        min_length=min_length,
+                        out=strings,
+                        remaining=remaining,
+                    )
+                    if remaining <= 0:
+                        scan_capped = True
+                segments += 1
+            pos = sec_end
+    except _WasmParseError as exc:
+        raise JsReError("backend_error", f"malformed WebAssembly module: {exc}") from exc
+    except IndexError as exc:  # a read ran off the end despite the guards
+        raise JsReError(
+            "backend_error", "malformed WebAssembly module: unexpected end of data"
+        ) from exc
+    return {
+        "module": module,
+        "version": version,
+        "strings": strings,
+        "total": len(strings),
+        "data_segments": segments,
+        "scanned_bytes": scanned_bytes,
+        "min_length": min_length,
+        "scan_capped": scan_capped,
+    }
+
+
 class WasmClient:
     """wabt-backed WebAssembly inspection (wasm2wat, wasm-objdump)."""
 
@@ -731,6 +952,40 @@ class WasmClient:
         _ = timeout
         resolved = _require_existing_file(path, missing="wasm file not found")
         return _parse_wasm_names(resolved.read_bytes(), module=resolved.name)
+
+    def strings(
+        self,
+        path: Path,
+        *,
+        min_length: int = _MIN_WASM_STRING_LEN,
+        offset: int = 0,
+        limit: int = 200,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """Extract printable strings from the module's Data section.
+
+        The wasm analogue of r2.strings / apk.strings: it surfaces the string
+        literals, URLs, format strings and constants a module keeps in its data
+        segments, each with its absolute memory offset when the segment is active.
+        Reads the bytes directly (no wabt); a malformed module faults cleanly.
+        """
+        _ = timeout
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        clamped = max(1, min(int(min_length), 1024))
+        parsed = _parse_wasm_strings(
+            resolved.read_bytes(), module=resolved.name, min_length=clamped
+        )
+        collected: list[JsonObject] = parsed["strings"]
+        total = len(collected)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_WASM_STRINGS_PAGE))
+        window = collected[start : start + cap]
+        parsed["strings"] = window
+        parsed["count"] = len(window)
+        parsed["total"] = total
+        parsed["offset"] = start
+        parsed["has_more"] = start + len(window) < total
+        return parsed
 
     def wat(
         self, path: Path, *, timeout: float = 120.0, spill_dir: Path | None = None

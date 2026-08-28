@@ -165,4 +165,39 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_names(path, timeout=timeout))
 
+    @tools.tool(name="wasm.strings")
+    def wasm_strings(
+        path: str,
+        min_length: Annotated[int, Field(ge=1, le=1024)] = 4,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=5000)] = 200,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Extract printable strings from a .wasm module's Data section.
+
+        The wasm analogue of r2.strings / apk.strings: a module keeps its string
+        literals, URLs, format strings, error messages and constants in its data
+        segments (its .rodata), which no other reader surfaced. This walks the
+        Data section and reports each printable ASCII run at least min_length long
+        (default 4), so it is the first-pass triage of "what does this module
+        talk about".
+
+        Answers with strings, each a {string, segment (its data-segment index),
+        segment_offset (byte offset within that segment), offset (the absolute
+        linear-memory address for an active segment, or null for a passive one)};
+        a run longer than 4096 bytes is cut and marked value_truncated. Also
+        answers with count, total, offset and has_more for paging, data_segments
+        (how many segments were seen), scanned_bytes, min_length and scan_capped
+        (set once the 50000-string collection cap was hit). The list field is
+        strings and each entry's text is strings[i].string (there is no values or
+        data field). Reads the bytes directly, so it needs no wabt; a malformed
+        module is a clean backend_error. An input over 16 MiB is refused as
+        too_large.
+        """
+        return _dump(
+            analysis.wasm_strings(
+                path, min_length=min_length, offset=offset, limit=limit, timeout=timeout
+            )
+        )
+
     return tools.bindings
