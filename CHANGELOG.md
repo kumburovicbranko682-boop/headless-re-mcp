@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **327（209 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **329（211 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -370,6 +370,27 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
 
 ### 新增（JavaScript 静态提取）
+
+- 新增 `js.imports`:纯 Python 从 JavaScript 源码里抽取模块依赖图——ESM `import`/`export ... from`、
+  CommonJS `require()`、动态 `import()` 与 worker `importScripts()` 一并收进来,于是分诊能看清一个 bundle
+  拉进了什么(CDN、npm 包、同级 chunk)以及在哪拉。不需要 Node/webcrack。匹配会用注释/字符串/正则映射校验一遍,
+  所以写在字符串或注释里的 `require()` 不计,正则字面量里的说明符也忽略。回 `imports`(分页、按说明符排序)、
+  `count`/`total`/`offset`/`has_more`、kinds 计数(每种 esm_import / esm_export / dynamic_import / require /
+  import_scripts 的出现次数)、packages 归并(每条 {package, count},只统计裸说明符,最常见在前)带 package_count
+  与 packages_truncated,以及 scan_capped。每条 import 带 specifier(原始模块串)、kind、category(./ 或 / 路径为
+  relative、scheme:// 或 // 为 url、其余为 bare)、package(裸说明符的 npm 包名——@scope/name 或首个路径段,否则 null)、
+  count(出现次数)与 lines(至多 5 个 1 起始行号采样)。超 16 MiB 报 too_large,不存在报 not_found。
+- 新增 `js.api_usage`:纯 Python 扫描 JavaScript 里的敏感 API 汇聚点,按威胁类别归并——`js.imports` 看拉进什么、
+  `js.urls` 看往哪发,这个看它能*做*什么,是 `apk.api_usage` 的 JS 对应物。它扫的是注释、字符串字面量与正则字面量
+  都已抹白的代码骨架(所以字符串或注释里的名字永不计数),对照一张精选的汇聚点表匹配。类别就是审查者会 grep 的词:
+  code_execution(eval、new Function、setTimeout/setInterval、execScript)、dom_injection(innerHTML/outerHTML、
+  document.write、insertAdjacentHTML)、network(fetch、XMLHttpRequest、WebSocket、sendBeacon、EventSource)、
+  storage(localStorage、sessionStorage、indexedDB、document.cookie)、encoding(atob/btoa、unescape、
+  decodeURIComponent、fromCharCode、charCodeAt)、crypto(crypto.subtle、CryptoJS)、messaging(postMessage)与
+  node_exec(child_process、exec、spawn)。回 `categories`(按命中数、再按名字排序)、category_count、total_hits 与
+  scan_capped。每个类别带 category、hits(该类总命中)、apis(每条 {api, count, lines}——至多 5 个 1 起始行号采样,
+  按命中数排名)、api_count 与 apis_truncated;无命中的类别直接不出现。这是词法扫描,不是数据流证明:命中标的是一个
+  调用点,不代表它可达。超 16 MiB 报 too_large,不存在报 not_found。
 
 - 新增 `js.strings`:纯 Python 从 JavaScript 源码里抽取字符串字面量——不需要 Node/webcrack,任何主机都能跑,
   是 `apk.strings` / `wasm.strings` 的 JS 对应物。一个小状态机走一遍源码,提取单引号、双引号和模板字面量,

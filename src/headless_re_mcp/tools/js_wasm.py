@@ -135,6 +135,69 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.js_urls(path, offset=offset, limit=limit))
 
+    @tools.tool(name="js.imports")
+    def js_imports(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Extract the module dependency graph from a JavaScript file (pure Python).
+
+        js.strings and js.urls read literals and IOCs; this reads the wiring --
+        every ESM ``import``/``export ... from``, CommonJS ``require()``, dynamic
+        ``import()`` and worker ``importScripts()`` -- so a triage can see what a
+        bundle pulls in (CDNs, npm packages, sibling chunks) and where. No
+        webcrack/Node needed. Matches are validated against a comment/string/
+        regex map, so a require() written inside a string or comment is not
+        counted, and a specifier inside a regex is ignored.
+
+        Answers with imports (paged, sorted by specifier), count, total, offset,
+        has_more, a kinds tally (occurrences per esm_import / esm_export /
+        dynamic_import / require / import_scripts), a packages roll-up (each
+        {package, count}, bare specifiers only, most-common first) with
+        package_count and packages_truncated, and scan_capped. Each import row
+        carries specifier (the raw module string), kind, category (relative for
+        ./ or / paths, url for scheme:// or //, else bare), package (the npm
+        package for a bare specifier -- @scope/name or the first path segment --
+        else null), count (occurrences) and lines (up to 5 sample 1-based line
+        numbers). Read has_more so a filled page is not read as every import.
+
+        A file over 16 MiB is refused as too_large and a missing one as
+        not_found.
+        """
+        return _dump(analysis.js_imports(path, offset=offset, limit=limit))
+
+    @tools.tool(name="js.api_usage")
+    def js_api_usage(path: str) -> dict[str, Any]:
+        """Scan a JavaScript file for sensitive-API sinks, grouped by threat category.
+
+        Where js.imports reads what a script pulls in and js.urls where it talks,
+        this reads what it can *do*: it scans a code skeleton with comments,
+        string literals and regex literals blanked (so a name inside a string or
+        comment never counts) for a curated table of dangerous sinks, the JS
+        counterpart to apk.api_usage. Categories are the words a reviewer greps
+        for: code_execution (eval, new Function, setTimeout/setInterval,
+        execScript), dom_injection (innerHTML/outerHTML, document.write,
+        insertAdjacentHTML), network (fetch, XMLHttpRequest, WebSocket,
+        sendBeacon, EventSource), storage (localStorage, sessionStorage,
+        indexedDB, document.cookie), encoding (atob/btoa, unescape,
+        decodeURIComponent, fromCharCode, charCodeAt), crypto (crypto.subtle,
+        CryptoJS), messaging (postMessage) and node_exec (child_process, exec,
+        spawn). Pure Python, no webcrack. Deobfuscate a packed script first so
+        the sinks are visible.
+
+        Answers with categories (sorted by hit count, then name), category_count,
+        total_hits and scan_capped. Each category carries category, hits (its
+        total matches), apis (each {api, count, lines} -- up to 5 sample 1-based
+        line numbers, ranked by count), api_count and apis_truncated. A category
+        with no hit is absent rather than reported empty. This is a lexical scan,
+        not a data-flow proof: a match names a call site, not a reachable one.
+
+        A file over 16 MiB is refused as too_large and a missing one as
+        not_found.
+        """
+        return _dump(analysis.js_api_usage(path))
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0

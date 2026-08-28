@@ -20,6 +20,8 @@ from headless_re_mcp.backends.common.bounded_run import (
     run_bounded,
 )
 from headless_re_mcp.backends.jsre.js_static import (
+    extract_js_api_usage,
+    extract_js_imports,
     extract_js_indicators,
     extract_js_strings,
 )
@@ -272,6 +274,16 @@ class JsClient:
         """Extract network indicators (URLs, hosts, IPs) from a JS source file."""
         text = self._read_source(path)
         return extract_js_indicators(text, offset=offset, limit=limit)
+
+    def imports(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        """Extract the module graph (import/require/dynamic import/importScripts)."""
+        text = self._read_source(path)
+        return extract_js_imports(text, offset=offset, limit=limit)
+
+    def api_usage(self, path: Path) -> JsonObject:
+        """Scan for sensitive-API sinks, grouped by threat category (no webcrack)."""
+        text = self._read_source(path)
+        return extract_js_api_usage(text)
 
 
 class WasmClient:
