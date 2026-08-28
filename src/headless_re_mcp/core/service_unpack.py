@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 from contextlib import suppress
 from pathlib import Path
-from threading import Event
+from threading import Event, RLock
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -26,7 +26,7 @@ from headless_re_mcp.core.models import BackendKind, Result, RpcError, SessionSt
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.service_detect import _detection_timeout
 from headless_re_mcp.core.service_ext import _register_capture
-from headless_re_mcp.core.session import InvalidStateTransition, file_sha256
+from headless_re_mcp.core.session import InvalidStateTransition, SessionNotFound, file_sha256
 from headless_re_mcp.core.windows import list_process_windows
 from headless_re_mcp.detection import PeFormatError, ScanMode, scan_pe
 from headless_re_mcp.detection.die import DieScanError
@@ -159,6 +159,9 @@ class UnpackMixin:
     _runtime_owner: BackendRuntimeOwner[_BackendRuntime]
     _unpack_owner: UnpackStateOwner[UnpackSessionState]
     _unpack_cancel_events: dict[str, Event]
+    # The service-wide lock (the runtime owner's): _store_unpack_session must
+    # serialize with close's CLOSING-transition-then-clear under the same lock.
+    _lock: RLock
 
     if TYPE_CHECKING:
 
@@ -2126,12 +2129,33 @@ class UnpackMixin:
             self.settings.artifact_root.expanduser().resolve() / "unpack" / session_id / "session"
         )
     def _store_unpack_session(self, state: UnpackSessionState) -> None:
-        self._unpack_owner.put(state.session_id, state)
+        # Serialized with close's CLOSING transition under the service lock,
+        # for the same reason _unpack_cancel_event is: unpack steps run for
+        # seconds between fetching this state and storing it back (score_oep
+        # collects runtime snapshots in that gap), and a close landing inside
+        # the gap has already cleared the owner. An unconditional put here
+        # re-installed the state for a session that never reopens -- one
+        # retained UnpackSessionState per lost race, the exact leak clear()
+        # exists to prevent. FAILED stays storable: close has not cleared a
+        # failed session yet, and unpack.cancel must still record that an
+        # in-flight orchestration was cancelled after a backend failure.
+        with self._lock:
+            try:
+                session = self.registry.get(state.session_id)
+            except SessionNotFound:
+                cleared = True
+            else:
+                cleared = session.state in {SessionState.CLOSING, SessionState.CLOSED}
+            if not cleared:
+                self._unpack_owner.put(state.session_id, state)
 
         def write(directory: Path) -> None:
             write_timeline_jsonl(state, directory / "timeline.jsonl")
             persist_state_snapshot(state, directory / "state.json")
 
+        # Written even when the session is gone: the on-disk snapshot is the
+        # post-mortem record of how far the orchestration got, close does not
+        # remove it, and artifact retention already bounds it.
         self.repository.persist_unpack_state(
             state.session_id,
             write=write,

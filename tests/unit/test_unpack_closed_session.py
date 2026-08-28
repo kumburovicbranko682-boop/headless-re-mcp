@@ -164,6 +164,88 @@ def test_unpack_start_close_race_does_not_recreate_cancel_event(
         service.close_all()
 
 
+def test_a_store_landing_after_close_does_not_resurrect_unpack_state(
+    tmp_path: Path,
+) -> None:
+    """A long unpack step finishing after close must not re-install owner state.
+
+    Unpack operations fetch the session state, run for seconds (score_oep
+    collects runtime snapshots in that gap), and store the transformed copy
+    back. A close landing inside the gap clears _unpack_owner; the late store
+    used to put the state straight back for a session that never reopens --
+    one retained UnpackSessionState per lost race, the same leak the
+    cancel-latch map already guards against.
+    """
+    binary = tmp_path / "managed.exe"
+    _write_verified_clr_pe(binary)
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        started = service.unpack_start(session_id, use_die=False, execute_upx=False)
+        assert started.ok, started.error
+        state = service._unpack_owner.get(session_id)
+        assert state is not None
+
+        closed = service.close_session(session_id)
+        assert closed.ok, closed.error
+        assert service._unpack_owner.get(session_id) is None
+
+        service._store_unpack_session(state)
+
+        assert service._unpack_owner.get(session_id) is None
+        assert session_id not in service._unpack_owner.sessions
+        # The on-disk snapshot is the post-mortem record and must still land.
+        snapshot = tmp_path / "artifacts" / "unpack" / session_id / "session" / "state.json"
+        assert snapshot.is_file()
+    finally:
+        service.close_all()
+
+
+def test_a_failed_session_still_records_its_unpack_state(tmp_path: Path) -> None:
+    """FAILED is not CLOSED: close has not cleared the owner yet.
+
+    unpack.cancel must still record that an in-flight orchestration was
+    cancelled after a backend failure, so a store for a FAILED session updates
+    the existing entry rather than being dropped.
+    """
+    binary = tmp_path / "managed.exe"
+    _write_verified_clr_pe(binary)
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        started = service.unpack_start(session_id, use_die=False, execute_upx=False)
+        assert started.ok, started.error
+        state = service._unpack_owner.get(session_id)
+        assert state is not None
+
+        service.registry.transition(session_id, SessionState.FAILED)
+        service._store_unpack_session(state)
+
+        assert service._unpack_owner.get(session_id) is state
+    finally:
+        service.close_all()
+
+
 def test_unpack_cancel_still_signals_a_failed_sessions_existing_latch(
     tmp_path: Path,
 ) -> None:

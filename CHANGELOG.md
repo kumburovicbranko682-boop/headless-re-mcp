@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（close 竞态后 `_store_unpack_session` 复活已清理的 unpack 状态）
+
+- `close_session` 在服务锁内把 `_unpack_owner.clear(session_id)` 与 CLOSING 迁移
+  一起执行，但 unpack 操作在取到会话状态与写回之间可运行数秒（如
+  `unpack.score_oep` 在该间隙里采集运行时快照）。close 落在间隙内时，
+  `_store_unpack_session` 无条件 `put` 会把状态原样写回——为一个永不重开的会话
+  复活一条 `_unpack_owner.sessions` 记录，每输一次竞态泄漏一份
+  `UnpackSessionState`，正是 clear() 要回收的内存。同类竞态此前已在
+  cancel-latch 映射上修过（`_unpack_cancel_event` 在服务锁内校验存活），但
+  unpack 状态映射漏掉了。修复：`_store_unpack_session` 的内存 put 与 close 的
+  迁移+清理在同一把服务锁下串行化，会话 CLOSING/CLOSED/已注销时跳过 put；
+  FAILED 仍可写（close 尚未清理，unpack.cancel 需要记录后端故障后在飞
+  orchestration 的取消）。磁盘快照照常落盘——close 不删它，作为事后取证记录由
+  制品保留机制约束。回归测试钉住 close 后迟到写回不复活、FAILED 会话仍可更新。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
