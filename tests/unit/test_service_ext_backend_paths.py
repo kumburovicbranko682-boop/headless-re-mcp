@@ -376,3 +376,60 @@ def test_windbg_live_methods_map_a_backend_error(
             assert result.error.code == "windbg_failed"
     finally:
         service.close_all()
+
+
+# --- ui.drive argument validation (before any real UI work) -------------------
+
+
+def test_ui_drive_to_event_rejects_invalid_arguments(tmp_path: Path) -> None:
+    service, sid = _open_session(tmp_path)
+    try:
+        # timeout out of range, both ends.
+        assert service.ui_drive_to_event(sid, "click", timeout=0).ok is False
+        assert service.ui_drive_to_event(sid, "click", timeout=500.0).ok is False
+        # event budget out of range.
+        assert service.ui_drive_to_event(sid, "click", event_budget=0).ok is False
+        # a blank event kind is rejected while building the pattern.
+        assert service.ui_drive_to_event(sid, "").ok is False
+        # an unsupported drive step is rejected while normalising steps.
+        bad_steps = service.ui_drive_to_event(sid, "click", steps=[{"action": "nope"}])
+        assert bad_steps.ok is False
+        assert bad_steps.error is not None
+        assert bad_steps.error.code == "invalid_params"
+    finally:
+        service.close_all()
+
+
+def test_ui_drive_to_breakpoint_reports_workflow_and_binding_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, sid = _open_session(tmp_path)
+    try:
+        # A fresh PE session has no dynamic workflow, so the status read fails
+        # and is returned verbatim.
+        no_workflow = service.ui_drive_to_breakpoint(sid, "bp1")
+        assert no_workflow.ok is False
+        assert no_workflow.error is not None
+        assert no_workflow.error.code == "backend_unavailable"
+
+        # With a status but no matching binding, the address lookup fails.
+        monkeypatch.setattr(
+            service,
+            "workflow_status",
+            lambda session_id: Result(
+                ok=True,
+                data={"workflow": {"state": {"breakpoints": {"bindings": []}}}},
+            ),
+        )
+        no_binding = service.ui_drive_to_breakpoint(sid, "bp1")
+        assert no_binding.ok is False
+        assert no_binding.error is not None
+
+        # A resolvable binding reaches _ui_drive, which rejects an out-of-range
+        # timeout before touching any window.
+        monkeypatch.setattr(ext, "_breakpoint_binding_address", lambda status, intent: 0x401000)
+        reached_drive = service.ui_drive_to_breakpoint(sid, "bp1", timeout=0)
+        assert reached_drive.ok is False
+        assert reached_drive.error is not None
+    finally:
+        service.close_all()
