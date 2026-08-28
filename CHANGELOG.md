@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **296（176 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **297（177 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -666,6 +666,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不移动函数索引空间，故转导出的导入在索引 0 仍解析为导入函数类型）、内部名挂接与非函数导出无签名字段，并另有 wat2wasm
   交叉校验（缺 wabt 时 skip≠pass）；单测另覆盖过滤、`signature_unknown`、空导出、4096 截断与非模块拒绝。该工具计入读效果，
   工具面因此 292→293。
+- **抓包里的 cookie 只能靠 flow.get 一条条翻、靠 proxy.search 找个名字**。`web.cookies` 读的是浏览器的 jar，可代理看的是
+  线上的东西——cookie 在这里是 Set-Cookie 响应头（服务器在铸造它，连同 HttpOnly/Secure/SameSite 旗标）或 Cookie 请求头
+  （客户端在回传），`proxy.search` 能找到名字却卷不起旗标姿态。新增只读的 `proxy.cookies`：把整条 ring 折叠成按 name+domain
+  去重的 cookie 清单（网络侧的 jar）。回 `cookies`，每条带 `name`、`domain` 与 `origin`（`response`——有 Set-Cookie 铸造过，
+  `request`——只见客户端回传过），外加 `set_count`/`sent_count`；`response` 源的另带 `value`（最近一次，按上限截断）、
+  `http_only`、`secure`（都默认 false，故缺键不会被误读成"已设"）、`same_site`、`path` 与出现过的 `expires`/`max_age`
+  （两者皆缺即会话 cookie）。旗标在多次 Set-Cookie 间粘滞——设过一次 HttpOnly/Secure 就一直算。response 源的排在前，再按
+  name/domain。外加 `count`（返回数）、`total`（去重 cookie 总数）、`has_more`（超 limit）、`flows_scanned` 与 `dropped`
+  （ring 驱逐数）。body 被省略（超保留上限）的流会连头一起整条从 ring 里换掉，故其 cookie 在此不可见——与 `proxy.search`
+  同一取舍。无代理运行时报 `invalid_state`。活体门经真 mitmproxy 起会铸造 cookie 的本地源站，打一次登录 GET（响应设一个
+  硬化 session 加一个裸 tracker）再打一次带 Cookie 头的 GET，断言从线上取到 session 的 HttpOnly/Secure/SameSite、
+  裸 tracker 的旗标默认关、客户端回传的 pref 标 `origin=request`；单测另覆盖 Set-Cookie 解析（含 Domain 去点、各属性）、
+  valueless 头拒绝、name+domain 折叠与最新值、request-only 合并、response 优先排序、500 截断与 docstring 形状。该工具计入
+  读效果，工具面因此 296→297。
 - **看得到模块给宿主什么（wasm.exports），看不到它管宿主要什么**。import 段是模块的宿主边界——没有这些函数/内存/表/全局它
   跑不起来，可 `wasm.summary` 只报 module/name/kind 三元组，`wasm.functions` 只解析函数导入，非函数导入的描述符（内存页限、
   表的 reftype、全局的可变性）谁都不解。新增只读的 `wasm.imports`：四种 kind 全解码，纯 Python（无需 wabt），与

@@ -125,6 +125,36 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_endpoints(session_id, limit=limit))
 
+    @tools.tool(name="proxy.cookies")
+    def proxy_cookies(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+    ) -> dict[str, Any]:
+        """Fold the capture's cookies into one inventory (the network-side jar).
+
+        web.cookies reads the browser's cookie jar; the proxy sees the wire,
+        where a cookie is a Set-Cookie response header (the server minting it,
+        with its flags) or a Cookie request header (the client sending it back).
+        proxy.search can find a cookie name but not roll the flag posture up.
+        This folds the ring into distinct cookies keyed by name+domain -- the
+        session/auth/tracking cookies an app relies on, with the security flags
+        that decide whether they leak.
+
+        Answers with cookies, each carrying name, domain, and origin (response
+        when a Set-Cookie minted it, request when only ever seen sent by the
+        client), plus set_count and sent_count. A response-origin cookie also
+        carries value (most recent, bounded), http_only, secure (both default
+        false so an absent key never reads as "set"), same_site, path and
+        whichever of expires/max_age was present (their absence means a session
+        cookie). Flags are sticky across Set-Cookie occurrences. Response-set
+        cookies rank first, then by name/domain. Also count (returned), total
+        (distinct cookies), has_more (more than the limit exist), flows_scanned
+        and dropped (ring evictions). A flow whose body was omitted is dropped
+        whole from the ring, so its cookies are not visible here. It errors
+        invalid_state when no proxy is running for the session.
+        """
+        return _dump(analysis.proxy_cookies(session_id, limit=limit))
+
     @tools.tool(name="proxy.search")
     def proxy_search(
         session_id: str,

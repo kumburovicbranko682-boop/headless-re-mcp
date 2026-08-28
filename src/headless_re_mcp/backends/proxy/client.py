@@ -57,6 +57,10 @@ _MAX_STATS_CONTENT_TYPES = 50
 # endpoint realistically returns a handful of distinct status codes; cap the set
 # so a pathological capture cannot grow one endpoint's status list without bound.
 _MAX_ENDPOINT_STATUSES = 32
+# proxy.cookies folds the capture's Set-Cookie / Cookie headers into a distinct
+# cookie inventory. The list is capped and the cut announced, like the other
+# folded views.
+_MAX_COOKIES = 500
 
 
 class ProxyError(RuntimeError):
@@ -260,6 +264,75 @@ def _headers_contain(message: Any, needle: str) -> bool:
     except Exception:  # noqa: BLE001 - odd header containers must not break the scan
         return False
     return any(needle in f"{key}: {value}".casefold() for key, value in items)
+
+
+def _header_values(message: Any, name: str) -> list[str]:
+    """Every value of one header on a mitmproxy message (case-insensitive).
+
+    ``Set-Cookie`` legitimately repeats -- a response setting three cookies
+    sends three ``Set-Cookie`` lines -- so a plain ``.get`` would see only the
+    last. mitmproxy's ``Headers.get_all`` returns them all; a plain dict (the
+    unit-test stand-in) has no duplicates, so its single value is wrapped. A
+    missing or odd container yields ``[]`` rather than raising, so one malformed
+    flow never sinks the fold.
+    """
+    headers = getattr(message, "headers", None)
+    if headers is None:
+        return []
+    get_all = getattr(headers, "get_all", None)
+    if get_all is not None:
+        try:
+            return [str(v) for v in get_all(name)]
+        except Exception:  # noqa: BLE001 - fall through to the items() path
+            pass
+    try:
+        items = list(headers.items())
+    except Exception:  # noqa: BLE001 - odd header containers must not crash the read
+        return []
+    lowered = name.casefold()
+    return [str(value) for key, value in items if str(key).casefold() == lowered]
+
+
+def _parse_set_cookie(raw: str) -> JsonObject | None:
+    """Parse one ``Set-Cookie`` value into name/value and its attributes.
+
+    A hand roll rather than ``http.cookies``: SimpleCookie rejects values that
+    real servers (and malware C2) send, and silently drops the flags an analyst
+    is reading the header *for*. Splits on ``;`` -- the first part is the
+    ``name=value`` pair, the rest are attributes -- and lifts Domain, Path,
+    Expires, Max-Age and SameSite plus the HttpOnly and Secure flags. Returns
+    ``None`` when there is no name, so a blank or malformed header is skipped.
+    """
+    parts = [segment.strip() for segment in raw.split(";")]
+    if not parts or "=" not in parts[0]:
+        return None
+    name, _, value = parts[0].partition("=")
+    name = name.strip()
+    if not name:
+        return None
+    record: JsonObject = {"name": name, "value": value.strip()}
+    for attr in parts[1:]:
+        if not attr:
+            continue
+        key, sep, val = attr.partition("=")
+        key = key.strip().casefold()
+        val = val.strip()
+        if key == "domain":
+            # A leading dot is legal but noise for grouping; drop it.
+            record["domain"] = val[1:] if val.startswith(".") else val
+        elif key == "path":
+            record["path"] = val
+        elif key == "expires":
+            record["expires"] = val
+        elif key == "max-age":
+            record["max_age"] = val
+        elif key == "samesite":
+            record["same_site"] = val
+        elif key == "httponly" and not sep:
+            record["http_only"] = True
+        elif key == "secure" and not sep:
+            record["secure"] = True
+    return record
 
 
 def _attach_body(section: JsonObject, body: bytes, artifact_dir: Path, *, prefix: str) -> None:
@@ -1105,6 +1178,123 @@ class ProxyBackend:
             "total": len(ranked),
             "has_more": len(ranked) > len(endpoints),
             "flows_folded": flows_folded,
+            "dropped": dropped,
+        }
+
+    def cookies(self, session_id: str, *, limit: int = 200) -> JsonObject:
+        """Fold the capture's cookies into one inventory (the network-side jar).
+
+        web.cookies reads the *browser's* cookie jar; the proxy sees the wire,
+        where a cookie is a Set-Cookie response header (the server minting it,
+        with its flags) or a Cookie request header (the client sending it back).
+        proxy.search can find a cookie name but not roll the flag posture up.
+        This folds the ring into distinct cookies keyed by name+domain: for a
+        set cookie the Domain (or the response host), HttpOnly / Secure /
+        SameSite flags, Path and expiry; for a sent cookie the host it went to.
+
+        Each entry carries name, domain, and origin (response when a Set-Cookie
+        minted it, request when it was only ever seen sent by the client), plus
+        set_count and sent_count. A response-origin cookie also carries value
+        (the most recent, bounded), http_only, secure, same_site, path and
+        whichever of expires/max_age was present (their absence means a session
+        cookie). Flags are sticky: once any Set-Cookie marked the cookie
+        HttpOnly/Secure it stays flagged.         Also count, total, has_more (more
+        distinct cookies than the limit), flows_scanned and dropped (ring
+        evictions). A flow whose body was omitted (over the retention cap) is
+        replaced whole in the ring, headers included, so its cookies are not
+        visible here -- the same trade-off proxy.search makes.
+        """
+        inst = self._get(session_id)
+        summaries = inst.recorder.snapshot()
+        flows_scanned = len(summaries)
+        dropped = 0
+        if summaries:
+            dropped = max(0, int(summaries[-1].get("seq") or 0) - flows_scanned)
+        cap = max(1, min(int(limit), 1000))
+
+        agg: dict[tuple[str, str], JsonObject] = {}
+
+        def _entry(name: str, domain: str) -> JsonObject:
+            key = (name, domain)
+            entry = agg.get(key)
+            if entry is None:
+                entry = {
+                    "name": name,
+                    "domain": domain,
+                    "origin": "request",
+                    "set_count": 0,
+                    "sent_count": 0,
+                }
+                agg[key] = entry
+            return entry
+
+        for summary in summaries:
+            flow_id = str(summary.get("id"))
+            host = str(summary.get("host", "") or "")
+            raw = inst.recorder.raw(flow_id)
+            # A never-retained flow (None) or one whose body was omitted (the
+            # sentinel replaces the whole flow, headers included) has no cookies
+            # to read -- the same trade-off search() makes.
+            if raw is None or raw is _OMITTED_BODY:
+                continue
+            req = getattr(raw, "request", None)
+            resp = getattr(raw, "response", None)
+
+            for header_value in _header_values(resp, "set-cookie"):
+                parsed = _parse_set_cookie(header_value)
+                if parsed is None:
+                    continue
+                domain = str(parsed.get("domain") or host)
+                entry = _entry(parsed["name"], domain)
+                entry["origin"] = "response"
+                entry["set_count"] += 1
+                entry["value"] = _bounded_metadata(parsed.get("value", ""), _MAX_METADATA_BYTES)[0]
+                if "path" in parsed:
+                    entry["path"] = _bounded_metadata(parsed["path"], _MAX_METADATA_BYTES)[0]
+                if "expires" in parsed:
+                    entry["expires"] = _bounded_metadata(parsed["expires"], _MAX_METADATA_BYTES)[0]
+                if "max_age" in parsed:
+                    entry["max_age"] = _bounded_metadata(parsed["max_age"], _MAX_METADATA_BYTES)[0]
+                if "same_site" in parsed:
+                    entry["same_site"] = _bounded_metadata(
+                        parsed["same_site"], _MAX_METADATA_BYTES
+                    )[0]
+                # Flags are sticky: a cookie set HttpOnly/Secure even once is.
+                if parsed.get("http_only"):
+                    entry["http_only"] = True
+                if parsed.get("secure"):
+                    entry["secure"] = True
+
+            for header_value in _header_values(req, "cookie"):
+                for pair in header_value.split(";"):
+                    name, sep, _ = pair.strip().partition("=")
+                    name = name.strip()
+                    if not name or not sep:
+                        continue
+                    entry = _entry(name, host)
+                    entry["sent_count"] += 1
+
+        # A response-set cookie sorts before a request-only one (the server's
+        # posture is the richer record), then by name and domain for stability.
+        ranked = sorted(
+            agg.values(),
+            key=lambda c: (0 if c["origin"] == "response" else 1, c["name"], c["domain"]),
+        )
+        cookies: list[JsonObject] = []
+        for entry in ranked[:cap]:
+            record = dict(entry)
+            # http_only/secure default to False so a caller never has to guess
+            # from an absent key whether the flag was set or just not seen.
+            if record["origin"] == "response":
+                record.setdefault("http_only", False)
+                record.setdefault("secure", False)
+            cookies.append(record)
+        return {
+            "cookies": cookies,
+            "count": len(cookies),
+            "total": len(ranked),
+            "has_more": len(ranked) > len(cookies),
+            "flows_scanned": flows_scanned,
             "dropped": dropped,
         }
 

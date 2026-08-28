@@ -483,6 +483,92 @@ def test_proxy_endpoints_folds_a_live_capture() -> None:
             backend.stop("gate-endpoints")
 
 
+@contextmanager
+def _cookie_origin_server() -> Iterator[str]:
+    """An origin that mints cookies like a real login: a flagged session plus a
+    plain tracking cookie, and it echoes nothing -- the flags live in the
+    Set-Cookie header the proxy captures on the wire."""
+
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(_ORIGIN_BODY)))
+            # Two Set-Cookie lines: a hardened session and a bare tracker.
+            self.send_header(
+                "Set-Cookie",
+                "session=tok-live; Path=/; HttpOnly; Secure; SameSite=Lax",
+            )
+            self.send_header("Set-Cookie", "track=42; Path=/")
+            self.end_headers()
+            self.wfile.write(_ORIGIN_BODY)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/login"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+
+
+@pytest.mark.integration
+def test_proxy_cookies_folds_a_live_capture() -> None:
+    """On a real capture, cookies must fold Set-Cookie and Cookie headers.
+
+    Drive a login GET whose response sets a hardened session cookie plus a plain
+    tracker, then a second GET that sends a cookie back. Assert proxy.cookies
+    lifts the session's HttpOnly/Secure/SameSite flags off the wire, defaults the
+    tracker's flags off, and marks the client-sent cookie origin=request -- the
+    session-security posture a jar inspection is for.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy cookies Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    with _cookie_origin_server() as origin_url:
+        backend.start("gate-cookies", host="127.0.0.1", port=port)
+        try:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"})
+            )
+            with opener.open(origin_url, timeout=10) as response:  # sets cookies
+                assert response.status == 200
+            # A second request that carries a Cookie header the origin never set.
+            sent = urllib.request.Request(origin_url, headers={"Cookie": "pref=dark"})
+            with opener.open(sent, timeout=10) as response:
+                assert response.status == 200
+
+            assert _poll(lambda: backend.flows("gate-cookies")["total"] >= 2), (
+                "the requests through the proxy were never recorded"
+            )
+            data = backend.cookies("gate-cookies")
+            names = {c["name"]: c for c in data["cookies"]}
+
+            session = names["session"]
+            assert session["origin"] == "response"
+            assert session["http_only"] is True
+            assert session["secure"] is True
+            assert session["same_site"] == "Lax"
+            assert session["value"] == "tok-live"
+
+            track = names["track"]
+            assert track["origin"] == "response"
+            # The bare tracker had no flags, so they default off, not absent.
+            assert track["http_only"] is False
+            assert track["secure"] is False
+
+            pref = names["pref"]
+            assert pref["origin"] == "request"
+            assert pref["sent_count"] >= 1
+        finally:
+            backend.stop("gate-cookies")
+
+
 @pytest.mark.integration
 def test_proxy_search_greps_a_live_capture() -> None:
     """On a real capture, search must find the flow whose body holds a needle.
