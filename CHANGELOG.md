@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（Windows OCR 子进程入口）
+
+- `core/_windows_ocr_worker.py` 此前 0% 覆盖：它被以 `python -m ...worker <path> <lang>`
+  拉起，让真正的 OCR 在独立进程里跑，`main` 读两个位置参数并把 OCR 结果以单行 JSON 打到
+  stdout。真实 OCR 仅限 Windows，故用桩替换 in-process OCR 调用，在任意平台上校验 argv 接线
+  与 JSON 序列化。新增 `tests/unit/test_windows_ocr_worker.py`：验证结果以单个可回环的 JSON
+  文档输出、两个位置参数按 path/language 转发、`ensure_ascii=False` 让非 ASCII 文本原样透出，
+  以及缺少 language 参数时抛 `IndexError`（父进程据非零退出码判定 OCR 失败）。模块补齐至 100%
+  行覆盖，只加测试、不改源码。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
