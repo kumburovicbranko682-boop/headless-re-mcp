@@ -96,6 +96,27 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_stats(session_id, top=top))
 
+    @tools.tool(name="proxy.cookies")
+    def proxy_cookies(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+    ) -> dict[str, Any]:
+        """Fold captured Set-Cookie/Cookie headers into a distinct cookie inventory.
+
+        The wire view of cookies: what servers set (with their security
+        attributes) and what the client sent back, across the whole capture --
+        complementary to web.cookies, which reads the live browser jar. Answers
+        with cookies, count, total, truncated and body_unavailable (flows whose
+        headers were evicted from the retain ring). Cookies are keyed by (name,
+        domain), so the same name on two hosts stays distinct. Each cookie
+        carries name, domain, value, path, http_only, secure, same_site
+        (Strict/Lax/None or null), set_count (times seen in a Set-Cookie),
+        sent_count (times seen in a request Cookie) and sources (set-cookie,
+        cookie, or both). A session cookie set without http_only and secure is
+        the weakness worth flagging.
+        """
+        return _dump(analysis.proxy_cookies(session_id, limit=limit))
+
     @tools.tool(name="proxy.endpoints")
     def proxy_endpoints(
         session_id: str,

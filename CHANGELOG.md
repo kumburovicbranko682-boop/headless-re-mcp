@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **281（164 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **282（165 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -483,6 +483,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `top_mime_types`(排序后各取前 `top` 条,默认 10,上限 50)及其背后的 `host_count` /
   `mime_type_count`。host 由每条 url 解析,`mime_type` 剥掉 `; charset=...` 只留裸媒体类型;
   聚合逻辑抽成纯函数 `summarize_requests`,不依赖运行中的浏览器,可独立单测。
+
+### 新增（抓包 Cookie 清点）
+
+- 新增 `proxy.cookies`:把抓到的 `Set-Cookie`(响应)与 `Cookie`(请求)头折成去重清单——cookie 的
+  在途视图:服务器设了什么(带安全属性)、客户端回送了什么,覆盖整段抓包;与读实时浏览器罐的
+  `web.cookies` 互补。回 `cookies`、`count`、`total`、`truncated` 与 `body_unavailable`(头被
+  环形缓冲淘汰的流)。按 `(name, domain)` 归并,同名跨主机各自独立。每条带 `name`/`domain`/`value`/
+  `path`/`http_only`/`secure`/`same_site`(Strict/Lax/None 或 null)、`set_count`(在 Set-Cookie
+  中出现次数)、`sent_count`(在请求 Cookie 中出现次数)与 `sources`(set-cookie/cookie/两者)。
+  没有 http_only 与 secure 的会话 cookie 是要标记的弱点。
 
 ### 新增（抓包端点归并）
 

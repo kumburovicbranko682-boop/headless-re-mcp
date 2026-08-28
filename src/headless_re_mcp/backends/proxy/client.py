@@ -375,6 +375,162 @@ _SEARCH_SNIPPET_MAX = 400
 # proxy.endpoints result cap: distinct endpoints are bounded by the flow ring,
 # but the returned page is still capped like every other list.
 _MAX_ENDPOINTS_PAGE = 1000
+# proxy.cookies caps: a response can carry many Set-Cookie headers and each
+# value can be a long token, so the header scan, each value, and the inventory
+# are all bounded.
+_MAX_COOKIE_HEADER_SCAN = 400
+_MAX_COOKIE_VALUE_CHARS = 4096
+_MAX_COOKIE_INVENTORY = 1000
+
+
+def _cookie_header_pairs(part: Any) -> list[tuple[str, str]]:
+    """Every (lowercased name, value) header on a message, bounded in count.
+
+    Unlike _bounded_headers this keeps duplicates, because a response commonly
+    carries several Set-Cookie headers that collapsing to a dict would lose.
+    """
+    headers = getattr(part, "headers", None)
+    if headers is None:
+        return []
+    try:
+        try:
+            items = list(headers.items(multi=True))
+        except TypeError:
+            items = list(headers.items())
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[tuple[str, str]] = []
+    for key, value in items[:_MAX_COOKIE_HEADER_SCAN]:
+        out.append((str(key).lower(), str(value)))
+    return out
+
+
+def _parse_set_cookie(value: str) -> tuple[str, str, dict[str, Any]] | None:
+    """Split one Set-Cookie value into (name, value, attributes)."""
+    segments = value.split(";")
+    first = segments[0].strip()
+    if "=" not in first:
+        return None
+    name, _, cval = first.partition("=")
+    name = name.strip()
+    if not name:
+        return None
+    attrs: dict[str, Any] = {}
+    for segment in segments[1:]:
+        segment = segment.strip()
+        if not segment:
+            continue
+        if "=" in segment:
+            key, _, val = segment.partition("=")
+            attrs[key.strip().lower()] = val.strip()
+        else:
+            attrs[segment.lower()] = True
+    return name, cval.strip(), attrs
+
+
+def _parse_cookie_header(value: str) -> list[tuple[str, str]]:
+    """Split a request Cookie header into its name=value pairs."""
+    pairs: list[tuple[str, str]] = []
+    for segment in value.split(";"):
+        segment = segment.strip()
+        if "=" in segment:
+            key, _, val = segment.partition("=")
+            pairs.append((key.strip(), val.strip()))
+    return pairs
+
+
+def _blank_cookie(name: str, domain: str) -> JsonObject:
+    return {
+        "name": name,
+        "domain": domain,
+        "value": "",
+        "path": None,
+        "http_only": False,
+        "secure": False,
+        "same_site": None,
+        "set_count": 0,
+        "sent_count": 0,
+    }
+
+
+def fold_cookies(
+    rows: list[JsonObject], raw_lookup: Any, *, limit: int = 200
+) -> JsonObject:
+    """Fold Set-Cookie (responses) and Cookie (requests) into a distinct inventory.
+
+    Pure over the recorder's two views. Set-Cookie carries the security
+    attributes (Domain/Path/HttpOnly/Secure/SameSite); the request Cookie header
+    only proves a name was sent back. Cookies are keyed by (name, domain), so
+    the same name on two hosts stays distinct. A flow whose headers were evicted
+    (body_omitted) contributes nothing and is counted in body_unavailable.
+    """
+    inventory: dict[tuple[str, str], JsonObject] = {}
+    body_unavailable = 0
+    for row in rows:
+        host = str(row.get("host") or "")
+        flow_id = str(row.get("id") or "")
+        raw = raw_lookup(flow_id) if flow_id else None
+        if raw is _OMITTED_BODY:
+            body_unavailable += 1
+            continue
+        if raw is None:
+            continue
+        resp = getattr(raw, "response", None)
+        if resp is not None:
+            for name_lower, value in _cookie_header_pairs(resp):
+                if name_lower != "set-cookie":
+                    continue
+                parsed = _parse_set_cookie(value)
+                if parsed is None:
+                    continue
+                cname, cval, attrs = parsed
+                domain = str(attrs.get("domain") or host)
+                entry = inventory.setdefault((cname, domain), _blank_cookie(cname, domain))
+                entry["value"] = cval[:_MAX_COOKIE_VALUE_CHARS]
+                entry["set_count"] += 1
+                entry["http_only"] = entry["http_only"] or ("httponly" in attrs)
+                entry["secure"] = entry["secure"] or ("secure" in attrs)
+                same_site = attrs.get("samesite")
+                if isinstance(same_site, str):
+                    entry["same_site"] = same_site
+                path = attrs.get("path")
+                if isinstance(path, str):
+                    entry["path"] = path
+        req = getattr(raw, "request", None)
+        if req is not None:
+            for name_lower, value in _cookie_header_pairs(req):
+                if name_lower != "cookie":
+                    continue
+                for cname, cval in _parse_cookie_header(value):
+                    entry = inventory.setdefault((cname, host), _blank_cookie(cname, host))
+                    if not entry["value"]:
+                        entry["value"] = cval[:_MAX_COOKIE_VALUE_CHARS]
+                    entry["sent_count"] += 1
+
+    cookies = list(inventory.values())
+    for entry in cookies:
+        sources: list[str] = []
+        if entry["set_count"]:
+            sources.append("set-cookie")
+        if entry["sent_count"]:
+            sources.append("cookie")
+        entry["sources"] = sources
+    cookies.sort(
+        key=lambda e: (
+            -(int(e["set_count"]) + int(e["sent_count"])),
+            str(e["name"]),
+            str(e["domain"]),
+        )
+    )
+    cap = max(1, min(int(limit), _MAX_COOKIE_INVENTORY))
+    window = cookies[:cap]
+    return {
+        "cookies": window,
+        "count": len(window),
+        "total": len(cookies),
+        "truncated": len(window) < len(cookies),
+        "body_unavailable": body_unavailable,
+    }
 
 
 def fold_endpoints(rows: list[JsonObject], *, limit: int = 100) -> JsonObject:
@@ -904,6 +1060,10 @@ class ProxyBackend:
     def endpoints(self, session_id: str, *, limit: int = 100) -> JsonObject:
         inst = self._get(session_id)
         return fold_endpoints(inst.recorder.snapshot(), limit=limit)
+
+    def cookies(self, session_id: str, *, limit: int = 200) -> JsonObject:
+        inst = self._get(session_id)
+        return fold_cookies(inst.recorder.snapshot(), inst.recorder.raw, limit=limit)
 
     def search(
         self,
