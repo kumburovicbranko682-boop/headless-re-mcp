@@ -27,6 +27,15 @@ _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
+# Unlike jadx/apktool/ghidra/r2, which hand the file to a child process with its
+# own memory and a run_bounded output cap, androguard parses in-process: _apk
+# reads the archive and _parsed runs a full DEX analysis whose in-memory graph
+# is several times the DEX size. A caller who points a session at a multi-GB
+# file -- or a zip bomb -- would grow this server's RSS unbounded. Refuse it up
+# front the way jsre._require_existing_file guards node, with a ceiling well past
+# any real APK (the Play base-APK limit is 150 MB) so only pathological input is
+# turned away. Enforced in _require, the one choke point both parse paths share.
+_MAX_APK_BYTES = 512 * 1024 * 1024
 # Page ceilings, kept equal to the apk.* tool schema maxima so the MCP path
 # (schema-validated) and the agent/OpenAI paths (clamped here) agree on the
 # largest page. test_apk_offset_schema.py pins them against the schema.
@@ -141,6 +150,18 @@ class ApkClient:
         resolved = path.expanduser().resolve()
         if not resolved.is_file():
             raise ApkError("not_found", "apk not found", path=str(resolved))
+        try:
+            size = int(resolved.stat().st_size)
+        except OSError as exc:
+            raise ApkError("backend_error", f"apk unreadable: {exc}", path=str(resolved)) from exc
+        if size > _MAX_APK_BYTES:
+            raise ApkError(
+                "too_large",
+                f"apk exceeds the {_MAX_APK_BYTES}-byte in-process analysis limit",
+                path=str(resolved),
+                size=size,
+                max_file_size=_MAX_APK_BYTES,
+            )
         return resolved
 
     def _key(self, path: Path) -> tuple[str, int]:
