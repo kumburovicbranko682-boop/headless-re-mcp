@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（让 proxy.start 的两条参数校验分支在 CI 真跑：非法端口 + 不可绑定主机）
+
+- `ProxyBackend.start` 有两条参数校验臂是其它 gate 都够不到的：越界端口报 `invalid_params`，
+  以及"本机任何接口都绑不上的主机"（240.0.0.1 是 class-E 保留地址，内核以 EADDRNOTAVAIL 拒绝）
+  必须与真正的端口占用区分开、报成 `invalid_params` 并点名 host（而非 `invalid_state` 那句"先停掉
+  另一个监听者"——对一个从来不是监听者的主机毫无意义）。这两条只有单测 `test_web_backends.py` 覆盖，
+  但那条单测在 mitmproxy 缺席时 skip：`start()` 先查可用性，缺包时这分支根本到不了。
+- 审计 CI 发现这两条臂在任何 job 里都不执行：每次提交的 unit job 装的是 `.[test,dev,web]`（无 proxy
+  extra），而 linux-integration 只跑 `-m integration`、不跑 `tests/unit`。于是这两条带着大段注释的
+  校验逻辑在 CI 里跑无可跑——正是"Linux 上诚实 CI"要根除的"有逻辑、无实跑"。
+- 在 `test_proxy_lifecycle_gate.py` 新增一条 gate，跑在装了 mitmproxy 的 linux-integration 里：
+  `start(port=99999)` 必得 `invalid_params`、`start(host="240.0.0.1")` 必得 `invalid_params` 且消息含
+  "host"，且两次被拒的 start 都不留半开会话（随后用同一个被拒端口的 session id 重新起一个好代理并停掉，
+  证明 id 可复用）。装 mitmproxy 12.2.3 本机实跑：gate 从 7 条增至 8 条全绿。
+- 变异验证承重：把端口区间放宽到 99999（越界端口放行）后，start 走到 `_port_accepts` 直接抛
+  OverflowError 而非干净的 invalid_params，gate 失败；把 `_bind_probe` 的 errno 判定反转（把
+  EADDRNOTAVAIL 当成端口占用）后，坏主机变 `invalid_state`，gate 失败。改回后复绿。
+
 ### 文档+测试（apk.sign 的 apk_path 默认值：钉死 decode→repack→sign 链的隐式交接）
 
 - `apk.repack` 的 docstring 早就点明 `decoded_dir` 默认指向"本会话的 decode 产物"，但 `apk.sign`

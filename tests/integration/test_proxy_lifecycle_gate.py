@@ -114,6 +114,52 @@ def test_start_on_an_occupied_port_fails_instead_of_reporting_success() -> None:
 
 
 @pytest.mark.integration
+def test_start_refuses_bad_arguments_before_binding_and_strands_no_session() -> None:
+    """An impossible port or an unbindable host is the caller's mistake, refused.
+
+    ProxyBackend.start has two argument-validation arms the other gates never
+    reach: an out-of-range port (invalid_params) and a host no local interface
+    can bind -- 240.0.0.1 is a class-E reserved address the kernel refuses with
+    EADDRNOTAVAIL -- which the bind probe must tell apart from a genuine port
+    clash and surface as invalid_params naming the host, not invalid_state
+    ("stop the other listener" for a host that was never a listener). Both arms
+    have unit coverage, but that unit test skips whenever mitmproxy is absent:
+    start() checks availability first, so the branch is unreachable without the
+    package. The every-commit unit jobs install no proxy extra and the
+    integration job runs only ``-m integration``, so across CI these two arms
+    execute nowhere. This gate runs where mitmproxy is installed, exercising the
+    validation the unit test can only skip -- and proving a refused start
+    reserves nothing, so a retry with good arguments can reuse the same id.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy validation Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    try:
+        with pytest.raises(ProxyError) as bad_port:
+            backend.start("gate-bad-port", host="127.0.0.1", port=99999)
+        assert bad_port.value.code == "invalid_params", bad_port.value.code
+        # A refusal before binding must not leave the session half-reserved.
+        assert backend.status("gate-bad-port") == {"running": False}
+
+        with pytest.raises(ProxyError) as bad_host:
+            backend.start("gate-bad-host", host="240.0.0.1", port=_free_port())
+        # invalid_params (bad host), never invalid_state (busy port): the two
+        # have opposite fixes, and the accept-probe sees nobody serving here.
+        assert bad_host.value.code == "invalid_params", bad_host.value.code
+        assert "host" in bad_host.value.message, bad_host.value.message
+        assert backend.status("gate-bad-host") == {"running": False}
+
+        # The id a refused start rejected must be reusable: bind a good proxy
+        # under the same session id the bad port left behind, then release it.
+        port = _free_port()
+        started = backend.start("gate-bad-port", host="127.0.0.1", port=port)
+        assert started["running"] is True
+        assert backend.stop("gate-bad-port")["stopped"] is True
+    finally:
+        backend.close_all()
+
+
+@pytest.mark.integration
 def test_two_sessions_cannot_silently_share_one_port() -> None:
     if not _mitmproxy_available():
         pytest.skip("mitmproxy not installed — proxy lifecycle Gate not run (skip != pass)")
