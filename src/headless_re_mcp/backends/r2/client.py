@@ -41,6 +41,7 @@ _ALLOWED = frozenset(
         "iI",
         "is",
         "il",
+        "ilj",
         "ie",
         "aflj",
         "izj",
@@ -404,6 +405,60 @@ class R2Client:
             result["ops_truncated"] = True
             result["ops_total"] = available
             result["ops_limit"] = _MAX_ITEMS
+        return result
+
+    def libs(self, binary: Path, *, timeout: float = 30.0) -> JsonObject:
+        """List the shared libraries the image links against.
+
+        ``r2.imports`` names the individual symbols pulled from other libraries;
+        this answers the coarser dependency question -- which shared objects the
+        loader must resolve at all: the ``DT_NEEDED`` entries of an ELF, the
+        linked dylibs of a Mach-O, the imported DLLs of a PE. It is the
+        native/cross-format analogue of a PE's imported-module list and a fast
+        triage read (a musl-only binary, an unexpected OpenSSL or curl
+        dependency, a stray extra ``.so``) before ever walking the per-symbol
+        imports. Runs ``ilj``. radare2 emits either bare library-name strings or
+        small objects across versions and formats, so both are normalised to
+        ``{"name": ...}`` items with a ``count``; a binary that links nothing
+        (a fully static ELF) is a clean empty list, not an error.
+        """
+        data = self.run(binary, ["ilj"], timeout=timeout)
+        parsed = parse_r2_json(str(data.get("raw") or ""))
+        # ``ilj`` is a bare array on most builds, but some wrap it as
+        # ``{"libs": [...]}``; accept either so the reader is version-proof.
+        entries: list[Any] = []
+        if isinstance(parsed, list):
+            entries = parsed
+        elif isinstance(parsed, dict):
+            maybe = parsed.get("libs")
+            if isinstance(maybe, list):
+                entries = maybe
+        items: list[JsonObject] = []
+        for entry in entries:
+            if len(items) >= _MAX_ITEMS:
+                break
+            if isinstance(entry, str):
+                name = entry
+            elif isinstance(entry, dict):
+                name = str(entry.get("name") or entry.get("library") or entry.get("lib") or "")
+            else:
+                continue
+            name = name.strip()
+            if name:
+                items.append({"name": name})
+        result: JsonObject = {
+            "commands": ["ilj"],
+            "module": binary.name,
+            "items": items,
+            "count": len(items),
+            "parsed": parsed is not None,
+        }
+        if len(entries) > _MAX_ITEMS:
+            # Trimmed to the cap; disclosed like the other r2 readers so "these
+            # are all the libraries" is never a wrong read on a crafted module.
+            result["items_truncated"] = True
+            result["items_total"] = len(entries)
+            result["items_limit"] = _MAX_ITEMS
         return result
 
     def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:

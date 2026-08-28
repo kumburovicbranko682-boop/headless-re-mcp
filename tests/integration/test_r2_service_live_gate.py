@@ -436,6 +436,18 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
         import_names = {item.get("name") for item in imports.data.get("items", [])}
         assert "printf" in import_names, sorted(n for n in import_names if n)
 
+        # r2.libs answers the coarser dependency question imports cannot: which
+        # shared objects the loader must resolve. A dynamically linked ELF from
+        # cc/gcc/clang always lists libc (as libc.so.6 or a musl equivalent), so
+        # some item must name a libc; each item is a bare name with no address.
+        libs = service.r2_libs(session_id, timeout=60.0)
+        assert libs.ok and libs.data is not None, libs.error
+        assert libs.data.get("parsed") is True
+        lib_names = [item.get("name") for item in libs.data.get("items", [])]
+        assert all(isinstance(n, str) and n for n in lib_names), lib_names
+        assert all(set(item) == {"name"} for item in libs.data.get("items", [])), lib_names
+        assert any("libc" in (n or "") for n in lib_names), lib_names
+
         exports = service.r2_exports(session_id, timeout=60.0)
         assert exports.ok and exports.data is not None, exports.error
         assert exports.data.get("parsed") is True
@@ -611,6 +623,18 @@ def test_r2_service_analyzes_a_native_macho_end_to_end(tmp_path: Path) -> None:
         assert program is not None, [row.get("type") for row in entry_rows]
         _assert_mapped(program.get("address"))
         assert program["address"].get("architecture") == expect_arch, program
+
+        # r2.libs resolves on Mach-O too. A zig-cross-linked Mach-O surfaces its
+        # linked dylibs differently than an ELF lists its DT_NEEDED, so assert
+        # only the reader's contract here -- parsed, and every item a bare name
+        # with no address -- not a specific dylib the toolchain may or may not
+        # emit.
+        libs = service.r2_libs(session_id, timeout=60.0)
+        assert libs.ok and libs.data is not None, libs.error
+        assert libs.data.get("parsed") is True
+        for item in libs.data.get("items", []):
+            assert set(item) == {"name"}, item
+            assert isinstance(item["name"], str) and item["name"], item
     finally:
         service.close_session(session_id)
 

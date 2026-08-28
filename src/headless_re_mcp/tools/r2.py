@@ -254,4 +254,25 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         ops_total and ops_limit when the function was longer than the cap (4096).
         """
         return _dump(analysis.r2_disasm_function(session_id, address, timeout=timeout))
+
+    @tools.tool(name="r2.libs")
+    def r2_libs(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Shared libraries the binary links against.
+
+        Where r2.imports names the individual symbols pulled from other
+        libraries, this answers the coarser dependency question -- which shared
+        objects the loader must resolve at all: the DT_NEEDED entries of an ELF,
+        the linked dylibs of a Mach-O, the imported DLLs of a PE. It is the
+        native/cross-format twin of a PE's imported-module list and a fast triage
+        read (a musl-only binary, an unexpected OpenSSL/curl dependency, a stray
+        extra .so) before walking per-symbol imports. Runs ``ilj``. Answers with
+        items, each carrying name, plus count. There is no address field -- a
+        DT_NEEDED name has no load address until the loader resolves it. A fully
+        static binary that links nothing is a clean empty list, not an error.
+        Read items_truncated, items_total and items_limit when the list filled
+        the cap (4096).
+        """
+        return _dump(analysis.r2_libs(session_id, timeout=timeout))
     return tools.bindings
