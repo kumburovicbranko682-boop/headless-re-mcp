@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（web.network.get 的非法 base64 错误路径漏掉了 body 等字段）
+
+- `web.network.get` 承诺“凡带 `body_error`，`body` / `base64_encoded` / `body_truncated`
+  都仍在”，好让调用方读 `result["body"]` 不会在错误路径上撞空键。CDP 无 body 的那条
+  路径此前已按此修好，但同类的“CDP 声明 base64、却解不出来”的路径漏改，只回 `{**entry,
+  body_error}`——请求元数据加一个 error，缺了那三个字段，于是两条错误路径里恰好有一条会让
+  `result["body"]` 撞空键。现让该路径回同样的形状（`body=""`、`base64_encoded=False`——没解出
+  任何字节、无 `body_path` 可读、`body_truncated=False`），两条错误路径形状一致。
+
 ### 诊断（doctor 补上 webcrack 的 Node 运行时探针）
 
 - doctor 过去报告 JVM 运行时（`java`，供 jadx/apktool/apksigner/ghidra）却完全不提 Node——

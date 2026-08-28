@@ -645,7 +645,18 @@ class WebBackend:
             try:
                 raw = base64.b64decode(body, validate=False)
             except (ValueError, binascii.Error) as exc:
-                return {**entry, "body_error": f"response body was not valid base64: {exc}"}
+                # Same documented shape as the CDP-no-body path: body,
+                # base64_encoded and body_truncated must stay present so a caller
+                # reading result["body"] after an error does not hit a missing key.
+                # No body decoded, so base64_encoded is False (there is nothing at
+                # body_path to read) rather than echoing CDP's base64Encoded flag.
+                return {
+                    **entry,
+                    "body": "",
+                    "base64_encoded": False,
+                    "body_truncated": False,
+                    "body_error": f"response body was not valid base64: {exc}",
+                }
             spill_path = _spill_bytes(
                 raw,
                 artifact_dir=artifact_dir,

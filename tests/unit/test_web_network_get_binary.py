@@ -61,7 +61,15 @@ def test_binary_body_is_decoded_to_raw_bytes_on_disk(
 def test_invalid_base64_body_reports_an_error_rather_than_lying(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """A body flagged base64 that will not decode must surface, not be treated as bytes."""
+    """A body flagged base64 that will not decode must surface, not be treated as bytes.
+
+    And it must keep the documented shape: the no-body path was fixed to leave
+    body/base64_encoded/body_truncated present alongside body_error, but this
+    parallel base64-decode-failure path still returned only the request metadata
+    plus body_error, so a caller reading result["body"] after an error hit a
+    missing key on exactly one of the two error paths. base64_encoded is False
+    here because nothing decoded -- there is no body_path to read.
+    """
     # Five base64-alphabet characters: a valid data run is a multiple of four,
     # so a length of five (4n+1) can never be legal and always raises.
     backend = _backend_returning(
@@ -73,3 +81,6 @@ def test_invalid_base64_body_reports_an_error_rather_than_lying(
 
     assert "body_error" in payload
     assert "body_path" not in payload
+    assert payload["body"] == ""
+    assert payload["base64_encoded"] is False
+    assert payload["body_truncated"] is False
