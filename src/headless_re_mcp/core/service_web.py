@@ -238,6 +238,9 @@ class WebAnalysisMixin:
     def web_forms(self, session_id: str) -> Result[JsonObject]:
         return self._web_wrap(session_id, "forms", session_id)
 
+    def web_performance(self, session_id: str) -> Result[JsonObject]:
+        return self._web_wrap(session_id, "performance", session_id)
+
     def web_meta(self, session_id: str) -> Result[JsonObject]:
         return self._web_wrap(session_id, "meta", session_id)
 

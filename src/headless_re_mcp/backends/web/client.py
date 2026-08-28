@@ -70,6 +70,9 @@ _MAX_SUB_RESOURCES = 500
 _MAX_LINK_ORIGINS = 200
 # web.frames cap: an ad-heavy page can nest hundreds of iframes; bound the list.
 _MAX_FRAMES = 200
+# web.performance cap: a resource-heavy page reports thousands of Resource Timing
+# entries; bound the slowest-first list the tool returns.
+_MAX_PERF_RESOURCES = 100
 # web.dom.query caps: a broad selector can match thousands of nodes; bound the
 # element list, the attributes per element, and each captured value/text/html.
 _MAX_DOM_QUERY = 100
@@ -464,6 +467,50 @@ _LINKS_SCRIPT = """(cfg) => {
     resources: resources,
     resource_total: resourceTotal
   };
+}"""
+
+
+_PERF_SCRIPT = """(cfg) => {
+  const round = (x) => (typeof x === 'number' && isFinite(x) ? Math.round(x) : null);
+  let nav = null;
+  try {
+    const entries = performance.getEntriesByType('navigation');
+    if (entries && entries.length) {
+      const n = entries[0];
+      nav = {
+        type: String(n.type || ''),
+        redirect_count: n.redirectCount || 0,
+        dns_ms: round(n.domainLookupEnd - n.domainLookupStart),
+        connect_ms: round(n.connectEnd - n.connectStart),
+        tls_ms: n.secureConnectionStart > 0 ? round(n.connectEnd - n.secureConnectionStart) : 0,
+        ttfb_ms: round(n.responseStart - n.requestStart),
+        response_ms: round(n.responseEnd - n.responseStart),
+        dom_interactive_ms: round(n.domInteractive),
+        dom_content_loaded_ms: round(n.domContentLoadedEventEnd),
+        load_ms: round(n.loadEventEnd),
+        transfer_size: n.transferSize || 0,
+        encoded_body_size: n.encodedBodySize || 0,
+        decoded_body_size: n.decodedBodySize || 0
+      };
+    }
+  } catch (e) { nav = null; }
+  const resources = [];
+  let resourceTotal = 0;
+  try {
+    const res = performance.getEntriesByType('resource');
+    resourceTotal = res.length;
+    const sorted = res.slice().sort((a, b) => (b.duration || 0) - (a.duration || 0));
+    for (let i = 0; i < sorted.length && resources.length < cfg.maxResources; i++) {
+      const r = sorted[i];
+      resources.push({
+        url: String(r.name || '').slice(0, cfg.maxUrl),
+        initiator_type: String(r.initiatorType || ''),
+        duration_ms: round(r.duration),
+        transfer_size: r.transferSize || 0
+      });
+    }
+  } catch (e) {}
+  return { navigation: nav, resources: resources, resource_total: resourceTotal };
 }"""
 
 
@@ -1688,6 +1735,65 @@ class WebBackend:
                 "count": len(forms),
                 "total": total_int,
                 "truncated": total_int > len(forms),
+            }
+
+        return self._runner(handle).call(work)
+
+    def performance(self, session_id: str) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            cfg = {"maxResources": _MAX_PERF_RESOURCES, "maxUrl": _MAX_URL_BYTES}
+            try:
+                raw = handle.page.evaluate(_PERF_SCRIPT, cfg)
+            except Exception as exc:  # noqa: BLE001
+                raise WebError(
+                    "backend_error", f"performance read failed: {exc}"
+                ) from exc
+            if not isinstance(raw, dict):
+                raise WebError("backend_error", "performance read returned no data")
+            page_url = _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0]
+            nav_raw = raw.get("navigation")
+            nav: JsonObject | None = None
+            if isinstance(nav_raw, dict):
+                nav = {
+                    "type": _bounded_metadata(nav_raw.get("type"), _MAX_METADATA_BYTES)[0],
+                    "redirect_count": nav_raw.get("redirect_count"),
+                    "dns_ms": nav_raw.get("dns_ms"),
+                    "connect_ms": nav_raw.get("connect_ms"),
+                    "tls_ms": nav_raw.get("tls_ms"),
+                    "ttfb_ms": nav_raw.get("ttfb_ms"),
+                    "response_ms": nav_raw.get("response_ms"),
+                    "dom_interactive_ms": nav_raw.get("dom_interactive_ms"),
+                    "dom_content_loaded_ms": nav_raw.get("dom_content_loaded_ms"),
+                    "load_ms": nav_raw.get("load_ms"),
+                    "transfer_size": nav_raw.get("transfer_size"),
+                    "encoded_body_size": nav_raw.get("encoded_body_size"),
+                    "decoded_body_size": nav_raw.get("decoded_body_size"),
+                }
+            resources: list[JsonObject] = []
+            for item in raw.get("resources") or []:
+                if not isinstance(item, dict):
+                    continue
+                resources.append(
+                    {
+                        "url": _bounded_metadata(item.get("url"), _MAX_URL_BYTES)[0],
+                        "initiator_type": _bounded_metadata(
+                            item.get("initiator_type"), _MAX_METADATA_BYTES
+                        )[0],
+                        "duration_ms": item.get("duration_ms"),
+                        "transfer_size": item.get("transfer_size"),
+                    }
+                )
+            total = raw.get("resource_total")
+            total_int = int(total) if isinstance(total, int) else len(resources)
+            return {
+                "url": page_url,
+                "navigation": nav,
+                "resources": resources,
+                "resource_count": len(resources),
+                "resource_total": total_int,
+                "truncated": total_int > len(resources),
             }
 
         return self._runner(handle).call(work)

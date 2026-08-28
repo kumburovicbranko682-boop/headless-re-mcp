@@ -351,6 +351,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "web.storage",
         "web.cookies",
         "web.forms",
+        "web.performance",
         "web.meta",
         "web.links",
         "web.frames",

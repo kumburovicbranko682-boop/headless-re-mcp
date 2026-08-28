@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **319（201 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **320（202 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -658,6 +658,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `enctype`、`field_count`、`has_password`、`has_file`、`fields` 列表与 `fields_truncated`。
   每个字段带 `tag`/`type`/`name`/`required`/`value`——`value` 只对 hidden 与 submit 输入抓取
   (CSRF token、动作标记),password/text 一律空值。表单多时按 200 个封顶,读 `truncated`。
+- 新增 `web.performance`:直接从浏览器 Navigation/Resource Timing API 读页面的加载时序——是浏览器自己的性能条目,
+  而非从捕获事件重建。`web.network.stats` 只计数请求,这个把主导航拆成各阶段(DNS、连接、TLS、首字节、响应、DOM
+  就绪、load)并浮出最慢的子资源——慢/信标页所需的分诊,以及跳转页或填充载荷的指纹(重定向数、传输 vs 解码体积)。
+  回 `url`、`navigation`(页面无导航条目时为 null,如 about:blank)、`resources`(最慢在前,封顶)、`resource_count`、
+  `resource_total` 与 `truncated`。`navigation` 带 `type`(navigate/reload/back_forward)、`redirect_count`、以毫秒
+  计的各阶段(`dns_ms`/`connect_ms`/`tls_ms`/`ttfb_ms`/`response_ms`/`dom_interactive_ms`/`dom_content_loaded_ms`/
+  `load_ms`)与字节体积(`transfer_size`/`encoded_body_size`/`decoded_body_size`)。每个资源带 `url`、
+  `initiator_type`、`duration_ms` 与 `transfer_size`。
 - 新增 `web.meta`:读页面 head 的身份——title、charset、meta 标签、link rel——做钓鱼/跳转/CSP
   三连而不必倒出整个 DOM。回 `url`、`title`、`charset`、`lang`、`base`,外加 `metas`/`meta_count`/
   `meta_total`/`metas_truncated` 与 `links`/`link_count`/`link_total`/`links_truncated`。每个 meta 行带

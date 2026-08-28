@@ -315,6 +315,29 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_forms(session_id))
 
+    @tools.tool(name="web.performance")
+    def web_performance(session_id: str) -> dict[str, Any]:
+        """Read the page's load timing from the Navigation/Resource Timing API.
+
+        The in-page view of how the navigation actually loaded, read straight
+        from the browser's own performance entries rather than reconstructed
+        from captured events. Where web.network.stats counts requests, this
+        breaks the main navigation into phases (DNS, connect, TLS, time-to-first-
+        byte, response, DOM ready, load) and surfaces the slowest subresources --
+        the triage a slow or beaconing page needs, and a fingerprint (redirect
+        count, transfer vs decoded size) for an interstitial or a padded payload.
+
+        Answers with url, navigation (null when the page reports no navigation
+        entry, e.g. about:blank), resources (slowest-first, capped), resource_
+        count, resource_total and truncated. navigation carries type
+        (navigate/reload/back_forward), redirect_count, the phase durations in ms
+        (dns_ms, connect_ms, tls_ms, ttfb_ms, response_ms, dom_interactive_ms,
+        dom_content_loaded_ms, load_ms) and the byte sizes (transfer_size,
+        encoded_body_size, decoded_body_size). Each resource carries url,
+        initiator_type, duration_ms and transfer_size.
+        """
+        return _dump(analysis.web_performance(session_id))
+
     @tools.tool(name="web.meta")
     def web_meta(session_id: str) -> dict[str, Any]:
         """Read the page head's identity: title, charset, meta tags, link rels.
