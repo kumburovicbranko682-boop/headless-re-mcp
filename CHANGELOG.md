@@ -348,6 +348,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `_SIGNED_OPERANDS`(两种宽度的分支 + `ldc.i4`),元数据 token(`call`/`ldstr` 等)仍按
   无符号。新增直测:对长分支、常量、短分支与 token 混合的 IL 断言各自解出正确符号。
 
+### 修复（`dotnet.inspect` 的 assembly_name 对几乎所有真实程序集都为 null）
+
+- `_parse_tables_and_names` 走 `#~` 表流找 Module 与 Assembly 名时逐表前进,却只认得
+  Module(0x00) 与 Assembly(0x20) 两张表,遇到任何别的表就 `break`。可 Assembly 表排在所有
+  更小编号的表之后,而真实程序集在 Module 与 Assembly 之间必然有别的表(TypeRef、TypeDef、
+  MethodDef……),于是循环走到第一张 TypeRef 就停,永远到不了 Assembly,`assembly_name` 对
+  每个真实输入都回落成 null(Module 名恰好第一张表故能读到)。改为按 ECMA-335 行宽把 Assembly
+  之前每张存在的表逐一累加求出其偏移,再从中读 Name:行宽逻辑复用枚举器的 `table_start_offset`
+  (延迟导入,因 `metadata_enum` 在模块顶层反过来导入本模块),让名字探测与元数据枚举对编码索引/
+  堆索引宽度这些细节始终一致;无法定尺寸的保留位则回落成不给 assembly 名而非从猜测偏移乱读。
+  新增直测:构造 Module/TypeRef/Assembly 各一行的 `#~`+`#Strings`,断言在 TypeRef 夹在中间时
+  仍解出正确的 module 与 assembly 名(旧逻辑此处返回 null)。
+
 ### 修复（frida.memory.read 在 frida 17 上因用了被删的全局 API 而失效）
 
 - **`frida.memory.read` 的注入脚本用 `Memory.readByteArray(ptr(address), size)` 读内存。**

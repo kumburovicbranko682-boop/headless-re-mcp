@@ -202,3 +202,83 @@ def test_metadata_root_stops_on_a_stream_name_with_no_terminator() -> None:
         _meta_root(streams=[(b"#Strings", 0x10, 0x20, False)])
     )
     assert streams == []
+
+
+def _meta_with_module_and_assembly() -> bytes:
+    """A BSJB root whose ``#~`` stream carries Module, TypeRef and Assembly.
+
+    Small heaps (all indexes two bytes) and one row per table. The point is the
+    TypeRef table sitting *between* Module (table 0) and Assembly (table 0x20):
+    reaching the Assembly row requires summing the Module and TypeRef row sizes,
+    which is exactly the walk the name probe has to get right.
+    """
+    strings = b"\x00MyModule\x00MyAssembly\x00"
+    module_idx = 1
+    assembly_idx = 1 + len(b"MyModule\x00")  # 10
+
+    valid = (1 << 0x00) | (1 << 0x01) | (1 << 0x20)
+    tables_header = b"\x00\x00\x00\x00"  # reserved
+    tables_header += bytes([2, 0, 0x00, 1])  # major, minor, heap_sizes=0, reserved
+    tables_header += struct.pack("<Q", valid)  # valid mask
+    tables_header += struct.pack("<Q", 0)  # sorted mask
+    tables_header += struct.pack("<III", 1, 1, 1)  # rows: Module, TypeRef, Assembly
+
+    # Module: Generation(2) + Name(str) + Mvid/EncId/EncBaseId(guid x3).
+    module_row = struct.pack("<HHHHH", 0, module_idx, 0, 0, 0)
+    # TypeRef: ResolutionScope(coded) + Name(str) + Namespace(str); values unused.
+    typeref_row = struct.pack("<HHH", 0, 0, 0)
+    # Assembly: HashAlgId(4) + Major/Minor/Build/Rev(2 each) + Flags(4)
+    #   + PublicKey(blob) + Name(str) + Culture(str).
+    assembly_row = (
+        struct.pack("<I", 0)
+        + struct.pack("<HHHH", 1, 0, 0, 0)
+        + struct.pack("<I", 0)
+        + struct.pack("<H", 0)
+        + struct.pack("<H", assembly_idx)
+        + struct.pack("<H", 0)
+    )
+    tables = tables_header + module_row + typeref_row + assembly_row
+
+    version = b"v4.0\x00"
+    vpad = (len(version) + 3) & ~3
+    version_block = version + b"\x00" * (vpad - len(version))
+    prefix = (
+        b"BSJB"
+        + struct.pack("<HHI", 1, 1, 0)
+        + struct.pack("<I", len(version))
+        + version_block
+        + struct.pack("<HH", 0, 2)  # flags, stream count
+    )
+
+    def _entry_name(name: bytes) -> bytes:
+        raw = name + b"\x00"
+        return raw + b"\x00" * (((len(raw) + 3) & ~3) - len(raw))
+
+    tilde_name = _entry_name(b"#~")
+    strings_name = _entry_name(b"#Strings")
+    header_len = len(prefix) + (8 + len(tilde_name)) + (8 + len(strings_name))
+    tilde_off = header_len
+    strings_off = header_len + len(tables)
+    root = prefix
+    root += struct.pack("<II", tilde_off, len(tables)) + tilde_name
+    root += struct.pack("<II", strings_off, len(strings)) + strings_name
+    return root + tables + strings
+
+
+def test_metadata_root_resolves_assembly_name_past_intervening_tables() -> None:
+    """Assembly name must survive tables that sort between Module and Assembly.
+
+    The Assembly table (0x20) always follows lower-numbered tables, and every
+    real assembly has some (TypeRef, TypeDef, MethodDef, ...). The old walk
+    stepped row-by-row and bailed at the first table it did not special-case,
+    so it never reached Assembly and assembly_name came back null for every
+    real input. Here a single TypeRef row stands between Module and Assembly.
+    """
+    version, streams, module, assembly, stats = _parse_metadata_root(
+        _meta_with_module_and_assembly()
+    )
+    assert version == "v4.0"
+    assert streams == ["#~", "#Strings"]
+    assert module == "MyModule"
+    assert assembly == "MyAssembly"
+    assert stats is not None
