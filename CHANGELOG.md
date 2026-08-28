@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **325（207 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **327（209 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -368,6 +368,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
   `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
   `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
+
+### 新增（JavaScript 静态提取）
+
+- 新增 `js.strings`:纯 Python 从 JavaScript 源码里抽取字符串字面量——不需要 Node/webcrack,任何主机都能跑,
+  是 `apk.strings` / `wasm.strings` 的 JS 对应物。一个小状态机走一遍源码,提取单引号、双引号和模板字面量,
+  并解码转义序列(\xHH、\uHHHH、\u{...} 以及具名转义);它会跳过行注释与块注释,并识别正则字面量,
+  于是 `/["']/` 里的引号不会被误当成字符串开头(这是同类工具最常见的漏洞)。要点:在一段被压缩/混淆的脚本里
+  藏着的 URL、密钥、选择器、动态 eval 载荷,这是最快的分诊;源码被打包时先过一遍 `js.deobfuscate`。回
+  `items`(分页)、`count`、`total`、`offset`、`has_more`、`min_length` 与 `scan_capped`。每条带 value(解码后的
+  字面量)、quote(single/double/template)、line(1 起始行号)与 length;truncated 标记在 8192 字符处截断的值,
+  unterminated 标记跑到换行/EOF 都没等到闭合引号的单/双引号字面量。min_length(默认 4,1..64)设最短保留长度。
+  模板值保留原样的 `${...}` 插值;个别刁钻正则里的引号仍可能被误判。超 16 MiB 报 too_large,不存在报 not_found;
+  这里没有 strings / items_truncated / capability_unavailable 字段。
+- 新增 `js.urls`:从 JavaScript 源码里抽取网络指标(URL、主机、IP)——`js.strings` 列全部字面量,这个把其中
+  网络相关的(C2 端点、API 基址、埋点信标、硬编码 IP)蒸馏成去重、按主机归并的清单,是 `apk.urls` 的 JS 对应物。
+  纯 Python,无 webcrack。它扫的是原始源码(不只字符串字面量),所以注释里的 URL 也抓得到。端点由碎片拼接时先
+  `js.deobfuscate`。回 `urls`(分页、已排序,每条 {url, scheme, host})、`count`/`total`/`offset`/`has_more`,再加
+  hosts 归并(每条 {host, count},最常见在前)带 host_count/hosts_truncated、ips 列表带 ip_count,以及命中采集上限时
+  的 scan_capped。只认绝对 http/https/ws/wss/ftp;URL 尾随的散文标点会被剥掉。超 16 MiB 报 too_large。
 
 ### 新增（radare2 静态分析对齐）
 

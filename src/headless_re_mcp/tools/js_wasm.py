@@ -69,6 +69,72 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="js.strings")
+    def js_strings(
+        path: str,
+        min_length: Annotated[int, Field(ge=1, le=64)] = 4,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Extract string literals from a JavaScript file (pure Python, no webcrack).
+
+        Where js.deobfuscate/js.beautify need Node/webcrack, this reads the
+        source itself, so it answers on any host -- the JS analogue of
+        apk.strings / wasm.strings. A small state machine walks the source and
+        pulls out single-quoted, double-quoted and template literals, decoding
+        escape sequences (\\xHH, \\uHHHH, \\u{...} and the named ones). It skips
+        line and block comments, and detects regular-expression literals so a
+        quote inside /["']/ is not misread as a string. This is the fastest
+        triage for URLs, keys, selectors and dynamic-eval payloads hiding in a
+        minified script; pair it with js.deobfuscate first when the source is
+        packed.
+
+        Answers with items (paged), count, total, offset, has_more, min_length
+        and scan_capped. Each row carries value (the decoded literal), quote
+        (single/double/template), line (1-based start line) and length (of the
+        decoded value); truncated marks a value cut at the 8192-char cap, and
+        unterminated marks a single/double literal that ran to a newline or EOF
+        without its closing quote. min_length (default 4, 1..64) sets the
+        shortest decoded value kept. Read has_more so a filled page is not read
+        as every literal. Template values keep their raw ${...} interpolations;
+        a quote inside an obscure regex may still be misparsed.
+
+        A file over 16 MiB is refused as too_large and a missing one as
+        not_found; there is no strings, items_truncated or capability_unavailable
+        field here.
+        """
+        return _dump(
+            analysis.js_strings(path, min_length=min_length, offset=offset, limit=limit)
+        )
+
+    @tools.tool(name="js.urls")
+    def js_urls(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Extract network indicators (URLs, hosts, IPs) from a JavaScript file.
+
+        js.strings lists every literal; this distils the network-relevant ones
+        -- the C2 endpoints, API bases, tracking beacons and hard-coded IPs a
+        triage wants first -- into a deduped, host-rolled-up inventory, the JS
+        counterpart to apk.urls. Pure Python, no webcrack. It scans the raw
+        source (not only string literals), so a URL sitting in a comment is
+        caught too. Deobfuscate a packed script first when the endpoints are
+        assembled from fragments.
+
+        Answers with urls (paged, sorted; each {url, scheme, host}), count,
+        total, offset, has_more, then a hosts roll-up (each {host, count},
+        most-common first) with host_count and hosts_truncated, an ips list with
+        ip_count, and scan_capped when a collection cap was hit. Absolute
+        http/https/ws/wss/ftp URLs only; trailing prose punctuation is stripped.
+        Read has_more so a filled page is not read as every URL.
+
+        A file over 16 MiB is refused as too_large and a missing one as
+        not_found.
+        """
+        return _dump(analysis.js_urls(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0

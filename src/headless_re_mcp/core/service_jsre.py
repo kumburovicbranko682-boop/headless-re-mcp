@@ -121,6 +121,32 @@ class JsReAnalysisMixin:
             if out_dir is not None:
                 prune_jsre_unpack_dirs(out_dir.parent)
 
+    def js_strings(
+        self, path: str, min_length: int = 4, offset: int = 0, limit: int = 200
+    ) -> Result[JsonObject]:
+        try:
+            data = JsClient(getattr(self.settings, "webcrack", None)).strings(
+                Path(path), min_length=min_length, offset=offset, limit=limit
+            )
+            return _success(data, backend="js-parser")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def js_urls(
+        self, path: str, offset: int = 0, limit: int = 200
+    ) -> Result[JsonObject]:
+        try:
+            data = JsClient(getattr(self.settings, "webcrack", None)).urls(
+                Path(path), offset=offset, limit=limit
+            )
+            return _success(data, backend="js-parser")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
     def wasm_wat(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
             data = WasmClient(getattr(self.settings, "wabt", None)).wat(

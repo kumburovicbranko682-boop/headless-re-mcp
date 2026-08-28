@@ -19,6 +19,10 @@ from headless_re_mcp.backends.common.bounded_run import (
     clamp_cli_timeout,
     run_bounded,
 )
+from headless_re_mcp.backends.jsre.js_static import (
+    extract_js_indicators,
+    extract_js_strings,
+)
 from headless_re_mcp.backends.jsre.wasm_summary import (
     extract_wasm_strings,
     list_wasm_callgraph,
@@ -242,6 +246,32 @@ class JsClient:
             "listing_truncated": listed_more,
         }
         return _note_nonzero_exit(result, code=code, stderr=stderr)
+
+    def _read_source(self, path: Path) -> str:
+        """Resolve and read a JS source file as text (pure Python; no webcrack).
+
+        Uses the same size cap and not_found guard as the webcrack path, but not
+        the capability check: string/indicator extraction needs no external tool.
+        """
+        resolved = _require_existing_file(path, missing="input file not found")
+        try:
+            return resolved.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+
+    def strings(
+        self, path: Path, *, min_length: int = 4, offset: int = 0, limit: int = 200
+    ) -> JsonObject:
+        """Extract string literals from a JS source file (pure Python, no webcrack)."""
+        text = self._read_source(path)
+        return extract_js_strings(text, min_length=min_length, offset=offset, limit=limit)
+
+    def urls(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        """Extract network indicators (URLs, hosts, IPs) from a JS source file."""
+        text = self._read_source(path)
+        return extract_js_indicators(text, offset=offset, limit=limit)
 
 
 class WasmClient:
