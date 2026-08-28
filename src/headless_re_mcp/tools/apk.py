@@ -67,11 +67,13 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with activities, services, receivers, providers,
         main_activity, and has_more so a list that filled the cap is not
-        read as every component. Also answers with exported and
+        read as every component.         Also answers with exported and
         exported_count: the components another app can reach -- those with
         android:exported="true", or with an <intent-filter> and no
-        exported="false" -- the attack surface to look at first. There is no
-        components field.
+        exported="false". And exported_unprotected/exported_unprotected_count:
+        the exported components with no permission guard (their own or
+        inherited from <application>), the attack surface to look at first.
+        There is no components field.
         """
         return _dump(analysis.apk_components(session_id))
 

@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（apk.components 进一步标注「无权限守卫」的 exported 组件）
+
+- `apk.components` 现额外返回 `exported_unprotected` 与 `exported_unprotected_count`：
+  即在已导出的组件里，**没有任何权限守卫**的那批——这才是真正的攻击面（一个被 exported
+  的组件若无权限保护，等于对外敞开的门；有 `signature` 级自定义权限守着的则风险小得多）。
+  判定按 Android 的实际规则：组件自身未写 `android:permission` 时会**继承**
+  `<application android:permission>`（有则视为受守卫）；provider 另看
+  `android:readPermission`/`android:writePermission`——只保护读或只保护写属「部分开放」，
+  但把它报成 unprotected 会造成误报，故仅当 provider 三个权限属性**全无**时才计入。空字符串
+  权限（`android:permission=""`）按无守卫处理。此前 `apk.components` 只给出 exported 全集，
+  分不清哪些真正无保护。已用 aapt 现打的多组件 APK 在真 androguard 上核验：显式权限守卫的
+  activity、带 `readPermission` 的 provider 均正确排除，未加守卫的 activity/service/provider
+  与隐式（intent-filter）导出组件如实入列；单测另钉住继承 `<application>` 权限、空权限字符串
+  与无清单优雅回落。
+
 ### 新增（apk.components 标注可被外部触达的 exported 组件）
 
 - `apk.components` 现返回 `exported` 与 `exported_count`：即其它应用能触达的组件——
