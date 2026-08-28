@@ -406,6 +406,84 @@ def _is_android_package(path: Path) -> bool:
         return False
 
 
+_APK_SIG_BLOCK_MAGIC = b"APK Sig Block 42"
+_APK_SIG_V2_ID = 0x7109871A
+_APK_SIG_V3_ID = 0xF05368C0
+_APK_SIG_V31_ID = 0x1B93AD61
+_EOCD_SIGNATURE = b"PK\x05\x06"
+_APK_SIG_MAX_PAIRS = 4096
+
+
+def _apk_signing_block_schemes(path: Path) -> tuple[bool, bool]:
+    """Detect APK Signature Scheme v2/v3 by reading the APK Signing Block.
+
+    v2/v3 signatures live in the APK Signing Block between the ZIP entries and
+    the central directory, not under META-INF, so a package signed only with
+    the modern schemes -- the default since Android 7 -- is invisible to the v1
+    check. Best-effort and defensive: any unreadable or malformed layout (or a
+    ZIP64 archive) reports neither scheme rather than raising. This is an
+    identity hint, not signature verification.
+    """
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            size = stream.tell()
+            if size < 22:
+                return (False, False)
+            # The End of Central Directory record sits at the end, after an
+            # optional comment of up to 65535 bytes.
+            tail_len = min(size, 65557)
+            stream.seek(size - tail_len)
+            tail = stream.read(tail_len)
+            eocd = tail.rfind(_EOCD_SIGNATURE)
+            if eocd < 0 or eocd + 20 > len(tail):
+                return (False, False)
+            cd_offset = int.from_bytes(tail[eocd + 16 : eocd + 20], "little")
+            # 0xFFFFFFFF means the real offset lives in a ZIP64 record; rather
+            # than guess, report nothing.
+            if cd_offset == 0xFFFFFFFF or not 24 <= cd_offset <= size:
+                return (False, False)
+            # The magic occupies the 16 bytes ending where the central
+            # directory begins; the block size is the 8 bytes before it.
+            stream.seek(cd_offset - 24)
+            footer = stream.read(24)
+            if len(footer) != 24 or footer[8:24] != _APK_SIG_BLOCK_MAGIC:
+                return (False, False)
+            block_size = int.from_bytes(footer[0:8], "little")
+            if block_size < 24:
+                return (False, False)
+            block_start = cd_offset - 8 - block_size
+            if block_start < 0:
+                return (False, False)
+            # The first eight bytes repeat the size; a mismatch means the magic
+            # was a coincidence, not a real signing block.
+            stream.seek(block_start)
+            if int.from_bytes(stream.read(8), "little") != block_size:
+                return (False, False)
+            pos = block_start + 8
+            pairs_end = cd_offset - 24
+            v2 = v3 = False
+            for _ in range(_APK_SIG_MAX_PAIRS):
+                if pos + 12 > pairs_end:
+                    break
+                stream.seek(pos)
+                header = stream.read(12)
+                if len(header) != 12:
+                    break
+                pair_len = int.from_bytes(header[0:8], "little")
+                if pair_len < 4:
+                    break
+                pair_id = int.from_bytes(header[8:12], "little")
+                if pair_id == _APK_SIG_V2_ID:
+                    v2 = True
+                elif pair_id in (_APK_SIG_V3_ID, _APK_SIG_V31_ID):
+                    v3 = True
+                pos += 8 + pair_len
+            return (v2, v3)
+    except (OSError, ValueError):
+        return (False, False)
+
+
 def describe_apk(path: Path) -> dict[str, Any]:
     """Read cheap identity facts from the package without a decompiler.
 
@@ -428,6 +506,7 @@ def describe_apk(path: Path) -> dict[str, Any]:
             if name.startswith("lib/") and len(parts := name.split("/")) >= 3 and parts[1]
         }
     )
+    signed_v2, signed_v3 = _apk_signing_block_schemes(path)
     return {
         "apk": {
             "native_abis": abis,
@@ -437,6 +516,8 @@ def describe_apk(path: Path) -> dict[str, Any]:
                 name.startswith("META-INF/") and name.endswith((".RSA", ".DSA", ".EC"))
                 for name in names
             ),
+            "signed_v2": signed_v2,
+            "signed_v3": signed_v3,
         }
     }
 

@@ -6,6 +6,8 @@ happy paths (which need a real device and live in the integration gates).
 
 from __future__ import annotations
 
+import io
+import struct
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +29,44 @@ def _apk(path: Path) -> Path:
         archive.writestr("classes.dex", b"dex\n035\x00")
         archive.writestr("lib/arm64-v8a/libx.so", b"\x7fELF")
         archive.writestr("META-INF/CERT.RSA", b"sig")
+    return path
+
+
+def _apk_with_signing_block(
+    path: Path, block_ids: list[int], *, with_v1: bool = False
+) -> Path:
+    """Write an APK whose bytes carry a real APK Signing Block.
+
+    The block is spliced in between the local entries and the central
+    directory exactly as apksigner lays it out, so describe_apk parses the same
+    structure a device would. block_ids are the scheme IDs to advertise.
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+        archive.writestr("classes.dex", b"dex\n035\x00")
+        if with_v1:
+            archive.writestr("META-INF/CERT.RSA", b"sig")
+    data = bytearray(buffer.getvalue())
+    eocd = data.rfind(b"PK\x05\x06")
+    cd_offset = struct.unpack_from("<I", data, eocd + 16)[0]
+    if not block_ids:
+        path.write_bytes(bytes(data))
+        return path
+    pairs = b"".join(
+        struct.pack("<Q", 4 + 48) + struct.pack("<I", scheme_id) + b"\x00" * 48
+        for scheme_id in block_ids
+    )
+    block_size = len(pairs) + 8 + 16
+    block = (
+        struct.pack("<Q", block_size)
+        + pairs
+        + struct.pack("<Q", block_size)
+        + b"APK Sig Block 42"
+    )
+    spliced = data[:cd_offset] + block + data[cd_offset:]
+    struct.pack_into("<I", spliced, eocd + len(block) + 16, cd_offset + len(block))
+    path.write_bytes(bytes(spliced))
     return path
 
 
@@ -356,6 +396,71 @@ class TestApkClassification:
         assert info["native_abis"] == ["arm64-v8a"]
         assert info["dex_count"] == 1
         assert info["signed_v1"] is True
+
+    def test_describe_apk_sees_v2_v3_signatures_not_just_v1(self, tmp_path: Path) -> None:
+        """A v2/v3-only APK looked unsigned; those schemes are not under META-INF.
+
+        Measured: signed_v1 read META-INF for a .RSA/.DSA/.EC entry, so a
+        package signed only with APK Signature Scheme v2 or v3 -- the default
+        since Android 7, where the v1 files are absent -- reported signed_v1
+        false and nothing else, indistinguishable from a genuinely unsigned
+        package. describe_apk now reads the APK Signing Block too.
+        """
+        v2 = describe_apk(
+            _apk_with_signing_block(tmp_path / "v2.apk", [0x7109871A])
+        )["apk"]
+        assert v2["signed_v1"] is False
+        assert v2["signed_v2"] is True
+        assert v2["signed_v3"] is False
+
+        v3 = describe_apk(
+            _apk_with_signing_block(tmp_path / "v3.apk", [0xF05368C0])
+        )["apk"]
+        assert v3["signed_v2"] is False
+        assert v3["signed_v3"] is True
+
+        # v3.1 is a v3 extension and counts as v3.
+        v31 = describe_apk(
+            _apk_with_signing_block(tmp_path / "v31.apk", [0x1B93AD61])
+        )["apk"]
+        assert v31["signed_v3"] is True
+
+        both = describe_apk(
+            _apk_with_signing_block(
+                tmp_path / "v1v2v3.apk", [0x7109871A, 0xF05368C0], with_v1=True
+            )
+        )["apk"]
+        assert both["signed_v1"] is True
+        assert both["signed_v2"] is True
+        assert both["signed_v3"] is True
+
+    def test_describe_apk_reports_unsigned_when_no_scheme_present(
+        self, tmp_path: Path
+    ) -> None:
+        info = describe_apk(
+            _apk_with_signing_block(tmp_path / "bare.apk", [])
+        )["apk"]
+        assert info["signed_v1"] is False
+        assert info["signed_v2"] is False
+        assert info["signed_v3"] is False
+
+    def test_describe_apk_does_not_mistake_the_magic_string_for_a_block(
+        self, tmp_path: Path
+    ) -> None:
+        """The 16-byte magic inside a stored file must not read as a signature.
+
+        Without the redundant-size cross-check, any APK that happened to embed
+        the magic bytes -- an asset, another APK bundled inside -- would be
+        reported v2/v3 signed. The block is only real when its two length
+        fields agree.
+        """
+        path = tmp_path / "decoy.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("assets/x", b"APK Sig Block 42" + b"\x00" * 64)
+        info = describe_apk(path)["apk"]
+        assert info["signed_v2"] is False
+        assert info["signed_v3"] is False
 
     def test_describe_apk_rejects_archive_without_manifest(self, tmp_path: Path) -> None:
         plain = tmp_path / "archive.zip"
