@@ -14,6 +14,7 @@ import contextlib
 import io
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -21,6 +22,7 @@ import zlib
 from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from headless_re_mcp.backends.common.secret_scan import iter_secret_matches
@@ -56,6 +58,44 @@ _MAX_HOST_METHODS = 16
 _MAX_HOST_CONTENT_TYPES = 32
 _MAX_HOST_STATUSES = 32
 _MAX_HOST_IPS = 32
+# proxy.endpoints rolls the capture up per (method, host, request path), with
+# volatile path segments collapsed so /users/123 and /users/456 fold into one
+# /users/{num} row. A hostile server can still answer an unbounded variety of
+# paths, so the distinct-endpoint set is capped and endpoints_truncated flags it.
+_MAX_ENDPOINTS = 5000
+_NUM_SEG_RE = re.compile(r"^\d+$")
+_HEX_SEG_RE = re.compile(r"^[0-9a-fA-F]{12,}$")
+_UUID_SEG_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _normalize_request_path(path: str) -> str:
+    """Fold a request path's volatile segments into placeholders.
+
+    Turns the concrete resource ids that would otherwise scatter one logical
+    endpoint across thousands of rows into stable placeholders -- a pure-digit
+    segment becomes ``{num}``, a UUID ``{uuid}``, and a long hex blob (object
+    id, sha, token) ``{hex}`` -- so ``/v1/users/123/orders/8f3a...`` and
+    ``/v1/users/456/orders/2b9c...`` aggregate into one ``/v1/users/{num}/
+    orders/{hex}`` endpoint. Conservative on purpose: only these three shapes
+    fold, so a real path segment is never mistaken for an id.
+    """
+    if not path:
+        return "/"
+    out: list[str] = []
+    for segment in path.split("/"):
+        if not segment:
+            out.append(segment)
+        elif _UUID_SEG_RE.match(segment):
+            out.append("{uuid}")
+        elif _NUM_SEG_RE.match(segment):
+            out.append("{num}")
+        elif _HEX_SEG_RE.match(segment):
+            out.append("{hex}")
+        else:
+            out.append(segment)
+    return "/".join(out) or "/"
 # proxy.search greps the retained flows' url/headers/bodies for a substring.
 # A query longer than this is not a grep, it is a payload; refused up front so
 # the matcher stays bounded.
@@ -896,6 +936,132 @@ class ProxyBackend:
             "has_more": start + len(window) < len(rows),
             "total_flows": len(items),
             "dropped": dropped,
+        }
+
+    def endpoints(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        name_filter: str = "",
+        content_type_filter: str = "",
+        normalize: bool = True,
+    ) -> JsonObject:
+        """Roll the capture up per API endpoint: the app's backend surface, as hit.
+
+        The dynamic counterpart to js/apk/wasm/web.endpoints (which read endpoints
+        out of static code) and the middle ground between proxy.hosts (one row per
+        host, too coarse to see which API was called) and proxy.flows (one row per
+        request, too granular on a busy capture). It aggregates the retained flows
+        by (method, host, request path) into one row each, and by default folds the
+        volatile path segments -- numeric ids, UUIDs, long hex blobs -- into
+        placeholders so /users/123 and /users/456 collapse into one
+        POST users/{num} endpoint; set normalize False to key on the exact path
+        instead. Each row carries flows (how many requests hit it), failed (how
+        many never got a response), the response content_types and status codes
+        seen, an example_url (a concrete instance, query intact) and first_flow
+        (the flow id to hand proxy.flow.get / proxy.replay). Rows are ordered by
+        flow count (busiest endpoint first), then host, path, method.
+        content_type_filter pre-narrows which flows feed the rollup -- pass 'json'
+        to pull the API surface out of a capture buried under image/script/css
+        responses. name_filter then keeps only endpoints whose method, host or path
+        contains that substring (case-insensitive), applied before paging so total
+        is the match count. endpoints_truncated says the distinct-endpoint ceiling
+        was hit; a row's truncated says its own content-type/status set overflowed.
+        """
+        inst = self._get(session_id)
+        items = inst.recorder.snapshot()
+        dropped = 0
+        if items:
+            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
+        type_needle = (
+            content_type_filter.strip().lower()
+            if isinstance(content_type_filter, str)
+            else ""
+        )
+        if type_needle:
+            items = [
+                item
+                for item in items
+                if type_needle in str(item.get("content_type", "") or "").lower()
+            ]
+        aggregates: OrderedDict[tuple[str, str, str], dict[str, Any]] = OrderedDict()
+        endpoints_truncated = False
+        for item in items:
+            method = str(item.get("method", "") or "").upper()
+            host = str(item.get("host", "") or "")
+            url = str(item.get("url", "") or "")
+            raw_path = urlsplit(url).path or "/"
+            path = _normalize_request_path(raw_path) if normalize else raw_path
+            key = (method, host, path)
+            agg = aggregates.get(key)
+            if agg is None:
+                if len(aggregates) >= _MAX_ENDPOINTS:
+                    endpoints_truncated = True
+                    continue
+                agg = {
+                    "flows": 0,
+                    "failed": 0,
+                    "content_types": set(),
+                    "statuses": {},
+                    "truncated": False,
+                    "example_url": url,
+                    "first_flow": str(item.get("id", "") or ""),
+                }
+                aggregates[key] = agg
+            agg["flows"] += 1
+            if item.get("failed"):
+                agg["failed"] += 1
+            content_type = str(item.get("content_type", "") or "").split(";", 1)[0].strip()
+            _add_capped(agg["content_types"], content_type, _MAX_HOST_CONTENT_TYPES, agg)
+            status = item.get("status")
+            if isinstance(status, int):
+                self._tally_status(agg, status)
+        needle = name_filter.strip().lower() if isinstance(name_filter, str) else ""
+        rows: list[JsonObject] = []
+        for (method, host, path), agg in aggregates.items():
+            if needle and not (
+                needle in method.lower() or needle in host.lower() or needle in path.lower()
+            ):
+                continue
+            row: JsonObject = {
+                "method": method,
+                "host": host,
+                "path": path,
+                "flows": agg["flows"],
+                "failed": agg["failed"],
+                "content_types": sorted(agg["content_types"]),
+                "statuses": dict(sorted(agg["statuses"].items())),
+            }
+            if agg["example_url"]:
+                row["example_url"] = agg["example_url"]
+            if agg["first_flow"]:
+                row["first_flow"] = agg["first_flow"]
+            if agg["truncated"]:
+                row["truncated"] = True
+            rows.append(row)
+        # Busiest endpoint first; host/path/method break ties so paging is stable.
+        rows.sort(
+            key=lambda row: (
+                -int(row["flows"]),
+                str(row["host"]),
+                str(row["path"]),
+                str(row["method"]),
+            )
+        )
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = rows[start : start + cap]
+        return {
+            "endpoints": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "total_flows": len(items),
+            "dropped": dropped,
+            "endpoints_truncated": endpoints_truncated,
         }
 
     def search(

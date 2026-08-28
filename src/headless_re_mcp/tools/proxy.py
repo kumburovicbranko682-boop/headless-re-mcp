@@ -134,6 +134,53 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="proxy.endpoints")
+    def proxy_endpoints(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        name_filter: str = "",
+        content_type_filter: str = "",
+        normalize: bool = True,
+    ) -> dict[str, Any]:
+        """Roll the capture up per API endpoint: the app's backend surface, as hit.
+
+        The dynamic counterpart to js/apk/wasm/web.endpoints (which read endpoints
+        out of static code) and the middle ground between proxy.hosts (one row per
+        host, too coarse) and proxy.flows (one row per request, too granular): it
+        aggregates the retained flows by (method, host, request path) into one row
+        each. By default it folds volatile path segments -- numeric ids, UUIDs,
+        long hex blobs -- into placeholders so /users/123 and /users/456 collapse
+        into one POST users/{num} endpoint; pass normalize=False to key on the
+        exact path instead. Answers with endpoints, count, total (distinct
+        endpoints after name_filter), offset, has_more, total_flows (how many
+        flows fed the rollup, i.e. the capture after content_type_filter), dropped
+        (ring evictions across the whole capture, same as proxy.flows), and
+        endpoints_truncated (the distinct-endpoint ceiling was hit). Each
+        endpoints row is {method, host, path, flows (request count),
+        failed (flows that never got a response), content_types (sorted response
+        MIME types, the part before ';'), statuses (a {code: count} map)} plus
+        example_url (a concrete instance, query intact) and first_flow (the flow
+        id to hand proxy.flow.get / proxy.replay), and truncated when that row's
+        own content-type/status set overflowed. Rows are ordered by flow count
+        (busiest endpoint first), then host, path, method. content_type_filter
+        pre-narrows which flows feed the rollup -- pass 'json' to pull the API
+        surface out of a capture buried under image/script/css responses.
+        name_filter then keeps only endpoints whose method, host or path contains
+        that substring (case-insensitive), applied before paging so total is the
+        match count. The list field is endpoints. Read-only.
+        """
+        return _dump(
+            analysis.proxy_endpoints(
+                session_id,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                content_type_filter=content_type_filter,
+                normalize=normalize,
+            )
+        )
+
     @tools.tool(name="proxy.search")
     def proxy_search(
         session_id: str,

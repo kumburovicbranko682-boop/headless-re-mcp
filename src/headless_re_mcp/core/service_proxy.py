@@ -138,6 +138,26 @@ class ProxyAnalysisMixin:
             host_filter=host_filter,
         )
 
+    def proxy_endpoints(
+        self,
+        session_id: str,
+        offset: int = 0,
+        limit: int = 100,
+        name_filter: str = "",
+        content_type_filter: str = "",
+        normalize: bool = True,
+    ) -> Result[JsonObject]:
+        return self._proxy_wrap(
+            session_id,
+            "endpoints",
+            session_id,
+            offset=offset,
+            limit=limit,
+            name_filter=name_filter,
+            content_type_filter=content_type_filter,
+            normalize=normalize,
+        )
+
     def proxy_search(
         self,
         session_id: str,

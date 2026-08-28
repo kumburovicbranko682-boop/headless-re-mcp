@@ -294,6 +294,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **`proxy.hosts` 把抓包按 host 汇总（太粗，看不出调了哪个 API），`proxy.flows` 每个请求一行（太细，繁忙抓包里翻不完），中间缺一层逆向真正想要的「API 清单」：
+  这个 app 到底打了哪些 method+path 端点、各多少次、返回什么状态**。新增只读工具 `proxy.endpoints`：js/apk/wasm/web.endpoints（从静态代码抽端点）的动态对应物。
+  它把留存的 flow 按 (method, host, 请求路径) 聚成一行，默认把路径里易变的段——纯数字 id、UUID、长 hex 块——折叠成占位符，故 /users/123 与 /users/456 合并成
+  一条 `POST users/{num}`；`normalize=False` 则按精确路径分组。每行 `{method, host, path, flows（请求数）, failed（无响应数）, content_types（去重响应 MIME）,
+  statuses（{状态码: 次数} 映射）}`，另带 `example_url`（一个带 query 的具体实例）与 `first_flow`（可丢给 proxy.flow.get / proxy.replay 的 flow id），
+  该行自身的类型/状态集合溢出上限时置 `truncated`。答复还带 `total`（name_filter 后的去重端点数）、`total_flows`、`dropped`（环形逐出）与 `endpoints_truncated`
+  （去重端点总数触及 5000 上限）。按 flows 降序（最忙端点在前）再 host、path、method 排序。`content_type_filter` 先收窄参与聚合的 flow——传 'json' 就把 API 面
+  从 image/script/css 噪声里拎出来；`name_filter` 再对 method/host/path 做大小写不敏感子串匹配、分页前应用，故 `total` 是命中数。列表字段是 `endpoints`。
+  只读，工具总数 301→302（182 只读 / 120 写）。
 - **有了 `frida.memory.ranges` 能看内存图、`frida.memory.read` 能按地址读，却仍缺最关键的一步：在运行进程里「找」东西**。新增只读工具 `frida.memory.scan`：
   短命探针注入，按 protection 掩码枚举内存段并对每段跑 `Memory.scanSync`，把运行时才解密出来、只存在于活进程内存里的密钥/令牌/结构体特征变成一个地址，
   可直接丢给 `frida.memory.read` 读上下文。`pattern` 支持两种解读：`pattern_type='text'`（默认）把字符串按 utf-8 编成字节模式（找已知令牌或错误串），
