@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -169,3 +170,28 @@ def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:
     assert xrefs.ok
     assert xrefs.data is not None
     assert xrefs.data["kind"] == "xrefs"
+
+
+@pytest.mark.parametrize("path", [123, ["/x"], {"p": "/x"}, 1.5, b"/x", None])
+def test_service_dotnet_verify_refuses_a_non_string_path(tmp_path: Path, path: object) -> None:
+    # path is schema-typed as a string, but the agent transport binds it from model
+    # output with no coercion. Path(path) raises a raw TypeError on a non-str value,
+    # which _failure would file as a logged internal_error incident; the tool must
+    # instead return the invalid_params an out-of-tree path already earns.
+    binary = tmp_path / "empty_tables.exe"
+    _write_minimal_clr(binary)
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    created = service.create_session(str(binary))
+    assert created.data is not None
+    session_id = created.data["session"]["id"]
+    rejected = service.dotnet_verify(session_id, cast(Any, path))
+    assert rejected.ok is False and rejected.error is not None
+    assert rejected.error.code == "invalid_params"

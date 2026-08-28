@@ -400,6 +400,21 @@ class DotnetAnalysisMixin:
         """Re-inspect a .NET artifact with the built-in CLR metadata checker."""
         try:
             self.registry.get(session_id)
+            # path is schema-typed as a string, but the agent and OpenAI-bridge
+            # transports bind it from model output with no pydantic coercion. Path()
+            # raises a raw TypeError on a non-str, non-PathLike value (an int, list,
+            # dict, ...), which the outer except BaseException would file as a logged
+            # internal_error incident rather than the invalid_params the sibling
+            # out-of-tree path check below already returns for a bad path.
+            if not isinstance(path, str):
+                return Result[JsonObject](
+                    ok=False,
+                    error=RpcError(
+                        code="invalid_params",
+                        message="path must be a string",
+                        details={"session_id": session_id},
+                    ),
+                )
             target = Path(path).expanduser().resolve(strict=True)
             owned = _session_owns_artifact_path(
                 self.settings.artifact_root,
