@@ -682,6 +682,51 @@ def test_trace_start_rejects_bad_parameters(tmp_path: Path) -> None:
     assert bad_bytes.error.code == "invalid_params"
 
 
+# The schema bounds the trace timeout gt=0, le=30.0, but the agent transport
+# skips that Field, so each lifecycle method has to re-reject a bad value before
+# it reaches ``worker.request(..., timeout=min(timeout, 30.0))`` -- where a
+# non-numeric one raises TypeError inside the mixin (an internal_error incident,
+# not invalid_params), a NaN slips through min() into Future.result(timeout=nan),
+# and an out-of-range one is silently clamped instead of refused.
+_BAD_TRACE_TIMEOUTS = [
+    pytest.param("soon", id="str"),
+    pytest.param(None, id="none"),
+    pytest.param({}, id="dict"),
+    pytest.param(True, id="bool"),
+    pytest.param(float("nan"), id="nan"),
+    pytest.param(float("inf"), id="inf"),
+    pytest.param(0, id="zero"),
+    pytest.param(-1.0, id="negative"),
+    pytest.param(30.0001, id="over_ceiling"),
+]
+
+
+@pytest.mark.parametrize("bad_timeout", _BAD_TRACE_TIMEOUTS)
+def test_trace_start_rejects_a_bad_timeout(tmp_path: Path, bad_timeout: Any) -> None:
+    svc = _TraceService(tmp_path, worker=_LifecycleWorker())
+    result = svc.trace_start("s", "C:/req.trace", timeout=bad_timeout)
+    assert result.error is not None and result.error.code == "invalid_params"
+    # The guard fires before the worker is touched, so nothing was recorded.
+    assert svc.records == []
+    assert svc.failed == []
+
+
+@pytest.mark.parametrize("bad_timeout", _BAD_TRACE_TIMEOUTS)
+def test_trace_stop_rejects_a_bad_timeout(tmp_path: Path, bad_timeout: Any) -> None:
+    svc = _TraceService(tmp_path, worker=_LifecycleWorker())
+    result = svc.trace_stop("s", timeout=bad_timeout)
+    assert result.error is not None and result.error.code == "invalid_params"
+    assert svc.failed == []
+
+
+@pytest.mark.parametrize("bad_timeout", _BAD_TRACE_TIMEOUTS)
+def test_trace_status_rejects_a_bad_timeout(tmp_path: Path, bad_timeout: Any) -> None:
+    svc = _TraceService(tmp_path, worker=_LifecycleWorker())
+    result = svc.trace_status("s", timeout=bad_timeout)
+    assert result.error is not None and result.error.code == "invalid_params"
+    assert svc.failed == []
+
+
 def test_trace_start_without_capability_is_unavailable(tmp_path: Path) -> None:
     svc = _TraceService(tmp_path, worker=_LifecycleWorker(capabilities=()))
     result = svc.trace_start("s", "C:/req.trace")

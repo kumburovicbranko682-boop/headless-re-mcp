@@ -39,6 +39,39 @@ JsonObject = dict[str, Any]
 # Only used by the argument decoder that moved here with the trace surface.
 _X64_ARGUMENT_REGISTERS = ("rcx", "rdx", "r8", "r9")
 
+# The trace.start/stop/status tool schema declares timeout gt=0, le=30.0.
+_MAX_TRACE_TIMEOUT_S = 30.0
+
+
+def _reject_bad_trace_timeout(timeout: float) -> Result[JsonObject] | None:
+    """Bound a caller trace timeout the way the tool schema (gt=0, le=30) does.
+
+    trace.start/stop/status hand this straight to ``worker.request`` via
+    ``min(timeout, 30.0)``. The MCP path enforces the schema through pydantic
+    Field, but the agent transport invokes the handler straight from model
+    arguments, so a non-numeric value reaches ``min()`` and raises TypeError --
+    which _failure files as an internal_error incident rather than the
+    invalid_params a bad timeout should be -- a NaN slips through ``min()`` into
+    Future.result(timeout=nan) and wedges the request, and a negative one
+    becomes a deadline that returns at once. The ``0 < x <= 30`` form rejects
+    NaN and inf as well as the out-of-range and non-positive values, the same
+    way trace_api_arguments already checks its own timeout.
+    """
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        return Result[JsonObject](
+            ok=False,
+            error=RpcError(code="invalid_params", message="timeout must be a number"),
+        )
+    if not 0 < float(timeout) <= _MAX_TRACE_TIMEOUT_S:
+        return Result[JsonObject](
+            ok=False,
+            error=RpcError(
+                code="invalid_params",
+                message=f"timeout must be > 0 and <= {_MAX_TRACE_TIMEOUT_S:g}",
+            ),
+        )
+    return None
+
 
 @dataclass(slots=True)
 class _TraceArtifactState:
@@ -218,6 +251,9 @@ class TraceMixin:
                 ok=False,
                 error=RpcError(code="invalid_params", message="max_file_bytes out of range"),
             )
+        bad_timeout = _reject_bad_trace_timeout(timeout)
+        if bad_timeout is not None:
+            return bad_timeout
         state: _TraceArtifactState | None = None
         runtime: _BackendRuntime | None = None
         state_registered = False
@@ -306,6 +342,9 @@ class TraceMixin:
                 self._fail_runtime(session_id, BackendKind.X64DBG, failure=exc)
             return _failure(exc, session_id=session_id, backend=BackendKind.X64DBG.value)
     def trace_stop(self, session_id: str, *, timeout: float = 30.0) -> Result[JsonObject]:
+        bad_timeout = _reject_bad_trace_timeout(timeout)
+        if bad_timeout is not None:
+            return bad_timeout
         state: _TraceArtifactState | None = None
         runtime: _BackendRuntime | None = None
         try:
@@ -362,6 +401,9 @@ class TraceMixin:
                 self._finalize_trace_artifact(state, terminal_reason="stop_failed")
             return _failure(exc, session_id=session_id, backend=BackendKind.X64DBG.value)
     def trace_status(self, session_id: str, *, timeout: float = 30.0) -> Result[JsonObject]:
+        bad_timeout = _reject_bad_trace_timeout(timeout)
+        if bad_timeout is not None:
+            return bad_timeout
         state: _TraceArtifactState | None = None
         runtime: _BackendRuntime | None = None
         try:
