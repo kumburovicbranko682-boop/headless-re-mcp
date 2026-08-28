@@ -5,7 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
+### 修复（x64 上 armadillo 夺魁时把可用 stealth profile 降级成 basic）
+
+- `profile_from_candidates` 按 `(token 长度, confidence)` 给每个 packer/protector 命中打分，并在
+  x64 上拒绝 armadillo（x86-only 的 ScyllaHide profile）。原实现先选出最高分 profile，若恰为
+  armadillo 就返回通用的 `basic`。但 armadillo 的 token 长 9 字符，于是当 DIE 对同一样本同时标出
+  "Armadillo" 与例如 "Themida"（经较短的 7 字符 "themida" token 命中）时，armadillo 赢下打分，
+  真正可用的 Themida profile 被丢弃、换成 basic——路由把一个可用信号让给了一个在目标架构上根本
+  无法生效的检测。
+- 现在选择时在"总体最高分"之外另行跟踪"本架构可用的最高分 profile"：被禁的赢家让位给同一样本上
+  检出的任何其他 profile，仅当 armadillo 是唯一命中时才回落到 basic。x64 armadillo-only → basic
+  的契约不变，x86 上的 armadillo（不在禁用集）与 x64 上非禁用赢家同样不受影响。新增测试中 2 个
+  在改动前失败，另 4 个为对照钉死上述不变路径。
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
   `_probe_run` 以 `creationflags=0` 调 `run_bounded`。但 `_probe_run` 用的
