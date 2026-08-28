@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（js.unpack_bundle 预建 -o 目录导致 webcrack 2.x 直接失败）
+
+- `JsClient.unpack_bundle` 先 `out_dir.mkdir(parents=True, exist_ok=True)`，再把该目录作为
+  `-o` 交给 webcrack；而 webcrack 2.x（README 要求的 Node 22/24 对应版本）见到已存在的 `-o`
+  目录会以 `output directory already exists` 非零退出且不解包，于是 `js.unpack_bundle` 在其
+  支持的 webcrack 版本上恒为 `backend_error`。改为只建父目录、把叶子目录留给 webcrack 自己
+  创建（服务侧 `_jsre_out_dir` 本就只建父级），实测解包恢复正常。
+- 单测：`test_jsre_unpack_dirs.py` 里模拟 webcrack 的 `fake_run` 改成先自建 `-o` 目录（贴近真
+  实行为），并新增 `test_client_lets_the_tool_create_the_output_directory`，在启动时断言目录
+  不存在，钉死"客户端不得预建 `-o` 目录"这一契约。
+
 ### 测试（Android 静态线 live gate：androguard 代码事实 + jadx 反编译）
 
 - `test_android_re_gate.py` 只用一个合成 zip（非合法 AXML）验信封，证明了管路却从没让真实

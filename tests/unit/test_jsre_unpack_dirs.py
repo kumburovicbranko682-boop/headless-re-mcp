@@ -89,11 +89,11 @@ def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
     from headless_re_mcp.backends.jsre import client as jsre_client
     from headless_re_mcp.backends.jsre.client import JsClient
 
-    def fake_run(
-        cmd: list[str], *, timeout: float, maximum: float = 0.0
-    ) -> tuple[str, str, int]:
+    def fake_run(cmd: list[str], *, timeout: float, maximum: float = 0.0) -> tuple[str, str, int]:
         del timeout, maximum
+        # Real webcrack creates the -o directory itself; the client must not.
         out_dir = Path(cmd[cmd.index("-o") + 1])
+        out_dir.mkdir(parents=True, exist_ok=True)
         if not any(out_dir.iterdir()):
             for index in range(250):
                 (out_dir / f"mod-{index:03d}.js").write_text("x", encoding="utf-8")
@@ -115,6 +115,44 @@ def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
     assert set(page["files"]) & set(tail["files"]) == set()
 
 
+def test_client_lets_the_tool_create_the_output_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """webcrack 2.x aborts on a pre-existing -o dir, so the client must not make it.
+
+    Regression guard for a real failure: the client used to ``mkdir`` the leaf
+    output directory before launching webcrack, and webcrack 2.x then exited
+    non-zero with "output directory already exists" and unpacked nothing. The
+    fake asserts the directory is absent at launch (the tool creates it), which
+    is exactly what a live webcrack needs.
+    """
+    from headless_re_mcp.backends.jsre import client as jsre_client
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    seen_absent = False
+
+    def fake_run(cmd: list[str], *, timeout: float, maximum: float = 0.0) -> tuple[str, str, int]:
+        del timeout, maximum
+        nonlocal seen_absent
+        out_dir = Path(cmd[cmd.index("-o") + 1])
+        seen_absent = not out_dir.exists()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "deobfuscated.js").write_text("x", encoding="utf-8")
+        return "", "", 0
+
+    monkeypatch.setattr(jsre_client, "_run", fake_run)
+    bundle = tmp_path / "app.js"
+    bundle.write_text("bundle", encoding="utf-8")
+
+    payload = JsClient(executable=Path("/bin/true")).unpack_bundle(
+        bundle, tmp_path / "nested" / "out"
+    )
+
+    assert seen_absent, "the client pre-created the -o directory webcrack refuses"
+    assert payload["file_count"] == 1
+    assert payload["files"] == ["deobfuscated.js"]
+
+
 @pytest.mark.parametrize(
     ("files_written", "listing_truncated"),
     [(5, False), (6, True)],
@@ -130,11 +168,11 @@ def test_bounded_unpack_listing_finishes_at_the_last_readable_page(
 
     monkeypatch.setattr(jsre_client, "_MAX_COUNTED_FILES", 5)
 
-    def fake_run(
-        cmd: list[str], *, timeout: float, maximum: float = 0.0
-    ) -> tuple[str, str, int]:
+    def fake_run(cmd: list[str], *, timeout: float, maximum: float = 0.0) -> tuple[str, str, int]:
         del timeout, maximum
+        # Real webcrack creates the -o directory itself; the client must not.
         out_dir = Path(cmd[cmd.index("-o") + 1])
+        out_dir.mkdir(parents=True, exist_ok=True)
         if not any(out_dir.iterdir()):
             for index in range(files_written):
                 (out_dir / f"mod-{index}.js").write_text("x", encoding="utf-8")
