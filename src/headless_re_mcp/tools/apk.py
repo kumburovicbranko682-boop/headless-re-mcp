@@ -420,6 +420,33 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_field_xrefs(session_id, field_name, limit=limit))
 
+    @tools.tool(name="apk.capabilities")
+    def apk_capabilities(session_id: str) -> dict[str, Any]:
+        """Fingerprint the DEX's use of security-relevant platform APIs.
+
+        The Android counterpart to js.capabilities: it matches the app's methods
+        against a fixed table of platform APIs a triage cares about and reports
+        which are reached and from where -- answering "what can this app do"
+        without reading every class by hand. Categories include dynamic_code (a
+        DexClassLoader or System.load pulling code at runtime, the payload-drop
+        surface), process_exec (Runtime.exec / ProcessBuilder, often a su probe),
+        reflection (Class.forName / Method.invoke that hide the real call
+        target), crypto, network (URL / Socket / OkHttp), webview (a plain
+        WebView.loadUrl, or the far riskier addJavascriptInterface JS bridge and
+        setJavaScriptEnabled), telephony_sms, device_identifiers (IMEI /
+        subscriber id / ANDROID_ID reads used to track a device), location,
+        installed_apps enumeration, clipboard and storage. This needs the full
+        DEX analysis (like apk.classes and apk.xrefs), so it is heavier than the
+        manifest tools. Each detected row is api (the label), category,
+        call_sites (the total call-site count) and callers (a sample of the
+        distinct calling class and method, capped at 25). Answers with
+        capabilities (rows sorted by call_sites then api), categories (the sorted
+        distinct categories detected), count and scan_capped (a caller sample was
+        clipped). It is an occurrence fingerprint, never a maliciousness verdict;
+        an API reached only through reflection is invisible to it.
+        """
+        return _dump(analysis.apk_capabilities(session_id))
+
     @tools.tool(name="apk.decompile")
     def apk_decompile(
         session_id: str,

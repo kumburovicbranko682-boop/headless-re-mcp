@@ -58,6 +58,100 @@ _APK_FILE_TYPES = (
     "signature",
     "other",
 )
+# apk.capabilities caps the distinct calling methods sampled per capability; the
+# call_sites total is still exact, only the caller list is clipped.
+_MAX_CAP_CALLERS = 25
+# The security-relevant platform APIs apk.capabilities fingerprints: each row is
+# (category, label, class-name regex, method-name regex). The regexes are matched
+# with re.match (start-anchored) exactly as androguard's find_methods does, so a
+# class pattern ends with ";$" for an exact class and a method pattern ends with
+# "$" to avoid a prefix matching a longer name. This is an occurrence fingerprint
+# -- "what can this app reach" -- never a maliciousness verdict.
+_APK_CAPABILITY_CATALOG: tuple[tuple[str, str, str, str], ...] = (
+    ("dynamic_code", "DexClassLoader", r"Ldalvik/system/DexClassLoader;$", r"<init>$"),
+    ("dynamic_code", "PathClassLoader", r"Ldalvik/system/PathClassLoader;$", r"<init>$"),
+    (
+        "dynamic_code",
+        "InMemoryDexClassLoader",
+        r"Ldalvik/system/InMemoryDexClassLoader;$",
+        r"<init>$",
+    ),
+    ("dynamic_code", "BaseDexClassLoader", r"Ldalvik/system/BaseDexClassLoader;$", r"<init>$"),
+    ("dynamic_code", "System.load", r"Ljava/lang/System;$", r"(?:load|loadLibrary)$"),
+    ("dynamic_code", "Runtime.load", r"Ljava/lang/Runtime;$", r"(?:load|loadLibrary)$"),
+    ("process_exec", "Runtime.exec", r"Ljava/lang/Runtime;$", r"exec$"),
+    ("process_exec", "ProcessBuilder", r"Ljava/lang/ProcessBuilder;$", r"(?:<init>|start)$"),
+    ("reflection", "Class.forName", r"Ljava/lang/Class;$", r"forName$"),
+    ("reflection", "Class.getMethod", r"Ljava/lang/Class;$", r"(?:getMethod|getDeclaredMethod)$"),
+    ("reflection", "Method.invoke", r"Ljava/lang/reflect/Method;$", r"invoke$"),
+    ("crypto", "Cipher", r"Ljavax/crypto/Cipher;$", r"getInstance$"),
+    ("crypto", "Mac", r"Ljavax/crypto/Mac;$", r"getInstance$"),
+    ("crypto", "MessageDigest", r"Ljava/security/MessageDigest;$", r"getInstance$"),
+    ("crypto", "SecretKeySpec", r"Ljavax/crypto/spec/SecretKeySpec;$", r"<init>$"),
+    ("network", "URL.openConnection", r"Ljava/net/URL;$", r"openConnection$"),
+    ("network", "Socket", r"Ljava/net/Socket;$", r"<init>$"),
+    ("network", "OkHttpClient", r"Lokhttp3/OkHttpClient;$", r"(?:<init>|newCall)$"),
+    (
+        "webview",
+        "WebView.loadUrl",
+        r"Landroid/webkit/WebView;$",
+        r"(?:loadUrl|postUrl|loadData|loadDataWithBaseURL)$",
+    ),
+    (
+        "webview",
+        "WebView.addJavascriptInterface",
+        r"Landroid/webkit/WebView;$",
+        r"addJavascriptInterface$",
+    ),
+    (
+        "webview",
+        "WebSettings.setJavaScriptEnabled",
+        r"Landroid/webkit/WebSettings;$",
+        r"setJavaScriptEnabled$",
+    ),
+    (
+        "telephony_sms",
+        "SmsManager.send",
+        r"Landroid/telephony/SmsManager;$",
+        r"(?:sendTextMessage|sendMultipartTextMessage|sendDataMessage)$",
+    ),
+    (
+        "device_identifiers",
+        "TelephonyManager.identifiers",
+        r"Landroid/telephony/TelephonyManager;$",
+        r"(?:getDeviceId|getImei|getMeid|getSubscriberId|getSimSerialNumber|getLine1Number)$",
+    ),
+    (
+        "device_identifiers",
+        "Settings.Secure.getString",
+        r"Landroid/provider/Settings\$Secure;$",
+        r"getString$",
+    ),
+    (
+        "location",
+        "LocationManager",
+        r"Landroid/location/LocationManager;$",
+        r"(?:getLastKnownLocation|requestLocationUpdates|requestSingleUpdate)$",
+    ),
+    (
+        "installed_apps",
+        "PackageManager.getInstalled",
+        r"Landroid/content/pm/PackageManager;$",
+        r"(?:getInstalledPackages|getInstalledApplications)$",
+    ),
+    (
+        "clipboard",
+        "ClipboardManager",
+        r"Landroid/content/ClipboardManager;$",
+        r"(?:getPrimaryClip|getText|setPrimaryClip|setText)$",
+    ),
+    (
+        "storage",
+        "Environment.getExternalStorage",
+        r"Landroid/os/Environment;$",
+        r"(?:getExternalStorageDirectory|getExternalStoragePublicDirectory)$",
+    ),
+)
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
@@ -1256,6 +1350,78 @@ class ApkClient:
             "accesses": accesses,
             "count": len(accesses),
             "has_more": has_more,
+        }
+
+    def capabilities(self, path: Path) -> JsonObject:
+        """Fingerprint the DEX's use of security-relevant platform APIs.
+
+        The Android counterpart to js.capabilities: it matches the app's methods
+        against a fixed table of platform APIs a triage cares about and reports
+        which are reached and from where. Categories include dynamic_code (a
+        DexClassLoader / System.load pulling code at runtime -- the payload-drop
+        surface), process_exec (Runtime.exec / ProcessBuilder, often a su probe),
+        reflection (Class.forName / Method.invoke hiding real call targets),
+        crypto (Cipher / MessageDigest), network (URL / Socket / OkHttp), webview
+        (a WebView.loadUrl, or the far riskier addJavascriptInterface JS bridge
+        and setJavaScriptEnabled), telephony_sms, device_identifiers (IMEI /
+        subscriber id / ANDROID_ID reads used for tracking), location,
+        installed_apps enumeration, clipboard and storage. This needs the full
+        DEX analysis (like apk.classes/xrefs), so it is heavier than the
+        manifest tools. Each detected row is api (the label), category,
+        call_sites (the total number of call sites) and callers (a sample of the
+        distinct calling class/method, capped at 25). Answers with capabilities
+        (rows sorted by call_sites then api), categories (the sorted distinct
+        categories detected), count and scan_capped (a caller sample was
+        clipped). This is an occurrence fingerprint -- what the app can reach --
+        never a maliciousness verdict; a name reached only by reflection is
+        invisible to it.
+        """
+        parsed = self._parsed(path)
+        analysis = parsed.analysis
+        rows: list[JsonObject] = []
+        scan_capped = False
+        for category, label, class_re, method_re in _APK_CAPABILITY_CATALOG:
+            call_sites = 0
+            callers: list[JsonObject] = []
+            seen: set[tuple[str, str]] = set()
+            clipped = False
+            try:
+                matches = analysis.find_methods(classname=class_re, methodname=method_re)
+            except Exception:  # noqa: BLE001 - analysis internals vary by version
+                continue
+            for method in matches:
+                try:
+                    edges = method.get_xref_from()
+                except Exception:  # noqa: BLE001
+                    continue
+                for _, caller, _ in edges:
+                    call_sites += 1
+                    key = (str(caller.class_name), str(caller.name))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    if len(callers) >= _MAX_CAP_CALLERS:
+                        clipped = True
+                        continue
+                    callers.append({"class": key[0], "method": key[1]})
+            if call_sites == 0:
+                continue
+            scan_capped = scan_capped or clipped
+            rows.append(
+                {
+                    "api": label,
+                    "category": category,
+                    "call_sites": call_sites,
+                    "callers": callers,
+                }
+            )
+        rows.sort(key=lambda row: (-int(row["call_sites"]), str(row["api"])))
+        categories = sorted({str(row["category"]) for row in rows})
+        return {
+            "capabilities": rows,
+            "categories": categories,
+            "count": len(rows),
+            "scan_capped": scan_capped,
         }
 
 

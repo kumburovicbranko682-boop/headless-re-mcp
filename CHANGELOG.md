@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **302（185 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **303（186 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -600,6 +600,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   字段的类）、`field_name`、`matched_fields`（该名解析到多少个不同字段）、`found`（是否匹配到任一
   字段，借此把"未被访问"与"根本不存在"区分开）、`count` 与仅在真丢行时才为真的 `has_more`。
   与 `apk.xrefs` 共用 1000 的分页上限。
+- **`apk.capabilities`**：`js.capabilities` 的 Android 对应物——把应用方法对一张固定的敏感平台 API 表做
+  匹配,报命中了哪些、从哪里调,不用手翻每个类就能答"这个应用能干什么"。类别含 `dynamic_code`
+  (DexClassLoader/System.load 运行时拉代码,投递 payload 的面)、`process_exec`(Runtime.exec/ProcessBuilder,
+  常是探 su)、`reflection`(Class.forName/Method.invoke 隐藏真实调用目标)、`crypto`、`network`
+  (URL/Socket/OkHttp)、`webview`(普通 loadUrl,以及风险大得多的 addJavascriptInterface JS 桥和
+  setJavaScriptEnabled)、`telephony_sms`、`device_identifiers`(IMEI/subscriber id/ANDROID_ID 等追踪读取)、
+  `location`、`installed_apps` 枚举、`clipboard` 与 `storage`。需要全量 DEX 分析(同 `apk.classes`/`apk.xrefs`),
+  比清单类工具重。每条命中含 `api`(标签)、`category`、`call_sites`(调用点总数)与 `callers`(去重的调用方
+  class/method 样本,上限 25)。输出 `capabilities`(按 call_sites 再按 api 排序)、`categories`(命中的去重类别)、
+  `count` 与 `scan_capped`(某条 caller 样本被裁)。这是出现次数指纹、不是恶意判定;只经反射到达的 API 它看不到。
 - **`apk.files`**：`apk.native_libs`(只看 lib/)给不了的整包清单——遍历 zip,报每个文件的解压/压缩大小
   与按路径判定的类型:`dex`(多出的 classesN.dex 提示多 dex 或动态加载代码)、`native_lib`、`resource`、
   `asset`(内嵌配置、JS bundle、ML 模型常藏在这)、`arsc` 与 `manifest` 单例、META-INF 下的 v1 签名文件,
