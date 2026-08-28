@@ -420,9 +420,8 @@ def terminate_pid_tree(pid: int) -> list[int]:
     if not isinstance(pid, int) or pid <= 0:
         return []
     descendants: list[int] = []
-    if isinstance(pid, int) and pid > 0:
-        with suppress(Exception):
-            descendants = collect_descendants(pid)
+    with suppress(Exception):
+        descendants = collect_descendants(pid)
     killed: list[int] = []
     killed.extend(_kill_own_process_group(pid))
     with suppress(Exception):
