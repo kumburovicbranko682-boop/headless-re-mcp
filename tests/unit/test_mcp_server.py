@@ -305,6 +305,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "js.unpack_bundle",
         "wasm.info",
         "wasm.summary",
+        "wasm.names",
         "wasm.wat",
         # Web dynamic (web.*)
         "web.open",

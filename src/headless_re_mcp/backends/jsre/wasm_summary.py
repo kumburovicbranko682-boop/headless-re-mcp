@@ -19,6 +19,7 @@ raises WasmParseError rather than looping, over-reading, or over-allocating.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import suppress
 from typing import Any
 
@@ -55,6 +56,10 @@ _MAX_SECTIONS = 4096
 # LEB128 unsigned: 10 bytes covers a u64; a u32 index/size uses at most 5. Ten is
 # the ceiling so a run of 0x80 continuation bytes cannot spin the decoder.
 _MAX_LEB_BYTES = 10
+# Function-name entries collected from the name section before the scan stops. A
+# real module names one entry per function; a hostile name section could declare
+# a huge namemap, so bound what is materialised (scan_capped when hit).
+_MAX_NAMES_COLLECT = 50000
 
 
 class WasmParseError(ValueError):
@@ -168,25 +173,17 @@ def _parse_exports(
     return items, count
 
 
-def summarize(data: bytes, *, max_imports: int = 1000, max_exports: int = 1000) -> JsonObject:
-    """Parse a wasm module's shape: version, sections, imports, exports, start.
+def _iter_sections(data: bytes) -> Iterator[tuple[int, int, int]]:
+    """Yield (section_id, body_start, body_end) for each top-level section.
 
-    Raises WasmParseError when the bytes are not a module we can read. The
-    imports/exports lists are capped at ``max_imports``/``max_exports``; the
-    ``*_total`` fields carry the declared vector length so a capped page is not
-    read as the whole section.
+    Validates the magic once and the framing of every section (size never runs
+    past the buffer, the record count is bounded); the caller decodes only the
+    bodies it cares about and lets the rest go by.
     """
     if len(data) < 8 or data[:4] != WASM_MAGIC:
         raise WasmParseError("not a WebAssembly module (bad magic)")
-    version = int.from_bytes(data[4:8], "little")
     pos = 8
     total_len = len(data)
-    sections: list[JsonObject] = []
-    imports: list[JsonObject] = []
-    exports: list[JsonObject] = []
-    imports_total = 0
-    exports_total = 0
-    start_function: int | None = None
     records = 0
     while pos < total_len:
         records += 1
@@ -199,10 +196,32 @@ def summarize(data: bytes, *, max_imports: int = 1000, max_exports: int = 1000) 
         end = pos + size
         if end > total_len:
             raise WasmParseError("section overruns module")
+        yield sec_id, body, end
+        pos = end
+
+
+def summarize(data: bytes, *, max_imports: int = 1000, max_exports: int = 1000) -> JsonObject:
+    """Parse a wasm module's shape: version, sections, imports, exports, start.
+
+    Raises WasmParseError when the bytes are not a module we can read. The
+    imports/exports lists are capped at ``max_imports``/``max_exports``; the
+    ``*_total`` fields carry the declared vector length so a capped page is not
+    read as the whole section.
+    """
+    if len(data) < 8 or data[:4] != WASM_MAGIC:
+        raise WasmParseError("not a WebAssembly module (bad magic)")
+    version = int.from_bytes(data[4:8], "little")
+    sections: list[JsonObject] = []
+    imports: list[JsonObject] = []
+    exports: list[JsonObject] = []
+    imports_total = 0
+    exports_total = 0
+    start_function: int | None = None
+    for sec_id, body, end in _iter_sections(data):
         record: JsonObject = {
             "id": sec_id,
             "name": _SECTION_NAMES.get(sec_id, str(sec_id)),
-            "size": size,
+            "size": end - body,
         }
         if sec_id == 0:  # custom: a name, then opaque bytes -- surface the name
             with suppress(WasmParseError):
@@ -214,7 +233,6 @@ def summarize(data: bytes, *, max_imports: int = 1000, max_exports: int = 1000) 
             exports, exports_total = _parse_exports(data, body, end, cap=max_exports)
         elif sec_id == 8:
             start_function, _ = _uleb(data, body)
-        pos = end
     result: JsonObject = {
         "version": version,
         "sections": sections,
@@ -230,3 +248,75 @@ def summarize(data: bytes, *, max_imports: int = 1000, max_exports: int = 1000) 
     if start_function is not None:
         result["start_function"] = start_function
     return result
+
+
+def _parse_namemap(
+    data: bytes, pos: int, end: int, *, needle: str
+) -> tuple[list[JsonObject], bool]:
+    """Parse a namemap (vec of {index, name}) from the function-names subsection.
+
+    Filters by ``needle`` (substring, case-sensitive: wasm names are symbols)
+    while scanning, and stops collecting at ``_MAX_NAMES_COLLECT`` (returning
+    scan_capped True) so a hostile namemap cannot materialise without bound. The
+    whole vector is still walked so an entry past the collect cap that matches
+    the filter is not silently dropped from the count -- only from the list.
+    """
+    count, pos = _uleb(data, pos)
+    collected: list[JsonObject] = []
+    seen = 0
+    capped = False
+    while seen < count and pos < end:
+        index, pos = _uleb(data, pos)
+        name, pos = _name(data, pos)
+        if pos > end:
+            raise WasmParseError("name map entry overruns subsection")
+        seen += 1
+        if needle and needle not in name:
+            continue
+        if len(collected) >= _MAX_NAMES_COLLECT:
+            capped = True
+            break
+        collected.append({"index": index, "name": name})
+    return collected, capped
+
+
+def parse_function_names(
+    data: bytes, *, name_filter: str = ""
+) -> tuple[str, list[JsonObject], bool, bool]:
+    """Decode the ``name`` custom section: module name and function-index names.
+
+    Returns ``(module_name, entries, has_name_section, scan_capped)``. ``entries``
+    are the function names ({index, name}) from subsection 1, filtered by
+    ``name_filter``. When the module carries no ``name`` section -- the common
+    case for a stripped release build -- has_name_section is False and entries is
+    empty, which is itself the answer rather than an error. Only the module-name
+    (0) and function-name (1) subsections are decoded; local/label/other
+    subsections are skipped by their declared size.
+    """
+    needle = name_filter if isinstance(name_filter, str) else ""
+    for sec_id, body, end in _iter_sections(data):
+        if sec_id != 0:
+            continue
+        section_name, cursor = _name(data, body)
+        if section_name != "name":
+            continue
+        module_name = ""
+        entries: list[JsonObject] = []
+        scan_capped = False
+        pos = cursor
+        while pos < end:
+            sub_id = data[pos]
+            pos += 1
+            sub_size, pos = _uleb(data, pos)
+            sub_end = pos + sub_size
+            if sub_end > end:
+                raise WasmParseError("name subsection overruns section")
+            if sub_id == 0:  # module name
+                with suppress(WasmParseError):
+                    module_name, _ = _name(data, pos)
+            elif sub_id == 1:  # function names
+                found, scan_capped = _parse_namemap(data, pos, sub_end, needle=needle)
+                entries.extend(found)
+            pos = sub_end
+        return module_name, entries, True, scan_capped
+    return "", [], False, False

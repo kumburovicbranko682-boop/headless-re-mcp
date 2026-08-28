@@ -98,6 +98,36 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.wasm_summary(path, max_imports=max_imports, max_exports=max_exports)
         )
 
+    @tools.tool(name="wasm.names")
+    def wasm_names(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        name_filter: str = "",
+    ) -> dict[str, Any]:
+        """Resolve a .wasm module's function indices to names, without wabt.
+
+        wasm.summary reports bare indices (export index 3, start_function 3);
+        this decodes the module's ``name`` custom section so those indices get
+        human names -- the difference between "func 42" and "_ZN4core...", the
+        first thing a wasm reversing pass wants. Parsed in-process (no wabt).
+        Answers with module_name (the module's own name subsection, often ""),
+        names (each {index, name} from the function-name subsection), count,
+        total, offset, has_more, and scan_capped when the namemap exceeded the
+        collect ceiling, plus has_name_section. When has_name_section is false
+        the module was stripped of its names (the usual release build) and names
+        is empty -- that is the answer, not an error, and there is nothing to
+        resolve. name_filter keeps only entries whose name contains that
+        substring (case-sensitive, since wasm names are symbols), applied before
+        paging so total is the match count -- the way to find one function in a
+        module that named thousands. The list field is names, not functions or
+        symbols. A file that is not a readable wasm module is invalid_params; one
+        over 16 MiB is too_large.
+        """
+        return _dump(
+            analysis.wasm_names(path, offset=offset, limit=limit, name_filter=name_filter)
+        )
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0

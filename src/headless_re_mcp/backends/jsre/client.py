@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.jsre.wasm_summary import WasmParseError
+from headless_re_mcp.backends.jsre.wasm_summary import parse_function_names as parse_wasm_names
 from headless_re_mcp.backends.jsre.wasm_summary import summarize as summarize_wasm
 
 JsonObject = dict[str, Any]
@@ -40,6 +41,10 @@ _MAX_INPUT_BYTES = 16 * 1024 * 1024
 # same reason.
 _MAX_TOOL_TIMEOUT_S = 600.0
 _MAX_UNPACK_TIMEOUT_S = 1200.0
+# Page ceiling for wasm.names, mirroring the tool's Field(le=...) so the agent
+# transport (which reaches the handler without pydantic validation) is bounded
+# here too, exactly like the apk/web/proxy backends.
+_MAX_WASM_NAMES_PAGE = 2000
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -324,6 +329,46 @@ class WasmClient:
             raise JsReError(
                 "invalid_params", f"not a readable wasm module: {exc}", path=str(resolved)
             ) from exc
+
+    def names(
+        self, path: Path, *, offset: int = 0, limit: int = 200, name_filter: str = ""
+    ) -> JsonObject:
+        """Function-index -> name mapping from the module's ``name`` section.
+
+        Also dependency-free (no wabt). When the module was stripped of its name
+        section, has_name_section is False and the list is empty -- the answer,
+        not an error. The list is paged; total is the count that matched the
+        filter, and scan_capped marks a namemap larger than the collect ceiling.
+        """
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        try:
+            data = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        try:
+            module_name, entries, has_section, scan_capped = parse_wasm_names(
+                data, name_filter=name_filter
+            )
+        except WasmParseError as exc:
+            raise JsReError(
+                "invalid_params", f"not a readable wasm module: {exc}", path=str(resolved)
+            ) from exc
+        entries.sort(key=lambda item: int(item["index"]))
+        start = max(0, int(offset))
+        capped = max(1, min(int(limit), _MAX_WASM_NAMES_PAGE))
+        window = entries[start : start + capped]
+        return {
+            "module_name": module_name,
+            "has_name_section": has_section,
+            "names": window,
+            "count": len(window),
+            "total": len(entries),
+            "offset": start,
+            "has_more": start + len(window) < len(entries),
+            "scan_capped": scan_capped,
+        }
 
 
 def _discover_webcrack() -> Path | None:

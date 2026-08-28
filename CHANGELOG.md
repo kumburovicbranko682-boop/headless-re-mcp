@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **276（158 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **277（159 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -284,6 +284,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **`wasm.summary` 给出的都是裸下标（导出下标 3、`start_function` 3），没有名字，逆向时得对着 WAT 反查**。wasm 模块常带一个
+  名为 `name` 的 custom 段，把函数下标映射到可读名字（emscripten `-g`、debug/dev 构建都会保留），这是「func 42」和
+  「`_ZN4core...`」之间的差别，也是 wasm 逆向在拿到导入/导出之后最想要的一样东西。新增只读工具 `wasm.names`：同样在进程内解析
+  （不调 wabt），解码 `name` 段的模块名子段（id 0）与函数名子段（id 1），把 `{index, name}` 映射结构化分页返回。答复带
+  `module_name`、`names`、`count`/`total`/`offset`/`has_more`、`has_name_section`，以及 namemap 超采集上限时的 `scan_capped`。
+  被剥掉名字的发布版模块 `has_name_section` 为 false、`names` 为空——这是答案而非报错，说明无名可查。`name_filter` 对名字做大小写
+  敏感子串匹配（wasm 名字是符号）、在分页前应用，故 `total` 是命中数——在命名了上千个函数的模块里定位某一个的办法。只解码 0/1
+  两个子段，local/label 等其余子段按声明长度跳过；子段/namemap 条目越界即报 `WasmParseError`→`invalid_params`，命中数按整段 vec
+  统计而只有列表受采集上限约束。非 wasm 文件 `invalid_params`、超 16 MiB `too_large`。只读，工具总数 276→277（159 只读 / 118 写）。
 - **WASM 一条线只有 `wasm.wat`/`wasm.info` 两把「整段文本」工具，且都要装 wabt，没装则整条线 `capability_unavailable`**。
   即便装了，想知道一个模块「依赖宿主的哪些接口、导出哪些入口」也只能去 grep wasm2wat/wasm-objdump 吐出的大段文本。新增只读
   工具 `wasm.summary`：直接在进程内解析模块的二进制分段（不调 wabt、不起子进程，故 wabt 缺席时照样可用），把三样三分类结构化
