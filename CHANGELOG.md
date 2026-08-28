@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（close 竞态后 workflow 状态被复活 / terminal 快照被覆盖）
+
+- workflow 操作持有 runtime.lock 而非服务锁，一次调试器转移可在该窗口内阻塞至
+  完整超时；`close_session` 不需要 runtime.lock 就能 pop 运行时并
+  `_workflow_owner.clear()`，因此 close 可落在转移中途。转移收尾处无条件的
+  `_workflow_owner.put`（成功推进、失败记录、事件消费异常、workflow.reset 四条
+  路径）会把 WorkflowRuntime 原样写回——为一个永不重开的会话复活一条 live 记录，
+  每输一次竞态永久泄漏一份。另一写者 `_fail_runtime` 的 put_terminal 也会被同类
+  迟到 put 破坏：`WorkflowStateOwner.put` 会把条目移回 live 并弹出 terminal，
+  在飞转移在故障记录之后完成时，会抹掉 runtime 消失后 `workflow.status` 赖以
+  服务的 terminal 快照。修复：新增 `_store_workflow_if_current`，在服务锁下原子
+  地 `is_current` 校验 + put（与 close 的迁移+清理、`_fail_runtime` 的 terminal
+  记录持同一把锁，无窗口；runtime.lock → 服务锁的顺序已被
+  `_require_current_runtime` 全库使用，无死锁），四条写回路径全部改走该辅助；
+  `_fail_runtime` 的 get→put_terminal 段亦移入服务锁内。打开路径的 put 不需守护：
+  `BackendRuntimeOwner.put` 在 OPENING 声明消失后先行抛错。回归测试通过真实
+  `_execute_workflow_transition_locked`（零操作的 reset 转移）钉死两侧：close 后
+  迟到转移不复活 live/terminal；`_fail_runtime` 之后的迟到转移不覆盖 terminal 快照。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

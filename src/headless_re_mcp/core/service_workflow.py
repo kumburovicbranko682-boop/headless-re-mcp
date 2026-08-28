@@ -147,9 +147,17 @@ class WorkflowAnalysisMixin:
         def _record_workflow_failure_locked(
             self,
             session_id: str,
+            runtime: _BackendRuntime,
             workflow: WorkflowRuntime,
             error: WorkflowExecutionError,
         ) -> WorkflowRuntime: ...
+
+        def _store_workflow_if_current(
+            self,
+            session_id: str,
+            runtime: _BackendRuntime,
+            workflow: WorkflowRuntime,
+        ) -> None: ...
 
         def dynamic_events(
             self,
@@ -218,11 +226,11 @@ class WorkflowAnalysisMixin:
                     timeout=validated,
                 )
             except WorkflowExecutionError as exc:
-                self._record_workflow_failure_locked(session_id, workflow, exc)
+                self._record_workflow_failure_locked(session_id, runtime, workflow, exc)
                 raise exc.cause from exc
             cursor = self._require_event_cursor(runtime).value
             reset = create_workflow_runtime(cursor=cursor)
-            self._workflow_owner.put(session_id, reset)
+            self._store_workflow_if_current(session_id, runtime, reset)
             return {"workflow": reset.to_dict()}
 
         return self._workflow_request(session_id, action)

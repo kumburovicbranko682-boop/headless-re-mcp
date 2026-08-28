@@ -2373,6 +2373,31 @@ class AnalysisService(
             )
         return workflow
 
+    def _store_workflow_if_current(
+        self,
+        session_id: str,
+        runtime: _BackendRuntime,
+        workflow: WorkflowRuntime,
+    ) -> None:
+        """Store the workflow unless the backend was popped out from under us.
+
+        Workflow operations hold runtime.lock, not the service lock, and a
+        debugger transition blocks for its full timeout inside that window.
+        close_session does not need runtime.lock to pop the runtime and clear
+        the workflow owner, so it can land mid-transition; the unconditional
+        put that used to follow re-installed the state for a session that
+        never reopens -- one retained WorkflowRuntime per lost race, the very
+        leak clear() exists to prevent. A concurrent _fail_runtime is the
+        other writer this guards: its put_terminal preserves the terminal
+        snapshot that an unconditional live put would have clobbered. Check
+        and put run under the service lock, the lock both of those writers
+        hold, so there is no window between them.
+        """
+        with self._lock:
+            if not self._runtime_owner.is_current(session_id, BackendKind.X64DBG, runtime):
+                return
+            self._workflow_owner.put(session_id, workflow)
+
     def _execute_workflow_transition_locked(
         self,
         session_id: str,
@@ -2390,7 +2415,7 @@ class AnalysisService(
                 timeout=timeout,
             )
         except WorkflowExecutionError as exc:
-            self._record_workflow_failure_locked(session_id, workflow, exc)
+            self._record_workflow_failure_locked(session_id, runtime, workflow, exc)
             raise exc.cause from exc
         resolved_status = status or _workflow_status_for_state(execution.state)
         updated = advance_workflow_runtime(
@@ -2399,12 +2424,13 @@ class AnalysisService(
             status=resolved_status,
             operations=1 + execution.operation_count,
         )
-        self._workflow_owner.put(session_id, updated)
+        self._store_workflow_if_current(session_id, runtime, updated)
         return updated
 
     def _record_workflow_failure_locked(
         self,
         session_id: str,
+        runtime: _BackendRuntime,
         workflow: WorkflowRuntime,
         error: WorkflowExecutionError,
     ) -> WorkflowRuntime:
@@ -2418,7 +2444,7 @@ class AnalysisService(
             state=error.execution.state,
             operations=1 + error.execution.operation_count,
         )
-        self._workflow_owner.put(session_id, failed)
+        self._store_workflow_if_current(session_id, runtime, failed)
         return failed
 
     def _consume_workflow_batch_locked(
@@ -2445,8 +2471,9 @@ class AnalysisService(
             transition = consume_workflow_events(workflow.state, batch)
         except BaseException as exc:
             code, details, retryable = _workflow_failure(exc)
-            self._workflow_owner.put(
+            self._store_workflow_if_current(
                 session_id,
+                runtime,
                 fail_workflow_runtime(
                     workflow,
                     code=code,
@@ -2992,20 +3019,25 @@ class AnalysisService(
         self._health.forget(session_id)
         if runtime is not None and kind == BackendKind.X64DBG:
             self._stop_event_drain(runtime)
-            workflow = self._workflow_owner.get(session_id)
-            if workflow is not None:
-                if workflow.status != WorkflowRunStatus.FAILED:
-                    code, details, retryable = _workflow_failure(
-                        failure or RuntimeError("x64dbg runtime failed")
-                    )
-                    workflow = fail_workflow_runtime(
-                        workflow,
-                        code=code,
-                        message=str(failure or "x64dbg runtime failed"),
-                        details=details,
-                        retryable=retryable,
-                    )
-                self._workflow_owner.put_terminal(session_id, workflow)
+            # Under the service lock so a close_session between the get and
+            # the put_terminal cannot have its clear() undone: a terminal
+            # snapshot written after the clear is never revisited and would be
+            # retained for the life of the process.
+            with self._lock:
+                workflow = self._workflow_owner.get(session_id)
+                if workflow is not None:
+                    if workflow.status != WorkflowRunStatus.FAILED:
+                        code, details, retryable = _workflow_failure(
+                            failure or RuntimeError("x64dbg runtime failed")
+                        )
+                        workflow = fail_workflow_runtime(
+                            workflow,
+                            code=code,
+                            message=str(failure or "x64dbg runtime failed"),
+                            details=details,
+                            retryable=retryable,
+                        )
+                    self._workflow_owner.put_terminal(session_id, workflow)
         if runtime is not None:
             runtime.worker.terminate()
             if kind == BackendKind.X64DBG:

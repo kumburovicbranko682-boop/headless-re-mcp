@@ -135,9 +135,14 @@ class _Double(sw.WorkflowAnalysisMixin):
         self.calls.append(("navigate", pattern.kind, event_budget))
         return {"navigated": True, "pattern": pattern.kind}
 
-    def _record_workflow_failure_locked(self, session_id: str, workflow: Any, error: Any) -> Any:
+    def _record_workflow_failure_locked(
+        self, session_id: str, runtime: Any, workflow: Any, error: Any
+    ) -> Any:
         self.calls.append(("record_failure", error))
         return self.workflow
+
+    def _store_workflow_if_current(self, session_id: str, runtime: Any, workflow: Any) -> None:
+        self.calls.append(("owner_put", workflow))
 
 
 @pytest.fixture
