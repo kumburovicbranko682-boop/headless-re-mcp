@@ -825,6 +825,15 @@ _NT_GNU_BUILD_ID = 3
 # ABI: x.y.z", so the toolchain gate can cross-check it. Every gcc/clang build
 # carries it, so it is a reliable "which Unix, how old a kernel" triage fact.
 _NT_GNU_ABI_TAG = 1
+# The systemd package-metadata note (.note.package, owner "FDO"): a JSON
+# object naming the distribution package the binary shipped in -- the ELF
+# self-declared identity, the pair to a PE's VS_VERSIONINFO and a .NET
+# assembly identity. The linker writes it (ld/lld --package-metadata=) and
+# readelf -n prints the same JSON, so a gate can compare key for key.
+_NT_FDO_PACKAGING_METADATA = 0xCAFE1A7E
+_ELF_MAX_PACKAGE_JSON = 4096
+_ELF_MAX_PACKAGE_KEYS = 32
+_ELF_MAX_PACKAGE_STR = 256
 # The GNU property note (NT_GNU_PROPERTY_TYPE_0) carries the forward-edge CFI
 # and shadow-stack posture -- the ELF pair to PE's cfg bit: gcc/clang
 # -fcf-protection stamps IBT and SHSTK on x86, -mbranch-protection stamps BTI
@@ -7956,6 +7965,13 @@ def _elf_layout_facts(
         build_id = _elf_build_id(stream, order, program["notes"])
         if build_id is not None:
             facts["build_id"] = build_id
+        # The distribution package the binary claims to ship in, off the
+        # .note.package JSON -- the ELF self-declared identity, the pair to a
+        # PE's version_info and a .NET assembly identity. Absent on binaries
+        # whose linker never stamped one.
+        package = _elf_package_note(stream, order, program["notes"])
+        if package is not None:
+            facts["package"] = package
         # Target OS and minimum kernel from the GNU ABI-tag note -- the ELF
         # analogue of Mach-O's platform/min_os, cross-checked against readelf -n.
         abi_os, min_kernel = _elf_abi_tag(stream, order, program["notes"])
@@ -8579,6 +8595,45 @@ def _elf_build_id(
     for ntype, name, desc in _elf_iter_notes(stream, order, notes):
         if ntype == _NT_GNU_BUILD_ID and name == b"GNU" and 0 < len(desc) <= _ELF_BUILD_ID_MAX:
             return desc.hex()
+    return None
+
+
+def _elf_package_note(
+    stream: BinaryIO, order: str, notes: list[tuple[int, int]]
+) -> dict[str, Any] | None:
+    """The package-metadata note's claims as a dict, or None when absent.
+
+    .note.package (owner "FDO", type 0xcafe1a7e) is the systemd/distribution
+    answer to "what package does this binary belong to": a NUL-terminated
+    JSON object with type/os/name/version/architecture and a debuginfod URL,
+    stamped by the linker at build time. That makes it the ELF self-declared
+    identity fact -- what VS_VERSIONINFO is to a PE and the Assembly table is
+    to a .NET image -- and, like those, it is a claim, not a verified fact.
+    Keys come back sorted and capped, string values truncated, non-scalar
+    values stringified; a descriptor that is not valid UTF-8 JSON or not an
+    object yields None rather than a guess.
+    """
+    for ntype, name, desc in _elf_iter_notes(stream, order, notes):
+        if ntype != _NT_FDO_PACKAGING_METADATA or name != b"FDO":
+            continue
+        if not 0 < len(desc) <= _ELF_MAX_PACKAGE_JSON:
+            return None
+        try:
+            parsed = json.loads(desc.split(b"\x00", 1)[0].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(parsed, dict) or not parsed:
+            return None
+        claims: dict[str, Any] = {}
+        for key in sorted(parsed, key=str)[:_ELF_MAX_PACKAGE_KEYS]:
+            value = parsed[key]
+            if isinstance(value, str):
+                claims[str(key)[:_ELF_MAX_PACKAGE_STR]] = value[:_ELF_MAX_PACKAGE_STR]
+            elif value is None or isinstance(value, (bool, int, float)):
+                claims[str(key)[:_ELF_MAX_PACKAGE_STR]] = value
+            else:  # nested arrays/objects: visible, but never open-ended
+                claims[str(key)[:_ELF_MAX_PACKAGE_STR]] = str(value)[:_ELF_MAX_PACKAGE_STR]
+        return claims
     return None
 
 

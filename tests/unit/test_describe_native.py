@@ -14,6 +14,7 @@ import glob
 import gzip
 import hashlib
 import io
+import json
 import struct
 import zipfile
 from pathlib import Path
@@ -1346,6 +1347,65 @@ def test_abi_tag_reports_target_os_and_min_kernel(tmp_path: Path) -> None:
     facts = describe_native(path)["native"]
     assert facts["abi_os"] == "linux"
     assert facts["min_kernel"] == "3.2.0"
+
+
+def _package_note(payload: bytes) -> bytes:
+    # FDO_PACKAGING_METADATA (0xcafe1a7e, owner "FDO"): a NUL-terminated JSON
+    # object -- what ld --package-metadata= writes into .note.package.
+    return _elf_note(0xCAFE1A7E, b"FDO", payload + b"\x00")
+
+
+def test_package_note_reads_the_self_declared_identity(tmp_path: Path) -> None:
+    """The ELF "which package am I": the pair to PE version_info.
+
+    The systemd package-metadata note carries the distribution's claims about
+    the binary's origin; readelf -n prints the identical JSON, so the
+    toolchain gate can compare key for key.
+    """
+    payload = b'{"type":"deb","os":"Ubuntu","name":"systemd","version":"255.4-1"}'
+    path = _write(tmp_path, "a.bin", _elf64_with_notes(_package_note(payload)))
+    facts = describe_native(path)["native"]
+    assert facts["package"] == {
+        "name": "systemd",
+        "os": "Ubuntu",
+        "type": "deb",
+        "version": "255.4-1",
+    }
+
+
+def test_a_binary_without_the_note_claims_no_package(tmp_path: Path) -> None:
+    # Most binaries never got the note; the key stays absent, no empty claim.
+    path = _write(tmp_path, "n.bin", _elf64_with_notes(_abi_note(0, 3, 2, 0)))
+    assert "package" not in describe_native(path)["native"]
+
+
+def test_package_note_with_hostile_payloads_stays_out(tmp_path: Path) -> None:
+    # Not-JSON, non-object JSON and non-UTF-8 bytes must all yield absence --
+    # never an exception, never an invented claim.
+    for payload in (b"not json at all", b'["a","list"]', b'"just a string"', b"\xff\xfe{}"):
+        path = _write(tmp_path, "h.bin", _elf64_with_notes(_package_note(payload)))
+        assert "package" not in describe_native(path)["native"]
+
+
+def test_package_note_under_a_foreign_owner_is_not_read(tmp_path: Path) -> None:
+    # The right type under the wrong owner is someone else's note.
+    note = _elf_note(0xCAFE1A7E, b"GNU", b'{"name":"fake"}\x00')
+    path = _write(tmp_path, "f.bin", _elf64_with_notes(note))
+    assert "package" not in describe_native(path)["native"]
+
+
+def test_package_note_values_come_back_bounded(tmp_path: Path) -> None:
+    # Long strings truncate, nested structures stringify, scalars survive:
+    # a hostile note cannot balloon the fact or smuggle open-ended shapes.
+    payload = json.dumps(
+        {"name": "A" * 600, "epoch": 3, "signed": True, "nested": {"k": "v"}}
+    ).encode()
+    path = _write(tmp_path, "b.bin", _elf64_with_notes(_package_note(payload)))
+    claims = describe_native(path)["native"]["package"]
+    assert claims["name"] == "A" * 256
+    assert claims["epoch"] == 3
+    assert claims["signed"] is True
+    assert claims["nested"] == "{'k': 'v'}"
 
 
 def test_abi_tag_and_build_id_parse_from_the_same_segment(tmp_path: Path) -> None:

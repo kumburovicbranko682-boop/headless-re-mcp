@@ -104,6 +104,7 @@ llvm is installed on the Linux lane.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import struct
@@ -602,6 +603,90 @@ def test_elf_abi_tag_agrees_with_readelf(tmp_path: Path) -> None:
         assert native["min_kernel"] == readelf_kernel
     finally:
         if session_id is not None:
+            service.close_session(session_id)
+
+
+# readelf -n renders the FDO_PACKAGING_METADATA descriptor verbatim on its
+# "Packaging Metadata:" line -- the very JSON the linker embedded.
+_READELF_PACKAGE_RE = re.compile(r"Packaging Metadata: (\{.*\})")
+
+
+@pytest.mark.integration
+def test_elf_package_note_agrees_with_readelf(tmp_path: Path) -> None:
+    """The self-declared package identity, stamped by ld, refereed by readelf.
+
+    A session over an ELF now reads .note.package -- the systemd
+    packaging-metadata spec's JSON, the ELF pair to a PE's VS_VERSIONINFO and
+    a .NET assembly identity. The note walk, the FDO owner/type match and the
+    JSON bounds are all ours, so the gate makes a production linker write the
+    real thing: ld --package-metadata= embeds a known claim set into a real
+    gcc link, the reader must hand back exactly those claims, and readelf
+    -n's own decode of the note (its "Packaging Metadata:" line) must parse
+    to the same dict -- writer, reader and referee agreeing on both bytes and
+    meaning. A plain link of the same source must keep the key absent. skip
+    != pass when the toolchain lacks the option (binutils < 2.39).
+    """
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    if gcc is None:
+        pytest.skip("no C compiler installed — package-note gate not run (skip != pass)")
+    readelf = shutil.which("readelf")
+    if readelf is None:
+        pytest.skip("readelf (binutils) not installed — package-note gate not run (skip != pass)")
+
+    claims = {
+        "type": "deb",
+        "os": "gate-linux",
+        "name": "probe-package",
+        "version": "1.2-3",
+        "architecture": "amd64",
+    }
+    source = tmp_path / "probe.c"
+    source.write_text(_PROBE_C)
+    stamped = tmp_path / "probe_stamped"
+    # -Xlinker passes the whole option through untouched; -Wl would split the
+    # JSON at its commas.
+    compile_result = subprocess.run(
+        [
+            gcc,
+            str(source),
+            "-o",
+            str(stamped),
+            "-Xlinker",
+            f"--package-metadata={json.dumps(claims, separators=(',', ':'))}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if compile_result.returncode != 0 and "--package-metadata" in compile_result.stderr:
+        pytest.skip("linker lacks --package-metadata — package-note gate not run (skip != pass)")
+    assert compile_result.returncode == 0, compile_result.stderr
+
+    # The referee first: readelf decodes the note the linker wrote, and the
+    # JSON it prints must be the claims we handed the linker -- proof the
+    # option really stamped them before the reader is asked anything.
+    result = subprocess.run(
+        [readelf, "-n", str(stamped)], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    printed = _READELF_PACKAGE_RE.search(result.stdout)
+    assert printed, result.stdout
+    assert json.loads(printed.group(1)) == claims
+
+    plain = _compile_probe(gcc, tmp_path, "probe_plain")
+
+    service = AnalysisService()
+    sessions: list[str] = []
+    try:
+        session_id, native = _session_native(service, stamped)
+        sessions.append(session_id)
+        assert native["package"] == claims
+        # No note stamped, no claim invented: absence is the honest answer.
+        session_id, plain_native = _session_native(service, plain)
+        sessions.append(session_id)
+        assert "package" not in plain_native
+    finally:
+        for session_id in sessions:
             service.close_session(session_id)
 
 
