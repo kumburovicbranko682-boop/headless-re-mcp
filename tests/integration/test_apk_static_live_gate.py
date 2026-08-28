@@ -21,6 +21,7 @@ skip != pass when androguard is absent; no external tool or device is required.
 from __future__ import annotations
 
 import hashlib
+import shutil
 import struct
 import subprocess
 import zipfile
@@ -37,6 +38,7 @@ from headless_re_mcp.backends.apktool.client import (
     _DEBUG_PASSWORD,
 )
 from headless_re_mcp.backends.jadx import JadxClient
+from headless_re_mcp.backends.r2.client import R2Client
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 
@@ -736,7 +738,11 @@ def _build_field_dex() -> bytes:
 
 
 def _build_apk(
-    path: Path, *, dex: bytes | None = None, extra_dexes: dict[str, bytes] | None = None
+    path: Path,
+    *,
+    dex: bytes | None = None,
+    extra_dexes: dict[str, bytes] | None = None,
+    extra_files: dict[str, bytes] | None = None,
 ) -> Path:
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("AndroidManifest.xml", _build_manifest_axml())
@@ -745,6 +751,10 @@ def _build_apk(
             archive.writestr(name, payload)
         archive.writestr("lib/arm64-v8a/libnative.so", b"\x7fELFplaceholder")
         archive.writestr("lib/x86_64/libhello.so", b"\x7fELFplaceholder")
+        # A real native library (an ELF shared object) can be embedded here so the
+        # extract -> native-analysis handoff gate has genuine bytes to pull out.
+        for name, payload in (extra_files or {}).items():
+            archive.writestr(name, payload)
     return path
 
 
@@ -1428,6 +1438,136 @@ def test_apk_certificates_report_the_actual_signing_scheme(tmp_path: Path) -> No
             assert certs.data["certificates"], (label, certs.data)
         finally:
             service.close_all()
+
+
+# The extract -> native-analysis handoff: a real ELF shared object embedded in
+# the APK, carrying an exported function and a marker string r2 must recover.
+_NATIVE_LIB_ENTRY = "lib/x86_64/libre_mcp.so"
+_NATIVE_FUNC = "re_mcp_triple"
+_NATIVE_MARKER = "re_mcp_native_marker_9449"
+_NATIVE_SO_SOURCE = (
+    f"int {_NATIVE_FUNC}(int x) {{ return x * 3 + 1; }}\n"
+    f'const char re_mcp_marker[] = "{_NATIVE_MARKER}";\n'
+)
+
+
+def _build_elf_so(tmp_path: Path) -> bytes:
+    """Compile a tiny ELF shared object, or skip (skip != pass).
+
+    A shared object (not the placeholder ``\\x7fELF`` bytes the other fixtures
+    embed) is what proves the extracted library is a genuine native binary the
+    portable backend can analyse: it carries an exported function and a marker
+    string in .rodata, both of which r2 must recover from the pulled-out file.
+    """
+    compiler = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+    if compiler is None:
+        pytest.skip("no C compiler (cc/gcc/clang) — native-lib handoff Gate not run (skip != pass)")
+    source = tmp_path / "re_mcp_lib.c"
+    source.write_text(_NATIVE_SO_SOURCE, encoding="utf-8")
+    out = tmp_path / "libre_mcp.so"
+    try:
+        completed = subprocess.run(
+            [compiler, "-shared", "-fPIC", "-O0", "-o", str(out), str(source)],
+            capture_output=True,
+            timeout=120.0,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:  # pragma: no cover - host dependent
+        pytest.skip(f"C compiler unusable ({exc}) — native-lib handoff Gate not run (skip != pass)")
+    if completed.returncode != 0 or not out.is_file():
+        pytest.skip(
+            "C compiler produced no shared object "
+            f"({completed.stderr.decode('utf-8', 'replace')[:200]}) — skip != pass"
+        )
+    return out.read_bytes()
+
+
+@pytest.mark.integration
+def test_apk_extract_native_lib_feeds_the_native_analysis_line(tmp_path: Path) -> None:
+    """An embedded .so must extract to a file the native RE backend can analyse.
+
+    apk.native_libs could list an app's native libraries but nothing could hand
+    one to r2/Ghidra -- jadx and apktool only touch Java/smali, so native crypto,
+    DRM and anti-tamper code was a dead end. This embeds a real ELF shared object
+    in the APK, extracts it through apk.extract_native_lib (exact bytes, an
+    artifact id), then opens the pulled-out file as a native session and proves r2
+    recovers the exported function and the marker string. That is the seam from
+    the Android line to the native line. skip != pass without androguard, a C
+    compiler, or radare2.
+    """
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — APK live gate not run (skip != pass)")
+    so_bytes = _build_elf_so(tmp_path)
+    apk = _build_apk(
+        tmp_path / "native.apk",
+        dex=_build_populated_dex(),
+        extra_files={_NATIVE_LIB_ENTRY: so_bytes},
+    )
+    service = AnalysisService(Settings.load())
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+
+        # The library is listed, then extracted to disk with the exact bytes.
+        libs = service.apk_native_libs(session_id)
+        assert libs.ok and libs.data is not None, libs.error
+        assert _NATIVE_LIB_ENTRY in libs.data["native_libs"], libs.data["native_libs"]
+
+        extracted = service.apk_extract_native_lib(session_id, _NATIVE_LIB_ENTRY)
+        assert extracted.ok and extracted.data is not None, extracted.error
+        assert extracted.data["abi"] == "x86_64", extracted.data
+        assert extracted.data["sha256"] == hashlib.sha256(so_bytes).hexdigest()
+        assert extracted.data["size"] == len(so_bytes)
+        # It is registered, so an agent has a handle to read it back.
+        assert extracted.data.get("artifact_id"), extracted.data
+        lib_path = Path(extracted.data["path"])
+        assert lib_path.is_file()
+        on_disk = lib_path.read_bytes()
+        assert on_disk == so_bytes
+        assert on_disk[:4] == b"\x7fELF", on_disk[:8]
+
+        # Asking for a real archive entry that is not a native library is refused,
+        # so this is not an arbitrary zip extractor.
+        not_a_lib = service.apk_extract_native_lib(session_id, "classes.dex")
+        assert not not_a_lib.ok and not_a_lib.error is not None
+        assert not_a_lib.error.code == "invalid_params", not_a_lib.error
+
+        # A .so name absent from the archive is a clean not_found.
+        ghost = service.apk_extract_native_lib(session_id, "lib/x86_64/ghost.so")
+        assert not ghost.ok and ghost.error is not None
+        assert ghost.error.code == "not_found", ghost.error
+
+        # The seam: the extracted file opens as a native session and r2 analyses
+        # it -- the whole reason to pull the library out of the APK.
+        if not R2Client().available:
+            pytest.skip("radare2 not installed — native handoff leg not run (skip != pass)")
+        native = service.create_session(str(lib_path))
+        assert native.ok and native.data is not None, native.error
+        nsession = native.data["session"]
+        assert nsession.get("target") == "native", nsession
+        assert nsession.get("metadata", {}).get("native", {}).get("format") == "elf", nsession
+        nsid = str(nsession["id"])
+
+        assert service.r2_open(nsid, timeout=60.0).ok
+
+        # The exported function must come back from the extracted library, named.
+        exports = service.r2_exports(nsid, timeout=60.0)
+        assert exports.ok and exports.data is not None, exports.error
+        symbols = service.r2_symbols(nsid, timeout=60.0)
+        assert symbols.ok and symbols.data is not None, symbols.error
+        names = {item.get("name") for item in exports.data.get("items", [])}
+        names |= {item.get("name") for item in symbols.data.get("items", [])}
+        assert any(_NATIVE_FUNC in (n or "") for n in names), sorted(n for n in names if n)
+
+        # The marker string in .rodata proves r2 read the real library bytes.
+        strings = service.r2_strings(nsid, timeout=60.0)
+        assert strings.ok and strings.data is not None, strings.error
+        literals = strings.data.get("items") or []
+        assert any(
+            _NATIVE_MARKER in (s.get("string") or "") for s in literals
+        ), [s.get("string") for s in literals]
+    finally:
+        service.close_all()
 
 
 @pytest.mark.integration
