@@ -20,6 +20,7 @@ the shaping tests use) whose method raises.
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import pytest
@@ -109,6 +110,27 @@ class TestClientClassification:
         with pytest.raises(AdbError) as caught:
             backend._client()
         assert caught.value.code == "capability_unavailable"
+
+    def test_init_marks_unavailable_when_adbutils_is_absent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """__init__ degrades to unavailable when ``import adbutils`` fails.
+
+        The construction-time partner of the runtime guard above: every other
+        unavailable test sets ``_available = False`` by hand, so __init__'s
+        except arm -- the one that establishes that state on a bare install --
+        was never run (adbutils installed alongside the android extra never
+        takes it). A None entry in sys.modules is the import system's negative
+        cache, so ``import adbutils`` raises ImportError regardless of what is
+        installed, pinning the degradation hermetically rather than relying on
+        the environment simply lacking adbutils.
+        """
+        monkeypatch.setitem(sys.modules, "adbutils", None)
+
+        backend = AdbBackend()
+
+        assert backend.available is False
+        assert backend._adbutils is None
 
     def test_the_socket_timeout_kwarg_is_optional_across_adbutils_versions(self) -> None:
         """The TypeError fallback: an older AdbClient without socket_timeout must

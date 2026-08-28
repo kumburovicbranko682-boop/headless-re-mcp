@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（补齐 adb 后端"模块缺席"构造分支的密闭覆盖）
+
+- 与上一条 frida 同源同型:`AdbBackend.__init__` 的 `except`（`import adbutils` 失败 → `_available=False`）
+  分支从未被执行——adbutils 装着时天然不走,而所有"不可用"用例都是构造后手动 `backend._available = False`
+  （含 `test_capability_unavailable_when_adbutils_is_absent`,它验的是 `_client()` 运行时守卫,绕过了 `__init__`）。
+- 补上构造期密闭伙伴:`monkeypatch.setitem(sys.modules, "adbutils", None)` 让 `import adbutils` 抛 ImportError
+  （装不装 adbutils 都成立）,断言 `available is False` 且 `_adbutils is None`。已在装有 adbutils 的环境验证通过、
+  mutation 验证载荷性（把 except 分支改成 `_available=True` 即失败）,覆盖 `adb/client.py:427-429`。
+  至此三个"在 `__init__` 里惰性 import"的后端（apk/frida/adb）都有了构造期降级的密闭覆盖。
+
 ### 测试（补齐 frida 后端"模块缺席"构造分支的密闭覆盖）
 
 - 满配环境（装齐 CLI 工具 + `android`/`browser`/`proxy` Python extras）下做覆盖率扫描，发现
