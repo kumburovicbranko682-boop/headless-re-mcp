@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`proxy.flow.get` 把压缩响应体当成二进制吐 .bin，而不是先解压）
+
+- 抓到的响应体绝大多数带 `Content-Encoding`（gzip/br/deflate/zstd）。`flow.get` 的取体助手
+  `_raw_body` 取的是 mitmproxy 的 `raw_content`——即在线上原样传输、仍处于压缩态的字节；`_emit_body`
+  拿去做 UTF-8 校验必然失败，于是把这团 gzip 溢写成 `.bin` 制品并标 `spill_reason=binary`。结果分析者
+  为一个 JSON/HTML 响应打开抓包，拿到的是一坨读不懂的压缩块，且没有任何线索提示「其实只差一步解压」
+  （实测 mitmproxy 12.2.3：90 字节 JSON 体经 gzip 后 `raw_content` 52 字节且无法 UTF-8 解码——旧路径必溢
+  写为 binary；`content` 解出的正是原始 90 字节可读文本）。现将助手改名 `_decoded_body`，优先取
+  `content`（按 `Content-Encoding` 解码后的体），仅当该编码无法还原（头部谎报或用了 mitmproxy 装不了的
+  编码，此时 `content` 抛异常）才回退到线上原始字节——那些字节确实不透明，此时溢写为 binary 才是诚实的
+  结果。取体只服务 `flow.get` 展示这一条路径（replay/抓包摘要都不经它），故改动自洽、不波及重放。新增
+  `tests/unit/test_proxy_decoded_body.py`：单测钉住「优先解码体、编码坏了回退线上字节、无体/无 part 皆空、
+  没有 content 属性的桩降级读 raw_content」四态；一条实机闸用真 mitmproxy 造一个 gzip JSON 响应，先断言
+  其 `raw_content` 无法 UTF-8 解码（旧路径必溢写），再核对 `_decoded_body` + `_emit_body` 把它内联成可读
+  文本、不落 `body_path`（无 mitmproxy 时跳过，skip≠pass）。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
