@@ -99,6 +99,38 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="frida.memory.ranges")
+    def frida_memory_ranges(
+        session_id: str,
+        protection: Annotated[str, Field(pattern="^[r-][w-][x-]$")] = "r--",
+        limit: Annotated[int, Field(ge=1, le=256)] = 64,
+        name_filter: str = "",
+    ) -> dict[str, Any]:
+        """List the target's mapped memory ranges via a short-lived Frida probe.
+
+        The map that makes frida.memory.read usable: read needs an address, and
+        this is how you find which ones are mapped, what they permit, and what is
+        backing them (Process.enumerateRanges). Answers with ranges (base, size,
+        protection like 'rw-' or 'r-x', file -- the mapped path or '' for
+        anonymous), count for this page, total, and has_more so a page that filled
+        the limit is not read as the whole map. protection is a three-character
+        r/w/x mask where '-' is a wildcard, passed to the enumerator: the default
+        'r--' lists the readable regions read can touch, 'rw-' narrows to writable
+        ones (where a decrypted key or token lands at runtime), '--x' to
+        executable code, '---' to everything. name_filter then keeps only ranges
+        whose backing file path contains that substring (case-sensitive), applied
+        before the cap so a specific library's mapping (e.g. libssl) is reachable
+        rather than buried past the limit -- there is no offset. The target is the
+        connected device's authorized pid when this session has one
+        (frida.device.connect + frida.spawn); otherwise the local debuggee. The
+        list field is ranges. Read-only.
+        """
+        return _dump(
+            analysis.frida_memory_ranges(
+                session_id, protection=protection, limit=limit, name_filter=name_filter
+            )
+        )
+
     @tools.tool(name="frida.memory.read")
     def frida_memory_read(
         session_id: str, address: int, size: Annotated[int, Field(ge=1, le=262144)] = 16

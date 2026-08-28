@@ -567,6 +567,48 @@ class ExtAnalysisMixin(UiDriveMixin):
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def frida_memory_ranges(
+        self,
+        session_id: str,
+        protection: str = "r--",
+        limit: int = 64,
+        name_filter: str = "",
+    ) -> Result[JsonObject]:
+        try:
+            client = FridaClient()
+            target = _frida_device_target(self, session_id)
+            if target is not None:
+                device_id, pid, allowed = target
+                data = client.ranges_device(
+                    device_id,
+                    pid,
+                    allowed_pids=allowed,
+                    protection=protection,
+                    limit=limit,
+                    name_filter=name_filter,
+                )
+            else:
+                pid = _require_debuggee_pid(self, session_id)
+                data = client.ranges(
+                    pid,
+                    allowed_pid=pid,
+                    protection=protection,
+                    limit=limit,
+                    name_filter=name_filter,
+                )
+            _timeline_append(
+                self,
+                session_id,
+                "frida.memory.ranges",
+                "frida memory ranges listed",
+                count=data.get("count"),
+            )
+            return _success(data, session_id=session_id, backend="frida")
+        except FridaError as exc:
+            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
     def frida_memory_read(
         self, session_id: str, address: int, size: int
     ) -> Result[JsonObject]:

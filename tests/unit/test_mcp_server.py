@@ -152,6 +152,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "frida.modules",
         "frida.exports",
         "frida.imports",
+        "frida.memory.ranges",
         "frida.memory.read",
         "frida.hook.template",
         "windbg.open_dump",

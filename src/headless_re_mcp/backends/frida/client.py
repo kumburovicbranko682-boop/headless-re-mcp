@@ -147,6 +147,29 @@ rpc.exports = {
     }
     return {found: true, module: mod.name, base: mod.base.toString(), imports: items};
   },
+  ranges: function (protection, filter, limit) {
+    var all = Process.enumerateRanges(protection || 'r--');
+    var items = [];
+    var cap = Math.max(0, limit);
+    var total = 0;
+    for (var i = 0; i < all.length; i++) {
+      var r = all[i];
+      var path = (r.file && r.file.path) ? r.file.path : '';
+      if (filter && path.indexOf(filter) === -1) {
+        continue;
+      }
+      total++;
+      if (items.length < cap) {
+        items.push({
+          base: r.base.toString(),
+          size: r.size,
+          protection: r.protection,
+          file: path
+        });
+      }
+    }
+    return {ranges: items, total: total};
+  },
   read: function (address, size) {
     return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
   }
@@ -232,6 +255,56 @@ def _check_read_bounds(address: int, size: int) -> None:
         raise FridaError("invalid_params", "size must be 1..262144")
     if type(address) is not int or not 0 <= address < 2**64:
         raise FridaError("invalid_params", "address must be an integer in [0, 2**64)")
+
+
+_PROTECTION_RE = re.compile(r"^[r-][w-][x-]$")
+
+
+def _normalize_protection(protection: str) -> str:
+    """Validate the enumerateRanges protection mask before it reaches the agent.
+
+    Frida takes a three-character r/w/x mask where '-' is a wildcard, so 'r--'
+    means "at least readable" (the useful default -- the regions memory.read can
+    actually touch) and 'rw-' narrows to writable ones (where a decrypted secret
+    lands). The MCP schema constrains it, but the agent transport skips pydantic,
+    so a junk string could otherwise be handed to Process.enumerateRanges;
+    reject anything off the mask as invalid_params rather than let it through.
+    """
+    if not isinstance(protection, str):
+        raise FridaError("invalid_params", "protection must be a string like 'r--'")
+    value = protection.strip()
+    if not _PROTECTION_RE.match(value):
+        raise FridaError(
+            "invalid_params",
+            "protection must match [r-][w-][x-], e.g. 'r--', 'rw-', 'rwx', '---'",
+            protection=protection,
+        )
+    return value
+
+
+def _shape_ranges(raw: Any, capped: int) -> JsonObject:
+    if isinstance(raw, dict):
+        held = list(raw.get("ranges") or [])
+        total = int(raw.get("total") or len(held))
+    else:
+        held = list(raw or [])
+        total = len(held)
+    items = [
+        {
+            "base": str(item.get("base", "")),
+            "size": int(item.get("size", 0) or 0),
+            "protection": str(item.get("protection", "")),
+            "file": str(item.get("file", "")),
+        }
+        for item in held[:capped]
+        if isinstance(item, dict)
+    ]
+    return {
+        "ranges": items,
+        "count": len(items),
+        "total": total,
+        "has_more": total > len(items),
+    }
 
 
 def _shape_modules(raw: Any, capped: int) -> JsonObject:
@@ -508,6 +581,30 @@ class FridaClient:
             with contextlib.suppress(Exception):
                 session.detach()
 
+    def ranges(
+        self,
+        pid: int,
+        *,
+        allowed_pid: int,
+        protection: str = "r--",
+        limit: int = 64,
+        name_filter: str = "",
+    ) -> JsonObject:
+        self._require(pid, allowed_pid)
+        prot = _normalize_protection(protection)
+        session = self._attach_local(pid)
+        try:
+            return self._run_enum(
+                session,
+                kind="ranges",
+                protection=prot,
+                limit=limit,
+                name_filter=name_filter,
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                session.detach()
+
     def memory_read(
         self, pid: int, address: int, size: int, *, allowed_pid: int
     ) -> JsonObject:
@@ -530,6 +627,7 @@ class FridaClient:
         size: int = 0,
         limit: int = 64,
         name_filter: str = "",
+        protection: str = "r--",
     ) -> JsonObject:
         """Load the enumeration agent into an attached session and run one query.
 
@@ -547,6 +645,11 @@ class FridaClient:
         if kind == "modules":
             capped = max(1, min(int(limit), 256))
             return _shape_modules(script.exports_sync.modules(needle, capped), capped)
+        if kind == "ranges":
+            capped = max(1, min(int(limit), 256))
+            return _shape_ranges(
+                script.exports_sync.ranges(protection, needle, capped), capped
+            )
         if kind == "exports":
             capped = max(1, min(int(limit), 512))
             raw = script.exports_sync.exports(module_name, needle, capped + 1)
@@ -987,6 +1090,30 @@ class FridaClient:
             timeout=timeout,
         )
 
+    def ranges_device(
+        self,
+        device_id: str | None,
+        pid: int,
+        *,
+        allowed_pids: Iterable[int],
+        protection: str = "r--",
+        limit: int = 64,
+        name_filter: str = "",
+        timeout: float = _PROBE_TIMEOUT_S,
+    ) -> JsonObject:
+        self._authorize(pid, allowed_pids)
+        prot = _normalize_protection(protection)
+        device = self._resolve_device(device_id)
+        return self._enum_on_device(
+            device,
+            pid,
+            kind="ranges",
+            protection=prot,
+            limit=limit,
+            name_filter=name_filter,
+            timeout=timeout,
+        )
+
     def memory_read_device(
         self,
         device_id: str | None,
@@ -1015,6 +1142,7 @@ class FridaClient:
         size: int = 0,
         limit: int = 64,
         name_filter: str = "",
+        protection: str = "r--",
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
         """attach on the resolved device, run one enumeration, detach.
@@ -1043,6 +1171,7 @@ class FridaClient:
                     size=size,
                     limit=limit,
                     name_filter=name_filter,
+                    protection=protection,
                 )
             finally:
                 with contextlib.suppress(Exception):

@@ -294,6 +294,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **Frida 线能 `frida.memory.read` 从一个地址读字节，却没有任何工具告诉你「哪些地址是映射的、可读还是可写、背后是哪个模块」——而运行时解密出来的密钥/令牌恰恰
+  落在可写匿名区里，你得先看到内存图才知道去读哪儿**。新增只读工具 `frida.memory.ranges`：短命探针注入 `Process.enumerateRanges`，列出目标进程的映射内存段。
+  答复带 `ranges`（每段 `base`、`size`、`protection`（如 'rw-'、'r-x'）、`file`（映射文件路径，匿名段为 ''））、`count`、`total` 与 `has_more`，故填满一页
+  不会被当成整张图。`protection` 是三位 r/w/x 掩码（'-' 为通配），直接传给枚举器：默认 'r--' 列出 read 能碰的可读段，'rw-' 收窄到可写段（运行时解密密钥落脚处），
+  '--x' 到可执行代码，'---' 到全部。`name_filter` 再对映射文件路径做大小写敏感子串匹配、在截断前应用，故某个库的映射（如 libssl）可达而非被埋在上限之外——没有
+  offset。目标与其它 frida 探针一致：会话已连设备（frida.device.connect + frida.spawn）时用其授权 pid，否则用本地被调试进程；整套 attach/枚举/detach 受探针
+  deadline 约束，故卡死的进程不会占住 worker。列表字段是 `ranges`，配合 `frida.memory.read` 构成「看图→读段」工作流。只读，工具总数 296→297（179 只读 / 118 写）。
 - **`web.network.list` 只能告诉你页面「实际打过」哪些请求，但逆向真正想问的是「这页 JS 里配置了哪些后端」——那些被 feature flag / 角色门控、只在管理台或
   懒加载 chunk 里出现、正常会话根本不会触发的端点，网络日志里永远看不到**。新增只读工具 `web.endpoints`：`js.endpoints` 的动态页对应物、`web.network.list`
   的静态补充。它抓取页面已解析的每个脚本源码——包括壳/加载器在内存里 eval 出来、从不落盘的运行时脚本——用共享 JS 词法器（`\x`/`\u` 转义 URL 先解码、注释与
