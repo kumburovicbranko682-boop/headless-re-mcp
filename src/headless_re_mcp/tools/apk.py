@@ -61,6 +61,22 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_certificates(session_id))
 
+    @tools.tool(name="apk.security")
+    def apk_security(session_id: str) -> dict[str, Any]:
+        """Report the <application> element's security posture.
+
+        The reviewer's first look. Answers with package, debuggable,
+        allow_backup, uses_cleartext_traffic, network_security_config,
+        application_class (a custom android.app.Application subclass, where a
+        packer/loader often runs first), min_sdk and target_sdk. A boolean the
+        manifest never declared is null ("not set"), which is not the same as
+        false -- so the caller can apply the target SDK's own default rather
+        than assume one. network_security_config and application_class are the
+        declared names or null. There is no flags or manifest field; use
+        apk.manifest for the raw XML.
+        """
+        return _dump(analysis.apk_security(session_id))
+
     @tools.tool(name="apk.components")
     def apk_components(session_id: str) -> dict[str, Any]:
         """List activities, services, receivers, and providers.

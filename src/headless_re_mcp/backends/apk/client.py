@@ -220,6 +220,50 @@ class ApkClient:
             ),
         }
 
+    def security(self, path: Path) -> JsonObject:
+        """Report the <application> element's security posture.
+
+        The first thing a reviewer checks: is the app debuggable, does it allow
+        cloud backup of its data, does it permit cleartext HTTP, does it pin a
+        network security config, and does it install a custom Application class
+        (a common place for packers/loaders to run first). A boolean flag that
+        the manifest never declared is reported as null -- "not set", which is
+        not the same as false -- so the caller can apply the right platform
+        default for the target SDK.
+        """
+        apk = self._apk(path)
+
+        def _attr(name: str) -> str | None:
+            try:
+                value = apk.get_attribute_value("application", name)
+            except Exception:  # noqa: BLE001 - androguard manifest access varies
+                return None
+            if value is None or str(value) == "":
+                return None
+            return str(value)
+
+        def _bool_attr(name: str) -> bool | None:
+            raw = _attr(name)
+            if raw is None:
+                return None
+            return raw.strip().lower() == "true"
+
+        try:
+            debuggable: bool | None = bool(apk.is_debuggable())
+        except Exception:  # noqa: BLE001
+            debuggable = _bool_attr("debuggable")
+
+        return {
+            "package": apk.get_package(),
+            "debuggable": debuggable,
+            "allow_backup": _bool_attr("allowBackup"),
+            "uses_cleartext_traffic": _bool_attr("usesCleartextTraffic"),
+            "network_security_config": _attr("networkSecurityConfig"),
+            "application_class": _attr("name"),
+            "min_sdk": _as_int(apk.get_min_sdk_version()),
+            "target_sdk": _as_int(apk.get_target_sdk_version()),
+        }
+
     def manifest(self, path: Path) -> JsonObject:
         apk = self._apk(path)
         try:
@@ -450,6 +494,14 @@ class ApkClient:
             # the enumeration ended or merely stopped.
             "has_more": has_more,
         }
+
+
+def _as_int(value: Any) -> int | None:
+    """Coerce androguard's SDK-version value (str/int/None) to an int, or None."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _dotted_to_smali(name: str) -> str:
