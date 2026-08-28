@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { api } from "../api/client";
 
 type ClientKind = "cursor" | "vscode" | "claude_desktop" | "stdio";
@@ -28,39 +28,52 @@ function snippetOf(payload: ExportPayload, client: ClientKind): unknown {
 
 export function McpExportModal({ onClose }: { onClose: () => void }) {
   const [client, setClient] = useState<ClientKind>("cursor");
-  const [payload, setPayload] = useState<ExportPayload | null>(null);
+  const [payload, setPayload] = useState<{ kind: ClientKind; data: ExportPayload } | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Discovery runs doctor probes, so a generate takes long enough for the user
+  // to click another tab meanwhile. Only the newest request may write state,
+  // or the slower response repaints the modal with another client's config.
+  const opSeq = useRef(0);
 
-  const snippet = payload ? snippetOf(payload, client) : null;
+  // The backend returns the config of the client that was *requested*; a
+  // payload generated for one tab must never render under another tab's name,
+  // or copy/download hands out the wrong client's JSON under that name.
+  const snippet = payload && payload.kind === client ? snippetOf(payload.data, client) : null;
   const text = snippet ? JSON.stringify(snippet, null, 2) : "";
 
   const generate = useCallback(async (kind: ClientKind) => {
+    const token = ++opSeq.current;
     setBusy(true); setError(null); setNote(null);
     try {
       const result = await api<ExportPayload>(`/api/mcp/export?client=${encodeURIComponent(kind)}`);
-      setPayload(result);
+      if (token !== opSeq.current) return;
+      setPayload({ kind, data: result });
       setNote(result.doctor_ready ? "已按本机路径生成。" : "已生成。Doctor 尚未全部就绪，配置仍可复制。");
     } catch (reason) {
+      if (token !== opSeq.current) return;
       setError(String(reason));
     } finally {
-      setBusy(false);
+      if (token === opSeq.current) setBusy(false);
     }
   }, []);
 
   const persist = useCallback(async () => {
+    const token = ++opSeq.current;
     setBusy(true); setError(null);
     try {
       const result = await api<ExportPayload & { persisted?: boolean }>("/api/mcp/export", {
         method: "POST",
         body: JSON.stringify({ confirm: true, persist: true }),
       });
+      if (token !== opSeq.current) return;
       setNote(result.config_path ? `已写入 ${result.config_path}` : "已写入本机配置目录。");
     } catch (reason) {
+      if (token !== opSeq.current) return;
       setError(String(reason));
     } finally {
-      setBusy(false);
+      if (token === opSeq.current) setBusy(false);
     }
   }, []);
 

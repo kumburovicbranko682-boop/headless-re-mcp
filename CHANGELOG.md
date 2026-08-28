@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（MCP 导出弹窗切换客户端标签时展示/复制/下载另一客户端的配置）
+
+- `/api/mcp/export?client=X` 返回的 `config` 是**请求时**那个客户端的结构
+  （Cursor 是 `mcpServers`、VS Code 是 `servers`），而弹窗的 `snippetOf`
+  无条件拿当前 payload 渲染当前标签。两个问题：其一，生成要跑 doctor
+  探测、耗时以秒计，快速点两个标签会并发两个请求，慢的后落地把 payload
+  盖成前一个客户端的配置——VS Code 标签下展示、复制、下载出来的却是
+  Cursor 结构的 JSON（下载文件名还叫 `headless-re-mcp-vscode.json`）；
+  其二，即使不竞态，切标签后到新响应落地前，旧客户端配置一直顶着新标签
+  名展示，这时点「复制」同样拿错。修复：payload 记录生成时的客户端，只在
+  与当前标签一致时渲染（在途期间面板回到占位提示、复制/下载自动禁用）；
+  generate/persist 用自增 token 守卫，只有最新请求能写 payload/note/
+  error/busy。新增两条回归测试（迟到响应不得覆盖新标签的配置、在途期间
+  不得借新标签展示旧配置），旧代码两条全红、新代码全绿。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
