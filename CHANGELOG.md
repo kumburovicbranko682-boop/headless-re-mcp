@@ -294,6 +294,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **`wasm.strings`/`wasm.endpoints` 补齐后，WASM 这条线离 JS/APK 的三件套只差最后一件「这个模块把哪些凭据编进去了」**。新增只读工具
+  `wasm.secrets`：复用 `wasm.strings` 的同一段 data 段解析（进程内、免 wabt）拿到 rodata 的可打印串，再把 `js.secrets`/`apk.secrets` 共用的那套
+  高精度凭据探测器（共享模块 `backends/common/secret_scan.py`，现在 JS/APK/代理/WASM 四条线共用一份规则）跑在每条串上——于是一个由 Rust/Go/C++
+  编出来、把 AWS/Google/GitHub key、Slack/Stripe token、JWT 或 PEM 私钥头写死进去的 wasm 模块，不必 `wasm2wat` 出一屏文本再翻，就能一次交出这些凭据。
+  按 `(detector, value)` 去重，每行 `{detector, value（命中的凭据，过长置 value_truncated）, count（出现次数）, first_offset（最早出现的那条 run 的
+  模块绝对字节偏移）}`，按 detector 再 count 再 value 排序。答复另带 `detectors`（命中的探测器种类集合）、`has_data_section`（模块没有 data 段时为 false、
+  `secrets` 为空——是答案不是错误），以及命中数超上限时的 `scan_capped`。探测器均加锚以压低误报，故普通长随机串不会被报，除非置 `include_generic`（对整条即为
+  高熵 base64/hex 的 run 补一个 `generic_high_entropy`，仅对没被具体探测器命中的 run 生效）。`name_filter` 对 detector 或 value 做大小写不敏感子串
+  匹配、分页前应用，故 `total` 是命中数。列表字段是 `secrets`；原始串用 `wasm.strings`，网络面用 `wasm.endpoints`。只读，工具总数 292→293（175 只读 / 118 写）。
 - **WASM 这条线有了 `wasm.summary`（结构）/`wasm.names`（符号）/`wasm.strings`（内容），但和 JS/APK 比还差最高价值的一问「这个模块到底连哪些后端」**。
   新增只读工具 `wasm.endpoints`：复用 `wasm.strings` 的同一段 data 段解析（进程内、免 wabt）拿到 rodata 的可打印串，再把 `js.endpoints`/`apk.endpoints`
   共用的那套 URL/路径识别（共享模块 `backends/common/endpoint_scan.py`，现在 JS/APK/WASM 三条线共用一份规则）跑在每条串上——于是一个由 Rust/Go/C++

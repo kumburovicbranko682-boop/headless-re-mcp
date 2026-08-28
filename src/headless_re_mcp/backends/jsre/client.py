@@ -21,6 +21,7 @@ from headless_re_mcp.backends.jsre.js_strings import extract_secrets as extract_
 from headless_re_mcp.backends.jsre.js_strings import extract_strings as extract_js_strings
 from headless_re_mcp.backends.jsre.wasm_summary import WasmParseError
 from headless_re_mcp.backends.jsre.wasm_summary import parse_data_endpoints as parse_wasm_endpoints
+from headless_re_mcp.backends.jsre.wasm_summary import parse_data_secrets as parse_wasm_secrets
 from headless_re_mcp.backends.jsre.wasm_summary import parse_data_strings as parse_wasm_strings
 from headless_re_mcp.backends.jsre.wasm_summary import parse_function_names as parse_wasm_names
 from headless_re_mcp.backends.jsre.wasm_summary import summarize as summarize_wasm
@@ -54,6 +55,8 @@ _MAX_WASM_NAMES_PAGE = 2000
 _MAX_WASM_STRINGS_PAGE = 2000
 # Same rationale for wasm.endpoints.
 _MAX_WASM_ENDPOINTS_PAGE = 2000
+# Same rationale for wasm.secrets.
+_MAX_WASM_SECRETS_PAGE = 2000
 # Same rationale for js.strings.
 _MAX_JS_STRINGS_PAGE = 2000
 # Same rationale for js.endpoints.
@@ -601,6 +604,54 @@ class WasmClient:
             "has_more": start + len(window) < len(endpoints),
             "hosts": hosts,
             "hosts_truncated": hosts_truncated,
+            "scan_capped": scan_capped,
+        }
+
+    def secrets(
+        self,
+        path: Path,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        include_generic: bool = False,
+    ) -> JsonObject:
+        """Embedded credentials in the module's data (rodata) section, no wabt.
+
+        The credential companion to strings()/endpoints(): it runs the same
+        high-precision detector table js.secrets/apk.secrets use over the module's
+        rodata runs, so a wasm module that baked in a key gives it up without
+        wabt. Dependency-free, paged; total is the count that matched the filter,
+        detectors is the distinct detector set present, has_data_section is False
+        when the module ships no data section (the answer, not an error), and
+        scan_capped marks a module with more distinct findings than the ceiling.
+        """
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        try:
+            data = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        try:
+            secrets, detectors, has_data, scan_capped = parse_wasm_secrets(
+                data, name_filter=name_filter, include_generic=include_generic
+            )
+        except WasmParseError as exc:
+            raise JsReError(
+                "invalid_params", f"not a readable wasm module: {exc}", path=str(resolved)
+            ) from exc
+        start = max(0, int(offset))
+        capped = max(1, min(int(limit), _MAX_WASM_SECRETS_PAGE))
+        window = secrets[start : start + capped]
+        return {
+            "has_data_section": has_data,
+            "secrets": window,
+            "count": len(window),
+            "total": len(secrets),
+            "offset": start,
+            "has_more": start + len(window) < len(secrets),
+            "detectors": detectors,
             "scan_capped": scan_capped,
         }
 

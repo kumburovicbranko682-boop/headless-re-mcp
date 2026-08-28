@@ -345,6 +345,50 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="wasm.secrets")
+    def wasm_secrets(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        name_filter: str = "",
+        include_generic: bool = False,
+    ) -> dict[str, Any]:
+        """Detect embedded credentials (keys/tokens) in a .wasm data section, no wabt.
+
+        The credential companion to wasm.strings (raw runs) and wasm.endpoints
+        (network surface): instead of the raw rodata it runs the same
+        high-precision detector table js.secrets and apk.secrets use over those
+        runs, so a module compiled from Rust/Go/C++ that baked in an
+        AWS/Google/GitHub key, a Slack/Stripe token, a JWT or a PEM private-key
+        header gives it up in one call, parsed in-process (no wabt). Answers with
+        secrets, count, total, offset, has_more, detectors (the distinct detector
+        names present), has_data_section, and scan_capped when the module held
+        more distinct findings than the collect ceiling. When has_data_section is
+        false the module ships no initialised memory and secrets is empty -- that
+        is the answer, not an error. Each secrets row is {detector, value (the
+        matched credential, clipped with value_truncated when long), count
+        (occurrences), first_offset (module-absolute byte offset of the earliest
+        run it was seen in)}, ordered by detector then count (descending) then
+        value. The detectors are anchored to keep the false-positive rate low, so
+        an ordinary long random-looking run is not reported unless include_generic
+        is set (which adds a whole-run high-entropy base64/hex catch-all, only for
+        a run no specific detector already claimed). name_filter keeps only
+        findings whose detector or value contains that substring
+        (case-insensitive), applied before paging so total is the match count. The
+        list field is secrets; for the raw strings use wasm.strings and for the
+        network surface use wasm.endpoints. A file that is not a readable wasm
+        module is invalid_params; one over 16 MiB is too_large.
+        """
+        return _dump(
+            analysis.wasm_secrets(
+                path,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_generic=include_generic,
+            )
+        )
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0

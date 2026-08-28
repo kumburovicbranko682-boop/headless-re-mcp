@@ -25,6 +25,7 @@ from contextlib import suppress
 from typing import Any
 
 from headless_re_mcp.backends.common.endpoint_scan import iter_endpoint_matches
+from headless_re_mcp.backends.common.secret_scan import iter_secret_matches
 
 JsonObject = dict[str, Any]
 
@@ -80,6 +81,11 @@ _MIN_STRING_LEN_MAX = 256
 _MAX_DATA_ENDPOINTS_COLLECT = 50000
 # Distinct URL hosts summarised; a hostile module could embed many.
 _MAX_DATA_HOSTS = 512
+# Distinct credential findings aggregated from the data section before the scan
+# stops (scan_capped when hit); the matched value is clipped so one embedded blob
+# cannot bloat a finding.
+_MAX_DATA_SECRETS_COLLECT = 20000
+_MAX_DATA_SECRET_VALUE = 512
 
 
 class WasmParseError(ValueError):
@@ -511,6 +517,80 @@ def parse_data_endpoints(
     host_set = sorted({str(e["host"]) for e in endpoints if e["kind"] == "url" and e["host"]})
     hosts_truncated = len(host_set) > _MAX_DATA_HOSTS
     return endpoints, host_set[:_MAX_DATA_HOSTS], hosts_truncated, has_data, scan_capped
+
+
+def parse_data_secrets(
+    data: bytes, *, name_filter: str = "", include_generic: bool = False
+) -> tuple[list[JsonObject], list[str], bool, bool]:
+    """Detect embedded credentials in a module's data (rodata) section.
+
+    Returns ``(secrets, detectors, has_data_section, scan_capped)``. The
+    credential companion to parse_data_strings(): it reuses that section walk to
+    pull the printable runs of a module's rodata, then runs the *same*
+    high-precision detector table js.secrets and apk.secrets use over each run --
+    so a wasm module compiled from Rust/Go/C++ that baked in an AWS/Google/GitHub
+    key, a JWT or a PEM private-key header gives it up without shelling out to
+    wabt and grepping. Findings are deduplicated by (detector, value): each row is
+    ``{detector, value (the matched credential, clipped with value_truncated when
+    long), count (occurrences), first_offset (module-absolute byte offset of the
+    earliest run it was seen in)}``, sorted by detector then count then value.
+    ``detectors`` is the distinct detector set present. When the module has no data
+    section, has_data_section is False and the list is empty -- the answer, not an
+    error. ``include_generic`` adds a whole-run high-entropy base64/hex catch-all
+    for a run no specific detector claimed (off by default; it trades recall for
+    precision). ``name_filter`` keeps only findings whose detector or value
+    contains that substring (case-insensitive), applied before paging so total is
+    the match count. scan_capped is carried from the string walk or set when the
+    distinct-finding ceiling is hit.
+    """
+    rows, has_data, scan_capped = parse_data_strings(data, min_length=1, name_filter="")
+    aggregates: dict[tuple[str, str], JsonObject] = {}
+
+    def add(detector: str, value: str, offset: int) -> bool:
+        nonlocal scan_capped
+        key = (detector, value)
+        current = aggregates.get(key)
+        if current is None:
+            if len(aggregates) >= _MAX_DATA_SECRETS_COLLECT:
+                scan_capped = True
+                return False
+            row: JsonObject = {
+                "detector": detector,
+                "value": value[:_MAX_DATA_SECRET_VALUE],
+                "count": 1,
+                "first_offset": offset,
+            }
+            if len(value) > _MAX_DATA_SECRET_VALUE:
+                row["value_truncated"] = True
+            aggregates[key] = row
+        else:
+            current["count"] = int(current["count"]) + 1
+            if offset < int(current["first_offset"]):
+                current["first_offset"] = offset
+        return True
+
+    stop = False
+    for row in rows:
+        text = str(row.get("text", ""))
+        offset = int(row.get("offset", 0))
+        for detector, value in iter_secret_matches(text, include_generic=include_generic):
+            if not add(detector, value, offset):
+                stop = True
+                break
+        if stop:
+            break
+
+    needle = name_filter.strip().lower() if isinstance(name_filter, str) else ""
+    secrets = list(aggregates.values())
+    if needle:
+        secrets = [
+            s
+            for s in secrets
+            if needle in str(s["detector"]).lower() or needle in str(s["value"]).lower()
+        ]
+    secrets.sort(key=lambda s: (str(s["detector"]), -int(s["count"]), str(s["value"])))
+    detectors = sorted({str(s["detector"]) for s in secrets})
+    return secrets, detectors, has_data, scan_capped
 
 
 def parse_function_names(
