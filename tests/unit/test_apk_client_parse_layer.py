@@ -374,6 +374,23 @@ def test_methods_reports_an_unknown_class_as_not_found(tmp_path: Path) -> None:
     assert caught.value.code == "not_found"
 
 
+@pytest.mark.parametrize("bad_name", [["com.x.Y"], 5, None, {"c": "com.x.Y"}])
+def test_methods_rejects_a_non_string_class_name(tmp_path: Path, bad_name: object) -> None:
+    """A non-string class_name is a clean invalid_params, not an AttributeError.
+
+    The agent and OpenAI-bridge transports bypass the schema, so a list/int/null
+    reached ``class_name.strip()`` and raised AttributeError -- an internal_error
+    incident -- rather than the invalid_params a blank name already earns.
+    """
+    class Analysis:
+        def get_classes(self) -> list[Any]:
+            return []
+
+    with pytest.raises(ApkError) as caught:
+        _client_with_parsed(Analysis()).methods(tmp_path / "app.apk", bad_name)  # type: ignore[arg-type]
+    assert caught.value.code == "invalid_params"
+
+
 def test_xrefs_requires_a_method_name(tmp_path: Path) -> None:
     class Analysis:
         def get_methods(self) -> list[Any]:

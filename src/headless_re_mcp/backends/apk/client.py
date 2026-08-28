@@ -358,6 +358,15 @@ class ApkClient:
         limit: int = 100,
     ) -> JsonObject:
         parsed = self._parsed(path)
+        # class_name is a handler kwarg the apk.methods tool schema types as a
+        # string, but the agent and OpenAI-bridge transports call the handler
+        # straight from model arguments with no pydantic coercion, so a
+        # list/int/null reaches ``class_name.strip()``. That raised AttributeError
+        # -- not the ApkError the service maps to a clean code -- so a bad name
+        # became an internal_error incident instead of the invalid_params a blank
+        # name already earns just below.
+        if not isinstance(class_name, str):
+            raise ApkError("invalid_params", "class_name must be a string")
         target = class_name.strip()
         if not target:
             raise ApkError("invalid_params", "class_name is required")
