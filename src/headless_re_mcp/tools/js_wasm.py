@@ -69,6 +69,28 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="js.webext")
+    def js_webext(path: str) -> dict[str, Any]:
+        """Inspect a packaged browser extension (Chrome .crx or Firefox/zip .xpi).
+
+        Browser extensions are a real Web-RE target (a common malware vector); a
+        .crx is a small header plus a ZIP and an .xpi is a plain ZIP. This opens
+        one offline with the stdlib -- no unzip, no browser -- and reads its
+        manifest.json permission surface plus the archive contents.
+
+        Answers with format (crx|zip), crx_version, is_extension, entry_count,
+        entries (bounded file names) with entries_truncated,
+        total_uncompressed_size, suffix_counts (how many .js/.wasm/.html/... ),
+        and manifest (name, version, manifest_version, description, permissions,
+        host_permissions, optional_permissions, content_scripts with
+        content_scripts_count, background, content_security_policy, firefox_id)
+        or manifest_error when manifest.json is missing/unreadable. It reads, it
+        does not extract: only manifest.json is inflated, under a cap. A file
+        that is not a readable crx/zip archive is invalid_params, one over 16 MiB
+        too_large.
+        """
+        return _dump(analysis.js_webext(path))
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0

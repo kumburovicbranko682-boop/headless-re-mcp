@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.webext import WebExtParseError, summarize_webext
 from headless_re_mcp.backends.jsre import JsClient, JsReError, WasmClient
+from headless_re_mcp.backends.jsre.client import _require_existing_file
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.limits import (
@@ -89,6 +91,29 @@ class JsReAnalysisMixin:
                 Path(path), timeout=timeout
             )
             return _success(data, backend="webcrack")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def js_webext(self, path: str) -> Result[JsonObject]:
+        """Inspect a packaged browser extension with the stdlib -- no unzip/browser.
+
+        A Chrome .crx is a small header plus a ZIP; a Firefox .xpi is a ZIP;
+        both carry a manifest.json whose permissions, host permissions,
+        background worker, content scripts and CSP are the security surface an
+        analyst reads first. This reports that manifest subset and the archive's
+        file listing (names and sizes from the central directory, without
+        decompressing) so the attack surface is visible before extraction. Only
+        manifest.json is inflated, under a size cap. A file that is not a
+        readable crx/zip archive is invalid_params, one over 16 MiB too_large.
+        """
+        try:
+            resolved = _require_existing_file(Path(path), missing="extension package not found")
+            summary = summarize_webext(resolved.read_bytes())
+            return _success(summary, backend="webext")
+        except WebExtParseError as exc:
+            return _failure(_as_rpc(JsReError("invalid_params", str(exc))))
         except JsReError as exc:
             return _failure(_as_rpc(exc))
         except BaseException as exc:
