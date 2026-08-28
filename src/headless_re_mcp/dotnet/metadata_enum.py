@@ -313,6 +313,23 @@ def _load_metadata_context(path: Path) -> _MetaCtx:
         name_len = name_end - cursor + 1
         cursor += (name_len + 3) & ~3
         stream_map[name] = (offset, size)
+    return _context_from_meta(path, data, layout, meta, stream_map)
+
+
+def _context_from_meta(
+    path: Path,
+    data: bytes,
+    layout: Any,
+    meta: bytes,
+    stream_map: dict[str, tuple[int, int]],
+) -> _MetaCtx:
+    """Assemble a table-walking context from an already-sliced BSJB blob.
+
+    Split out of :func:`_load_metadata_context` so callers that already hold the
+    metadata bytes and stream map (e.g. ``clr_inspect``) can reuse the same
+    bounded parse without re-reading the PE. ``data``/``layout`` only matter for
+    later method-body/RVA work and may be empty when only names are needed.
+    """
     tables_key = "#~" if "#~" in stream_map else ("#-" if "#-" in stream_map else None)
     strings = b""
     if "#Strings" in stream_map:
@@ -381,6 +398,37 @@ def _load_metadata_context(path: Path) -> _MetaCtx:
         row_counts=row_counts,
         table_data_offset=cursor,
     )
+
+
+def read_identity_names(
+    meta: bytes,
+    stream_map: dict[str, tuple[int, int]],
+) -> tuple[str | None, str | None]:
+    """Return (module_name, assembly_name) from an already-sliced BSJB blob.
+
+    The Module table (0x00) leads the row data, but the Assembly table (0x20)
+    sits past the large tables (TypeRef, TypeDef, MethodDef, ...) that every
+    real assembly populates. A caller that walks rows by hand and stops at the
+    first such table never reaches the Assembly row and reports no assembly
+    name. This uses the bounded table walker, which sizes and skips the
+    intervening tables per ECMA-335, so both rows are located correctly.
+    """
+    ctx = _context_from_meta(Path("<clr-metadata>"), b"", None, meta, stream_map)
+    if not ctx.strings:
+        return None, None
+    module_name: str | None = None
+    assembly_name: str | None = None
+    for _rid, at in _iter_table_rows(ctx, 0x00):  # Module: Generation(2) + Name
+        idx, _ = _read_index(ctx.tables, at + 2, ctx.string_index_size)
+        module_name = _string_at(ctx, idx)
+        break
+    for _rid, at in _iter_table_rows(ctx, 0x20):  # Assembly
+        # Name follows HashAlgId(4) + Version(2*4) + Flags(4) + PublicKey(blob).
+        name_at = at + 4 + 8 + 4 + ctx.blob_index_size
+        idx, _ = _read_index(ctx.tables, name_at, ctx.string_index_size)
+        assembly_name = _string_at(ctx, idx)
+        break
+    return module_name, assembly_name
 
 
 def _string_at(meta: _MetaCtx, index: int) -> str | None:

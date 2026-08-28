@@ -320,17 +320,12 @@ def _parse_tables_and_names(
         return None, None, None
     t_off, t_size = stream_map[tables_key]
     tables = meta[t_off : t_off + t_size]
-    strings = b""
     strings_heap_bytes: int | None = None
     if strings_key is not None:
-        s_off, s_size = stream_map[strings_key]
-        strings = meta[s_off : s_off + s_size]
-        strings_heap_bytes = s_size
+        strings_heap_bytes = stream_map[strings_key][1]
     us_heap_bytes = stream_map["#US"][1] if "#US" in stream_map else None
     if len(tables) < 24:
         return None, None, None
-    heap_sizes = tables[6]
-    string_index_size = 4 if (heap_sizes & 0x01) else 2
     valid = int.from_bytes(tables[8:16], "little")
     cursor = 24
     row_counts: dict[int, int] = {}
@@ -351,57 +346,18 @@ def _parse_tables_and_names(
         source="metadata_tables",
     )
 
-    def read_string_index(buf: bytes, at: int) -> tuple[int, int]:
-        if string_index_size == 4:
-            return int.from_bytes(buf[at : at + 4], "little"), 4
-        return int.from_bytes(buf[at : at + 2], "little"), 2
+    # Names come from a bounded ECMA-335 table walk that sizes and skips the
+    # tables between Module (0x00) and Assembly (0x20). The former hand-rolled
+    # walk broke at the first intervening table (TypeRef/TypeDef/... which every
+    # real assembly has), so it never reached the Assembly row and assembly_name
+    # came back None for essentially every genuine .NET assembly.
+    from headless_re_mcp.dotnet import metadata_enum  # lazy: avoids import cycle
 
-    def string_at(index: int) -> str | None:
-        if index <= 0 or index >= len(strings):
-            return None
-        end = strings.find(b"\0", index)
-        if end < 0:
-            end = len(strings)
-        return strings[index:end].decode("utf-8", errors="replace")
-
-    module_name: str | None = None
-    assembly_name: str | None = None
-    if not strings:
-        return None, None, stats
-    for bit in range(64):
-        rows = row_counts.get(bit)
-        if not rows:
-            continue
-        if bit == 0x00:  # Module
-            name_idx, _ = read_string_index(tables, cursor + 2)
-            module_name = string_at(name_idx)
-            guid_index_size = 4 if (heap_sizes & 0x02) else 2
-            row_size = (
-                2
-                + string_index_size
-                + guid_index_size
-                + guid_index_size
-                + guid_index_size
-            )
-            cursor += row_size * rows
-            continue
-        if bit == 0x20:  # Assembly
-            blob_index_size = 4 if (heap_sizes & 0x04) else 2
-            name_at = cursor + 4 + 2 + 2 + 2 + 2 + 4 + blob_index_size
-            name_idx, _ = read_string_index(tables, name_at)
-            assembly_name = string_at(name_idx)
-            row_size = (
-                4
-                + 2
-                + 2
-                + 2
-                + 2
-                + 4
-                + blob_index_size
-                + string_index_size
-                + string_index_size
-            )
-            cursor += row_size * rows
-            continue
-        break
+    try:
+        module_name, assembly_name = metadata_enum.read_identity_names(meta, stream_map)
+    except DotnetInspectError:
+        # A malformed table stream (e.g. a reserved table bit that the walker
+        # cannot size) should cost the names, not the row-count stats already
+        # gathered above.
+        module_name, assembly_name = None, None
     return module_name, assembly_name, stats

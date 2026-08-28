@@ -24,6 +24,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（`dotnet.inspect` 对真实程序集始终报不出 assembly_name）
+
+- `dotnet/clr_inspect.py` 的 `_parse_tables_and_names` 手工遍历 `#~` 表行来取 Module（0x00）
+  与 Assembly（0x20）名：命中 0x00/0x20 就取名并按行大小前移游标，遇到其它有行的表则直接
+  `break`。可 Assembly 表排在 TypeRef/TypeDef/MethodDef 之后，而任何真实 .NET 程序集都必然有
+  这些中间表，于是循环在第一张中间表就 `break`，永远走不到 Assembly 行——`assembly_name` 对
+  几乎所有真实程序集都返回 `None`（仅当程序集恰好只含 Module+Assembly 两表时才偶然取到）。
+  现改为复用 `metadata_enum` 里已有且经测试的有界 ECMA-335 表遍历器：它按 II.22 逐表定尺寸、
+  正确跳过中间表后落到 Module 与 Assembly 行。为此把 `_load_metadata_context` 尾部“meta+流表→
+  上下文”的解析抽成 `_context_from_meta`，并新增 `read_identity_names(meta, stream_map)`；
+  `clr_inspect` 惰性导入调用它（避免与 `metadata_enum→clr_inspect` 形成循环导入），且只把取名
+  调用包在 `except DotnetInspectError` 内——中间表若含遍历器无法定尺寸的保留表位，只丢名字、
+  不连累已算好的行计数 `metadata_stats`。新增回归：构造带 Module(0x00)+TypeDef(0x02,2 行)+
+  Assembly(0x20) 三表及 `#Strings` 堆的 CLR PE，断言 `assembly_name == "MyAssembly"`、
+  `module_name == "MyModule.dll"`、`metadata_stats.type_count == 2`；去掉修复后该用例如实失败
+  （`assembly_name` 为 None）。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
