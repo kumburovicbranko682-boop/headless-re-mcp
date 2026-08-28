@@ -131,6 +131,39 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_class_summary(session_id, class_name))
 
+    @tools.tool(name="apk.subclasses")
+    def apk_subclasses(
+        session_id: str,
+        class_name: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """The inverse of apk.class_summary: who extends a class / implements an interface.
+
+        class_summary reads one class's own superclass and interfaces (the "up"
+        edges); this is the "down" direction type-graph navigation needs. Given a
+        class or interface (dotted com.example.Base or Lsmali/form), it scans the
+        DEX for every defined class that names the target as its superclass or
+        among its interfaces -- the way to answer "every Activity/Service
+        subclass", "every implementer of this callback/crypto interface", "every
+        subclass of this obfuscated base". The target need not be defined in the
+        DEX (a framework class like android.app.Activity is the common case), so
+        this never returns not_found; target_defined reports whether the DEX
+        itself carries it.
+
+        Answers with subtypes -- a merged list of {class_name, relation} where
+        relation is extends (a direct subclass) or implements (an interface
+        implementer), sorted by class name -- plus count, total, offset and
+        has_more for paging, subclass_count and implementer_count (totals before
+        paging), target (the resolved smali form) and scan_capped (set once the
+        class scan hit its 10000 ceiling). The list field is subtypes (there is no
+        classes or results field). Only direct subtypes are reported, not the full
+        transitive tree; walk it again on a result to go deeper.
+        """
+        return _dump(
+            analysis.apk_subclasses(session_id, class_name, offset=offset, limit=limit)
+        )
+
     @tools.tool(name="apk.methods")
     def apk_methods(
         session_id: str,

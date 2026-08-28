@@ -41,6 +41,9 @@ _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
+# apk.subclasses pages its merged subtype list; keep the ceiling equal to the
+# tool schema maximum so the MCP and agent paths agree on the largest page.
+_MAX_SUBTYPES_PAGE = 1000
 
 
 class ApkError(RuntimeError):
@@ -514,6 +517,77 @@ class ApkClient:
             "method_count": method_count,
             "field_count": field_count,
             "is_external": bool(klass.is_external()),
+        }
+
+    def subclasses(
+        self, path: Path, class_name: str, *, offset: int = 0, limit: int = 100
+    ) -> JsonObject:
+        """The inverse of class_summary: who extends a class or implements an interface.
+
+        class_summary reads one class's own superclass and interfaces -- the
+        "up" edges. This is the "down" direction the call/type graph needs:
+        given a class or interface (dotted or ``Lsmali/`` form), it scans the DEX
+        for every defined class that names the target as its superclass or in its
+        interface list. That answers the questions an Android triage starts with
+        -- every Activity/Service subclass, every implementer of a callback or
+        crypto interface, every subclass of an obfuscated base -- which the
+        forward view cannot. The target need not be defined in the DEX (a
+        framework class such as ``android/app/Activity`` is the common case), so
+        this never raises not_found; ``target_defined`` reports whether the DEX
+        itself carries it.
+
+        Answers with subtypes -- a merged list of {class_name, relation} where
+        relation is ``extends`` (a direct subclass) or ``implements`` (an
+        interface implementer), sorted by class name -- plus count, total, offset
+        and has_more for paging, subclass_count and implementer_count (the totals
+        before paging), target (the resolved smali form) and scan_capped (set once
+        the class scan hit its 10000 ceiling). Only *direct* subtypes are
+        reported, not the full transitive tree.
+        """
+        target = class_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "class_name is required")
+        parsed = self._parsed(path)
+        smali = _dotted_to_smali(target)
+        matches: list[JsonObject] = []
+        subclass_count = 0
+        implementer_count = 0
+        target_defined = False
+        scanned = 0
+        scan_more = False
+        for klass in parsed.analysis.get_classes():
+            name = str(klass.name)
+            external = bool(klass.is_external())
+            if not external and name in (smali, target):
+                target_defined = True
+            if external:
+                continue
+            if scanned >= _MAX_CLASSES_COLLECT:
+                scan_more = True
+                break
+            scanned += 1
+            superclass, interfaces = _supertypes(klass)
+            if superclass == smali:
+                matches.append({"class_name": name, "relation": "extends"})
+                subclass_count += 1
+            elif smali in interfaces:
+                matches.append({"class_name": name, "relation": "implements"})
+                implementer_count += 1
+        matches.sort(key=lambda item: str(item["class_name"]))
+        start = max(0, int(offset))
+        cap = min(max(1, int(limit)), _MAX_SUBTYPES_PAGE)
+        window = matches[start : start + cap]
+        return {
+            "target": smali,
+            "target_defined": target_defined,
+            "subtypes": window,
+            "count": len(window),
+            "total": len(matches),
+            "offset": start,
+            "has_more": start + len(window) < len(matches),
+            "subclass_count": subclass_count,
+            "implementer_count": implementer_count,
+            "scan_capped": scan_more,
         }
 
     def methods(
@@ -1132,3 +1206,25 @@ def _dotted_to_smali(name: str) -> str:
     if name.startswith("L") and name.endswith(";"):
         return name
     return "L" + name.replace(".", "/") + ";"
+
+
+def _supertypes(klass: Any) -> tuple[str, list[str]]:
+    """(superclass, interfaces) as smali descriptors, tolerant of androguard drift.
+
+    Mirrors class_summary: read ``extends``/``implements`` first, and only fall
+    back to the underlying vm class when the superclass is missing, so scanning
+    the whole class table does not pay a get_vm_class() call per class.
+    """
+    superclass = str(getattr(klass, "extends", "") or "")
+    interfaces = [str(i) for i in (getattr(klass, "implements", None) or [])]
+    if not superclass:
+        vm = klass.get_vm_class() if hasattr(klass, "get_vm_class") else None
+        if vm is not None and hasattr(vm, "get_superclassname"):
+            superclass = str(vm.get_superclassname() or "")
+        if not interfaces and vm is not None and hasattr(vm, "get_interfaces"):
+            try:
+                raw = vm.get_interfaces() or []
+            except Exception:  # noqa: BLE001 - androguard raises many types
+                raw = []
+            interfaces = [str(i) for i in raw]
+    return superclass, interfaces
