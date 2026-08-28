@@ -208,6 +208,27 @@ def test_client_marks_itself_available_when_frida_imports(
     assert client._frida is fake
 
 
+def test_client_degrades_to_unavailable_when_frida_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The optional native module must degrade, not explode, when absent.
+
+    Setting the module to ``None`` in ``sys.modules`` makes ``import frida``
+    raise ``ImportError``; construction has to swallow it and report
+    ``available is False`` so the doctor/capability surface can say
+    ``capability_unavailable`` rather than the whole process failing to build a
+    client. This mirrors the frida-present sibling above and pins the import
+    ``except`` branch that homogeneous "frida is installed" fixtures leave inert
+    (the module is optional and only sometimes present in CI)."""
+
+    monkeypatch.setitem(sys.modules, "frida", None)
+
+    client = FridaClient()
+
+    assert client.available is False
+    assert client._frida is None
+
+
 # ----------------------------------------------------------------------
 # attach (local) and its authorization guards.
 # ----------------------------------------------------------------------

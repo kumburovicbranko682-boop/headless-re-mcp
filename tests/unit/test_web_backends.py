@@ -210,22 +210,40 @@ class TestCapturesAreReachableAndReclaimable:
 
 
 class TestJsReDegradation:
-    def test_missing_webcrack_degrades(self, tmp_path: Path) -> None:
+    def test_missing_webcrack_degrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Force webcrack undiscoverable so the degradation path runs whether or
+        # not the CLI is on PATH: JsClient(None) still falls back to
+        # _discover_webcrack (shutil.which), so the old ``if client.available:
+        # skip`` left the "no webcrack -> capability_unavailable" contract
+        # unasserted on any machine that has webcrack -- green in CI (no Node
+        # tool) but a silent skip in a full dev/validation install, as its own
+        # "skip != pass" message concedes.
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.jsre.client._discover_webcrack", lambda: None
+        )
         source = tmp_path / "a.js"
         source.write_text("var a=1;", encoding="utf-8")
         client = JsClient(None)
-        if client.available:
-            pytest.skip("webcrack installed — degradation path not exercised (skip != pass)")
+        assert client.available is False
         with pytest.raises(JsReError) as info:
             client.deobfuscate(source)
         assert info.value.code == "capability_unavailable"
 
-    def test_missing_wabt_degrades(self, tmp_path: Path) -> None:
+    def test_missing_wabt_degrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same reasoning for wabt: force the wasm2wat/wasm-objdump lookup to fail
+        # so the degrade path runs even where wabt is installed.
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.jsre.client._resolve_wabt_tool",
+            lambda *args, **kwargs: None,
+        )
         module = tmp_path / "m.wasm"
         module.write_bytes(b"\x00asm\x01\x00\x00\x00")
         client = WasmClient(None)
-        if client.available:
-            pytest.skip("wabt installed — degradation path not exercised (skip != pass)")
+        assert client.available is False
         with pytest.raises(JsReError) as info:
             client.wat(module)
         assert info.value.code == "capability_unavailable"
@@ -244,12 +262,15 @@ class TestProxyScoping:
     def test_stop_without_start_is_not_an_error(self) -> None:
         assert ProxyBackend().stop("no-such-session")["stopped"] is False
 
-    def test_start_rejects_an_out_of_range_port(self) -> None:
+    def test_start_rejects_an_out_of_range_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Stub the capability gate so the port-range branch is exercised whether
+        # or not mitmproxy is installed. start() checks _check_available() before
+        # the port range, so the old skip left this validation untested wherever
+        # mitmproxy was absent -- which includes CI (installs only [test,dev,web],
+        # so the [proxy] extra is missing). Port 99999 is rejected at the range
+        # check, well before any _ProxyInstance is built, so no real proxy runs.
+        monkeypatch.setattr(ProxyBackend, "_check_available", lambda self: None)
         backend = ProxyBackend()
-        try:
-            backend._check_available()
-        except ProxyError:
-            pytest.skip("mitmproxy not installed — port validation not reached (skip != pass)")
         with pytest.raises(ProxyError) as info:
             backend.start("s", port=99999)
         assert info.value.code == "invalid_params"

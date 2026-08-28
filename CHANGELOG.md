@@ -27,11 +27,20 @@ until 1.0 the tool surface may still change between minor versions.
 - 验证：装齐 `[test,dev,web,android,proxy]` 后全量单测 6048 通过 0 失败（修前
   5 失败），adbutils 那例由跳过变为真实运行；不装 extras 的环境行为不变（钉
   None 与真缺席走同一条 ImportError 弧）。
-- 本条整合并取代六个内容重叠的历史分支（fix-apk-parse-layer-env-assumption /
+- 同一模式的另外三处一并收进来（预防性，装齐依赖时暂未失败，但同样测环境）：
+  `test_proxy_client_guard_paths.py` 的 import-failure 例改用 `_force_mitmproxy_absent`
+  连同 `mitmproxy.tools.dump` 等子模块一起钉 None，并断言 `_error` 确是 ImportError；
+  `test_web_backends.py` 的 webcrack/wabt 降级例改 patch 模块级
+  `_discover_webcrack`/`_resolve_wabt_tool` 返回 None（比信赖 PATH 更精准），端口
+  越界例也去掉对环境的隐含依赖；`test_frida_client_guard_paths.py` 的 frida
+  import-failure 例同样强制缺席。
+- 本条整合并取代十个内容重叠的历史分支（fix-apk-parse-layer-env-assumption /
   force-optional-dep-absent-tests / tests-force-optional-dep-absence /
   apk-proxy-paths-force-dep-absence / nonpe-unit-hardening /
-  pin-androguard-absence-in-apk-tests，均为 -4586 系），它们对同一批测试做了
-  语义相同的修改，只保留这一份以免合并互相冲突。
+  pin-androguard-absence-in-apk-tests / proxy-run-import-failure-force-absent /
+  jsre-degradation-force-absent / web-jsre-proxy-degrade-tests-deterministic /
+  frida-import-failure-degrades，均为 -4586 系），它们对同一批测试做了语义相同或
+  重叠的修改，只保留这一份以免合并互相冲突。
 
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 

@@ -158,6 +158,23 @@ def _install_fake_mitmproxy(
     return calls
 
 
+def _force_mitmproxy_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``from mitmproxy import ...`` raise regardless of the environment.
+
+    mitmproxy is the optional ``proxy`` extra, absent from both CI's install
+    (``.[test,dev,web]``) and the android/web dev install. Relying on that
+    absence means the moment anyone installs the extra -- or a sibling test
+    leaves a real mitmproxy in ``sys.modules`` -- the import here would
+    succeed and this test would assert the environment instead of the import
+    guard. A ``None`` entry in ``sys.modules`` makes Python raise ImportError
+    on the parent package before it looks at any submodule, so the guard is
+    exercised deterministically. The keys are set the same place the fake
+    installer sets its modules, and monkeypatch restores them afterward.
+    """
+    for name in ("mitmproxy", "mitmproxy.options", "mitmproxy.tools", "mitmproxy.tools.dump"):
+        monkeypatch.setitem(sys.modules, name, None)
+
+
 # --------------------------------------------------------------------------
 # _shutdown_loop
 # --------------------------------------------------------------------------
@@ -456,14 +473,10 @@ def test_instance_run_falls_back_when_the_constructor_signature_differs(
 
 def test_instance_run_records_an_import_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """With mitmproxy absent, the run thread records the import error."""
-    # Pin absence: a None entry makes _run's `from mitmproxy import options`
-    # raise ImportError even when the [proxy] extra is installed. The old
-    # `assert "mitmproxy" not in sys.modules` guard hard-failed the moment
-    # anything imported mitmproxy (the extra itself, or a sibling test that
-    # injected a fake), instead of covering the import-failure arm it names.
-    monkeypatch.setitem(sys.modules, "mitmproxy", None)
+    _force_mitmproxy_absent(monkeypatch)
     inst = _free_instance()
     _run_in_thread(inst)
+    assert inst._error is not None
     assert isinstance(inst._error, ImportError)
 
 
