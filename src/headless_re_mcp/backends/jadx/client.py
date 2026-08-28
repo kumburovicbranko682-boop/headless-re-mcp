@@ -31,24 +31,34 @@ _MAX_COUNTED_FILES = 50_000
 
 
 def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
-    names: list[str] = []
-    total = 0
-    has_more = False
+    """Return a sorted alphabetical prefix of the ``.java`` tree, its total, and
+    whether the returned page is clipped.
+
+    Sort before the cap, not after. The whole tree (up to the walk ceiling
+    ``_MAX_COUNTED_FILES``) is collected and sorted, then sliced to ``cap`` -- so
+    the page is a genuine alphabetical prefix, not an arbitrary rglob-order slice
+    that was merely sorted for display. Otherwise a class that sorts early but is
+    walked late would sit past ``cap`` and vanish from the middle of a page that
+    looked ordered, and a caller scanning the listing for a class name would read
+    that gap as "absent". The walk itself is bounded (``_MAX_COUNTED_FILES``), so
+    the pre-sort set stays in hand; matches apk.classes / device.packages, which
+    page their sorted set rather than sort a raw slice.
+    """
     if not root.is_dir():
         return [], 0, False
+    names: list[str] = []
+    scan_capped = False
     for path in root.rglob("*.java"):
         if not path.is_file():
             continue
-        total += 1
-        if len(names) < cap:
-            names.append(str(path.relative_to(root)))
-        else:
-            has_more = True
-        if total >= _MAX_COUNTED_FILES:
-            has_more = True
+        if len(names) >= _MAX_COUNTED_FILES:
+            scan_capped = True
             break
+        names.append(str(path.relative_to(root)))
+    total = len(names)
     names.sort()
-    return names, total, has_more
+    has_more = total > cap or scan_capped
+    return names[:cap], total, has_more
 
 
 class JadxError(RuntimeError):

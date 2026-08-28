@@ -52,7 +52,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `spill_dir` 时落全文并带 `manifest_xml_path`、未超限不落盘且不建空目录、不给 `spill_dir` 保持旧形状(向后\
   兼容)、写失败降级为无路径,以及服务层把溢出文件注册成带 `artifact_id` 的制品。
 
-### 诚实（device.packages / properties 与 apk.permissions / components / native_libs 先排序再切页，超限页是真正的字母序前缀，而非装作有序的安装序切片）
+### 诚实（device.packages / properties、apk.permissions / components / native_libs 与 jadx java_files 先排序再切页，超限页是真正的字母序前缀，而非装作有序的遍历序切片）
 
 - `device.packages` / `device.properties` 过去按设备返回顺序(安装序 / getprop 序)收满 `capped` 条就 `break`,\
   再对这一页 `sort()`。结果是“任意子集,排过序”:一个字母序靠前的包/键完全可能排在设备返回的第 501 位而被丢在\
@@ -69,6 +69,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (`native_libs` 更是已经遍历了全部文件以收集 abi),开销可忽略。`certificates` 不动:签名顺序有意义,不能按主题\
   重排。`tests/unit/test_apk_components_fields.py` 与 `test_apk_native_libs_fields.py` 以逆序输入把返回页钉到\
   字母序前缀。
+- 同一反模式在 jadx 侧收尾:`apk.decompile` / `export_sources` 汇报的 `java_files` 由 `_capped_java_listing`\
+  按 `rglob` 遍历顺序收满 `_MAX_LISTED_FILES`(2000)条再对这一页 `sort()`。反编译一棵超过 2000 个类的大树时,\
+  返回页只是“遍历序的任意 2000 个,排过序”:一个字母序靠前但被晚遍历到的类会落在 cap 之外,从有序清单中间消失,\
+  agent 扫这份清单找某个类找不到便误判为“没反编译出来”。现改为先收全(仍受 `_MAX_COUNTED_FILES`=50000 的遍历\
+  上限约束)、`sort()`、再切 `[:cap]`,返回页是真正的字母序前缀,`total` 仍如实计每个遍历到的文件。`rglob` 的\
+  遍历顺序依赖文件系统,故 `tests/unit/test_jadx_pure_helpers.py` 用逆序喂给遍历,把 cap-3 页钉到 `C000..C002`——\
+  cap-then-sort 会切出 `C007..C009` 而失败。
 
 ### 测试（钉住 frida.java.classes / methods 的 has_more 全靠“向脚本多要一个”：脚本按 limit+1 枚举，回包按 limit 切页）
 

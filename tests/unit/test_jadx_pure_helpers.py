@@ -37,6 +37,30 @@ def test_java_listing_caps_names_but_counts_all_and_flags_has_more(tmp_path: Pat
     assert has_more is True
 
 
+def test_java_listing_capped_page_is_the_alphabetical_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A capped java_files page must be the alphabetically first names, not an
+    arbitrary rglob-order slice that was merely sorted among itself.
+
+    rglob order is filesystem-dependent, so the walk is handed the names in
+    reverse and the cap-3 page is required to still be C000..C002. With the old
+    cap-then-sort the three kept would be C009/C008/C007 (the first walked),
+    sorted to C007..C009 -- and a class that sorts early but is walked late would
+    drop out of the middle of a page that looked ordered, which a caller scanning
+    the listing reads as "not decompiled". total still counts every walked file.
+    """
+    files = [tmp_path / f"C{index:03d}.java" for index in range(10)]
+    for source in files:
+        source.write_text("x", encoding="utf-8")
+    walk_order = list(reversed(files))
+    monkeypatch.setattr(Path, "rglob", lambda self, pattern: iter(walk_order))
+    names, total, has_more = _capped_java_listing(tmp_path, cap=3)
+    assert total == 10
+    assert has_more is True
+    assert names == ["C000.java", "C001.java", "C002.java"]
+
+
 def test_java_listing_of_a_non_directory_is_empty(tmp_path: Path) -> None:
     regular = tmp_path / "Main.java"
     regular.write_text("x", encoding="utf-8")
