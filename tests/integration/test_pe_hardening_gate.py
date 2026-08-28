@@ -14,6 +14,15 @@ independently and decodes the same fields through its own constant tables
 facts bit for bit. A second case compiles a real PE with Mono's mcs so at least
 one gated binary comes from a producer neither builder controls.
 
+The load-config gate covers the mitigations the DllCharacteristics bits don't
+carry: ``gs`` -- the /GS stack cookie, the PE canary, the pair to the
+ELF/Mach-O canary facts, read off the load config's SecurityCookie VA -- and,
+for PE32 only, ``safe_seh`` off the SEHandlerTable/Count pair. The struct
+layouts diverge between PE32 and PE32+ (most fields widen to pointers), and
+the offsets are ours, so pefile referees them: it parses
+IMAGE_LOAD_CONFIG_DIRECTORY through its own format strings and exposes the
+same fields by name.
+
 pefile ships in the project's ``pe`` extra; mcs comes from mono-mcs in CI. skip
 != pass: each test skips only when its own referee is unavailable.
 """
@@ -243,3 +252,159 @@ def test_posture_of_an_mcs_compiled_pe_agrees_with_pefile(tmp_path: Path) -> Non
     assert expected["subsystem_version"] != "0.0"
 
     assert _session_posture(binary) == expected
+
+    # The same compiler PE through the load-config gate: whatever Mono's
+    # linker did or did not emit, the reader and pefile must agree on it.
+    assert _session_load_config(binary) == _pefile_load_config(pefile_mod, binary)
+
+
+def _pe_with_load_config(
+    *,
+    magic: int,
+    cookie_va: int,
+    seh_table: int = 0,
+    seh_count: int = 0,
+    with_config: bool = True,
+) -> bytes:
+    """A one-section PE carrying a load-config directory, built independently.
+
+    Unlike the reader's own test builder this one parks the struct at +0x40
+    into the section (not at its start) and always writes the full winnt.h
+    span through the SEH fields, so a reader that only works for structs at a
+    section boundary would fail here. ``with_config=False`` leaves directory
+    10 zeroed -- the no-mitigation baseline.
+    """
+    image_base = 0x1_4000_0000 if magic == 0x20B else 0x40_0000
+    sect_rva = 0x2000
+    struct_off = 0x40
+    span = 112 if magic == 0x20B else 72
+    sec = bytearray(0x400)
+    struct.pack_into("<I", sec, struct_off, span)
+    if magic == 0x20B:
+        struct.pack_into("<Q", sec, struct_off + 88, cookie_va)
+    else:
+        struct.pack_into("<I", sec, struct_off + 60, cookie_va)
+        struct.pack_into("<II", sec, struct_off + 64, seh_table, seh_count)
+
+    dos = bytearray(0x40)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x40)
+    machine = 0x8664 if magic == 0x20B else 0x14C
+    opt_size = 0xF0 if magic == 0x20B else 0xE0
+    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", machine, 1, 0, 0, 0, opt_size, 0x0102)
+    opt = bytearray(opt_size)
+    struct.pack_into("<H", opt, 0, magic)
+    if magic == 0x20B:
+        struct.pack_into("<Q", opt, 24, image_base)
+    else:
+        struct.pack_into("<I", opt, 28, image_base)
+    struct.pack_into("<I", opt, 32, 0x1000)  # SectionAlignment
+    struct.pack_into("<I", opt, 36, 0x200)  # FileAlignment
+    struct.pack_into("<I", opt, 56, sect_rva + len(sec))  # SizeOfImage
+    dir_count_off = 108 if magic == 0x20B else 92
+    struct.pack_into("<I", opt, dir_count_off, 16)
+    if with_config:
+        struct.pack_into(
+            "<II", opt, dir_count_off + 4 + 10 * 8, sect_rva + struct_off, span
+        )
+
+    raw_off = 0x40 + len(coff) + opt_size + 40
+    if raw_off % 0x200:
+        raw_off += 0x200 - (raw_off % 0x200)
+    struct.pack_into("<I", opt, 60, raw_off)  # SizeOfHeaders
+
+    sect = bytearray(40)
+    sect[0:6] = b".rdata"
+    struct.pack_into("<I", sect, 8, len(sec))
+    struct.pack_into("<I", sect, 12, sect_rva)
+    struct.pack_into("<I", sect, 16, len(sec))
+    struct.pack_into("<I", sect, 20, raw_off)
+    struct.pack_into("<I", sect, 36, 0x40000040)  # initialized data | read
+
+    out = bytearray(dos + coff + opt + sect)
+    if len(out) < raw_off:
+        out += b"\x00" * (raw_off - len(out))
+    return bytes(out + sec)
+
+
+def _pefile_load_config(pefile_mod: Any, path: Path) -> dict[str, Any]:
+    """gs/safe_seh as pefile reads them off its own load-config parse."""
+    pe = pefile_mod.PE(str(path))
+    is_pe32 = pe.OPTIONAL_HEADER.Magic == 0x10B
+    facts: dict[str, Any] = {"gs": False}
+    if is_pe32:
+        facts["safe_seh"] = False
+    config = getattr(pe, "DIRECTORY_ENTRY_LOAD_CONFIG", None)
+    if config is None:
+        return facts
+    facts["gs"] = bool(getattr(config.struct, "SecurityCookie", 0) or 0)
+    if is_pe32:
+        table = getattr(config.struct, "SEHandlerTable", 0) or 0
+        count = getattr(config.struct, "SEHandlerCount", 0) or 0
+        facts["safe_seh"] = bool(table and count)
+    return facts
+
+
+def _session_load_config(path: Path) -> dict[str, Any]:
+    """The reader's gs/safe_seh facts, extracted from a session's PE metadata."""
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(path))
+        assert created.ok, created.error
+        pe = created.data["session"]["metadata"]["pe"]
+        return {key: pe[key] for key in ("gs", "safe_seh") if key in pe}
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("magic", "cookie_va", "seh_table", "seh_count", "with_config"),
+    [
+        # A /GS-built 64-bit image: cookie VA set, no SEH fields to speak of.
+        (0x20B, 0x1_4000_3000, 0, 0, True),
+        # A fully mitigated 32-bit image: /GS cookie plus a /SAFESEH table.
+        (0x10B, 0x40_3000, 0x40_3100, 4, True),
+        # A load config shipped for other reasons: cookie zero, no SafeSEH.
+        (0x20B, 0, 0, 0, True),
+        # No load config at all -- the no-mitigation baseline.
+        (0x10B, 0, 0, 0, False),
+    ],
+    ids=["pe32+-gs", "pe32-gs-safeseh", "pe32+-config-no-gs", "pe32-no-config"],
+)
+def test_load_config_mitigations_agree_with_pefile(
+    tmp_path: Path,
+    magic: int,
+    cookie_va: int,
+    seh_table: int,
+    seh_count: int,
+    with_config: bool,
+) -> None:
+    pefile_mod = _pefile()
+    if pefile_mod is None:
+        pytest.skip("pefile not installed — PE load-config gate not run (skip != pass)")
+
+    binary = tmp_path / f"loadcfg_{magic:x}_{cookie_va:x}.exe"
+    binary.write_bytes(
+        _pe_with_load_config(
+            magic=magic,
+            cookie_va=cookie_va,
+            seh_table=seh_table,
+            seh_count=seh_count,
+            with_config=with_config,
+        )
+    )
+
+    # Referee sanity: pefile must actually see the planted struct, so the
+    # comparison below cannot pass vacuously on a failed parse.
+    expected = _pefile_load_config(pefile_mod, binary)
+    if with_config:
+        pe = pefile_mod.PE(str(binary))
+        assert pe.DIRECTORY_ENTRY_LOAD_CONFIG.struct.SecurityCookie == cookie_va
+    assert expected["gs"] is bool(cookie_va)
+    if magic == 0x10B:
+        assert expected["safe_seh"] is bool(seh_table and seh_count)
+
+    # Field for field: the /GS verdict on both widths, and the SafeSEH verdict
+    # wherever the 32-bit layout defines it (PE32+ must omit the key).
+    assert _session_load_config(binary) == expected

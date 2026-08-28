@@ -28,6 +28,7 @@ from headless_re_mcp.core.session import (
     _pe_debug_fingerprint,
     _pe_hardening_facts,
     _pe_high_entropy_sections,
+    _pe_load_config_facts,
     _pe_overlay,
     _pe_resource_payloads,
     _pe_rich_header,
@@ -1221,6 +1222,149 @@ class TestPeTlsFacts:
         assert session.metadata["pe"]["tls"] == {"present": True, "callbacks": 2}
 
 
+def _pe_with_load_config(
+    *,
+    magic: int = 0x20B,
+    cookie_va: int | None = None,
+    declared_size: int | None = None,
+    seh_table: int = 0,
+    seh_count: int = 0,
+    dir_size: int | None = None,
+) -> bytes:
+    """A minimal one-section PE whose load-config directory (index 10) is planted.
+
+    The section holds the IMAGE_LOAD_CONFIG_DIRECTORY at its start. The
+    struct's leading Size field (``declared_size``; None writes the full span
+    through the SEH fields) governs which fields the reader may trust, with
+    ``dir_size`` as the directory-entry size it falls back to. ``cookie_va``
+    plants SecurityCookie (None picks a plausible in-image VA, 0 declares no
+    /GS cookie); the SEH table/count pair only exists in the 32-bit layout.
+    """
+    image_base = 0x1_4000_0000 if magic == 0x20B else 0x40_0000
+    sect_rva = 0x1000
+    sec = bytearray(0x200)
+    full_span = 112 if magic == 0x20B else 72
+    struct.pack_into("<I", sec, 0, full_span if declared_size is None else declared_size)
+    resolved_cookie = image_base + 0x3000 if cookie_va is None else cookie_va
+    if magic == 0x20B:
+        struct.pack_into("<Q", sec, 88, resolved_cookie)
+    else:
+        struct.pack_into("<I", sec, 60, resolved_cookie)
+        struct.pack_into("<II", sec, 64, seh_table, seh_count)
+
+    dos = bytearray(0x40)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x40)
+    machine = 0x8664 if magic == 0x20B else 0x14C
+    opt_size = 0xF0 if magic == 0x20B else 0xE0
+    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", machine, 1, 0, 0, 0, opt_size, 0)
+    opt = bytearray(opt_size)
+    struct.pack_into("<H", opt, 0, magic)
+    if magic == 0x20B:
+        struct.pack_into("<Q", opt, 24, image_base)
+    else:
+        struct.pack_into("<I", opt, 28, image_base)
+    struct.pack_into("<I", opt, 32, 0x1000)  # SectionAlignment
+    struct.pack_into("<I", opt, 36, 0x200)  # FileAlignment
+    struct.pack_into("<I", opt, 56, sect_rva + len(sec))  # SizeOfImage
+    dir_count_off = 108 if magic == 0x20B else 92
+    struct.pack_into("<I", opt, dir_count_off, 16)
+    entry_size = full_span if dir_size is None else dir_size
+    struct.pack_into("<II", opt, dir_count_off + 4 + 10 * 8, sect_rva, entry_size)
+
+    raw_off = 0x40 + len(coff) + opt_size + 40
+    if raw_off % 0x200:
+        raw_off += 0x200 - (raw_off % 0x200)
+    struct.pack_into("<I", opt, 60, raw_off)  # SizeOfHeaders
+
+    sect = bytearray(40)
+    sect[0:6] = b".rdata"
+    struct.pack_into("<I", sect, 8, len(sec))
+    struct.pack_into("<I", sect, 12, sect_rva)
+    struct.pack_into("<I", sect, 16, len(sec))
+    struct.pack_into("<I", sect, 20, raw_off)
+    struct.pack_into("<I", sect, 36, 0x40000040)  # initialized data | read
+
+    out = bytearray(dos + coff + opt + sect)
+    if len(out) < raw_off:
+        out += b"\x00" * (raw_off - len(out))
+    return bytes(out + sec)
+
+
+class TestPeLoadConfigFacts:
+    """_pe_load_config_facts reads /GS and SafeSEH off the load-config directory.
+
+    ``gs`` is the PE stack canary -- the pair to the ELF/Mach-O canary facts:
+    a /GS build stores its cookie's VA in SecurityCookie, so nonzero means the
+    prologue/epilogue checks are compiled in. ``safe_seh`` exists for PE32
+    only (x64 exception dispatch is table-driven through .pdata). False is a
+    real answer: no load config, or one too short to carry the field, is a
+    binary built without the mitigation.
+    """
+
+    def test_a_gs_cookie_reads_true_on_pe32_plus(self, tmp_path: Path) -> None:
+        path = tmp_path / "gs64.exe"
+        path.write_bytes(_pe_with_load_config(magic=0x20B))
+        # PE32+ carries no safe_seh key at all -- absence, not False, because
+        # the answer would be meaningless for table-driven x64 dispatch.
+        assert _pe_load_config_facts(path) == {"gs": True}
+
+    def test_a_zero_cookie_reads_gs_false(self, tmp_path: Path) -> None:
+        # A load config can ship for other reasons (CFG tables, dependent load
+        # flags); a zero SecurityCookie still means "not a /GS build".
+        path = tmp_path / "nogs.exe"
+        path.write_bytes(_pe_with_load_config(magic=0x20B, cookie_va=0))
+        assert _pe_load_config_facts(path) == {"gs": False}
+
+    def test_a_pe32_reads_the_narrow_cookie_and_the_seh_pair(self, tmp_path: Path) -> None:
+        # PE32's SecurityCookie is a 4-byte field at +60, not 8 at +88; a
+        # reader assuming the wide layout would read zeros. SafeSEH requires
+        # both a table VA and a nonzero handler count.
+        path = tmp_path / "gs32.exe"
+        path.write_bytes(
+            _pe_with_load_config(magic=0x10B, seh_table=0x40_2000, seh_count=3)
+        )
+        assert _pe_load_config_facts(path) == {"gs": True, "safe_seh": True}
+
+    def test_a_handler_table_with_zero_count_is_not_safeseh(self, tmp_path: Path) -> None:
+        path = tmp_path / "seh0.exe"
+        path.write_bytes(_pe_with_load_config(magic=0x10B, seh_table=0x40_2000, seh_count=0))
+        assert _pe_load_config_facts(path) == {"gs": True, "safe_seh": False}
+
+    def test_a_pe_without_a_load_config_reads_all_false(self, tmp_path: Path) -> None:
+        path = tmp_path / "bare.exe"
+        path.write_bytes(_native_pe())
+        assert _pe_load_config_facts(path) == {"gs": False, "safe_seh": False}
+
+    def test_a_declared_size_short_of_the_cookie_reads_false(self, tmp_path: Path) -> None:
+        # The struct's own Size field says which fields exist; a cookie planted
+        # beyond the declared span is unmapped territory, not a fact.
+        path = tmp_path / "short.exe"
+        path.write_bytes(_pe_with_load_config(magic=0x20B, declared_size=64))
+        assert _pe_load_config_facts(path) == {"gs": False}
+
+    def test_a_zero_size_field_falls_back_to_the_directory_entry(
+        self, tmp_path: Path
+    ) -> None:
+        # Some linkers leave the leading Size 0 and only fill the directory
+        # entry; the fallback keeps their /GS builds readable.
+        path = tmp_path / "size0.exe"
+        path.write_bytes(_pe_with_load_config(magic=0x20B, declared_size=0, dir_size=112))
+        assert _pe_load_config_facts(path) == {"gs": True}
+
+    def test_a_non_pe_reads_no_facts(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _pe_load_config_facts(path) == {}
+
+    def test_session_over_a_pe_carries_the_gs_posture(self, tmp_path: Path) -> None:
+        path = tmp_path / "app.exe"
+        path.write_bytes(_pe_with_load_config(magic=0x10B, seh_table=0x40_2000, seh_count=2))
+        session = SessionRegistry().create(str(path))
+        assert session.metadata["pe"]["gs"] is True
+        assert session.metadata["pe"]["safe_seh"] is True
+
+
 _GUID = "a1b2c3d4-e5f6-4788-99aa-bbccddeeff00"
 
 
@@ -2070,6 +2214,8 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
             "no_seh": False,
             "appcontainer": False,
             "cfg": False,
+            "gs": False,
+            "safe_seh": False,
             "tls": {"present": False, "callbacks": 0},
             "wx_sections": [],
             "high_entropy_sections": [],

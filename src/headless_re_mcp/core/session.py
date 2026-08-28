@@ -170,6 +170,10 @@ class SessionRegistry:
                 # header -- the native PE build posture, the pair to the ELF
                 # nx/relro/canary/pie and Mach-O nx/pie facts.
                 metadata["pe"].update(_pe_hardening_facts(path))
+                # /GS stack cookie (the PE canary, the pair to the ELF/Mach-O
+                # canary facts) and, on PE32, SafeSEH -- the load-config
+                # mitigations the DllCharacteristics bits don't carry.
+                metadata["pe"].update(_pe_load_config_facts(path))
                 # TLS callbacks -- the PE's code-before-main, the pair to the
                 # ELF/Mach-O init_funcs facts and the packer's anti-debug home.
                 metadata["pe"].update(_pe_tls_facts(path))
@@ -3983,6 +3987,18 @@ _PE_MAX_RSDS = 1024 + 24
 # hostile array degrades to a shorter count rather than an unbounded read.
 _PE_TLS_DIR = 9
 _PE_MAX_TLS_CALLBACKS = 64
+# The load-config data directory (index 10) carries the mitigations the
+# DllCharacteristics bits don't: SecurityCookie -- the /GS stack cookie's VA,
+# the PE canary, the exact pair to the ELF/Mach-O ``canary`` facts -- and, on
+# 32-bit images only, the SafeSEH handler table (x64 exception dispatch is
+# table-driven through .pdata instead, so the field is meaningless there).
+# Field offsets diverge between the 32- and 64-bit structs because most fields
+# widen to pointers; both are pinned by winnt.h and mirrored by pefile and
+# winchecksec.
+_PE_LOAD_CONFIG_DIR = 10
+_PE_LC_COOKIE_OFF = {0x10B: 60, 0x20B: 88}
+_PE_LC_SEH_TABLE_OFF = 64
+_PE_LC_SEH_COUNT_OFF = 68
 # Subsystem and DllCharacteristics sit at the same optional-header offsets for
 # PE32 and PE32+ (the layouts only diverge at ImageBase and the tail); together
 # they are the native PE build posture -- the pair to ELF nx/relro/canary/pie
@@ -5107,6 +5123,65 @@ def _pe_tls_facts(path: Path) -> dict[str, Any]:
         count += 1
     facts["callbacks"] = count
     return {"tls": facts}
+
+
+def _pe_load_config_facts(path: Path) -> dict[str, Any]:
+    """/GS and SafeSEH off the load-config directory: ``gs`` and ``safe_seh``.
+
+    The mitigations the DllCharacteristics bits don't carry. ``gs`` is the PE
+    stack canary -- the exact pair to the ELF/Mach-O ``canary`` facts: a /GS
+    build stores the cookie's VA in the load config's SecurityCookie field, so
+    a nonzero field means the prologue/epilogue cookie checks are compiled in.
+    ``safe_seh`` is reported for PE32 only (x64 exception dispatch is
+    table-driven through .pdata, the field is meaningless there): a /SAFESEH
+    link registers its handler table and count, and the loader then refuses
+    any handler outside the table.
+
+    False is a real answer -- an image without a load config, or with one too
+    short to carry the field, simply was not built with the mitigation. Only a
+    non-PE yields ``{}``. The struct's own leading Size field bounds which
+    fields exist (the directory-entry size backstops linkers that write it 0),
+    so a truncated or lying structure degrades to False rather than a read
+    beyond the mapped bytes.
+    """
+    try:
+        if path.stat().st_size > _PE_MAX_IMPORT_FILE:
+            return {}
+        with path.open("rb") as stream:
+            raw = stream.read(_PE_MAX_IMPORT_FILE)
+    except OSError:
+        return {}
+    view = _pe_header_view(raw)
+    if view is None:
+        return {}
+    magic, dir_count, dir_off, sections, _base = view
+    facts: dict[str, Any] = {"gs": False}
+    if magic == 0x10B:
+        facts["safe_seh"] = False
+    entry = dir_off + _PE_LOAD_CONFIG_DIR * 8
+    if dir_count <= _PE_LOAD_CONFIG_DIR or entry + 8 > len(raw):
+        return facts
+    lc_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    dir_size = int.from_bytes(raw[entry + 4 : entry + 8], "little")
+    if lc_rva == 0:
+        return facts
+    lc_off = _pe_rva_to_offset(sections, lc_rva)
+    if lc_off is None or lc_off + 4 > len(raw):
+        return facts
+    declared = int.from_bytes(raw[lc_off : lc_off + 4], "little")
+    span = declared or dir_size
+    ptr = 8 if magic == 0x20B else 4
+    cookie_off = _PE_LC_COOKIE_OFF[magic]
+    if cookie_off + ptr <= span and lc_off + cookie_off + ptr <= len(raw):
+        cookie = int.from_bytes(raw[lc_off + cookie_off : lc_off + cookie_off + ptr], "little")
+        facts["gs"] = cookie != 0
+    seh_end = _PE_LC_SEH_COUNT_OFF + 4
+    if magic == 0x10B and seh_end <= span and lc_off + seh_end <= len(raw):
+        table_off = lc_off + _PE_LC_SEH_TABLE_OFF
+        table = int.from_bytes(raw[table_off : table_off + 4], "little")
+        count = int.from_bytes(raw[table_off + 4 : table_off + 8], "little")
+        facts["safe_seh"] = table != 0 and count != 0
+    return facts
 
 
 def _pe_debug_fingerprint(path: Path) -> dict[str, Any]:
