@@ -2267,6 +2267,13 @@ def describe_har(path: Path) -> dict[str, Any]:
     status_classes: dict[str, int] = {}
     has_websocket = False
     total_response_bytes = 0
+    # Capture-completeness tallies: how many responses declare a body, and of
+    # those, how many actually carry it, how many were stripped, and how many
+    # carry a body whose length disagrees with the declared size.
+    responses_with_body = 0
+    bodies_captured = 0
+    bodies_stripped = 0
+    bodies_size_mismatch = 0
     truncated = len(entries) > _HAR_MAX_ENTRIES
     for entry in entries[:_HAR_MAX_ENTRIES]:
         if not isinstance(entry, dict):
@@ -2290,7 +2297,17 @@ def describe_har(path: Path) -> dict[str, Any]:
                 )
             content = response.get("content")
             if isinstance(content, dict) and isinstance(content.get("size"), int):
-                total_response_bytes += max(content["size"], 0)
+                size = content["size"]
+                total_response_bytes += max(size, 0)
+                if size > 0:
+                    responses_with_body += 1
+                    measured = _har_body_length(content)
+                    if measured is None:
+                        bodies_stripped += 1
+                    else:
+                        bodies_captured += 1
+                        if measured != size:
+                            bodies_size_mismatch += 1
         ws = entry.get("_webSocketMessages")
         if isinstance(ws, list) and ws:
             has_websocket = True
@@ -2305,9 +2322,45 @@ def describe_har(path: Path) -> dict[str, Any]:
             "status_classes": dict(sorted(status_classes.items())),
             "has_websocket": has_websocket,
             "total_response_bytes": total_response_bytes,
+            # Is this capture whole, or a body-stripped/truncated copy? For
+            # every response declaring a non-empty body: bodies_captured carry
+            # one whose decoded length matches content.size, bodies_stripped
+            # declare a size but ship no text (the privacy-scrubbed share),
+            # and bodies_size_mismatch ship text whose length disagrees (a
+            # truncated or re-encoded capture). All zero but responses_with_body
+            # positive means a size-only export like this project's own.
+            "body_integrity": {
+                "responses_with_body": responses_with_body,
+                "bodies_captured": bodies_captured,
+                "bodies_stripped": bodies_stripped,
+                "bodies_size_mismatch": bodies_size_mismatch,
+            },
             "truncated": truncated,
         }
     }
+
+
+def _har_body_length(content: dict[str, Any]) -> int | None:
+    """The decoded byte length of a HAR response body, or None when absent.
+
+    Per HAR 1.2, ``content.text`` is the response body and ``content.size`` its
+    length in bytes; a ``base64`` ``encoding`` means text is the base64 of the
+    raw bytes, otherwise it is the decoded text whose UTF-8 length is the byte
+    count the size claims. Returns the measured length so the caller can compare
+    it with the declared size, None when no body text is present (the stripped
+    case), and -1 for a body that claims base64 but does not decode -- a corrupt
+    capture that can equal no honest size.
+    """
+    text = content.get("text")
+    if not isinstance(text, str) or text == "":
+        return None
+    encoding = content.get("encoding")
+    if isinstance(encoding, str) and encoding.lower() == "base64":
+        try:
+            return len(base64.b64decode(text, validate=True))
+        except ValueError:
+            return -1
+    return len(text.encode("utf-8"))
 
 
 _HTML_SUFFIXES = frozenset({".html", ".htm"})

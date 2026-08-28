@@ -54,6 +54,15 @@ def test_reads_a_real_capture(tmp_path: Path) -> None:
     assert info["total_response_bytes"] == 1284
     assert info["has_websocket"] is False
     assert info["truncated"] is False
+    # This capture declares body sizes (1234, 50) but carries no content.text
+    # -- exactly the shape of a size-only export -- so both non-empty bodies
+    # read as stripped, none captured, none mismatched.
+    assert info["body_integrity"] == {
+        "responses_with_body": 2,
+        "bodies_captured": 2 - 2,
+        "bodies_stripped": 2,
+        "bodies_size_mismatch": 0,
+    }
 
 
 def test_detects_websocket_traffic(tmp_path: Path) -> None:
@@ -108,6 +117,93 @@ def test_ignores_a_non_har_suffix(tmp_path: Path) -> None:
     path = tmp_path / "data.json"
     path.write_text(json.dumps({"log": {"entries": []}}), encoding="utf-8")
     assert describe_har(path) == {}
+
+
+def _resp(size: int, text: str | None = None, encoding: str | None = None) -> dict:
+    content: dict = {"size": size, "mimeType": "text/plain"}
+    if text is not None:
+        content["text"] = text
+    if encoding is not None:
+        content["encoding"] = encoding
+    return {
+        "request": {"method": "GET", "url": "https://h.example.com/a"},
+        "response": {"status": 200, "content": content},
+    }
+
+
+class TestHarBodyIntegrity:
+    """describe_har says whether a capture's response bodies are actually there.
+
+    A shared .har is often trimmed: bodies scrubbed for privacy, or a capture
+    cut short. Per HAR 1.2, content.size is the body's byte length and
+    content.text is the body (base64 when content.encoding says so). Comparing
+    the decoded length with the declared size tells a whole capture from a
+    stripped or truncated one -- the HAR analogue of the DEX checksum verdict.
+    """
+
+    def test_matching_bodies_read_as_captured(self, tmp_path: Path) -> None:
+        import base64
+
+        har = _write_har(
+            tmp_path / "whole.har",
+            [
+                _resp(5, "hello"),
+                _resp(5, base64.b64encode(b"world").decode(), "base64"),
+            ],
+        )
+        assert describe_har(har)["har"]["body_integrity"] == {
+            "responses_with_body": 2,
+            "bodies_captured": 2,
+            "bodies_stripped": 0,
+            "bodies_size_mismatch": 0,
+        }
+
+    def test_a_size_without_text_reads_as_stripped(self, tmp_path: Path) -> None:
+        # The privacy-scrubbed share: the entry keeps its declared size but the
+        # body was removed -- an absence a byte total alone would hide.
+        har = _write_har(tmp_path / "scrubbed.har", [_resp(2048)])
+        integrity = describe_har(har)["har"]["body_integrity"]
+        assert integrity["responses_with_body"] == 1
+        assert integrity["bodies_stripped"] == 1
+        assert integrity["bodies_captured"] == 0
+
+    def test_a_short_body_reads_as_a_size_mismatch(self, tmp_path: Path) -> None:
+        # A truncated capture: the body text is present but shorter than the
+        # size the header promised -- neither whole nor honestly empty.
+        har = _write_har(tmp_path / "cut.har", [_resp(100, "only-a-little")])
+        integrity = describe_har(har)["har"]["body_integrity"]
+        assert integrity["bodies_captured"] == 1
+        assert integrity["bodies_size_mismatch"] == 1
+
+    def test_a_multibyte_body_is_measured_in_bytes_not_chars(self, tmp_path: Path) -> None:
+        # HAR size is bytes; a 3-char string of 3-byte runes is 9 bytes, so a
+        # size of 9 matches and a size of 3 (the char count) is the mismatch.
+        body = "\u4e00\u4e8c\u4e09"  # three CJK chars, 3 bytes each in UTF-8
+        assert describe_har(_write_har(tmp_path / "u9.har", [_resp(9, body)]))["har"][
+            "body_integrity"
+        ]["bodies_size_mismatch"] == 0
+        assert describe_har(_write_har(tmp_path / "u3.har", [_resp(3, body)]))["har"][
+            "body_integrity"
+        ]["bodies_size_mismatch"] == 1
+
+    def test_corrupt_base64_cannot_pass_as_a_body(self, tmp_path: Path) -> None:
+        # An entry claiming base64 whose text does not decode can represent no
+        # honest size -- it is counted as a mismatch, not silently accepted.
+        har = _write_har(tmp_path / "corrupt.har", [_resp(4, "not*valid*base64!", "base64")])
+        integrity = describe_har(har)["har"]["body_integrity"]
+        assert integrity["bodies_captured"] == 1
+        assert integrity["bodies_size_mismatch"] == 1
+
+    def test_an_empty_body_is_not_a_missing_body(self, tmp_path: Path) -> None:
+        # A 204/redirect with size 0 declares no body, so it is neither counted
+        # among responses_with_body nor flagged as stripped.
+        har = _write_har(tmp_path / "empty.har", [_resp(0, "")])
+        assert describe_har(har)["har"]["body_integrity"] == {
+            "responses_with_body": 0,
+            "bodies_captured": 0,
+            "bodies_stripped": 0,
+            "bodies_size_mismatch": 0,
+        }
 
 
 def test_session_over_a_local_har_carries_the_facts(tmp_path: Path) -> None:
