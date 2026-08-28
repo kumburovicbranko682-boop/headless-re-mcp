@@ -105,6 +105,25 @@ def _wait_for_flow(backend: ProxyBackend, session: str, *, minimum: int = 1) -> 
     pytest.fail(f"proxy did not record a flow within the deadline (session={session})")
 
 
+def _wait_for_completed_flows(
+    backend: ProxyBackend, session: str, *, minimum: int
+) -> list[dict[str, object]]:
+    """Poll until at least ``minimum`` flows exist and all have a final status.
+
+    The replayed request is issued on the proxy loop and its response lands
+    asynchronously, so both the new flow row and its status appear after
+    replay() returns.
+    """
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        flows = backend.flows(session)
+        rows = flows["flows"]
+        if len(rows) >= minimum and all(row["status"] is not None for row in rows):
+            return rows
+        time.sleep(0.05)
+    pytest.fail(f"proxy did not complete {minimum} flows within the deadline (session={session})")
+
+
 @pytest.mark.integration
 def test_proxy_records_a_request_routed_through_it(tmp_path: Path) -> None:
     if not _mitmproxy_available():
@@ -159,3 +178,39 @@ def test_proxy_captures_the_request_body_and_exports_har(tmp_path: Path) -> None
         har = backend.export_har("capture-post", tmp_path / "capture.har")
         assert har["entry_count"] == 1
         assert Path(har["path"]).is_file()
+
+
+@pytest.mark.integration
+def test_proxy_replays_a_captured_flow() -> None:
+    """proxy.replay re-issues a captured request and the origin serves it again.
+
+    replay() wraps mitmproxy's replay.client command; if the client-playback
+    addon were not loaded the command would not exist and this would fail. The
+    proof that it actually replayed (not just returned a happy envelope) is a
+    second completed flow to the same URL -- the origin answered the re-sent
+    request, so mitmproxy recorded its 200 response.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy replay Gate not run (skip != pass)")
+    with _origin_server() as origin_port, _running_proxy("replay") as (backend, proxy_port):
+        url = f"http://127.0.0.1:{origin_port}/replayme"
+        response = _through_proxy(proxy_port).open(url, timeout=10.0)
+        assert response.status == 200
+        assert response.read() == _GET_BODY
+
+        _wait_for_flow(backend, "replay")
+        original_id = backend.flows("replay")["flows"][0]["id"]
+
+        replayed = backend.replay("replay", original_id)
+        # The tool promises it waited for the command to run, not merely queue it.
+        assert replayed["replayed"] is True
+        assert replayed["flow_id"] == original_id
+
+        # A new flow, completed against the origin, is what proves the request
+        # was re-sent rather than the envelope faked.
+        rows = _wait_for_completed_flows(backend, "replay", minimum=2)
+        assert len(rows) == 2
+        assert {row["method"] for row in rows} == {"GET"}
+        assert {row["url"] for row in rows} == {url}
+        assert all(row["status"] == 200 for row in rows)
+        assert all(row["response_size"] == len(_GET_BODY) for row in rows)
