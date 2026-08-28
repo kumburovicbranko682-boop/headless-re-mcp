@@ -151,3 +151,44 @@ def test_bounded_unpack_listing_finishes_at_the_last_readable_page(
     assert tail["count"] == 0
     assert tail["has_more"] is False
     assert tail["listing_truncated"] is listing_truncated
+
+
+def test_capped_file_listing_bounds_the_walk_by_entries_not_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directory flood must trip the scan ceiling a files-only bound misses.
+
+    A webcrack unpack tree can be mostly empty directories. The scan ceiling is
+    meant to keep the listing walk from running away, but counting it only on
+    files never trips on such a tree -- the walk crosses the whole flood, right
+    after the unpack on the response path. Here the walk is forced to visit the
+    empty directories before the one real file; with an entry bound it stops
+    inside the flood and never reaches the file. A files-only bound would cross
+    all twenty directories to reach and list it, which is what makes this guard
+    non-vacuous.
+    """
+    from headless_re_mcp.backends.jsre import client as jsre_client
+    from headless_re_mcp.backends.jsre.client import _capped_file_listing
+
+    monkeypatch.setattr(jsre_client, "_MAX_COUNTED_FILES", 5)
+    root = tmp_path / "unpacked"
+    root.mkdir()
+    for index in range(20):
+        (root / f"d{index:03d}").mkdir()
+    (root / "z_late.js").write_text("x", encoding="utf-8")
+
+    real_rglob = Path.rglob
+
+    def dirs_before_files(self: Path, pattern: str) -> list[Path]:
+        entries = list(real_rglob(self, pattern))
+        directories = sorted(path for path in entries if path.is_dir())
+        files = sorted(path for path in entries if path.is_file())
+        return directories + files
+
+    monkeypatch.setattr(Path, "rglob", dirs_before_files)
+
+    names, total, has_more = _capped_file_listing(root, cap=1000)
+
+    assert names == []
+    assert total == 0
+    assert has_more is True

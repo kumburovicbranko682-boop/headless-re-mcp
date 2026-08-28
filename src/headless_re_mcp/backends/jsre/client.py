@@ -45,15 +45,23 @@ _WASM_MAGIC = b"\x00asm"
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
     names: list[str] = []
     total = 0
+    seen = 0
     has_more = False
     if not root.is_dir():
         return [], 0, False
     for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        if total >= _MAX_COUNTED_FILES:
+        # Bound the walk by every entry visited, not by files alone. rglob
+        # yields directories too, and a webcrack unpack tree -- or a hostile
+        # bundle -- can be mostly, or entirely, empty directories; a files-only
+        # ceiling never trips on such a tree and walks it to the end, right
+        # after the unpack on the response path. total still counts only files,
+        # so the reported file_count is unchanged for any tree walked in full.
+        if seen >= _MAX_COUNTED_FILES:
             has_more = True
             break
+        seen += 1
+        if not path.is_file():
+            continue
         total += 1
         if len(names) < cap:
             names.append(str(path.relative_to(root)))

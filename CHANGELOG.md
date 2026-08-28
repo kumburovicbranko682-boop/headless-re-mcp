@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（jsre _capped_file_listing 的扫描上限只按文件计数，目录洪泛会走满整棵解包树）
+
+- `backends/jsre/client.py` 的 `_capped_file_listing()`（`js.unpack_bundle` 解包后用它列出输出
+  树的文件）与 `_dir_size` 同类：`_MAX_COUNTED_FILES` 扫描上限的判断落在跳过非文件之后，`total`
+  只在遇到文件时自增。于是一棵几乎全是（或全是）空目录的 webcrack 解包树——恶意 bundle 也能造
+  出——永远触不到这个上限，`rglob` 会把整棵树走完，而这一步就跑在解包后的响应路径上。
+- 改法：把上限检查与 `seen += 1` 提到跳过非文件之前，对 `rglob` 产出的每一个条目（文件和目录）
+  都计数封顶。`total` 仍只累加文件，因此凡是能被完整走完的树，报告出的 `file_count` 不变；
+  `unpack_bundle` 现有的 sort-before-page + offset 分页与 `listing_truncated` 语义均不变。
+- 新增用例 `test_capped_file_listing_bounds_the_walk_by_entries_not_files`：把遍历强制成
+  「先目录后文件」，在 20 个空目录后放一个 `z_late.js`，`_MAX_COUNTED_FILES` 压到 5，钉死
+  返回空列表、`total==0`、`has_more==True`（遍历停在洪泛里、够不到那个文件）。非空验证：改回
+  只按文件计数后该用例失败，返回 `["z_late.js"]`（越过 20 个空目录数到了那个文件）。既有的分页、
+  扫描触顶（`test_bounded_unpack_listing_finishes_at_the_last_readable_page`，无子目录）等用例
+  不受影响。
+
 ### 修复（core/limits 的 _dir_size 只按文件计数封顶，目录洪泛会让 pruner 走满整棵树）
 
 - `core/limits.py` 的 `_dir_size()`（供 `prune_capped_dir` 给未登记的抓取目录——设备截图、
