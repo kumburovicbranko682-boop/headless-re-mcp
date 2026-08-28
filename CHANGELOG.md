@@ -10,6 +10,8 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
+批量三查韧性新增经真实 MCP stdio 服务的端到端 Gate（`tests/integration/test_batch_triage_gate.py`）。无人值守三查把 `batch.analyze` 指向一堆样本便走开,承重性质是故障隔离:语料里总有次品——挪走了的路径、并非真 PE 的文件——运行必须尽力打开一切能打开的、并**报告**打不开的,而非在第一个失败处中止整批。若一个坏输入就能停下整批,这工具对它存在的意义本身就废了。既有覆盖此路径的 composite-tools gate 是 Windows-only,故 Linux 上这条批量路径无端到端覆盖。本 gate 以 `open_static=False`(故无需反编译器)驱动真实 MCP stdio 服务,证:故障隔离与诚实计数——两枚合法 PE、一个缺失路径、一个非 PE 文件的混合批在调用层返回 `ok`,`succeeded=2`/`failed=2`/`count=4`,每个输入一条 entry,好的带 session id、坏的各带具体错误码(缺失→`file_not_found`、非 PE→`invalid_request`),而非整批一个不透明失败;成功项是真实一等会话而非空口——批报出的 id 在 `session.list` 里活着、`session.get` 解析得到、对其中之一再跑 `report.generate` 能产出制品;一个**全部**输入皆坏的批仍作为调用成功、`succeeded=0` 且逐条带错误——「每个样本都失败」与「批调用失败」是两种不同、可上报的结果。纯 stdlib、stdio 回环、无后端、任意平台。
+
 新增 Linux x86_64 核心支持：wheel/sdist 与 `scripts/install-linux.sh` 可安装，`doctor --strict` 以平台动态必需项判断就绪，`serve` / `serve-web`、会话、制品和可移植后端可在 Linux 加载。doctor 与 `/readyz` 现在报告 `full`（Windows）或 `core`（Linux）支持级别。
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
