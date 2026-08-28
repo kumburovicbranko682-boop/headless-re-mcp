@@ -63,6 +63,12 @@ _MAX_FILTER_ITEMS = 256
 # carries this fixed set (null when the element omits one) so the shape is
 # predictable rather than varying with whatever the manifest happened to set.
 _DATA_ATTRS = ("scheme", "host", "port", "path", "pathPrefix", "pathPattern", "mimeType")
+# A deep link is a VIEW filter carrying a URI scheme; BROWSABLE additionally
+# marks it reachable from a web browser / other app. The three path attributes
+# map to the kind each row reports.
+_VIEW_ACTION = "android.intent.action.VIEW"
+_BROWSABLE_CATEGORY = "android.intent.category.BROWSABLE"
+_PATH_ATTRS = (("path", "literal"), ("pathPrefix", "prefix"), ("pathPattern", "pattern"))
 
 
 class ApkError(RuntimeError):
@@ -543,6 +549,88 @@ class ApkClient:
             "truncated": truncated,
         }
 
+    def deep_links(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """Distill the manifest's deep links into testable URI templates.
+
+        Manifest-level (uses the cheap _apk parse, no DEX analysis): it keeps
+        only the VIEW intent filters that carry a URI scheme -- the deep links
+        another app or a browser can drive the app with -- and crosses each
+        filter's merged scheme/host/path sets into concrete scheme://host/path
+        templates ready to paste into `adb shell am start -a
+        android.intent.action.VIEW -d <uri>`. See _deep_link_rows for the
+        cross-product rule; browsable, auto_verify and the owning component's
+        exported status are carried so a web-reachable, unverified link on an
+        exported activity -- the hijack/injection risk -- stands out.
+        """
+        apk = self._apk(path)
+        package = apk.get_package() or ""
+        target_sdk = _int_or_none(apk.get_target_sdk_version())
+        try:
+            xml_bytes = apk.get_android_manifest_axml().get_xml()
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
+
+        rows: list[JsonObject] = []
+        scan_more = False
+        truncated = False
+        try:
+            root = ET.fromstring(xml_bytes)
+        except ET.ParseError:
+            root = None
+            truncated = True
+        application = root.find("application") if root is not None else None
+        if application is not None:
+            for element in application:
+                tag = element.tag if isinstance(element.tag, str) else ""
+                comp_type = _COMPONENT_TAGS.get(tag)
+                if comp_type is None:
+                    continue
+                declared = _android_attr(element, "exported")
+                name = _resolve_component_name(package, _android_attr(element, "name") or "")
+                for intent_filter in element.findall("intent-filter"):
+                    actions = {_android_attr(a, "name") for a in intent_filter.findall("action")}
+                    if _VIEW_ACTION not in actions:
+                        continue
+                    links, capped = _deep_link_rows(intent_filter)
+                    if not links:
+                        continue
+                    scan_more = scan_more or capped
+                    categories = {
+                        _android_attr(c, "name") for c in intent_filter.findall("category")
+                    }
+                    exported = _effective_exported(comp_type, declared, True, target_sdk)
+                    browsable = _BROWSABLE_CATEGORY in categories
+                    auto_verify = _android_attr(intent_filter, "autoVerify") == "true"
+                    for link in links:
+                        if len(rows) >= _MAX_FILTERS_COLLECT:
+                            scan_more = True
+                            break
+                        rows.append(
+                            {
+                                "component": name,
+                                "type": comp_type,
+                                "exported": exported,
+                                "browsable": browsable,
+                                "auto_verify": auto_verify,
+                                **link,
+                            }
+                        )
+                    if len(rows) >= _MAX_FILTERS_COLLECT:
+                        break
+                if len(rows) >= _MAX_FILTERS_COLLECT:
+                    break
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_COMPONENTS_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "deep_links": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_more,
+            "truncated": truncated,
+        }
+
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
         names: list[str] = []
@@ -864,6 +952,77 @@ def _filter_data(intent_filter: Any) -> tuple[list[JsonObject], bool]:
         if any(value is not None for value in spec.values()):
             specs.append(spec)
     return specs, more
+
+
+def _ordered_distinct(values: Any) -> list[str]:
+    """Distinct non-null values in first-appearance order."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value is None or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _build_deep_link_uri(scheme: str, host: str | None, port: str | None, path: str | None) -> str:
+    """Assemble a testable scheme://host[:port][path] template (best-effort)."""
+    uri = f"{scheme}://"
+    if host:
+        uri += host
+        if port:
+            uri += f":{port}"
+    if path:
+        uri += path
+    return uri
+
+
+def _deep_link_rows(intent_filter: Any) -> tuple[list[JsonObject], bool]:
+    """Cross the filter's merged scheme/host/port/path sets into link templates.
+
+    Android matches a URI when its scheme, host and path each satisfy one of the
+    filter's declared values (attributes merge across every <data> tag), so the
+    testable links are that cross product rather than one row per <data>. Returns
+    (rows, capped); rows carry only the URI parts, the caller attaches the owning
+    component. A filter with no scheme is not a deep link and yields nothing.
+    """
+    datas = intent_filter.findall("data")
+    schemes = _ordered_distinct(_android_attr(d, "scheme") for d in datas)
+    if not schemes:
+        return [], False
+    hosts = _ordered_distinct(_android_attr(d, "host") for d in datas)
+    ports = _ordered_distinct(_android_attr(d, "port") for d in datas)
+    # Pairing hosts with ports across separate <data> tags is ambiguous, so a
+    # port is only applied when the filter declares exactly one.
+    port = ports[0] if len(ports) == 1 else None
+    paths: list[tuple[str | None, str | None]] = []
+    seen_paths: set[tuple[str, str]] = set()
+    for data in datas:
+        for attr, kind in _PATH_ATTRS:
+            value = _android_attr(data, attr)
+            if value is not None and (value, kind) not in seen_paths:
+                seen_paths.add((value, kind))
+                paths.append((value, kind))
+    no_path: tuple[str | None, str | None] = (None, None)
+    hosts_or_none: list[str | None] = list(hosts) or [None]
+    rows: list[JsonObject] = []
+    for scheme in schemes:
+        for host in hosts_or_none:
+            for path_value, path_kind in paths or [no_path]:
+                if len(rows) >= _MAX_FILTER_ITEMS:
+                    return rows, True
+                rows.append(
+                    {
+                        "scheme": scheme,
+                        "host": host,
+                        "port": port,
+                        "path": path_value,
+                        "path_kind": path_kind,
+                        "uri": _build_deep_link_uri(scheme, host, port, path_value),
+                    }
+                )
+    return rows, False
 
 
 def _dotted_to_smali(name: str) -> str:

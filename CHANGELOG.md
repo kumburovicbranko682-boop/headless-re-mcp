@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **297（180 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **298（181 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -625,6 +625,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `data`(每个 `<data>` 一个定形 dict:scheme/host/port/path/pathPrefix/pathPattern/mimeType,缺省为 null)。
   输出 `filters`、`count`/`total`/`offset`/`has_more`;`total` 上限 2000、越限(或单个过滤器的
   action/category/data 列表被裁到 256)置 `scan_capped`;清单 XML 解析失败时 `truncated` 为真。
+- **`apk.deep_links`**：把 `apk.intent_filters` 隐含、但没直接给的深链清单蒸出来——只保留带 URI scheme 的
+  VIEW 过滤器(浏览器或别的应用能用来拉起本应用的深链),并把每个过滤器合并后的 scheme/host/path 集做叉乘,
+  生成可直接粘进 `adb shell am start -a android.intent.action.VIEW -d <uri>` 的 `scheme://host/path` 模板,
+  用来探深链劫持或未校验输入流进 WebView。清单级解析、**不需要 DEX 分析**。每行含 `uri`(拼出的模板)、
+  `scheme`、`host`、`port`、`path` 与 `path_kind`(literal/prefix/pattern,避免把前缀/模式误当精确路径),
+  外加属主 `component`、`type`、`exported`(解析后)、`browsable`(带 BROWSABLE 类别、即可从网页链接触达)与
+  `auto_verify`(App Links 的 `android:autoVerify` 域名校验标志)。输出 `deep_links`、
+  `count`/`total`/`offset`/`has_more`;`total` 上限 2000、越限(或单个过滤器的叉乘被裁到 256)置 `scan_capped`;
+  清单 XML 解析失败时 `truncated` 为真。
 - **改包**：`apk.decode/repack/sign`，apktool 解包回编 + apksigner 重签，缺省用 Android
   debug keystore；签名失败时 stderr 里的口令会被抹掉再进错误信封。
 - **设备**：`device.*` 15 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、

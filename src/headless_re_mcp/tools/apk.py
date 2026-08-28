@@ -159,6 +159,34 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_intent_filters(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.deep_links")
+    def apk_deep_links(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Distill the manifest's deep links into ready-to-test URI templates.
+
+        The payload apk.intent_filters implies but does not hand you: it keeps
+        only the VIEW filters that carry a URI scheme -- the deep links a
+        browser or another app can drive the app with -- and crosses each
+        filter's merged scheme/host/path sets into concrete scheme://host/path
+        strings you can paste straight into `adb shell am start -a
+        android.intent.action.VIEW -d <uri>` to probe for link hijacking or
+        unvalidated input reaching a WebView. Manifest-level, so it needs no
+        DEX analysis. Each row is uri (the assembled template), scheme, host,
+        port, path and path_kind (literal, prefix or pattern -- so a prefix/
+        pattern template is not mistaken for an exact path), plus the owning
+        component, type, exported (resolved), browsable (carries the BROWSABLE
+        category, i.e. reachable from a web link) and auto_verify (the App Links
+        android:autoVerify domain-verification flag). Answers with deep_links,
+        count, total, offset and has_more so a filled page is not read as every
+        link; total is capped at 2000 with scan_capped when more may exist (also
+        set when one filter's cross product is clipped at 256), and truncated is
+        true when the manifest XML could not be parsed.
+        """
+        return _dump(analysis.apk_deep_links(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,
