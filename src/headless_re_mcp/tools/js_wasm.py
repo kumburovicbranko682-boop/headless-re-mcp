@@ -68,6 +68,36 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="wasm.summary")
+    def wasm_summary(
+        path: str,
+        max_imports: Annotated[int, Field(ge=1, le=5000)] = 1000,
+        max_exports: Annotated[int, Field(ge=1, le=5000)] = 1000,
+    ) -> dict[str, Any]:
+        """Structured imports/exports/sections of a .wasm module, without wabt.
+
+        wasm.wat and wasm.info shell out to wabt and hand back a wall of text to
+        grep; this reads the module's binary sections in-process (no wabt, so it
+        works when wabt is not installed) and returns the triage facts as data.
+        Answers with version, sections (one {id, name, size} per section in file
+        order, custom_name on a custom section), imports and exports, and
+        start_function when the module declares one. Each imports row is {module,
+        name, kind}, plus type_index for a function import -- the host interface
+        the module needs (env.* JS glue, wasi_snapshot_preview1.* syscalls) that
+        names what it can call out to. Each exports row is {name, kind, index} --
+        its entry points. kind is func, table, memory or global. The lists are
+        capped by max_imports/max_exports; imports_total/exports_total carry the
+        declared section length and imports_truncated/exports_truncated say a page
+        did not cover it, so a capped list is not read as the whole section
+        (imports_count/exports_count are the returned lengths). For the full
+        instruction text use wasm.wat; for wabt's section dump use wasm.info. A
+        file that is not a readable wasm module is invalid_params, and one over
+        16 MiB is too_large.
+        """
+        return _dump(
+            analysis.wasm_summary(path, max_imports=max_imports, max_exports=max_exports)
+        )
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0

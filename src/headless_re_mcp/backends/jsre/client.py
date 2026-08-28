@@ -16,6 +16,8 @@ from typing import Any
 from uuid import uuid4
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.jsre.wasm_summary import WasmParseError
+from headless_re_mcp.backends.jsre.wasm_summary import summarize as summarize_wasm
 
 JsonObject = dict[str, Any]
 _MAX_INLINE = 400_000
@@ -298,6 +300,30 @@ class WasmClient:
         return _bounded_output(
             stdout, "objdump", include_bytes=False, stream_truncated=cut, spill_dir=spill_dir
         )
+
+    def summary(
+        self, path: Path, *, max_imports: int = 1000, max_exports: int = 1000
+    ) -> JsonObject:
+        """Structured import/export/section view, parsed in-process (no wabt).
+
+        Unlike wat()/info() this needs no wabt tool -- it reads the module's
+        binary sections directly -- so it stays available when wabt is not
+        configured. The file-size cap still applies; the parse is bounded and a
+        module the parser cannot read is reported as invalid_params, not a crash.
+        """
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        try:
+            data = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        try:
+            return summarize_wasm(data, max_imports=max_imports, max_exports=max_exports)
+        except WasmParseError as exc:
+            raise JsReError(
+                "invalid_params", f"not a readable wasm module: {exc}", path=str(resolved)
+            ) from exc
 
 
 def _discover_webcrack() -> Path | None:

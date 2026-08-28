@@ -161,6 +161,19 @@ class JsReAnalysisMixin:
                     root, max_entries=JSRE_UNPACK_MAX_ENTRIES, max_bytes=JSRE_UNPACK_MAX_BYTES
                 )
 
+    def wasm_summary(
+        self, path: str, max_imports: int = 1000, max_exports: int = 1000
+    ) -> Result[JsonObject]:
+        try:
+            data = WasmClient(getattr(self.settings, "wabt", None)).summary(
+                Path(path), max_imports=max_imports, max_exports=max_exports
+            )
+            return _success(data, backend="wabt")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
     def wasm_info(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         root: Path | None = None
         try:

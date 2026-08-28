@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **275（157 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **276（158 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -284,6 +284,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **WASM 一条线只有 `wasm.wat`/`wasm.info` 两把「整段文本」工具，且都要装 wabt，没装则整条线 `capability_unavailable`**。
+  即便装了，想知道一个模块「依赖宿主的哪些接口、导出哪些入口」也只能去 grep wasm2wat/wasm-objdump 吐出的大段文本。新增只读
+  工具 `wasm.summary`：直接在进程内解析模块的二进制分段（不调 wabt、不起子进程，故 wabt 缺席时照样可用），把三样三分类结构化
+  返回——`imports`（每条 `{module, name, kind}`，函数导入附 `type_index`：即 `env.*` 的 JS glue、`wasi_snapshot_preview1.*`
+  系统调用这类**宿主接口**，直接说明模块能向外调用什么）、`exports`（每条 `{name, kind, index}`：模块的入口点），以及 `version`、
+  逐段 `sections`（`{id, name, size}`，custom 段附 `custom_name`）与存在时的 `start_function`。只深读 import/export/start 三段，
+  其余段（type/code/data…）按声明长度跳过，故再大的 code 段在这里也不花代价。所有读取都对缓冲区与段边界做校验、LEB128 整数限长、
+  分段遍历计数、导出/导入向量按 `max_imports`/`max_exports` 封顶（`*_total` 报声明长度、`*_truncated` 标记一页没盖全），故畸形或
+  敌意模块得到结构化 `WasmParseError`→`invalid_params` 而非死循环/超量分配；非 wasm 文件报 `invalid_params`，超 16 MiB 报 `too_large`。
+  穷举指令文本仍用 `wasm.wat`、wabt 的段落 dump 仍用 `wasm.info`。只读，工具总数 275→276（158 只读 / 118 写）。
 - **`apk.files` 能看见藏在 `assets/` 里的载荷，却没有任何工具能把它取出来做下一步分析**。`apk.files` 标出一个嵌套 apk/zip
   （`kind` 为 `zip`）、一段 ELF（`elf`）或多出来的 `classesN.dex`（`dex`）后，此前想拿到那一个成员只能整树 `apk.decode`/
   `apk.export_sources`（apktool/jadx 子进程，把整包铺开），没有"只取这一个成员"的办法。新增只读工具 `apk.extract`：按 `apk.files`
