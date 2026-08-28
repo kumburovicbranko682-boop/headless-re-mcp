@@ -82,6 +82,9 @@ def test_proxy_flows_puts_the_page_in_flows_with_content_type(
     # started_at (the captured request epoch) rides on a flow row when mitmproxy
     # timestamped it, so the field the export reads must be named here too.
     assert "started_at" in doc
+    # timings (measured send/wait/receive ms) rides on a row the same way and
+    # feeds the HAR's per-entry timings, so the catalog must name it too.
+    assert "timings" in doc
 
 
 def test_proxy_flows_names_has_more_and_dropped(monkeypatch: Any) -> None:

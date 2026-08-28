@@ -168,6 +168,41 @@ def _content_len(part: Any) -> int:
         return 0
 
 
+def _epoch_of(part: Any, attr: str) -> float | None:
+    value = getattr(part, attr, None)
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _phase_timings(req: Any, resp: Any) -> JsonObject:
+    """HAR send/wait/receive (ms) from the four timestamps mitmproxy stamps.
+
+    mitmproxy records when the client's request started and finished arriving
+    (``request.timestamp_start/_end``) and when the upstream's response started
+    and finished (``response.timestamp_start/_end``); its own HAR export derives
+    the three phases from exactly these, so reporting them here is measurement,
+    not fabrication. Only phases whose both endpoints exist and are ordered are
+    emitted -- an errored flow with no response yields at most ``send``, and a
+    NaN or backwards pair (clock steps) is dropped rather than shipped as a
+    negative duration -- leaving the HAR's -1 "not measured" sentinel for the
+    rest.
+    """
+    request_start = _epoch_of(req, "timestamp_start")
+    request_end = _epoch_of(req, "timestamp_end")
+    response_start = _epoch_of(resp, "timestamp_start")
+    response_end = _epoch_of(resp, "timestamp_end")
+    phases: JsonObject = {}
+
+    def measure(name: str, start: float | None, end: float | None) -> None:
+        # NaN endpoints fail the >= comparison, so they are excluded here too.
+        if start is not None and end is not None and end >= start:
+            phases[name] = round((end - start) * 1000, 3)
+
+    measure("send", request_start, request_end)
+    measure("wait", request_end, response_start)
+    measure("receive", response_start, response_end)
+    return phases
+
+
 def _encoded_len(value: object) -> int:
     try:
         return len(str(value).encode("utf-8", errors="replace"))
@@ -375,6 +410,11 @@ class _FlowRecorder:
         # that did not set it) simply has no attribute and the export falls back.
         raw_started = getattr(req, "timestamp_start", None)
         started_at = float(raw_started) if isinstance(raw_started, (int, float)) else None
+        # How long each HAR phase took, measured from the same flow timestamps.
+        # Computed here, while the flow object is in hand, because the raw flow
+        # may later be evicted from the retain ring while the summary row (and
+        # therefore the HAR export) lives on.
+        timings = _phase_timings(req, resp)
         error_text, error_truncated = _bounded_metadata(error_msg, _MAX_METADATA_BYTES)
         with self._lock:
             self._seq += 1
@@ -409,6 +449,8 @@ class _FlowRecorder:
             }
             if started_at is not None:
                 entry["started_at"] = started_at
+            if timings:
+                entry["timings"] = timings
             if omitted:
                 entry["body_omitted"] = True
             if error_msg is not None:
@@ -739,6 +781,7 @@ class ProxyBackend:
                 mime_type=f.get("content_type") or "",
                 response_body_size=f.get("response_size"),
                 started_date_time=iso_from_epoch(f.get("started_at")),
+                timings_ms=f.get("timings"),
             )
             for f in inst.recorder.snapshot()
         ]

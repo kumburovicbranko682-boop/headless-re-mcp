@@ -223,6 +223,18 @@ def test_proxy_records_a_real_request_and_exports_it_to_har(tmp_path: Path) -> N
         # content.size would revert HAR sizes to -1 unnoticed.
         assert matched["response"]["content"]["size"] == body_size
         assert matched["response"]["bodySize"] == body_size
+        # Real phase timings, measured from mitmproxy's own flow timestamps (the
+        # source its HAR export uses too): a live roundtrip must produce all
+        # three phases with a positive total, not the -1 "not measured"
+        # sentinels a summary without timestamps falls back to. Only asserted
+        # loosely (non-negative phases, sane total) because localhost phase
+        # durations are tiny; the exact arithmetic is pinned by unit tests.
+        timings = matched["timings"]
+        assert all(timings[phase] >= 0 for phase in ("send", "wait", "receive")), timings
+        assert 0 < matched["time"] <= 60_000, matched["time"]
+        assert matched["time"] == round(sum(timings.values()), 3), (matched["time"], timings)
+        row_timings = recorded[0].get("timings")
+        assert row_timings and all(value >= 0 for value in row_timings.values()), recorded[0]
     finally:
         backend.close_all()
         server.shutdown()

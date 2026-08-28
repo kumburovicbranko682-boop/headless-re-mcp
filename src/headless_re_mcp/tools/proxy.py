@@ -63,7 +63,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         response_size is the decoded response body length in bytes (0 when the
         response had no body). started_at, when present, is the unix epoch
         (seconds) when mitmproxy saw the request begin -- the same instant the
-        HAR export uses for each entry's startedDateTime. body_omitted is set on
+        HAR export uses for each entry's startedDateTime. timings, when
+        present, holds the measured send/wait/receive durations in
+        milliseconds (from mitmproxy's flow timestamps; unmeasured phases are
+        absent) -- the same values the HAR export puts in each entry's timings,
+        whose non-negative sum is that entry's time. body_omitted is set on
         a row whose
         request/response body was over the retain cap. A flow mitmproxy could
         not complete (TLS refused, upstream unreachable, connection reset) is

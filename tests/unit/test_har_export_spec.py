@@ -248,6 +248,123 @@ def test_proxy_export_har_uses_the_captured_request_time(tmp_path: Path) -> None
     assert len(set(stamps.values())) == 3
 
 
+def test_har_entry_reports_measured_phases_and_sums_them_as_time() -> None:
+    """Measured send/wait/receive replace the -1 sentinels and time is their sum.
+
+    The spec defines time as the sum of the non-negative timing phases, and a
+    viewer draws the waterfall bar from it -- so an entry whose capture measured
+    the phases must say so instead of shipping a zero-width bar. The comment
+    must also stop claiming timings were not captured once they were.
+    """
+    entry = har_entry(
+        method="GET",
+        url="http://x/",
+        status=200,
+        mime_type="text/plain",
+        timings_ms={"send": 0.5, "wait": 12.25, "receive": 3.25},
+    )
+    _assert_valid_har(json.dumps(build_har([entry])))
+    assert entry["timings"] == {"send": 0.5, "wait": 12.25, "receive": 3.25}
+    assert entry["time"] == 16.0
+    assert "timings" not in entry["comment"]
+
+    # A partial measurement (errored flow: request arrived, no response) keeps
+    # the unmeasured phases at -1 and sums only what was measured.
+    partial = har_entry(
+        method="GET",
+        url="http://x/",
+        status=None,
+        mime_type="",
+        timings_ms={"send": 2.0},
+    )
+    assert partial["timings"] == {"send": 2.0, "wait": -1, "receive": -1}
+    assert partial["time"] == 2.0
+
+
+def test_har_entry_rejects_junk_phase_values_instead_of_corrupting_time() -> None:
+    """A negative, NaN, or non-numeric phase stays -1 and never reaches the sum.
+
+    time feeds a viewer's waterfall; one NaN phase would make the whole bar NaN
+    (and json.dumps would emit the non-standard NaN literal, which strict JSON
+    parsers reject), and a negative would shrink the total below the measured
+    phases. The guard keeps the -1 "not measured" sentinel for anything that is
+    not a finite non-negative number, so the entry stays spec-valid and honest.
+    """
+    entry = har_entry(
+        method="GET",
+        url="http://x/",
+        status=200,
+        mime_type="text/plain",
+        timings_ms={"send": -5.0, "wait": float("nan"), "receive": "fast"},
+    )
+    _assert_valid_har(json.dumps(build_har([entry])))
+    assert entry["timings"] == {"send": -1, "wait": -1, "receive": -1}
+    assert entry["time"] == 0
+    # Nothing was measured, so the comment keeps the full disclaimer.
+    assert "timings" in entry["comment"]
+
+
+def test_proxy_export_har_carries_real_phase_timings(tmp_path: Path) -> None:
+    """mitmproxy's four flow timestamps become HAR send/wait/receive and time.
+
+    request.timestamp_start/_end and response.timestamp_start/_end are how
+    mitmproxy's own HAR export derives the phases, so the recorder measures the
+    same way: send is the request arriving, wait is upstream think time, receive
+    is the response body. The row keeps them (surfaced on proxy.flows as
+    timings) because the raw flow can be evicted while the summary lives on. An
+    errored flow with no response still reports its send phase; the other
+    phases stay the spec's -1.
+    """
+    recorder = _FlowRecorder()
+    epoch = 1_700_000_000.0
+    request = SimpleNamespace(
+        method="GET",
+        pretty_url="http://x/ok",
+        host="x",
+        timestamp_start=epoch,
+        timestamp_end=epoch + 0.010,
+    )
+    response = SimpleNamespace(
+        status_code=200,
+        headers={"content-type": "text/plain"},
+        timestamp_start=epoch + 0.050,
+        timestamp_end=epoch + 0.075,
+    )
+    recorder.response(SimpleNamespace(id="ok", request=request, response=response))
+    failed_request = SimpleNamespace(
+        method="GET",
+        pretty_url="http://x/refused",
+        host="x",
+        timestamp_start=epoch + 1.0,
+        timestamp_end=epoch + 1.002,
+    )
+    recorder.error(
+        SimpleNamespace(
+            id="refused",
+            request=failed_request,
+            response=None,
+            error=SimpleNamespace(msg="connection refused"),
+        )
+    )
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)  # type: ignore[assignment]
+
+    rows = {row["url"]: row for row in backend.flows("s", offset=0, limit=10)["flows"]}
+    assert rows["http://x/ok"]["timings"] == {"send": 10.0, "wait": 40.0, "receive": 25.0}
+    assert rows["http://x/refused"]["timings"] == {"send": 2.0}
+
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    entries = {e["request"]["url"]: e for e in doc["log"]["entries"]}
+    ok = entries["http://x/ok"]
+    assert ok["timings"] == {"send": 10.0, "wait": 40.0, "receive": 25.0}
+    assert ok["time"] == 75.0
+    refused = entries["http://x/refused"]
+    assert refused["timings"] == {"send": 2.0, "wait": -1, "receive": -1}
+    assert refused["time"] == 2.0
+
+
 def test_serialize_har_keeps_the_newest_entries_that_fit_the_cap() -> None:
     """Eviction drops the oldest end, so the surviving entries are the newest.
 
