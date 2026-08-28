@@ -10,6 +10,8 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
+制品内容寻址往返新增经真实 MCP stdio 服务的端到端 Gate（`tests/integration/test_artifact_roundtrip_gate.py`）。回复过大时服务把它注册为制品、只回 `artifact_id`，Agent 之后传的是这个 id 而非字节——fault-contract 路径就明确让跑飞的模型「送 artifact_id 这样的引用」。这条间接只有在 id 能解析回**分毫不差**的那份字节时才安全:等长、同 sha256、可分段读、且只挂在产它的会话名下。本 gate 用 `report.generate` 当产出方(它把纯会话状态——findings 与审计——渲染成 Markdown,故整条 gate 无需反编译器或任何后端),证三件事:报告是内容寻址制品(`report.generate` 回 `artifact_id` 与字节数,`artifacts.describe` 给吻合的 size 与 sha256,且报告反映真实状态——标题与一条记录的 finding 都出现在字节里);读取把 id 解析回精确字节(`artifacts.read` 以小偏移窗口分段取回、重组后长度与 sha256 都吻合 describe 所声明,且等于产出方已给的内联预览;读到 EOF 回空、未知 id 回 `not_found` 而非崩溃或假成功);列举按会话隔离(`artifacts.list(session_id=...)` 只回该会话的制品,无 scope 的列举则看到所有会话的——一个同时处理两个目标的 Agent 绝不能让一个会话的产出串进另一个)。纯 stdlib、stdio 回环、无后端、任意平台。
+
 新增 Linux x86_64 核心支持：wheel/sdist 与 `scripts/install-linux.sh` 可安装，`doctor --strict` 以平台动态必需项判断就绪，`serve` / `serve-web`、会话、制品和可移植后端可在 Linux 加载。doctor 与 `/readyz` 现在报告 `full`（Windows）或 `core`（Linux）支持级别。
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
