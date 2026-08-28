@@ -60,6 +60,30 @@ elif mode == "symbols":
             }
         )
     payload["items"] = items
+elif mode == "strings":
+    items = []
+    data_iter = listing.getDefinedData(True)
+    while data_iter.hasNext():
+        data = data_iter.next()
+        if data is None:
+            continue
+        if not data.hasStringValue():
+            continue
+        if len(items) >= limit:
+            payload["has_more"] = True
+            break
+        value = data.getDefaultValueRepresentation()
+        if value is None:
+            value = ""
+        items.append(
+            {
+                "address": str(data.getAddress()),
+                "value": value[:2048],
+                "type": str(data.getDataType().getName()),
+                "length": int(data.getLength()),
+            }
+        )
+    payload["items"] = items
 elif mode == "xrefs":
     items = []
     if address_arg:

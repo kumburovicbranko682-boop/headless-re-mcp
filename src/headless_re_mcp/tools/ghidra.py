@@ -59,6 +59,31 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.ghidra_symbols(session_id, limit=limit, timeout=timeout))
 
+    @tools.tool(name="ghidra.strings")
+    def ghidra_strings(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
+    ) -> dict[str, Any]:
+        """Defined strings Ghidra recovered, in Ghidra's own address space.
+
+        The r2.strings counterpart on the Ghidra line, and what closes the loop
+        with the other ghidra tools: it lists the program's defined string data
+        (those Ghidra's analysis marked as strings), so a caller can take a
+        string's address straight to ghidra.xrefs to find who references it, then
+        ghidra.decompile the referencing function -- a chain that was impossible
+        before because string addresses could not be discovered inside Ghidra.
+        Answers with items, each carrying address (Ghidra's address string, the
+        form ghidra.xrefs expects), value (the string, cut at 2048 chars), type
+        (the Ghidra data type, e.g. string/unicode) and length (the datum's byte
+        length), plus count and has_more so a page that filled the limit is not
+        read as the whole list. Only strings Ghidra defined are listed; undefined
+        bytes that happen to be printable are not (use r2.strings for a raw scan).
+        Imports the binary again under -deleteProject like the other ghidra tools;
+        minutes on a large binary. Requires HEADLESS_RE_GHIDRA_HOME. Read-only.
+        """
+        return _dump(analysis.ghidra_strings(session_id, limit=limit, timeout=timeout))
+
     @tools.tool(name="ghidra.xrefs")
     def ghidra_xrefs(
         session_id: str,
