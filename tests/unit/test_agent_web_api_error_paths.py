@@ -270,9 +270,10 @@ def test_event_stream_waits_for_a_terminal_frame_written_after_the_status_flips(
     store.transition(run.id, RunStatus.FAILED, error="boom")
 
     real_list_events = store.list_events
-    state = {"gap_seen": False, "appended": False}
+    state = {"gap_seen": False, "appended": False, "polls": 0}
 
     def list_events_in_the_gap(run_id: str, after: int = 0) -> Any:
+        state["polls"] += 1
         # The frame lands one poll *after* the stream first reads an empty
         # batch on the terminal run -- the exact window the executor's
         # transition-then-append ordering leaves open.
@@ -288,6 +289,11 @@ def test_event_stream_waits_for_a_terminal_frame_written_after_the_status_flips(
     reply = client.get(f"/api/agent/runs/{run.id}/events")
     assert reply.status_code == 200
     assert "event: run.failed" in reply.text
+    # The terminal frame is the last thing a run appends, so the stream must
+    # close right after sending it: the backlog poll (create_run's run.started),
+    # one empty poll inside the gap, then the poll that delivered the frame --
+    # no trailing polls to re-confirm the obvious.
+    assert state["polls"] == 3
 
 
 # --- personas ---------------------------------------------------------------

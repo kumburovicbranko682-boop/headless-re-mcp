@@ -38,6 +38,11 @@ from headless_re_mcp.tools.catalog import (
 
 JsonObject = dict[str, Any]
 
+# Every run finalization path appends exactly one of these as its last event
+# (right after flipping the run status terminal), so streaming one of them
+# means the run's event log is complete.
+_TERMINAL_RUN_EVENTS = frozenset({"run.completed", "run.failed", "run.cancelled", "run.rejected"})
+
 
 def _attach_scheduler_lifespan(app: FastAPI, scheduler: MissionScheduler) -> None:
     """Run the scheduler for as long as the app is serving.
@@ -382,6 +387,12 @@ def register_agent_routes(
                     cursor = event.seq
                     payload = json.dumps(event.dump(), ensure_ascii=False, separators=(",", ":"), default=str)
                     yield f"id: {event.seq}\nevent: {event.type}\ndata: {payload}\n\n".encode()
+                    if event.type in _TERMINAL_RUN_EVENTS:
+                        # The terminal frame is the last thing a run appends,
+                        # so once it is on the wire the stream is complete --
+                        # close now instead of polling until the empty reads
+                        # below conclude the same thing.
+                        return
                 run = await asyncio.to_thread(store.get_run, run_id)
                 if run is None:
                     break
