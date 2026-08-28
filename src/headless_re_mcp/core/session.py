@@ -3756,8 +3756,19 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         if entry is not None:
             facts["entry"] = entry
         # FairPlay: an LC_ENCRYPTION_INFO with cryptid != 0 means the code is
-        # ciphertext on disk; no command at all means not encrypted.
-        facts["encrypted"] = bool(lc["cryptid"])
+        # ciphertext on disk; no command at all means not encrypted. When the
+        # command exists, the full range is the triage map: which file bytes
+        # are opaque until dumped (cryptid 1, FairPlay) -- or, cryptid 0 with
+        # the command still present, the telltale of a decrypted App Store
+        # dump rather than a never-encrypted build.
+        encryption = lc["encryption"]
+        facts["encrypted"] = bool(encryption and encryption[2])
+        if encryption is not None:
+            facts["encryption_info"] = {
+                "offset": encryption[0],
+                "size": encryption[1],
+                "cryptid": encryption[2],
+            }
         # The load-time constructor surface (S_MOD_INIT_FUNC_POINTERS and
         # friends), the Mach-O counterpart of the ELF init_funcs fact: how
         # many entries dyld runs before the entry point and after exit.
@@ -4049,8 +4060,9 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
     main, or None),     ``segments`` ((vmaddr, fileoff, filesize) per LC_SEGMENT
     / LC_SEGMENT_64, for mapping that offset to an address), ``symtab``
     (LC_SYMTAB's (symoff, nsyms, stroff, strsize), for the exported-symbol
-    walk and the canary scan), ``cryptid``
-    (LC_ENCRYPTION_INFO's crypt id, or None when the image carries none),
+    walk and the canary scan), ``encryption``
+    (LC_ENCRYPTION_INFO's (cryptoff, cryptsize, cryptid), or None when the
+    image carries none),
     ``code_signature`` (LC_CODE_SIGNATURE's (dataoff, datasize) locating the
     embedded signature SuperBlob, or None when unsigned),
     ``rpaths`` (the LC_RPATH search paths, the DT_RPATH/DT_RUNPATH analogue),
@@ -4069,7 +4081,7 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
         "entryoff": None,
         "segments": [],
         "symtab": None,
-        "cryptid": None,
+        "encryption": None,
         "code_signature": None,
         "rpaths": [],
         "platform": None,
@@ -4147,12 +4159,16 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
             )
         elif (
             cmd in (_LC_ENCRYPTION_INFO, _LC_ENCRYPTION_INFO_64)
-            and result["cryptid"] is None
+            and result["encryption"] is None
             and cmdsize >= 20
         ):
             # cryptoff/cryptsize then cryptid, in both the 32- and 64-bit
             # layouts (the 64-bit one only appends padding).
-            result["cryptid"] = int.from_bytes(cmds[pos + 16 : pos + 20], order)  # type: ignore[arg-type]
+            result["encryption"] = (
+                int.from_bytes(cmds[pos + 8 : pos + 12], order),  # type: ignore[arg-type]
+                int.from_bytes(cmds[pos + 12 : pos + 16], order),  # type: ignore[arg-type]
+                int.from_bytes(cmds[pos + 16 : pos + 20], order),  # type: ignore[arg-type]
+            )
         elif cmd == _LC_CODE_SIGNATURE and result["code_signature"] is None and cmdsize >= 16:
             # linkedit_data_command: dataoff/datasize locate the SuperBlob.
             result["code_signature"] = (

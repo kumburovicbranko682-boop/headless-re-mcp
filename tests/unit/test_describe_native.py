@@ -204,13 +204,15 @@ def _macho64_with_symbols(
     )
 
 
-def _lc_encryption_info(cryptid: int, cmd: int = 0x2C) -> bytes:
+def _lc_encryption_info(
+    cryptid: int, cmd: int = 0x2C, cryptoff: int = 0x1000, cryptsize: int = 0x1000
+) -> bytes:
     # LC_ENCRYPTION_INFO(_64): cryptoff/cryptsize then cryptid (+ pad for _64).
     return (
         cmd.to_bytes(4, "little")
         + (24).to_bytes(4, "little")
-        + (0x1000).to_bytes(4, "little")
-        + (0x1000).to_bytes(4, "little")
+        + cryptoff.to_bytes(4, "little")
+        + cryptsize.to_bytes(4, "little")
         + cryptid.to_bytes(4, "little")
         + (0).to_bytes(4, "little")
     )
@@ -1536,6 +1538,54 @@ def test_macho_encrypted_from_the_encryption_info_cryptid(tmp_path: Path) -> Non
     assert describe_native(_write(tmp_path, "c.bin", decrypted))["native"]["encrypted"] is False
     plain = _macho64_full(filetype=2, flags=0x4, load_cmds=b"", ncmds=0)
     assert describe_native(_write(tmp_path, "d.bin", plain))["native"]["encrypted"] is False
+
+
+def test_macho_encryption_info_reports_the_opaque_range(tmp_path: Path) -> None:
+    """The full encryption_info triple maps which file bytes are ciphertext.
+
+    encrypted answers *whether*; the range answers *what* -- cryptoff/cryptsize
+    bound the region static analysis cannot read until the image is dumped,
+    and cryptid names the scheme (1 = FairPlay). The command's mere presence
+    with cryptid 0 is itself a fact: that is the shape of a decrypted App
+    Store dump, distinct from a never-encrypted build which carries no
+    command at all.
+    """
+    encrypted = _macho64_full(
+        filetype=2,
+        flags=0x4,
+        load_cmds=_lc_encryption_info(1, cryptoff=0x4000, cryptsize=0x14000),
+        ncmds=1,
+    )
+    facts = describe_native(_write(tmp_path, "enc.bin", encrypted))["native"]
+    assert facts["encrypted"] is True
+    assert facts["encryption_info"] == {"offset": 0x4000, "size": 0x14000, "cryptid": 1}
+
+    # A decrypted dump: the command survives with cryptid 0 -- the range is
+    # still reported (it is now plaintext), and the telltale is auditable.
+    dumped = _macho64_full(
+        filetype=2,
+        flags=0x4,
+        load_cmds=_lc_encryption_info(0, cryptoff=0x4000, cryptsize=0x14000),
+        ncmds=1,
+    )
+    facts = describe_native(_write(tmp_path, "dump.bin", dumped))["native"]
+    assert facts["encrypted"] is False
+    assert facts["encryption_info"] == {"offset": 0x4000, "size": 0x14000, "cryptid": 0}
+
+    # The 32-bit command (0x21) carries the same triple at the same offsets.
+    encrypted32 = _macho64_full(
+        filetype=2,
+        flags=0x4,
+        load_cmds=_lc_encryption_info(1, cmd=0x21, cryptoff=0x2000, cryptsize=0x3000),
+        ncmds=1,
+    )
+    facts = describe_native(_write(tmp_path, "enc32.bin", encrypted32))["native"]
+    assert facts["encryption_info"] == {"offset": 0x2000, "size": 0x3000, "cryptid": 1}
+
+    # A never-encrypted image carries no command, hence no range at all --
+    # absence is the fact, not a zeroed placeholder.
+    plain = _macho64_full(filetype=2, flags=0x4, load_cmds=b"", ncmds=0)
+    assert "encryption_info" not in describe_native(_write(tmp_path, "p.bin", plain))["native"]
 
 
 def test_macho_canary_from_the_symbol_string_table(tmp_path: Path) -> None:

@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import struct
 import subprocess
 from pathlib import Path
 from typing import Any, cast
@@ -884,6 +885,116 @@ def test_macho_overlay_agrees_with_llvm_objdump(tmp_path: Path) -> None:
         sessions.append(session_id)
         # The appended bytes land exactly at LLVM's image end, byte for byte.
         assert padded_facts["overlay"] == {"offset": image_end, "size": len(payload)}
+    finally:
+        for session_id in sessions:
+            service.close_session(session_id)
+
+
+# llvm-objdump prints the encryption command as otool does: one field per line.
+_LLVM_CRYPT_RE = re.compile(r"^\s*(cryptoff|cryptsize|cryptid)\s+(\d+)\s*$", re.MULTILINE)
+
+
+def _fairplay_shaped_macho() -> bytes:
+    """A thin Mach-O with the FairPlay-encrypted layout, strict enough for LLVM.
+
+    One __TEXT segment mapping the whole 0x300-byte file and one
+    LC_ENCRYPTION_INFO_64 marking 0x100..0x300 as ciphertext (cryptid 1).
+    llvm-objdump refuses an encryption range that runs past the file, so the
+    probe carries the real bytes -- passing its decode certifies the shape,
+    not just the header fields.
+    """
+    segment = bytearray(72)
+    segment[0:4] = (0x19).to_bytes(4, "little")  # LC_SEGMENT_64
+    segment[4:8] = (72).to_bytes(4, "little")
+    segment[8:14] = b"__TEXT"
+    # vmaddr / vmsize / fileoff / filesize, then maxprot/initprot r-x.
+    struct.pack_into("<QQQQ", segment, 24, 0x100000000, 0x300, 0, 0x300)
+    struct.pack_into("<iiII", segment, 56, 5, 5, 0, 0)
+    encryption = (
+        (0x2C).to_bytes(4, "little")  # LC_ENCRYPTION_INFO_64
+        + (24).to_bytes(4, "little")
+        + (0x100).to_bytes(4, "little")  # cryptoff
+        + (0x200).to_bytes(4, "little")  # cryptsize
+        + (1).to_bytes(4, "little")  # cryptid: FairPlay
+        + (0).to_bytes(4, "little")  # pad
+    )
+    cmds = bytes(segment) + encryption
+    header = (
+        b"\xcf\xfa\xed\xfe"
+        + (0x01000007).to_bytes(4, "little")  # cputype x86_64
+        + (0).to_bytes(4, "little")
+        + (2).to_bytes(4, "little")  # MH_EXECUTE
+        + (2).to_bytes(4, "little")  # ncmds
+        + len(cmds).to_bytes(4, "little")
+        + (0x4).to_bytes(4, "little")  # MH_DYLDLINK
+        + (0).to_bytes(4, "little")
+    )
+    blob = bytearray(0x300)
+    blob[: len(header) + len(cmds)] = header + cmds
+    return bytes(blob)
+
+
+@pytest.mark.integration
+def test_macho_encryption_range_agrees_with_llvm_objdump(tmp_path: Path) -> None:
+    """The encryption_info triple against LLVM's decode of the same command.
+
+    The reader now maps which file bytes FairPlay leaves as ciphertext
+    (cryptoff/cryptsize) and the scheme id -- the first triage fact for an
+    App Store binary, since static analysis over that range reads garbage.
+    The field offsets and the unit fixtures are both ours; llvm-objdump
+    decodes the very same load command (and validates the range really sits
+    inside the file), so its three printed fields must equal the reader's
+    triple exactly -- and the committed fixture must read as carrying no such
+    command in both views.
+    """
+    objdump = shutil.which("llvm-objdump")
+    if objdump is None:
+        pytest.skip("llvm-objdump not installed — Mach-O encryption gate not run (skip != pass)")
+
+    probe = tmp_path / "fairplay.macho"
+    probe.write_bytes(_fairplay_shaped_macho())
+    result = subprocess.run(
+        [objdump, "--macho", "--all-headers", str(probe)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "LC_ENCRYPTION_INFO_64" in result.stdout
+    llvm_fields = {key: int(value) for key, value in _LLVM_CRYPT_RE.findall(result.stdout)}
+
+    service = AnalysisService()
+    sessions: list[str] = []
+    try:
+        session_id, facts = _session_native(service, probe)
+        sessions.append(session_id)
+        assert facts["encrypted"] is True
+        assert facts["encryption_info"] == {
+            "offset": llvm_fields["cryptoff"],
+            "size": llvm_fields["cryptsize"],
+            "cryptid": llvm_fields["cryptid"],
+        }
+        assert facts["encryption_info"] == {"offset": 0x100, "size": 0x200, "cryptid": 1}
+        # The whole range the reader marks opaque really is inside the file --
+        # the same containment LLVM enforced by decoding without error.
+        info = facts["encryption_info"]
+        assert info["offset"] + info["size"] <= probe.stat().st_size
+
+        # Negative agreement on the committed fixture: no command, no range,
+        # in LLVM's decode and the reader's facts alike.
+        if _MACHO_FIXTURE.is_file():
+            fixture_dump = subprocess.run(
+                [objdump, "--macho", "--all-headers", str(_MACHO_FIXTURE)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            assert fixture_dump.returncode == 0, fixture_dump.stderr
+            assert "LC_ENCRYPTION_INFO" not in fixture_dump.stdout
+            session_id, fixture_facts = _session_native(service, _MACHO_FIXTURE)
+            sessions.append(session_id)
+            assert fixture_facts["encrypted"] is False
+            assert "encryption_info" not in fixture_facts
     finally:
         for session_id in sessions:
             service.close_session(session_id)
