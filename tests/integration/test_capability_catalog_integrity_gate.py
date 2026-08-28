@@ -90,6 +90,8 @@ async def test_no_capability_points_at_a_phantom_tool(tmp_path: Path) -> None:
         assert searched["ok"] is True, searched
         capabilities = searched["data"]["capabilities"]
         assert capabilities, "capabilities.search returned nothing"
+        # The reported count is the list, not a stale counter beside it.
+        assert searched["data"]["count"] == len(capabilities), searched["data"]
 
         seen_ids: set[str] = set()
         for entry in capabilities:
@@ -115,6 +117,14 @@ async def test_no_capability_points_at_a_phantom_tool(tmp_path: Path) -> None:
             assert detail["id"] == cap_id
             assert detail["tools"] == entry["tools"], (cap_id, detail, entry)
             assert detail["status_probe"] == entry["status_probe"]
+            assert detail["backend"] == entry["backend"], (cap_id, detail, entry)
+            assert detail["summary"] == entry["summary"], (cap_id, detail, entry)
+
+        # The served catalog is exactly the source of truth: an entry filtered
+        # out on the way to the wire would hide a capability without any test
+        # noticing, and an extra one would advertise something unvetted.
+        source_ids = {str(capability["id"]) for capability in _CORE_CAPABILITIES}
+        assert seen_ids == source_ids, seen_ids ^ source_ids
 
         # An unknown id is a not_found error, not an empty object a caller
         # might read as "exists but has nothing".
