@@ -294,6 +294,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **WASM 这条线有了 `wasm.summary`（结构）/`wasm.names`（符号）/`wasm.strings`（内容），但和 JS/APK 比还差最高价值的一问「这个模块到底连哪些后端」**。
+  新增只读工具 `wasm.endpoints`：复用 `wasm.strings` 的同一段 data 段解析（进程内、免 wabt）拿到 rodata 的可打印串，再把 `js.endpoints`/`apk.endpoints`
+  共用的那套 URL/路径识别（共享模块 `backends/common/endpoint_scan.py`，现在 JS/APK/WASM 三条线共用一份规则）跑在每条串上——于是一个由 Rust/Go/C++
+  编出来的 wasm 模块，不必 `wasm2wat` 出一屏文本再 grep，就能一次交出它触及的 fetch host 与 api 路径。按 value 去重，每行 `{value, kind（url|path）,
+  scheme, host, count（出现次数）, first_offset（最早出现的那条 run 的模块绝对字节偏移）}`，路径行 scheme/host 为空，按 count 再 value 排序。答复另带
+  `hosts`（URL 端点的去重 host 集合——「这模块跟谁说话」的答案）、`hosts_truncated`、`has_data_section`（模块没有 data 段时为 false、`endpoints` 为空——
+  是答案不是错误），以及命中数超上限或串扫描封顶时的 `scan_capped`。`include_paths` 置假则只留带协议的 URL；`name_filter` 对 value 或 host 做大小写不敏感
+  子串匹配、在 host 汇总与分页前应用，故 `total` 是命中数。列表字段是 `endpoints`；原始串仍用 `wasm.strings`。只读，工具总数 291→292（174 只读 / 118 写）。
 - **`js.secrets`/`apk.secrets` 扫的是静止文件，但凭据泄漏最要命的一处是「运行时到底有哪些 key/token 真的过了线」——`Authorization`/`Cookie` 头、
   跟着重定向 url 走的 OAuth token、被 JSON 响应回显的 api key——这些是运行时现签发的，静态 bundle 里根本没有**。新增只读工具 `proxy.secrets`：把
   `js.secrets`/`apk.secrets` 用的同一套高精度凭据探测器（共享模块 `backends/common/secret_scan.py`，现在 JS/APK/代理三条线共用一份规则）跑在环形

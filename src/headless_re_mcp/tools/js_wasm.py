@@ -304,6 +304,47 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="wasm.endpoints")
+    def wasm_endpoints(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        name_filter: str = "",
+        include_paths: bool = True,
+    ) -> dict[str, Any]:
+        """Extract the network surface (URLs, hosts, api paths) from a .wasm data section, no wabt.
+
+        The endpoint companion to wasm.strings: instead of the raw rodata runs it
+        runs the same URL/path recogniser js.endpoints and apk.endpoints use over
+        those runs, so a module compiled from Rust/Go/C++ gives up the backends it
+        reaches -- the fetch hosts, the api paths -- in one call, parsed in-process
+        (no wabt). Answers with endpoints, count, total, offset, has_more, hosts
+        (the distinct URL host set -- the "what does this module talk to" answer),
+        hosts_truncated when that set overflowed its cap, has_data_section, and
+        scan_capped when the module held more distinct endpoints than the collect
+        ceiling. When has_data_section is false the module ships no initialised
+        memory and endpoints is empty -- that is the answer, not an error. Each
+        endpoints row is {value (the URL or path), kind (url|path), scheme, host,
+        count (occurrences), first_offset (module-absolute byte offset of the
+        earliest run it was seen in)}; path rows have empty scheme/host. Rows are
+        ordered by count (descending) then value. include_paths=false drops the
+        relative request paths and keeps only scheme'd URLs. name_filter keeps only
+        endpoints whose value or host contains that substring (case-insensitive),
+        applied before the host summary and paging so total is the match count --
+        the way to pull one host out of a busy module. The list field is
+        endpoints; for the raw strings use wasm.strings. A file that is not a
+        readable wasm module is invalid_params; one over 16 MiB is too_large.
+        """
+        return _dump(
+            analysis.wasm_endpoints(
+                path,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_paths=include_paths,
+            )
+        )
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0

@@ -24,6 +24,8 @@ from collections.abc import Iterator
 from contextlib import suppress
 from typing import Any
 
+from headless_re_mcp.backends.common.endpoint_scan import iter_endpoint_matches
+
 JsonObject = dict[str, Any]
 
 WASM_MAGIC = b"\x00asm"
@@ -72,6 +74,12 @@ _MAX_STRING_TEXT = 4096
 # A caller-supplied minimum run length is clamped to this so a value of 0 does
 # not turn every byte into a "string".
 _MIN_STRING_LEN_MAX = 256
+# Distinct endpoints aggregated from the data section before the scan stops. A
+# real module reaches a handful of backends; bound what is materialised
+# (scan_capped when hit) so a URL-dense module cannot grow the answer forever.
+_MAX_DATA_ENDPOINTS_COLLECT = 50000
+# Distinct URL hosts summarised; a hostile module could embed many.
+_MAX_DATA_HOSTS = 512
 
 
 class WasmParseError(ValueError):
@@ -431,6 +439,78 @@ def parse_data_strings(
         # The data section is unique in a module; no need to walk further.
         break
     return results, has_data, scan_capped
+
+
+def parse_data_endpoints(
+    data: bytes, *, include_paths: bool = True, name_filter: str = ""
+) -> tuple[list[JsonObject], list[str], bool, bool, bool]:
+    """Extract network endpoints (URLs, request paths) from the data section.
+
+    Returns ``(endpoints, hosts, hosts_truncated, has_data_section, scan_capped)``.
+    The endpoint companion to parse_data_strings(): it reuses that section walk to
+    pull the printable runs of a module's rodata, then runs the *same* URL/path
+    recogniser js.endpoints and apk.endpoints use over each run -- so a wasm
+    module compiled from Rust/Go/C++ gives up the backends it calls (the fetch
+    hosts, the api paths) without shelling out to wabt and grepping. Endpoints are
+    deduplicated: each row is ``{value, kind (url|path), scheme, host, count
+    (occurrences), first_offset (module-absolute byte offset of the earliest run
+    it was seen in)}``, sorted by count then value. ``hosts`` is the distinct host
+    set of the URL endpoints, capped (hosts_truncated when over). When the module
+    has no data section, has_data_section is False and the list is empty -- the
+    answer, not an error. ``name_filter`` keeps only endpoints whose value or host
+    contains that substring (case-insensitive), applied before the host summary
+    and paging so total is the match count. scan_capped is carried from the string
+    walk or set when the distinct-endpoint ceiling is hit.
+    """
+    rows, has_data, scan_capped = parse_data_strings(data, min_length=1, name_filter="")
+    aggregates: dict[str, JsonObject] = {}
+
+    def add(value: str, kind: str, scheme: str, host: str, offset: int) -> bool:
+        nonlocal scan_capped
+        current = aggregates.get(value)
+        if current is None:
+            if len(aggregates) >= _MAX_DATA_ENDPOINTS_COLLECT:
+                scan_capped = True
+                return False
+            aggregates[value] = {
+                "value": value,
+                "kind": kind,
+                "scheme": scheme,
+                "host": host,
+                "count": 1,
+                "first_offset": offset,
+            }
+        else:
+            current["count"] = int(current["count"]) + 1
+            if offset < int(current["first_offset"]):
+                current["first_offset"] = offset
+        return True
+
+    stop = False
+    for row in rows:
+        text = str(row.get("text", ""))
+        offset = int(row.get("offset", 0))
+        for value, kind, scheme, host in iter_endpoint_matches(
+            text, include_paths=include_paths
+        ):
+            if not add(value, kind, scheme, host, offset):
+                stop = True
+                break
+        if stop:
+            break
+
+    needle = name_filter.strip().lower() if isinstance(name_filter, str) else ""
+    endpoints = list(aggregates.values())
+    if needle:
+        endpoints = [
+            e
+            for e in endpoints
+            if needle in str(e["value"]).lower() or needle in str(e["host"]).lower()
+        ]
+    endpoints.sort(key=lambda e: (-int(e["count"]), str(e["value"])))
+    host_set = sorted({str(e["host"]) for e in endpoints if e["kind"] == "url" and e["host"]})
+    hosts_truncated = len(host_set) > _MAX_DATA_HOSTS
+    return endpoints, host_set[:_MAX_DATA_HOSTS], hosts_truncated, has_data, scan_capped
 
 
 def parse_function_names(

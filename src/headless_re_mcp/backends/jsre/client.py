@@ -20,6 +20,7 @@ from headless_re_mcp.backends.jsre.js_strings import extract_endpoints as extrac
 from headless_re_mcp.backends.jsre.js_strings import extract_secrets as extract_js_secrets
 from headless_re_mcp.backends.jsre.js_strings import extract_strings as extract_js_strings
 from headless_re_mcp.backends.jsre.wasm_summary import WasmParseError
+from headless_re_mcp.backends.jsre.wasm_summary import parse_data_endpoints as parse_wasm_endpoints
 from headless_re_mcp.backends.jsre.wasm_summary import parse_data_strings as parse_wasm_strings
 from headless_re_mcp.backends.jsre.wasm_summary import parse_function_names as parse_wasm_names
 from headless_re_mcp.backends.jsre.wasm_summary import summarize as summarize_wasm
@@ -51,6 +52,8 @@ _MAX_UNPACK_TIMEOUT_S = 1200.0
 _MAX_WASM_NAMES_PAGE = 2000
 # Same rationale for wasm.strings.
 _MAX_WASM_STRINGS_PAGE = 2000
+# Same rationale for wasm.endpoints.
+_MAX_WASM_ENDPOINTS_PAGE = 2000
 # Same rationale for js.strings.
 _MAX_JS_STRINGS_PAGE = 2000
 # Same rationale for js.endpoints.
@@ -549,6 +552,55 @@ class WasmClient:
             "total": len(rows),
             "offset": start,
             "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_capped,
+        }
+
+    def endpoints(
+        self,
+        path: Path,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        include_paths: bool = True,
+    ) -> JsonObject:
+        """Network endpoints (URLs, hosts, request paths) from the data section, no wabt.
+
+        The endpoint companion to strings(): it runs the same URL/path recogniser
+        js.endpoints/apk.endpoints use over the module's rodata runs, so a wasm
+        module gives up the backends it reaches without wabt. Dependency-free,
+        paged; total is the count that matched the filter, hosts is the distinct
+        URL host set, has_data_section is False when the module ships no data
+        section (the answer, not an error), and scan_capped marks a module with
+        more distinct endpoints than the ceiling.
+        """
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        try:
+            data = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        try:
+            endpoints, hosts, hosts_truncated, has_data, scan_capped = parse_wasm_endpoints(
+                data, include_paths=include_paths, name_filter=name_filter
+            )
+        except WasmParseError as exc:
+            raise JsReError(
+                "invalid_params", f"not a readable wasm module: {exc}", path=str(resolved)
+            ) from exc
+        start = max(0, int(offset))
+        capped = max(1, min(int(limit), _MAX_WASM_ENDPOINTS_PAGE))
+        window = endpoints[start : start + capped]
+        return {
+            "has_data_section": has_data,
+            "endpoints": window,
+            "count": len(window),
+            "total": len(endpoints),
+            "offset": start,
+            "has_more": start + len(window) < len(endpoints),
+            "hosts": hosts,
+            "hosts_truncated": hosts_truncated,
             "scan_capped": scan_capped,
         }
 
