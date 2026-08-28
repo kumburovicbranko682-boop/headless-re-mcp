@@ -28,6 +28,7 @@ from headless_re_mcp.core.service_ui import (
     _as_positive_pid,
     _desktop_monitor_pids,
     _select_desktop_window,
+    _ui_backend_key,
     _ui_finalize_windows,
 )
 from headless_re_mcp.core.windows import UiPidBoundaryError
@@ -828,6 +829,128 @@ def test_ui_key_backends(
     assert result.ok is True
     assert result.data is not None
     assert result.data["via"] == backend
+
+
+# --------------------------------------------------------------------------
+# _ui_backend_key
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, "win32"),
+        ("", "win32"),
+        ("   ", "win32"),
+        ("win32", "win32"),
+        ("  UIA  ", "uia"),
+        ("UiAutomation", "uiautomation"),
+        ("INPUT", "input"),
+        ("sendinput", "sendinput"),
+        # An unknown selector is preserved (the caller routes it to its default).
+        ("mystery", "mystery"),
+    ],
+)
+def test_ui_backend_key_normalizes_strings(value: object, expected: str) -> None:
+    assert _ui_backend_key(value) == expected
+
+
+@pytest.mark.parametrize("bad", [5, 1.5, [1], {"a": 1}, (1,), b"win32", True, False])
+def test_ui_backend_key_rejects_non_strings(bad: object) -> None:
+    # The old ``(backend or "win32").strip()`` crashed .strip() with an
+    # AttributeError on a truthy non-string; reject it as invalid_params here.
+    with pytest.raises(UiPidBoundaryError) as excinfo:
+        _ui_backend_key(bad)
+    assert excinfo.value.code == "invalid_params"
+
+
+@pytest.mark.parametrize("bad_backend", [5, 1.5, [1], {"a": 1}, b"win32", True])
+def test_ui_click_refuses_a_non_string_backend(
+    tmp_path: Path, _nt: None, monkeypatch: pytest.MonkeyPatch, bad_backend: object
+) -> None:
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        svc_ui, "click_hwnd_uia", lambda hwnd, allowed: dispatched.append("uia") or {}
+    )
+    monkeypatch.setattr(
+        svc_ui,
+        "click_hwnd_sendinput",
+        lambda hwnd, allowed: dispatched.append("sendinput") or {},
+    )
+    monkeypatch.setattr(
+        svc_ui,
+        "click_hwnd",
+        lambda hwnd, allowed, *, timeout_ms: dispatched.append("win32") or {},
+    )
+    service = _service(tmp_path, monkeypatch, state=_RUNNING)
+    result = service.ui_click("s", 5, backend=cast(Any, bad_backend))
+    assert result.error is not None
+    assert result.error.code == "invalid_params"
+    assert dispatched == []
+
+
+@pytest.mark.parametrize("bad_backend", [5, 1.5, [1], {"a": 1}, b"win32", True])
+def test_ui_tree_refuses_a_non_string_backend(
+    tmp_path: Path, _nt: None, monkeypatch: pytest.MonkeyPatch, bad_backend: object
+) -> None:
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        svc_ui, "build_uia_tree", lambda root, allowed, **kw: dispatched.append("uia") or {}
+    )
+    monkeypatch.setattr(
+        svc_ui,
+        "build_window_tree",
+        lambda roots, allowed, **kw: dispatched.append("win32") or {},
+    )
+    monkeypatch.setattr(svc_ui, "list_windows_for_pids", lambda pids: [])
+    monkeypatch.setattr(svc_ui, "uia_available", lambda: False)
+    service = _service(tmp_path, monkeypatch, state=_RUNNING)
+    result = service.ui_tree("s", backend=cast(Any, bad_backend))
+    assert result.error is not None
+    assert result.error.code == "invalid_params"
+    assert dispatched == []
+
+
+@pytest.mark.parametrize("bad_backend", [5, 1.5, [1], {"a": 1}, b"win32", True])
+def test_ui_text_set_refuses_a_non_string_backend(
+    tmp_path: Path, _nt: None, monkeypatch: pytest.MonkeyPatch, bad_backend: object
+) -> None:
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        svc_ui, "set_value_uia", lambda hwnd, text, allowed: dispatched.append("uia") or {}
+    )
+    monkeypatch.setattr(
+        svc_ui,
+        "set_window_text",
+        lambda hwnd, text, allowed, *, timeout_ms: dispatched.append("win32") or {},
+    )
+    service = _service(tmp_path, monkeypatch, state=_RUNNING)
+    result = service.ui_text_set("s", 5, "hi", backend=cast(Any, bad_backend))
+    assert result.error is not None
+    assert result.error.code == "invalid_params"
+    assert dispatched == []
+
+
+@pytest.mark.parametrize("bad_backend", [5, 1.5, [1], {"a": 1}, b"win32", True])
+def test_ui_key_refuses_a_non_string_backend(
+    tmp_path: Path, _nt: None, monkeypatch: pytest.MonkeyPatch, bad_backend: object
+) -> None:
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        svc_ui,
+        "send_key_sendinput",
+        lambda hwnd, *, allowed_pids, text, vk: dispatched.append("sendinput") or {},
+    )
+    monkeypatch.setattr(
+        svc_ui,
+        "send_key",
+        lambda hwnd, *, allowed_pids, text, vk, timeout_ms: dispatched.append("win32") or {},
+    )
+    service = _service(tmp_path, monkeypatch, state=_RUNNING)
+    result = service.ui_key("s", 5, text="a", backend=cast(Any, bad_backend))
+    assert result.error is not None
+    assert result.error.code == "invalid_params"
+    assert dispatched == []
 
 
 def test_ui_invoke_forwards_the_action(

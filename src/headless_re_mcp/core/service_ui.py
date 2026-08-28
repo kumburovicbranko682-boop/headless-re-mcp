@@ -72,6 +72,29 @@ def _unsupported_ui(session_id: str, capability: str) -> Result[JsonObject]:
     )
 
 
+def _ui_backend_key(backend: Any) -> str:
+    """Normalize a UI backend selector to its casefolded key (default ``win32``).
+
+    ``backend`` is typed ``str`` at the tool boundary, but the agent and
+    OpenAI-bridge transports bind it from model output with no pydantic
+    coercion. The old ``(backend or "win32").strip().casefold()`` returned the
+    raw value for a *truthy* non-string (an int, list or dict), so ``.strip()``
+    raised an AttributeError that ``_ui_call``'s ``except BaseException`` filed
+    as an internal_error incident. Reject a non-string here so the UI action
+    sees the invalid_params caller fault it is, while ``None`` and an
+    empty/blank string still fall back to ``win32`` exactly as before.
+    """
+    if backend is None:
+        return "win32"
+    if not isinstance(backend, str):
+        raise UiPidBoundaryError(
+            "invalid_params",
+            "backend must be a string",
+            got=type(backend).__name__,
+        )
+    return backend.strip().casefold() or "win32"
+
+
 def _as_positive_pid(value: object) -> int | None:
     if type(value) is int and value > 0:
         return value
@@ -462,7 +485,7 @@ class UiAutomationMixin:
     ) -> Result[JsonObject]:
         def action(ctx: JsonObject) -> JsonObject:
             allowed = frozenset(ctx["allowed"])
-            key = (backend or "win32").strip().casefold()
+            key = _ui_backend_key(backend)
             if key in {"uia", "uiautomation"}:
                 if root_hwnd is None:
                     raise UiPidBoundaryError(
@@ -559,7 +582,7 @@ class UiAutomationMixin:
     ) -> Result[JsonObject]:
         def action(ctx: JsonObject) -> JsonObject:
             allowed = frozenset(ctx["allowed"])
-            key = (backend or "win32").strip().casefold()
+            key = _ui_backend_key(backend)
             if key in {"uia", "uiautomation"}:
                 result = click_hwnd_uia(hwnd, allowed)
             elif key in {"sendinput", "input"}:
@@ -653,7 +676,7 @@ class UiAutomationMixin:
     ) -> Result[JsonObject]:
         def action(ctx: JsonObject) -> JsonObject:
             allowed = frozenset(ctx["allowed"])
-            key = (backend or "win32").strip().casefold()
+            key = _ui_backend_key(backend)
             if key in {"uia", "uiautomation"}:
                 result = set_value_uia(hwnd, text, allowed)
             else:
@@ -685,7 +708,7 @@ class UiAutomationMixin:
     ) -> Result[JsonObject]:
         def action(ctx: JsonObject) -> JsonObject:
             allowed = frozenset(ctx["allowed"])
-            key = (backend or "win32").strip().casefold()
+            key = _ui_backend_key(backend)
             if key in {"sendinput", "input"}:
                 result = send_key_sendinput(
                     hwnd,
