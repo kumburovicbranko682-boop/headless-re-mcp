@@ -850,8 +850,19 @@ class AdbBackend:
         ``0.0.0.0`` to expose it on the network for a remote-by-IP connection.
         """
         dev = self._device(serial)
+        # Same transport gap as _check_serial: both are typed str at the
+        # frida.server.ensure tool boundary, but the agent and OpenAI-bridge
+        # transports bind them from model output with no pydantic coercion. A
+        # non-string remote_path (None included) crashed re.match, and a truthy
+        # non-string bind_host fell past ``or ""`` into _BIND_HOST_RE.match,
+        # each a TypeError filed as an internal_error incident instead of the
+        # invalid_params caller fault it is.
+        if not isinstance(remote_path, str):
+            raise AdbError("invalid_params", "invalid remote_path", got=type(remote_path).__name__)
         if not re.match(r"^/[\w./\-]+$", remote_path):
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
+        if bind_host is not None and not isinstance(bind_host, str):
+            raise AdbError("invalid_params", "invalid bind_host", got=type(bind_host).__name__)
         if not _BIND_HOST_RE.match(bind_host or ""):
             raise AdbError("invalid_params", "invalid bind_host", bind_host=bind_host)
         visible = _frida_server_visible(dev)

@@ -77,3 +77,35 @@ def test_invalid_bind_host_is_refused_before_any_launch(monkeypatch: Any, bad: s
         backend.ensure_frida_server("emulator-5554", bind_host=bad)
     assert caught.value.code == "invalid_params"
     assert commands == []
+
+
+@pytest.mark.parametrize("bad", [127, 1.5, ["127.0.0.1"], {"host": "x"}, b"127.0.0.1", True])
+def test_non_string_bind_host_is_refused_not_crashed(monkeypatch: Any, bad: object) -> None:
+    """A truthy non-string used to fall past ``or ""`` into re.match's TypeError.
+
+    bind_host is typed str at the frida.server.ensure tool boundary, but the
+    agent and OpenAI-bridge transports bind it from model output with no
+    pydantic coercion. The crash was filed as an internal_error incident
+    instead of the invalid_params caller fault it is; nothing runs either way.
+    """
+    commands = _capture_launch(monkeypatch)
+    backend = _backend(monkeypatch)
+    with pytest.raises(AdbError) as caught:
+        backend.ensure_frida_server("emulator-5554", bind_host=bad)  # type: ignore[arg-type]
+    assert caught.value.code == "invalid_params"
+    assert caught.value.details.get("got") == type(bad).__name__
+    assert commands == []
+
+
+@pytest.mark.parametrize(
+    "bad", [None, 4242, 0.5, ["/data/local/tmp/frida-server"], {"path": "x"}, b"/data", True]
+)
+def test_non_string_remote_path_is_refused_not_crashed(monkeypatch: Any, bad: object) -> None:
+    """re.match on a non-string remote_path (None included) was a raw TypeError."""
+    commands = _capture_launch(monkeypatch)
+    backend = _backend(monkeypatch)
+    with pytest.raises(AdbError) as caught:
+        backend.ensure_frida_server("emulator-5554", remote_path=bad)  # type: ignore[arg-type]
+    assert caught.value.code == "invalid_params"
+    assert caught.value.details.get("got") == type(bad).__name__
+    assert commands == []
