@@ -650,3 +650,82 @@ def test_session_target_framework_agrees_with_monodis(tmp_path: Path) -> None:
         assert created.data["session"]["metadata"]["dotnet"]["target_framework"] == expected
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_session_assembly_identity_agrees_with_monodis(tmp_path: Path) -> None:
+    """The session-level identity facts against Mono's own table decode.
+
+    ``assembly_name``, ``assembly_version``, ``public_key_token`` and
+    ``mvid`` are now tool-free session facts -- the .NET member of the
+    declared-identity family (PE VS_VERSIONINFO, ELF soname/build-id, Mach-O
+    install_name/LC_UUID, APK package/version). Mono decodes the Assembly and
+    Module rows entirely by itself, so each fact is refereed independently:
+    name and version off ``--assembly``, the MVID off ``--module``'s GUID,
+    and the token re-derived from Mono's own dump of the public key bytes
+    (SHA-1 low eight, reversed -- ECMA-335 II.6.3). The mcs leg re-runs the
+    same referee on a compiler-produced assembly whose MVID is fresh every
+    build and which carries no strong name: agreement there proves nothing
+    is echoed from the fixture, and the honest None for the token.
+    """
+    if not _FIXTURE.is_file():
+        pytest.skip(
+            "minimal .NET fixture missing; run fixtures/dotnet/build_minimal_dotnet.py"
+            " (skip != pass)"
+        )
+    if shutil.which("monodis") is None:
+        pytest.skip("monodis (mono-utils) not installed — .NET cross-check not run (skip != pass)")
+
+    assembly_dump = _monodis("--assembly")
+    mono_name = _ASM_NAME_RE.search(assembly_dump)
+    mono_version = _ASM_VERSION_RE.search(assembly_dump)
+    assert mono_name and mono_version, assembly_dump
+    mono_module = _MODULE_RE.search(_monodis("--module"))
+    assert mono_module, "monodis must decode the Module row"
+    mono_key = _monodis_public_key(assembly_dump)
+    assert mono_key, assembly_dump
+    expected_token = hashlib.sha1(mono_key).digest()[-8:][::-1].hex()  # noqa: S324
+
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(_FIXTURE))
+        assert created.ok, created.error
+        facts = created.data["session"]["metadata"]["dotnet"]
+        assert facts["assembly_name"] == mono_name.group(1)
+        assert facts["assembly_version"] == mono_version.group(1)
+        assert facts["mvid"] == mono_module.group(2).lower()
+        assert facts["public_key_token"] == expected_token
+        assert facts["public_key_token"] == "b77a5c561934e089"
+    finally:
+        service.close_all()
+
+    mcs = shutil.which("mcs")
+    if mcs is None:
+        return  # the fixture leg already ran; this leg needs a compiler
+    source = tmp_path / "plain.cs"
+    source.write_text('class P { static void Main() { System.Console.WriteLine("hi"); } }\n')
+    binary = tmp_path / "plain.exe"
+    subprocess.run(
+        [mcs, f"-out:{binary}", str(source)], check=True, capture_output=True, timeout=120
+    )
+    plain_assembly = _monodis_file(binary, "--assembly")
+    plain_name = _ASM_NAME_RE.search(plain_assembly)
+    plain_version = _ASM_VERSION_RE.search(plain_assembly)
+    assert plain_name and plain_version, plain_assembly
+    plain_module = _MODULE_RE.search(_monodis_file(binary, "--module"))
+    assert plain_module, "monodis must decode the compiled Module row"
+
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok, created.error
+        facts = created.data["session"]["metadata"]["dotnet"]
+        assert facts["assembly_name"] == plain_name.group(1)
+        assert facts["assembly_version"] == plain_version.group(1)
+        # The MVID is freshly generated per compile: matching it proves the
+        # session read this file's Module row, not anything remembered.
+        assert facts["mvid"] == plain_module.group(2).lower()
+        # mcs without -keyfile emits no public key: the honest answer is None.
+        assert facts["public_key_token"] is None
+    finally:
+        service.close_all()

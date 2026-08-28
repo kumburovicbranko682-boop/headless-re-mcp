@@ -21,6 +21,7 @@ import pytest
 from headless_re_mcp.core.models import Architecture, TargetKind
 from headless_re_mcp.core.session import (
     SessionRegistry,
+    _dotnet_assembly_identity,
     _dotnet_assembly_refs,
     _dotnet_high_entropy_resources,
     _dotnet_module_initializer,
@@ -2590,6 +2591,55 @@ class TestDotnetTargetFramework:
             pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
         session = SessionRegistry().create(str(_DOTNET_FIXTURE))
         assert session.metadata["dotnet"]["target_framework"] == ".NETFramework,Version=v4.8"
+
+
+class TestDotnetAssemblyIdentity:
+    """_dotnet_assembly_identity reads the self-declared identity facts.
+
+    The .NET member of the declared-identity family -- the pair to a PE
+    VS_VERSIONINFO, an ELF soname/build-id, a Mach-O install_name/LC_UUID
+    and an APK package/version: the Assembly row's name and version, the
+    strong-name public key token (SHA-1 low eight bytes, reversed) and the
+    Module row's per-build MVID. None for anything not a walkable managed PE.
+    """
+
+    _EXPECTED = {
+        "assembly_name": "MyAssembly",
+        "assembly_version": "1.0.0.0",
+        # The fixture strong-names with the ECMA standard public key, whose
+        # token is the one every mscorlib binding names.
+        "public_key_token": "b77a5c561934e089",
+        "mvid": "8b8a2c3d-4e5f-6071-8293-a4b5c6d7e8f9",
+    }
+
+    def test_the_committed_fixture_declares_all_four_facts(self) -> None:
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        assert _dotnet_assembly_identity(_DOTNET_FIXTURE) == self._EXPECTED
+
+    def test_an_assembly_with_resources_reads_the_same_identity(self, tmp_path: Path) -> None:
+        # The resource blob moves the #GUID and #Blob heaps; every lookup
+        # must survive the re-layout.
+        path = tmp_path / "resourced.exe"
+        path.write_bytes(_dotnet_with_resources([("payload.bin", b"\x00" * 64)]))
+        assert _dotnet_assembly_identity(path) == self._EXPECTED
+
+    def test_a_native_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "native.exe"
+        path.write_bytes(_native_pe())
+        assert _dotnet_assembly_identity(path) is None
+
+    def test_a_non_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _dotnet_assembly_identity(path) is None
+
+    def test_session_over_a_managed_pe_carries_the_identity(self) -> None:
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        session = SessionRegistry().create(str(_DOTNET_FIXTURE))
+        facts = session.metadata["dotnet"]
+        assert {key: facts[key] for key in self._EXPECTED} == self._EXPECTED
 
 
 def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path: Path) -> None:

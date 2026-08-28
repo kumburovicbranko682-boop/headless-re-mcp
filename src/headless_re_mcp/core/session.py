@@ -254,6 +254,13 @@ class SessionRegistry:
                     # minimum kernel and an APK min/target SDK. None means
                     # the attribute is absent (pre-4.0-era assemblies).
                     metadata["dotnet"]["target_framework"] = _dotnet_target_framework(path)
+                    # The self-declared identity: assembly name and version,
+                    # the strong-name public key token and the per-build
+                    # MVID -- the managed pair to a PE VS_VERSIONINFO, an
+                    # ELF soname/build-id and a Mach-O install_name/LC_UUID.
+                    identity = _dotnet_assembly_identity(path)
+                    if identity is not None:
+                        metadata["dotnet"].update(identity)
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             elif kind is TargetKind.NATIVE:
@@ -4576,6 +4583,8 @@ _DOTNET_MAX_MODULE_METHODS = 4096
 _DOTNET_TYPE_REF = 0x01
 _DOTNET_MEMBER_REF = 0x0A
 _DOTNET_CUSTOM_ATTRIBUTE = 0x0C
+_DOTNET_MODULE_TABLE = 0x00
+_DOTNET_ASSEMBLY_TABLE = 0x20
 _DOTNET_TFA_NAME = "TargetFrameworkAttribute"
 _DOTNET_TFA_NAMESPACE = "System.Runtime.Versioning"
 # HasCustomAttribute coded index for the Assembly table (tag 14), row 1.
@@ -5323,6 +5332,145 @@ def _dotnet_target_framework(path: Path) -> str | None:
             return None
         table_offset += row_size * row_counts[bit]
     return None
+
+
+def _dotnet_assembly_identity(path: Path) -> dict[str, Any] | None:
+    """The assembly's self-declared identity, or ``None`` off a non-assembly.
+
+    Four facts and nothing derived: ``assembly_name`` and
+    ``assembly_version`` off the Assembly table (what the binary calls
+    itself), ``public_key_token`` (the strong-name identity -- the low eight
+    bytes of the public key's SHA-1, reversed, the token every binding
+    redirect and GAC entry names) and ``mvid`` (the per-build GUID the
+    compiler stamps into the Module table). The .NET member of the declared
+    identity family: the pair to a PE VS_VERSIONINFO, an ELF
+    soname/build-id, a Mach-O install_name/LC_UUID and an APK
+    package/version. A netmodule without an Assembly row keeps its mvid and
+    reads None for the rest. Bounded and fail-closed like every walk here.
+    """
+    from headless_re_mcp.dotnet.tables import table_row_size
+
+    try:
+        if path.stat().st_size > _DOTNET_MAX_FILE:
+            return None
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    view = _pe_header_view(raw)
+    if view is None:
+        return None
+    _magic, dir_count, dir_off, sections, _base = view
+    entry = dir_off + _PE_COM_DESCRIPTOR_DIR * 8
+    if dir_count <= _PE_COM_DESCRIPTOR_DIR or entry + 8 > len(raw):
+        return None
+    clr_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    if clr_rva == 0:
+        return None
+    clr_off = _pe_rva_to_offset(sections, clr_rva)
+    if clr_off is None or clr_off + 16 > len(raw):
+        return None
+    meta_rva = int.from_bytes(raw[clr_off + 8 : clr_off + 12], "little")
+    meta_off = _pe_rva_to_offset(sections, meta_rva)
+    if meta_off is None:
+        return None
+    stream_map = _clr_stream_map(raw, meta_off)
+    tables_span = stream_map.get("#~") or stream_map.get("#-")
+    strings_span = stream_map.get("#Strings")
+    guid_span = stream_map.get("#GUID")
+    blob_span = stream_map.get("#Blob")
+    if tables_span is None:
+        return None
+    tables = raw[meta_off + tables_span[0] : meta_off + tables_span[0] + tables_span[1]]
+    strings = b""
+    if strings_span is not None:
+        strings = raw[meta_off + strings_span[0] : meta_off + strings_span[0] + strings_span[1]]
+    guids = b""
+    if guid_span is not None:
+        guids = raw[meta_off + guid_span[0] : meta_off + guid_span[0] + guid_span[1]]
+    blob_heap = b""
+    if blob_span is not None:
+        blob_heap = raw[meta_off + blob_span[0] : meta_off + blob_span[0] + blob_span[1]]
+    if len(tables) < 24:
+        return None
+    heap_sizes = tables[6]
+    string_index_size = 4 if (heap_sizes & 0x01) else 2
+    guid_index_size = 4 if (heap_sizes & 0x02) else 2
+    blob_index_size = 4 if (heap_sizes & 0x04) else 2
+    valid = int.from_bytes(tables[8:16], "little")
+    cursor = 24
+    row_counts: dict[int, int] = {}
+    for bit in range(64):
+        if valid & (1 << bit):
+            if cursor + 4 > len(tables):
+                return None
+            row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
+            cursor += 4
+    max_rows = max((len(tables) - cursor) // 2, 0)
+    row_counts = {bit: min(count, max_rows) for bit, count in row_counts.items()}
+    if _DOTNET_MODULE_TABLE not in row_counts:
+        return None
+
+    def string_at(index: int) -> str:
+        if index <= 0 or index >= len(strings):
+            return ""
+        end = strings.find(b"\0", index)
+        return strings[index : (end if end >= 0 else len(strings))].decode(
+            "utf-8", errors="replace"
+        )
+
+    identity: dict[str, Any] = {
+        "assembly_name": None,
+        "assembly_version": None,
+        "public_key_token": None,
+        "mvid": None,
+    }
+    table_offset = cursor
+    for bit in sorted(row_counts):
+        row_size = table_row_size(
+            row_counts, string_index_size, blob_index_size, guid_index_size, bit
+        )
+        if row_size is None:
+            return None
+        if bit == _DOTNET_MODULE_TABLE:
+            # Row: Generation(2), Name(#Strings), Mvid(#GUID), Enc*(#GUID x2).
+            # The #GUID heap is 1-based: index N is the Nth 16-byte GUID,
+            # rendered the way Guid.ToString() does (first three groups
+            # little-endian), which is what monodis prints after "GUID = ".
+            mvid_at = table_offset + 2 + string_index_size
+            if mvid_at + guid_index_size <= len(tables):
+                guid_index = int.from_bytes(tables[mvid_at : mvid_at + guid_index_size], "little")
+                start = (guid_index - 1) * 16
+                if guid_index > 0 and start + 16 <= len(guids):
+                    identity["mvid"] = str(uuid.UUID(bytes_le=guids[start : start + 16]))
+        elif bit == _DOTNET_ASSEMBLY_TABLE:
+            # Row: HashAlgId(4), Major/Minor/Build/Revision(2 each), Flags(4),
+            # PublicKey(#Blob), Name(#Strings), Culture(#Strings).
+            if table_offset + row_size > len(tables):
+                return None
+            version = [
+                int.from_bytes(tables[table_offset + at : table_offset + at + 2], "little")
+                for at in (4, 6, 8, 10)
+            ]
+            identity["assembly_version"] = ".".join(str(part) for part in version)
+            pk_at = table_offset + 16
+            pk_index = int.from_bytes(tables[pk_at : pk_at + blob_index_size], "little")
+            if 0 < pk_index < len(blob_heap):
+                decoded = _dotnet_packed_uint(blob_heap, pk_index)
+                if decoded is not None:
+                    length, start = decoded
+                    if length > 0 and start + length <= len(blob_heap):
+                        public_key = blob_heap[start : start + length]
+                        identity["public_key_token"] = (
+                            hashlib.sha1(public_key)  # noqa: S324 -- the format's own algorithm
+                            .digest()[-8:][::-1]
+                            .hex()
+                        )
+            name_at = pk_at + blob_index_size
+            name_index = int.from_bytes(tables[name_at : name_at + string_index_size], "little")
+            identity["assembly_name"] = string_at(name_index) or None
+            break
+        table_offset += row_size * row_counts[bit]
+    return identity
 
 
 def _dotnet_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
