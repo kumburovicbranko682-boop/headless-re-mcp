@@ -609,6 +609,15 @@ class WebBackend:
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
+        # request_id keys handle.requests. An unhashable value -- a list or dict
+        # slipping past the schema on the agent/bridge transports, which do no
+        # pydantic coercion -- would make dict.get() raise TypeError, and the
+        # service's ``except BaseException`` files that as an internal_error
+        # incident instead of the not_found a bad id already earns. Reject a
+        # non-string up front as invalid_params, the same shape network_list's
+        # page bounds give a bad ``offset``.
+        if not isinstance(request_id, str):
+            raise WebError("invalid_params", "request_id must be a string")
         with handle.lock:
             entry = handle.requests.get(request_id)
         if entry is None:

@@ -572,6 +572,26 @@ def test_network_get_rejects_an_unknown_request(tmp_path: Path) -> None:
         handle.runner.shutdown()
 
 
+def test_network_get_rejects_a_non_string_request_id(tmp_path: Path) -> None:
+    # A list is unhashable, so handle.requests.get() would raise TypeError --
+    # an internal_error incident -- rather than the not_found a bad id already
+    # earns. The guard must fold a non-string into a clean invalid_params, the
+    # same way the page readers answer a non-integer offset.
+    backend = WebBackend()
+    handle = _WebSession(None, None, None, _FakePage(), _FakeCdp())
+    handle.runner = _Runner("test-netget-badid")
+    try:
+        backend._sessions["s"] = handle
+        backend._get = lambda session_id: handle  # type: ignore[method-assign]
+
+        with pytest.raises(WebError) as caught:
+            backend.network_get("s", ["r1"], tmp_path)  # type: ignore[arg-type]
+
+        assert caught.value.code == "invalid_params"
+    finally:
+        handle.runner.shutdown()
+
+
 def test_network_get_stringifies_a_non_string_text_body(tmp_path: Path) -> None:
     backend = WebBackend()
     cdp = _FakeCdp()
