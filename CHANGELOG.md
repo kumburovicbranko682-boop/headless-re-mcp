@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（Windows OCR worker 的畸形 JSON 末行逃逸成内部事故）
+
+- `core/ui_ocr.py` 的 `ocr_bmp_windows` 每条失败路径都抛结构化的 `UiPidBoundaryError`
+  (输入缺失、子进程非零退出、无输出、返回非对象),唯独把 worker stdout 末行
+  `json.loads(lines_out[-1])` 当作可信 JSON——无 try/except。winsdk 导入期的提示、DLL 加载
+  通知或任何库向 stdout 的写入都可能让末行不是那段 JSON,而 OCR 文本本身来自
+  attacker-controlled 截图;此时裸 `JSONDecodeError` 逃逸后被 `results._failure` 记为
+  `internal_error` 事故,违反该函数「一律 backend_error」的错误契约。现把该 `json.loads`
+  包进 try,`ValueError`(含 `JSONDecodeError`)与 `RecursionError` 均映射为
+  `UiPidBoundaryError("backend_error", ...)` 并附截断的 stdout 末行。新增「修复前必失败」
+  回归(monkeypatch `_run_ocr` 返回被前置行污染的 stdout,断言得到 backend_error 而非裸
+  解码异常)。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、

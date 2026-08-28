@@ -187,7 +187,21 @@ def ocr_bmp_windows(path: str | Path, *, language: str = "en-US") -> JsonObject:
     lines_out = [ln for ln in (completed.stdout or "").splitlines() if ln.strip()]
     if not lines_out:
         raise UiPidBoundaryError("backend_error", "Windows OCR subprocess produced no output")
-    payload = json.loads(lines_out[-1])
+    try:
+        payload = json.loads(lines_out[-1])
+    except (ValueError, RecursionError) as exc:
+        # Every other exit from this function raises UiPidBoundaryError, but the
+        # worker's last stdout line was trusted to be the JSON it prints. winsdk
+        # import chatter, a DLL-load notice, or any library writing to stdout can
+        # make the final line something else, and the OCR text itself comes from
+        # an attacker-controlled screenshot; a raw JSONDecodeError (or, for a
+        # pathological payload, RecursionError) then escaped as an internal
+        # incident instead of the backend_error this contract promises.
+        raise UiPidBoundaryError(
+            "backend_error",
+            "Windows OCR subprocess returned malformed JSON",
+            stdout=lines_out[-1][:200],
+        ) from exc
     if not isinstance(payload, dict):
         raise UiPidBoundaryError("backend_error", "Windows OCR returned non-object")
     return payload
