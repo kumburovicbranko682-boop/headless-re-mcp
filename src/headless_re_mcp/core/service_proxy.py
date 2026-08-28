@@ -118,6 +118,9 @@ class ProxyAnalysisMixin:
     def proxy_endpoints(self, session_id: str, limit: int = 100) -> Result[JsonObject]:
         return self._proxy_wrap(session_id, "endpoints", session_id, limit=limit)
 
+    def proxy_hosts(self, session_id: str, limit: int = 100) -> Result[JsonObject]:
+        return self._proxy_wrap(session_id, "hosts", session_id, limit=limit)
+
     def proxy_cookies(self, session_id: str, limit: int = 200) -> Result[JsonObject]:
         return self._proxy_wrap(session_id, "cookies", session_id, limit=limit)
 

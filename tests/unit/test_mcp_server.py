@@ -343,6 +343,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "proxy.stats",
         "proxy.search",
         "proxy.endpoints",
+        "proxy.hosts",
         "proxy.cookies",
         "proxy.flow.get",
         "proxy.replay",

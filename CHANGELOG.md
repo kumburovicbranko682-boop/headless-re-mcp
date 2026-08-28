@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **293（175 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **294（176 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -583,6 +583,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不同状态码、以及其中多少条出错。回 `endpoints`(按命中排序)、`count`、`total`(不同端点数)、
   `truncated`(列表被截)与 `total_flows`(折进去的行数)。每个端点带 `method`/`host`/`path`/`hits`/
   `statuses`(去重排序的状态码列表)/`errors`。要看某端点背后的单条流用 `proxy.flows`。
+- 新增 `proxy.hosts`:把抓包折成去重的"联系过的主机"清单——这目标到底和谁通信。比 `proxy.endpoints`
+  (按 method+path 归并)更粗,是分诊的一眼总览:碰过哪些服务器、其中有没有走明文。回 `hosts`(按命中
+  排序)、`count`、`total`(不同主机数)、`truncated`(列表被截)与 `total_flows`(折进去的行数)。每台主机带
+  `host`、`hits`、`schemes`(去重排序,如 `["https"]` 或 `["http","https"]`)、`secure`(见过 https)、
+  `cleartext`(见过明文 http——安全相关标志)、`methods`(去重排序)、`statuses`(去重排序的状态码列表)、
+  `errors`(失败流数)与 `first_seq`/`last_seq`(首末次接触的抓包序号)。要下钻某主机的路径用 `proxy.endpoints`。
 
 ### 新增（抓包全文检索）
 

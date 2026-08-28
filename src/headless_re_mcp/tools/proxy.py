@@ -149,6 +149,27 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_endpoints(session_id, limit=limit))
 
+    @tools.tool(name="proxy.hosts")
+    def proxy_hosts(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Fold the capture into distinct contacted hosts: who did the app talk to.
+
+        Coarser than proxy.endpoints (which keys on method+path): the one-look
+        contacted-hosts inventory for triage -- which servers this target
+        reached, and whether any were reached over cleartext. Answers with hosts
+        (ranked by hits), count, total (distinct hosts), truncated (the list was
+        capped) and total_flows (rows folded). Each host carries host, hits,
+        schemes (a sorted list, e.g. ["https"] or ["http","https"]), secure
+        (https was seen), cleartext (plain http was seen -- the security-relevant
+        flag), methods (sorted), statuses (a sorted list of distinct status
+        codes), errors (flows that failed), and first_seq/last_seq (the capture
+        sequence numbers of first and last contact). Use proxy.endpoints to drill
+        into a host's paths.
+        """
+        return _dump(analysis.proxy_hosts(session_id, limit=limit))
+
     @tools.tool(name="proxy.search")
     def proxy_search(
         session_id: str,

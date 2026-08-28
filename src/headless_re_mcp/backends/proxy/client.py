@@ -590,6 +590,79 @@ def fold_endpoints(rows: list[JsonObject], *, limit: int = 100) -> JsonObject:
     }
 
 
+def fold_hosts(rows: list[JsonObject], *, limit: int = 100) -> JsonObject:
+    """Fold a flow snapshot into distinct hosts: who did this app talk to.
+
+    Coarser than fold_endpoints (which keys on method+path): this is the one-look
+    contacted-hosts inventory. Each host aggregates its hit count, the schemes
+    seen (so a host reached over cleartext http stands out), the methods and
+    distinct status codes, how many flows errored, and the first/last capture
+    sequence numbers so first contact is visible. Ranked by hits.
+    """
+    buckets: dict[str, JsonObject] = {}
+    for row in rows:
+        url = str(row.get("url") or "")
+        host = str(row.get("host") or "")
+        scheme = ""
+        if url:
+            parts = urlsplit(url)
+            if not host:
+                host = parts.netloc
+            scheme = parts.scheme
+        if not host:
+            host = "?"
+        bucket = buckets.get(host)
+        if bucket is None:
+            bucket = {
+                "host": host,
+                "hits": 0,
+                "_schemes": set(),
+                "_methods": set(),
+                "_statuses": set(),
+                "errors": 0,
+                "first_seq": None,
+                "last_seq": None,
+            }
+            buckets[host] = bucket
+        bucket["hits"] += 1
+        if scheme:
+            bucket["_schemes"].add(scheme)
+        method = str(row.get("method") or "").upper()
+        if method:
+            bucket["_methods"].add(method)
+        status = row.get("status")
+        if isinstance(status, int):
+            bucket["_statuses"].add(status)
+        if row.get("error"):
+            bucket["errors"] += 1
+        seq = row.get("seq")
+        if isinstance(seq, int):
+            if bucket["first_seq"] is None or seq < bucket["first_seq"]:
+                bucket["first_seq"] = seq
+            if bucket["last_seq"] is None or seq > bucket["last_seq"]:
+                bucket["last_seq"] = seq
+
+    hosts: list[JsonObject] = []
+    for bucket in buckets.values():
+        schemes = bucket.pop("_schemes")
+        bucket["schemes"] = sorted(schemes)
+        bucket["secure"] = "https" in schemes
+        bucket["cleartext"] = "http" in schemes
+        bucket["methods"] = sorted(bucket.pop("_methods"))
+        bucket["statuses"] = sorted(bucket.pop("_statuses"))
+        hosts.append(bucket)
+    hosts.sort(key=lambda h: (-h["hits"], str(h["host"])))
+    cap = max(1, min(int(limit), _MAX_ENDPOINTS_PAGE))
+    window = hosts[:cap]
+    return {
+        "hosts": window,
+        "count": len(window),
+        "total": len(hosts),
+        "truncated": len(window) < len(hosts),
+        "total_flows": len(rows),
+    }
+
+
 def _headers_text(headers: dict[str, str]) -> str:
     return "\n".join(f"{name}: {value}" for name, value in headers.items())
 
@@ -1081,6 +1154,10 @@ class ProxyBackend:
     def endpoints(self, session_id: str, *, limit: int = 100) -> JsonObject:
         inst = self._get(session_id)
         return fold_endpoints(inst.recorder.snapshot(), limit=limit)
+
+    def hosts(self, session_id: str, *, limit: int = 100) -> JsonObject:
+        inst = self._get(session_id)
+        return fold_hosts(inst.recorder.snapshot(), limit=limit)
 
     def cookies(self, session_id: str, *, limit: int = 200) -> JsonObject:
         inst = self._get(session_id)
