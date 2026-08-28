@@ -152,6 +152,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "r2.search",
         "r2.libs",
         "r2.relocations",
+        "r2.resolve",
         "ghidra.analyze",
         "ghidra.functions",
         "ghidra.symbols",

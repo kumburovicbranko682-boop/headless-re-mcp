@@ -301,6 +301,34 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_disasm_function(session_id, address, timeout=timeout))
 
+    @tools.tool(name="r2.resolve")
+    def r2_resolve(
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Map a raw address back to its function and nearest symbol.
+
+        The reverse of every other r2 reader: r2.xrefs, r2.relocations,
+        r2.search, r2.read and the disassemblers all emit addresses; this turns
+        one back into "what lives here". Give it an address (a search hit, an
+        xref target, a relocation slot, a pointer read out of the data) and it
+        answers with the function it falls inside and the nearest named flag at
+        or before it -- the equivalent of reading ``main + 16`` or ``str.foo``
+        off a listing, even when r2 never turned that spot into a function.
+
+        Runs ``afij`` and ``fdj``. Answers with address (va/rva/module),
+        address_va, function and flag. ``function`` is {name, addr (the function
+        start), size, delta (address - addr, i.e. bytes into the function),
+        signature and type when r2 has them, address (va/rva/module of the
+        start)}, or null when the address is not inside any analysed function.
+        ``flag`` is {name, realname when it differs, addr (the flag's own
+        address) and address when known, delta (address - the flag's addr)}, or
+        null when the image has no flags to resolve against. delta 0 means the
+        address sits exactly on that function/flag.
+        """
+        return _dump(analysis.r2_resolve(session_id, address, timeout=timeout))
+
     @tools.tool(name="r2.libs")
     def r2_libs(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0

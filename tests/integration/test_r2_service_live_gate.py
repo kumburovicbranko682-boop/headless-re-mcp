@@ -386,6 +386,32 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
         _assert_mapped(all_marker.get("address"))
         assert all_marker["address"].get("architecture") == expect_arch, all_marker
 
+        # r2.resolve is the reverse reader: given a raw address it names what
+        # lives there. An address a few bytes into main must resolve to the main
+        # function with delta 4 and the target's architecture; the marker
+        # string's own address, inside no function, must resolve to a null
+        # function and a flag that names the string. This is the "I hold a search
+        # hit / xref target, what is it" pivot the emitting readers cannot serve.
+        in_main = service.r2_resolve(session_id, entry + 4, timeout=60.0)
+        assert in_main.ok and in_main.data is not None, in_main.error
+        assert in_main.data.get("architecture") == expect_arch
+        rfunc = in_main.data.get("function")
+        assert rfunc is not None, in_main.data
+        assert (rfunc.get("name") or "").endswith("main"), rfunc
+        assert rfunc.get("addr") == entry, rfunc
+        assert rfunc.get("delta") == 4, rfunc
+        _assert_mapped(rfunc.get("address"))
+        assert rfunc["address"].get("architecture") == expect_arch, rfunc
+
+        at_marker = service.r2_resolve(
+            session_id, int(marker["address"]["va"]), timeout=60.0
+        )
+        assert at_marker.ok and at_marker.data is not None, at_marker.error
+        assert at_marker.data.get("function") is None, at_marker.data
+        mflag = at_marker.data.get("flag")
+        assert mflag is not None, at_marker.data
+        assert isinstance(mflag.get("name"), str) and mflag["name"], mflag
+
         # r2.read is the data-side reader. Point it at the marker string's own
         # address -- a .rodata data address r2.disasm would only decode as a run
         # of invalid bytes -- and the exact bytes must come back, byte for byte.

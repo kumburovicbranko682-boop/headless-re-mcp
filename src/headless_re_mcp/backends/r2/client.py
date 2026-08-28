@@ -73,6 +73,12 @@ _XJ_COMMAND = re.compile(r"/xj (?:[0-9a-f]{2})+\Z")
 # honour the seek on every version; axj stays whitelisted for the enrich filter
 # path and older builds.
 _AXREF_COMMAND = re.compile(r"ax[tf]?j @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+# afij @ addr: JSON info for the function containing addr ([] when none).
+# fdj @ addr: JSON for the flag (symbol/string) nearest at-or-before addr.
+# r2.resolve runs both to answer "what is at this address" -- the reverse of the
+# address-emitting readers (xrefs/relocations/search/read/disasm).
+_AFIJ_COMMAND = re.compile(r"afij @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+_FDJ_COMMAND = re.compile(r"fdj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 
 
 def _is_invalid_op(item: JsonObject) -> bool:
@@ -111,7 +117,114 @@ def _require_allowed_command(command: str) -> None:
         return
     if _AXREF_COMMAND.fullmatch(command) is not None:
         return
+    if _AFIJ_COMMAND.fullmatch(command) is not None:
+        return
+    if _FDJ_COMMAND.fullmatch(command) is not None:
+        return
     raise R2Error("invalid_params", "r2 command not whitelisted", command=command)
+
+
+def _decode_r2_values(raw: str) -> list[Any]:
+    """Every top-level JSON value in an r2 stream, arrays and objects alike.
+
+    ``parse_r2_json`` returns only the first value and ``parse_r2_arrays`` only
+    the arrays; ``r2.resolve`` runs two commands that print an array (``afij``)
+    then an object (``fdj``), so it needs both. Decodes at each ``[``/``{`` and
+    jumps past the value's inner brackets, so an ``str.[...]`` flag name or an
+    ``[x] Analyze`` banner in between is stepped over rather than mis-parsed.
+    """
+    text = raw or ""
+    decoder = json.JSONDecoder()
+    values: list[Any] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if text[index] not in "[{":
+            index += 1
+            continue
+        try:
+            value, end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            index += 1
+            continue
+        values.append(value)
+        index = end
+    return values
+
+
+def _resolve_function(
+    afij_val: Any,
+    address: int,
+    *,
+    module: str,
+    image_base: int | None,
+    architecture: Any,
+) -> JsonObject | None:
+    """The function containing ``address`` from an ``afij`` array, or None.
+
+    afij prints a one-element array for the function whose bounds contain the
+    address and an empty array when the address is not inside any analysed
+    function; the empty case is a null function, not an error.
+    """
+    if not isinstance(afij_val, list) or not afij_val:
+        return None
+    entry = afij_val[0]
+    if not isinstance(entry, dict):
+        return None
+    # r2 5.x names the function start ``offset``; r2 6.x renamed it ``addr``.
+    start = _item_va(entry, ("offset", "addr", "vaddr"))
+    func: JsonObject = {"name": entry.get("name")}
+    if isinstance(entry.get("size"), int):
+        func["size"] = entry["size"]
+    if isinstance(entry.get("signature"), str) and entry["signature"]:
+        func["signature"] = entry["signature"]
+    if isinstance(entry.get("type"), str) and entry["type"]:
+        func["type"] = entry["type"]
+    if start is not None:
+        func["addr"] = start
+        func["delta"] = address - start
+        mapped = address_dict(
+            start, module=module, image_base=image_base, architecture=architecture
+        )
+        if mapped is not None:
+            func["address"] = mapped
+    return func
+
+
+def _resolve_flag(
+    fdj_val: Any,
+    address: int,
+    *,
+    module: str,
+    image_base: int | None,
+    architecture: Any,
+) -> JsonObject | None:
+    """The nearest flag at-or-before ``address`` from an ``fdj`` object, or None.
+
+    fdj names the flag (a symbol, import thunk, or ``str.`` literal) nearest at
+    or before the address. Its ``offset`` is that flag's own address, present
+    when the flag precedes the queried address and omitted when the flag sits
+    exactly on it -- so a missing offset means delta 0. An empty object (no
+    ``name``) means the image has no flags to resolve against, hence None.
+    """
+    if not isinstance(fdj_val, dict) or not fdj_val.get("name"):
+        return None
+    flag: JsonObject = {"name": str(fdj_val.get("name"))}
+    realname = fdj_val.get("realname")
+    if isinstance(realname, str) and realname:
+        flag["realname"] = realname
+    flag_va = _item_va(fdj_val, ("offset", "addr", "vaddr"))
+    if flag_va is not None:
+        flag["addr"] = flag_va
+        flag["delta"] = address - flag_va
+        mapped = address_dict(
+            flag_va, module=module, image_base=image_base, architecture=architecture
+        )
+        if mapped is not None:
+            flag["address"] = mapped
+    else:
+        flag["delta"] = 0
+    return flag
 
 
 class R2Client:
@@ -407,6 +520,68 @@ class R2Client:
             result["ops_truncated"] = True
             result["ops_total"] = available
             result["ops_limit"] = _MAX_ITEMS
+        return result
+
+    def resolve(
+        self,
+        binary: Path,
+        address: int,
+        *,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """Map a raw address to its containing function and nearest named symbol.
+
+        The reverse of every other r2 reader. ``r2.xrefs``, ``r2.relocations``,
+        ``r2.search``, ``r2.read`` and the disassemblers all *emit* addresses;
+        nothing turned one back into "what lives here". This does: given an
+        address it reports the function it falls inside (with the offset from the
+        function start) and the nearest flag at-or-before it (a symbol, an import
+        thunk, an ``str.`` literal), so a hit from a search or an xref target that
+        r2 never turned into a function still gets a name and a delta -- the
+        equivalent of reading ``main + 16`` or ``str.foo + 4`` off a listing.
+
+        Runs ``afij @ addr`` (the function whose bounds contain the address; an
+        empty list, hence a null ``function``, when the address is not inside any
+        analysed function) and ``fdj @ addr`` (the flag nearest at-or-before it).
+        Both ``function`` and ``flag`` report ``delta`` = the queried address
+        minus that entity's start, so 0 means the address sits exactly on it.
+        """
+        if type(address) is not int or address < 0:
+            raise R2Error("invalid_params", "address must be a non-negative int")
+        afij = f"afij @ {address}"
+        fdj = f"fdj @ {address}"
+        # afij needs the analysis pass to know function boundaries; fdj reads the
+        # flag space aa populates. One ``aa`` covers both.
+        data = self.run(binary, ["aa", afij, fdj], timeout=timeout)
+        raw = str(data.get("raw") or "")
+        # afij prints a JSON array, fdj a JSON object, back to back in one stream;
+        # decode both in emission order (parse_r2_json would return only the
+        # first, parse_r2_arrays would miss the object).
+        values = _decode_r2_values(raw)
+        afij_val = next((v for v in values if isinstance(v, list)), None)
+        fdj_val = next((v for v in values if isinstance(v, dict)), None)
+        arch, image_base = pe_preferred_base(binary)
+        result: JsonObject = {
+            "commands": ["aa", afij, fdj],
+            "module": binary.name,
+            "address_va": address,
+            "parsed": bool(values),
+        }
+        if image_base is not None:
+            result["image_base"] = image_base
+        if arch is not None:
+            result["architecture"] = arch.value
+        mapped = address_dict(
+            address, module=binary.name, image_base=image_base, architecture=arch
+        )
+        if mapped is not None:
+            result["address"] = mapped
+        result["function"] = _resolve_function(
+            afij_val, address, module=binary.name, image_base=image_base, architecture=arch
+        )
+        result["flag"] = _resolve_flag(
+            fdj_val, address, module=binary.name, image_base=image_base, architecture=arch
+        )
         return result
 
     def libs(self, binary: Path, *, timeout: float = 30.0) -> JsonObject:
