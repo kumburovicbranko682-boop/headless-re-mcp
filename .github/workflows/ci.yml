@@ -196,7 +196,7 @@ jobs:
       - name: Install package with optional backends
         run: |
           python -m pip install -U pip
-          python -m pip install -e ".[test,web,android,proxy,browser]"
+          python -m pip install -e ".[test,web,android,proxy,browser,pe]"
 
       - name: Install chromium for the browser gates
         run: python -m playwright install --with-deps chromium
