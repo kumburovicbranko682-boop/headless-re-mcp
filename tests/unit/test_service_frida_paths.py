@@ -185,7 +185,7 @@ def test_frida_server_ensure_maps_an_adb_error(tmp_path: Path) -> None:
     service = _service(tmp_path)
     try:
         session_id = _web_session(service)
-        service._adb_backend = _BoomAdb()  # type: ignore[attr-defined]
+        service._adb_backend = _BoomAdb()  # type: ignore[assignment]
         result = service.frida_server_ensure(session_id, serial="emulator-5554")
         assert result.ok is False and result.error is not None
         assert result.error.code == "adb_failed"
