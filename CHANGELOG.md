@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（独立 .dex 离线读取，无需 androguard）
+
+- 新增 `dex.summary`：纯 stdlib 直接解析单个 Dalvik 可执行文件（`.dex`），**无需 androguard**。
+  `apk.*` 走 androguard 打开 APK 容器，但一份独立 `.dex`——被恶意样本丢下、运行时动态加载、或
+  从 APK 里抽出来的——此前在工具面里没有任何读取器，而 androguard 并不总是装着。DEX header 是固定
+  112 字节记录、字符串表是指向 MUTF-8 的偏移数组，两者都精确且有文档；`dex.summary` 用 stdlib 读出
+  version、checksum、signature(SHA-1)、file_size（声明）与 actual_size、header_size、endian、
+  段计数（strings/types/protos/fields/methods/classes），并按诚实分页返回字符串表切片（类名/方法名/
+  字面量——分析者最先 grep 的东西）：`strings` + `strings_count`/`strings_total`/`offset`/`limit`/
+  `has_more`，外加越界字符串偏移的 `warnings`。header 解析精确，字符串表按条防御式跟随——坏偏移记
+  warning 并跳过而非抛异常；字符串按 UTF-8 尽力解码（DEX 存 MUTF-8，对主导类表的 ASCII 标识符等价）
+  且长度有界。非 DEX 报 `invalid_params`，超 64 MiB 报 `too_large`，缺文件报 `not_found`。工具挂在
+  新的 `dex.` 前缀下（并入 android 工作方向：android/full 可见，web/pe 隐藏）。新增真实 MCP stdio
+  Gate（`test_dex_summary_gate.py`，无需任何后端，始终执行）与 `test_dex_summary.py` 单测覆盖
+  （手工汇编的 DEX、分页、坏偏移续跑、反字节序标记、超长字符串有界、非 DEX 拒绝、服务四类信封）。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
@@ -39,7 +55,7 @@ until 1.0 the tool surface may still change between minor versions.
   先例：去掉 POSIX-only 前置断言，只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
