@@ -220,11 +220,12 @@ class _GotoRaises:
 def test_navigate_failure_is_a_backend_error_naming_the_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A transport failure from goto is a classified backend_error, not a wedge.
+    """A hard transport failure from goto is a backend_error, not a wedge.
 
-    goto raises for DNS/refused/timeout transport failures; navigate must report
-    that as backend_error carrying the url, and -- because the runner did answer
-    -- must leave the session usable rather than flipping it to wedged.
+    goto raises for DNS/refused/protocol failures (a deadline is classified
+    separately as code=timeout); navigate must report the hard failure as
+    backend_error carrying the url, and -- because the runner did answer -- must
+    leave the session usable rather than flipping it to wedged.
     """
     backend = WebBackend()
     runner = _Runner("test-nav-fail-runner")

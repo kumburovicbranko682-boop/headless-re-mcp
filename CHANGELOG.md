@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（web 导航超时归类为 timeout，而非笼统的 backend_error）
+
+- 承接上一条:上一条让 `code="timeout"` 变可重试后,顺藤查证"web 会话超时也受益"这一说法,发现 `web.open`
+  与 `web.navigate` 的 `page.goto` 一旦超时(playwright 抛 `TimeoutError`),都被那圈 `except Exception`
+  折进 `WebError("backend_error", ...)`——与 DNS/连接被拒/协议错误这些**硬失败**同码,调用者无从区分"页面
+  慢、重试即可"和"永远打不开",且经上一条的信封后被判为不可重试,与系统别处所有超时(`TimedOut`/
+  `TimeoutError`/x64dbg/adb 设备 shell)标 `retryable=True` 的一致性相悖。
+- 新增 `_is_timeout(exc)`(与 adb/frida 同型:按异常类名含 "timeout" 或消息含 "timed out" 判定,版本容错、
+  无需 import 可选的 playwright),在 `open`/`navigate` 的 except 里先分流:是超时则抛 `WebError("timeout", …)`,
+  否则维持 `backend_error`。硬失败(refused/DNS)行为不变,只把真正的截止时限拆出来。
+- 新增 `TestWebNavTimeoutClassification` 两用例(用类名带 "timeout" 的假异常模拟 playwright 超时、
+  用 `net::ERR_CONNECTION_REFUSED` 模拟硬失败),分别钉住 `code="timeout"` 与 `code="backend_error"`;
+  mutation 验证载荷性(令 `_is_timeout` 恒为 False,超时用例即失败而硬失败用例仍绿,证明未过度归类)。
+  同步修正 `test_web_reap_and_helpers.py` 里把 timeout 列作 backend_error 示例的过期 docstring。web 相关
+  单测 104 passed。
+
 ### 修复（非 PE 后端 timeout 现在如实标记 retryable，与其余错误信封一致）
 
 - 审计错误信封映射时发现:每个非 PE 后端（apk/adb/frida/web/proxy/jsre/r2/ghidra/jadx/apktool）都把

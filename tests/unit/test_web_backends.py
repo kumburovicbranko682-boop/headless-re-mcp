@@ -418,6 +418,82 @@ class TestWebNavTimeoutIsBounded:
             runner.shutdown()
 
 
+class PlaywrightTimeoutError(Exception):
+    """Mirror of playwright.sync_api.TimeoutError.
+
+    playwright raises a distinct class whose name says timeout when goto outruns
+    its deadline; the real package is not installed in the unit environment, so
+    stand in for it with the one attribute _is_timeout keys off -- the class
+    name -- to drive the classification without a browser.
+    """
+
+
+class _TimeoutNavPage:
+    """A page whose goto always times out, like a slow server that never loads."""
+
+    def __init__(self) -> None:
+        self.url = "https://old/"
+
+    def goto(self, url: str, timeout: float = 0.0, wait_until: str = "") -> None:
+        raise PlaywrightTimeoutError("Timeout 30000ms exceeded.")
+
+    def title(self) -> str:
+        return "Example"
+
+
+class _RefusedNavPage:
+    """A page whose goto fails hard (refused/DNS), not a deadline."""
+
+    def __init__(self) -> None:
+        self.url = "https://old/"
+
+    def goto(self, url: str, timeout: float = 0.0, wait_until: str = "") -> None:
+        raise RuntimeError("net::ERR_CONNECTION_REFUSED")
+
+    def title(self) -> str:
+        return "Example"
+
+
+class TestWebNavTimeoutClassification:
+    """A navigation deadline is code=timeout, a hard failure stays backend_error.
+
+    playwright's goto raises TimeoutError when it outruns its budget. navigate /
+    open used to fold every goto exception into code=backend_error, so a
+    transient slow page looked identical to a DNS/refused failure -- and once the
+    error envelope derived retryability from the code, that timeout came back
+    non-retryable, unlike every other timeout the system marks retryable. Pin the
+    split so a caller can tell "retry, it was slow" from "this will never load".
+    """
+
+    def test_a_navigation_timeout_is_classified_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = WebBackend()
+        runner = _Runner("test-nav-timeout-runner")
+        try:
+            handle = SimpleNamespace(page=_TimeoutNavPage(), runner=runner)
+            monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+            with pytest.raises(WebError) as info:
+                backend.navigate("s", "https://slow/app", timeout=30.0)
+            assert info.value.code == "timeout", info.value.code
+        finally:
+            runner.shutdown()
+
+    def test_a_navigation_transport_failure_stays_backend_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = WebBackend()
+        runner = _Runner("test-nav-refused-runner")
+        try:
+            handle = SimpleNamespace(page=_RefusedNavPage(), runner=runner)
+            monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+            with pytest.raises(WebError) as info:
+                backend.navigate("s", "https://nope/app", timeout=30.0)
+            assert info.value.code == "backend_error", info.value.code
+        finally:
+            runner.shutdown()
+
+
 class _TrackingWebBackend:
     def __init__(self) -> None:
         self.live: set[str] = set()

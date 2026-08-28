@@ -59,6 +59,22 @@ class WebError(RuntimeError):
         self.details = details
 
 
+def _is_timeout(exc: BaseException) -> bool:
+    """Whether a browser exception is a deadline, not a hard failure.
+
+    Playwright raises ``TimeoutError`` (a distinct class whose name says timeout)
+    when ``goto`` outruns its budget; a DNS/refused/protocol failure raises the
+    plain ``Error`` instead. Keying off the class name (and the "timed out"
+    phrasing) is the same version-tolerant check the adb and frida backends use,
+    and it needs no import of the optional playwright package. Classifying the
+    deadline as ``code="timeout"`` -- not the catch-all ``backend_error`` -- lets
+    the caller tell "the page was slow, retry" from "this will never load", and
+    the envelope marks the timeout retryable to match every other timeout path.
+    """
+    name = type(exc).__name__.lower()
+    return "timeout" in name or "timed out" in str(exc).lower()
+
+
 def _bound_nav_timeout(timeout: float) -> float:
     """Clamp a caller navigation timeout at the backend boundary.
 
@@ -500,6 +516,10 @@ class WebBackend:
             except Exception as exc:  # noqa: BLE001
                 with contextlib.suppress(Exception):
                     pw.stop()
+                if _is_timeout(exc):
+                    raise WebError(
+                        "timeout", f"navigation did not complete within {timeout:g}s", url=url
+                    ) from exc
                 raise WebError("backend_error", f"failed to open browser: {exc}", url=url) from exc
             return handle, summary
 
@@ -700,6 +720,10 @@ class WebBackend:
                     url, timeout=timeout * 1000.0, wait_until="domcontentloaded"
                 )
             except Exception as exc:  # noqa: BLE001
+                if _is_timeout(exc):
+                    raise WebError(
+                        "timeout", f"navigation did not complete within {timeout:g}s", url=url
+                    ) from exc
                 raise WebError("backend_error", f"navigation failed: {exc}", url=url) from exc
             result: JsonObject = {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
