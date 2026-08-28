@@ -141,6 +141,12 @@ _LLVM_BUILD_VERSION_RE = re.compile(
     r"\s*sdk (\S+)\n"
     r"\s*minos (\S+)"
 )
+# ... and its trailing build_tool_version entries as "tool ld" / "version
+# 1053.12" line pairs.
+_LLVM_TOOL_RE = re.compile(r"^\s*tool (\S+)\n\s*version (\S+)$", re.MULTILINE)
+# readelf -p .comment rows: "  [    20]  GCC: (Ubuntu ...) 13.2.0" with a hex
+# section offset in the brackets.
+_READELF_COMMENT_RE = re.compile(r"^\s*\[\s*[0-9a-f]+\]\s+(.*)$", re.MULTILINE | re.IGNORECASE)
 
 
 def _llvm_macho_sections(objdump: str, binary: Path) -> list[dict[str, Any]]:
@@ -654,6 +660,104 @@ def test_macho_build_version_agrees_with_llvm_objdump() -> None:
         assert native["platform"] == llvm_platform == "macos"
         assert native["min_os"] == llvm_minos == "13.0"
         assert native["sdk"] == llvm_sdk == "14.2"
+    finally:
+        if session_id is not None:
+            service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_elf_comment_toolchain_agrees_with_readelf(tmp_path: Path) -> None:
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    readelf = shutil.which("readelf")
+    if gcc is None:
+        pytest.skip("gcc not installed — ELF toolchain gate not run (skip != pass)")
+    if readelf is None:
+        pytest.skip("readelf not installed — ELF toolchain gate not run (skip != pass)")
+
+    # A real compiler's .comment: GCC records itself at every compile, so the
+    # probe carries at least one provenance string neither side invented.
+    probe = _compile_probe(gcc, tmp_path, "probe.bin")
+    result = subprocess.run(
+        [readelf, "-p", ".comment", str(probe)], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    readelf_records: list[str] = []
+    for match in _READELF_COMMENT_RE.finditer(result.stdout):
+        text = match.group(1).strip()
+        if text and text not in readelf_records:
+            readelf_records.append(text)
+    assert readelf_records, result.stdout
+
+    service = AnalysisService()
+    session_id = None
+    try:
+        session_id, native = _session_native(service, probe)
+        # The tool-free .comment read and readelf print the same compiler
+        # records, string for string and in section order.
+        assert native["toolchain"] == readelf_records
+    finally:
+        if session_id is not None:
+            service.close_session(session_id)
+
+
+def _macho_with_build_tools() -> bytes:
+    """A minimal 64-bit Mach-O whose LC_BUILD_VERSION carries two tool entries.
+
+    Built here independently of the reader's unit builder: one arm64 header and
+    one load command claiming macOS 14.0 / SDK 14.5, ld 1053.12 and clang 15.0.
+    llvm-objdump's strict decode doubles as the well-formedness check.
+    """
+    command = struct.pack(
+        "<IIIIII",
+        0x32,  # LC_BUILD_VERSION
+        40,
+        1,  # PLATFORM_MACOS
+        14 << 16,  # minos 14.0
+        (14 << 16) | (5 << 8),  # sdk 14.5
+        2,  # ntools
+    )
+    command += struct.pack("<II", 3, (1053 << 16) | (12 << 8))  # TOOL_LD 1053.12
+    command += struct.pack("<II", 1, 15 << 16)  # TOOL_CLANG 15.0
+    header = struct.pack(
+        "<IIIIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 1, len(command), 0, 0
+    )
+    return header + command
+
+
+@pytest.mark.integration
+def test_macho_build_tools_agree_with_llvm_objdump(tmp_path: Path) -> None:
+    objdump = shutil.which("llvm-objdump")
+    if objdump is None:
+        pytest.skip("llvm-objdump not installed — Mach-O tool gate not run (skip != pass)")
+
+    binary = tmp_path / "tools.macho"
+    binary.write_bytes(_macho_with_build_tools())
+    result = subprocess.run(
+        [objdump, "--macho", "--all-headers", str(binary)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    # llvm-objdump validates every load command before printing, so a zero
+    # exit is itself a well-formedness check on the synthetic image.
+    assert result.returncode == 0, result.stderr
+    llvm_tools = [
+        {"tool": tool, "version": version}
+        for tool, version in _LLVM_TOOL_RE.findall(result.stdout)
+    ]
+    # LLVM must see the planted rows, so it is a genuine second opinion.
+    assert llvm_tools == [
+        {"tool": "ld", "version": "1053.12"},
+        {"tool": "clang", "version": "15.0"},
+    ]
+
+    service = AnalysisService()
+    session_id = None
+    try:
+        session_id, native = _session_native(service, binary)
+        # The tool-free ntools walk and LLVM's decoder name the same
+        # toolchain, tool for tool and version for version.
+        assert native["build_tools"] == llvm_tools
     finally:
         if session_id is not None:
             service.close_session(session_id)

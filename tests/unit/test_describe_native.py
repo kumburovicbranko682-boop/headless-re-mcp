@@ -105,14 +105,30 @@ def _lc_rpath(path: str, *, name_offset: int = 12) -> bytes:
     return bytes(cmd)
 
 
-def _lc_build_version(platform: int, minos: int, sdk: int) -> bytes:
-    # build_version_command with no trailing build_tool_version entries.
-    cmd = bytearray(24)
+def _lc_build_version(
+    platform: int,
+    minos: int,
+    sdk: int,
+    tools: tuple[tuple[int, int], ...] = (),
+    *,
+    declared_ntools: int | None = None,
+) -> bytes:
+    # build_version_command, optionally with trailing build_tool_version
+    # entries (tool id, nibble-packed version). ``declared_ntools`` lets a test
+    # lie about the count without laying down the entries.
+    total = 24 + 8 * len(tools)
+    cmd = bytearray(total)
     cmd[0:4] = (0x32).to_bytes(4, "little")  # LC_BUILD_VERSION
-    cmd[4:8] = (24).to_bytes(4, "little")
+    cmd[4:8] = total.to_bytes(4, "little")
     cmd[8:12] = platform.to_bytes(4, "little")
     cmd[12:16] = minos.to_bytes(4, "little")
     cmd[16:20] = sdk.to_bytes(4, "little")
+    ntools = declared_ntools if declared_ntools is not None else len(tools)
+    cmd[20:24] = ntools.to_bytes(4, "little")
+    for index, (tool_id, tool_version) in enumerate(tools):
+        base = 24 + index * 8
+        cmd[base : base + 4] = tool_id.to_bytes(4, "little")
+        cmd[base + 4 : base + 8] = tool_version.to_bytes(4, "little")
     return bytes(cmd)
 
 
@@ -1413,6 +1429,62 @@ def test_macho_build_version_names_platform_and_versions(tmp_path: Path) -> None
     assert facts["sdk"] == "17.0"
 
 
+def test_macho_build_version_reports_the_toolchain(tmp_path: Path) -> None:
+    # The trailing build_tool_version entries are the toolchain provenance --
+    # the Mach-O pair to an ELF .comment and the WASM producers section.
+    data = _macho64_full(
+        filetype=2,
+        flags=0x4,
+        load_cmds=_lc_build_version(
+            1,
+            0x000E0000,
+            0x000E0500,
+            tools=((3, (1095 << 16) | (2 << 8)), (1, 15 << 16)),  # ld 1095.2, clang 15.0
+        ),
+        ncmds=1,
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["build_tools"] == [
+        {"tool": "ld", "version": "1095.2"},
+        {"tool": "clang", "version": "15.0"},
+    ]
+
+
+def test_macho_build_version_without_tools_reports_no_toolchain(tmp_path: Path) -> None:
+    data = _macho64_full(
+        filetype=2, flags=0x4, load_cmds=_lc_build_version(1, 0x000E0000, 0), ncmds=1
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["platform"] == "macos"
+    assert "build_tools" not in facts
+
+
+def test_macho_a_lying_ntools_stays_inside_its_command(tmp_path: Path) -> None:
+    # ntools claims five entries but the command holds one: the walk must stop
+    # at the command's own boundary, not read the next command as tools.
+    data = _macho64_full(
+        filetype=2,
+        flags=0x4,
+        load_cmds=_lc_build_version(
+            1, 0x000E0000, 0, tools=((3, 900 << 16),), declared_ntools=5
+        ),
+        ncmds=1,
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["build_tools"] == [{"tool": "ld", "version": "900.0"}]
+
+
+def test_macho_an_unknown_tool_id_reads_numerically(tmp_path: Path) -> None:
+    data = _macho64_full(
+        filetype=2,
+        flags=0x4,
+        load_cmds=_lc_build_version(1, 0x000E0000, 0, tools=((9, 7 << 16),)),
+        ncmds=1,
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["build_tools"] == [{"tool": "tool_9", "version": "7.0"}]
+
+
 def test_macho_version_min_command_kind_names_the_platform(tmp_path: Path) -> None:
     # The pre-LC_BUILD_VERSION encoding: LC_VERSION_MIN_MACOSX (0x24) et al.
     # carry version+sdk, with the platform implied by the command itself.
@@ -2194,6 +2266,52 @@ class TestElfSectionPayloads:
         facts = describe_native(_write(tmp_path, "hdr.elf", _elf64_le()))["native"]
         assert "section_payloads" not in facts
         assert "section_payload_count" not in facts
+
+
+class TestElfToolchain:
+    """describe_native reports .comment compiler records -- the ELF toolchain.
+
+    Every compiler that contributed objects to the link appends one
+    NUL-terminated record; the fact is the pair to the WASM producers section,
+    a Mach-O build-tool entry and a PE Rich header, and reads exactly what
+    ``readelf -p .comment`` prints. Absent stays absent: an image without the
+    section (or whose .comment is not file-backed) records no provenance.
+    """
+
+    def test_comment_records_read_in_link_order(self, tmp_path: Path) -> None:
+        comment = b"GCC: (Ubuntu 13.2.0-23ubuntu4) 13.2.0\x00clang version 17.0.6\x00"
+        data = _elf64_with_sections([(".text", 1, b"\x90" * 8), (".comment", 1, comment)])
+        facts = describe_native(_write(tmp_path, "cc.elf", data))["native"]
+        assert facts["toolchain"] == [
+            "GCC: (Ubuntu 13.2.0-23ubuntu4) 13.2.0",
+            "clang version 17.0.6",
+        ]
+
+    def test_repeated_records_dedupe_to_one(self, tmp_path: Path) -> None:
+        # Every object file repeats its compiler's record; the link keeps them
+        # all, the fact reports each toolchain once.
+        comment = b"GCC: (GNU) 12.3.0\x00" * 5
+        data = _elf64_with_sections([(".comment", 1, comment)])
+        facts = describe_native(_write(tmp_path, "dup.elf", data))["native"]
+        assert facts["toolchain"] == ["GCC: (GNU) 12.3.0"]
+
+    def test_an_elf_without_comment_records_no_provenance(self, tmp_path: Path) -> None:
+        data = _elf64_with_sections([(".text", 1, b"\x90" * 8)])
+        facts = describe_native(_write(tmp_path, "bare.elf", data))["native"]
+        assert "toolchain" not in facts
+
+    def test_a_nobits_comment_is_not_file_backed(self, tmp_path: Path) -> None:
+        data = _elf64_with_sections(
+            [(".comment", 1, b"GCC: (GNU) 12.3.0\x00")], nobits_names=frozenset({".comment"})
+        )
+        facts = describe_native(_write(tmp_path, "nobits.elf", data))["native"]
+        assert "toolchain" not in facts
+
+    def test_the_record_list_is_bounded(self, tmp_path: Path) -> None:
+        comment = b"".join(f"compiler {i:02d}\x00".encode() for i in range(20))
+        data = _elf64_with_sections([(".comment", 1, comment)])
+        facts = describe_native(_write(tmp_path, "many.elf", data))["native"]
+        assert len(facts["toolchain"]) == 16  # _ELF_MAX_TOOLCHAIN
 
 
 class TestMachoSectionPayloads:

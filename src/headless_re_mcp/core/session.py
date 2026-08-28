@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import re
+import uuid
 import zipfile
 import zlib
 from collections import deque
@@ -164,6 +165,16 @@ class SessionRegistry:
                 # TLS callbacks -- the PE's code-before-main, the pair to the
                 # ELF/Mach-O init_funcs facts and the packer's anti-debug home.
                 metadata["pe"].update(_pe_tls_facts(path))
+                # The CodeView RSDS record -- the PE build fingerprint, the
+                # pair to an ELF build-id / Mach-O UUID; absent is an answer.
+                metadata["pe"].update(_pe_debug_fingerprint(path))
+                # VS_VERSIONINFO -- the self-declared identity (versions,
+                # CompanyName/ProductName strings); a claim, not a verdict.
+                metadata["pe"].update(_pe_version_info(path))
+                # The Rich header -- MSVC's toolchain census, the PE pair to
+                # an ELF .comment and a Mach-O build-tool entry; only
+                # Microsoft linkers write it, so absence is a real answer.
+                metadata["pe"].update(_pe_rich_header(path))
                 # Managed resources are a separate store from the PE resource
                 # tree: the ManifestResource census covers the Assembly.Load
                 # packer pattern.
@@ -482,8 +493,18 @@ _NATIVE_SECTION_SNIFF = 0x40
 _NATIVE_MAX_SECTION_PAYLOADS = 64
 _NATIVE_MAX_MACHO_SECTIONS = 4096
 _SHT_NULL = 0
+_SHT_PROGBITS = 1
 _ELF_MAX_SHSTRTAB = 1024 * 1024
 _ELF_MAX_EXPORTS = 8192
+# The .comment section collects one NUL-terminated record per compiler that
+# touched the link ("GCC: (Ubuntu 13.2.0...)", "clang version ...") -- the ELF
+# toolchain provenance, the pair to the WASM producers section, a Mach-O
+# LC_BUILD_VERSION tool entry and a PE Rich header. readelf -p .comment prints
+# the same strings, so the native gate can cross-check them.
+_ELF_TOOLCHAIN_SECTION = ".comment"
+_ELF_MAX_COMMENT = 64 * 1024
+_ELF_MAX_TOOLCHAIN = 16
+_ELF_MAX_TOOLCHAIN_CHARS = 256
 _DT_NULL = 0
 _DT_NEEDED = 1
 _DT_STRTAB = 5
@@ -650,6 +671,12 @@ _MACHO_PLATFORMS = {
     11: "visionos",
     12: "visionos-simulator",
 }
+# LC_BUILD_VERSION's trailing ntools entries name the toolchain that produced
+# the image (clang/swift/ld and their versions) -- the Mach-O toolchain
+# provenance, the pair to an ELF .comment and the WASM producers section.
+# llvm-objdump --macho --all-headers prints the same tool/version rows.
+_MACHO_TOOLS = {1: "clang", 2: "swift", 3: "ld", 4: "lld"}
+_MACHO_MAX_TOOLS = 16
 _LC_SEGMENT = 0x01
 _LC_SEGMENT_64 = 0x19
 # The embedded code signature (a linkedit_data_command naming where the
@@ -3398,6 +3425,27 @@ _PE_RES_MAX_DEPTH = 8
 _PE_RES_MAX_ENTRIES = 8192
 _PE_RES_MAX_PAYLOADS = 64
 _PE_RES_MAX_TREE = 32 * 1024 * 1024
+# The RT_VERSION resource (type 16) carries VS_VERSIONINFO -- the PE's
+# self-declared identity: the numeric file/product versions and the
+# CompanyName/ProductName/OriginalFilename strings Explorer shows and malware
+# routinely fakes. The pair to an APK's package identity, a .NET assembly
+# version and an ELF/Mach-O soname/install_name.
+_PE_RT_VERSION = 16
+_VS_FIXED_SIG = 0xFEEF04BD
+_VS_FIXED_SIZE = 52
+_PE_MAX_VERSION_BLOB = 64 * 1024
+_PE_MAX_VERSION_STRINGS = 32
+_PE_MAX_VERSION_CHARS = 256
+# The Rich header: MSVC's XOR-masked toolchain census between the DOS stub and
+# the PE header (DanS ^ key, three masked zeros, (comp.id ^ key, count ^ key)
+# pairs, "Rich", key). Each comp.id is a product id (high word) and build
+# number (low word) -- the PE toolchain provenance, the pair to an ELF
+# .comment, a Mach-O build-tool entry and the WASM producers section. Only
+# MSVC-family linkers write it; pefile's parse_rich_header referees the gate.
+_PE_RICH_MARKER = b"Rich"
+_PE_DANS = 0x536E6144  # 'DanS' as a little-endian dword
+_PE_MAX_RICH_ENTRIES = 64
+_PE_MAX_RICH_SCAN = 0x1000
 _PE_RES_MAX_NAME = 128
 # The standard RT_* resource type ids, so a flagged payload names the resource
 # it hid in (RT_RCDATA is the dropper's usual choice, but a PE in a "bitmap" is
@@ -3450,6 +3498,18 @@ _PE_MAX_IMPORTS_PER_DLL = 4096
 _PE_MAX_EXPORTS = 8192
 _PE_MAX_SYMBOL_NAME = 512
 _PE_MAX_IMPORT_FILE = 128 * 1024 * 1024
+# The debug data directory (index 6) carries the CodeView RSDS record -- the
+# native PE build fingerprint, the pair to an ELF build-id and a Mach-O UUID:
+# a per-build PDB GUID plus age (together the symbol-server key) and the PDB
+# path the linker baked in, which routinely leaks user and project names.
+_PE_DEBUG_DIR = 6
+_PE_DEBUG_ENTRY_SIZE = 28
+_PE_MAX_DEBUG_ENTRIES = 32
+_PE_DEBUG_TYPE_CODEVIEW = 2
+# RSDS sig (4) + GUID (16) + age (4) + at least a NUL for the path, up to a
+# bounded path length.
+_PE_MIN_RSDS = 25
+_PE_MAX_RSDS = 1024 + 24
 # The TLS data directory (index 9) carries the PE's code-before-main: the
 # loader runs every AddressOfCallBacks entry before the entry point -- the pair
 # to an ELF DT_INIT_ARRAY and a Mach-O __mod_init_func section, and the classic
@@ -4232,6 +4292,324 @@ def _pe_tls_facts(path: Path) -> dict[str, Any]:
     return {"tls": facts}
 
 
+def _pe_debug_fingerprint(path: Path) -> dict[str, Any]:
+    """The CodeView RSDS record off the debug directory, as ``{"pdb": ...}``.
+
+    The native PE build fingerprint -- the pair to an ELF build-id and a Mach-O
+    UUID, and the same fact ``dotnet.inspect`` reports for managed assemblies,
+    now tool-free for every PE: the per-build PDB GUID and age (``signature``
+    is their concatenation, the exact string symstore and every symbol server
+    index the PDB by) and the PDB path the linker baked in, which routinely
+    leaks user and project names. Walks the IMAGE_DEBUG_DIRECTORY entries (data
+    directory 6) for the first CodeView (type 2) record, preferring the entry's
+    file pointer and falling back to its RVA when a linker left the pointer 0.
+
+    Bounded and fail-closed: the whole read is capped, the entry walk and the
+    declared blob size are bounded, and an absent directory, a foreign
+    (non-RSDS) record or a truncated blob yields ``{}`` -- no fingerprint is a
+    real answer -- rather than a guess or an exception.
+    """
+    try:
+        if path.stat().st_size > _PE_MAX_IMPORT_FILE:
+            return {}
+        with path.open("rb") as stream:
+            raw = stream.read(_PE_MAX_IMPORT_FILE)
+    except OSError:
+        return {}
+    view = _pe_header_view(raw)
+    if view is None:
+        return {}
+    _magic, dir_count, dir_off, sections = view
+    entry = dir_off + _PE_DEBUG_DIR * 8
+    if dir_count <= _PE_DEBUG_DIR or entry + 8 > len(raw):
+        return {}
+    table_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    table_size = int.from_bytes(raw[entry + 4 : entry + 8], "little")
+    if table_rva == 0 or table_size < _PE_DEBUG_ENTRY_SIZE:
+        return {}
+    table_off = _pe_rva_to_offset(sections, table_rva)
+    if table_off is None:
+        return {}
+    for i in range(min(table_size // _PE_DEBUG_ENTRY_SIZE, _PE_MAX_DEBUG_ENTRIES)):
+        rec = raw[table_off + i * _PE_DEBUG_ENTRY_SIZE : table_off + (i + 1) * _PE_DEBUG_ENTRY_SIZE]
+        if len(rec) < _PE_DEBUG_ENTRY_SIZE:
+            break
+        if int.from_bytes(rec[12:16], "little") != _PE_DEBUG_TYPE_CODEVIEW:
+            continue
+        size = int.from_bytes(rec[16:20], "little")
+        addr_rva = int.from_bytes(rec[20:24], "little")
+        ptr_raw = int.from_bytes(rec[24:28], "little")
+        if size < _PE_MIN_RSDS or size > _PE_MAX_RSDS:
+            continue
+        # The record's raw data is addressed both ways; the file pointer is
+        # authoritative on disk, the RVA the fallback when it is 0.
+        offsets = (ptr_raw or None, _pe_rva_to_offset(sections, addr_rva) if addr_rva else None)
+        for off in offsets:
+            if off is None or off + size > len(raw):
+                continue
+            blob = raw[off : off + size]
+            if blob[:4] != b"RSDS":
+                continue
+            guid = uuid.UUID(bytes_le=blob[4:20])
+            age = int.from_bytes(blob[20:24], "little")
+            pdb_path = blob[24:].split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+            return {
+                "pdb": {
+                    "guid": str(guid),
+                    "age": age,
+                    "path": pdb_path or None,
+                    "signature": f"{guid.hex.upper()}{age:X}",
+                }
+            }
+    return {}
+
+
+def _pe_rich_header(path: Path) -> dict[str, Any]:
+    """The Rich header -- MSVC's toolchain census -- as ``{"rich_header": ...}``.
+
+    Every object the Microsoft linker consumed leaves one row in the XOR-masked
+    block between the DOS stub and the PE header: a product id naming the tool
+    (compiler, masm, the linker itself, per-version), the tool's build number
+    and how many objects it contributed. The PE toolchain provenance, the pair
+    to an ELF .comment, a Mach-O build-tool entry and the WASM producers
+    section -- and a classic attribution artifact, since the census survives
+    even a fully stripped build.
+
+    The mask (the "checksum" dword after the ``Rich`` marker) is only trusted
+    once unmasking backwards reaches the ``DanS`` sentinel; a stray ``Rich``
+    string without one is not a Rich header. Bounded and fail-closed: the scan
+    stays inside the pre-PE-header bytes, the backwards walk and the entry
+    list are capped, and absence -- every gcc-, mingw- or mcs-built image --
+    is a real answer, since only MSVC-family linkers write the census.
+    """
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(_PE_MAX_RICH_SCAN)
+    except OSError:
+        return {}
+    if len(head) < 0x40 or head[:2] != b"MZ":
+        return {}
+    e_lfanew = int.from_bytes(head[0x3C:0x40], "little")
+    end = min(e_lfanew, len(head))
+    if end <= 0x40:
+        return {}
+    region = head[:end]
+    rich_at = region.rfind(_PE_RICH_MARKER)
+    if rich_at < 0 or rich_at + 8 > len(region):
+        return {}
+    key = int.from_bytes(region[rich_at + 4 : rich_at + 8], "little")
+
+    def unmask(offset: int) -> int:
+        return int.from_bytes(region[offset : offset + 4], "little") ^ key
+
+    dans_at = -1
+    pos = rich_at - 8
+    while pos >= 0x40 and rich_at - pos <= 8 * (_PE_MAX_RICH_ENTRIES + 2):
+        if unmask(pos) == _PE_DANS:
+            dans_at = pos
+            break
+        pos -= 8
+    if dans_at < 0:
+        return {}
+    # The census rows sit between DanS's 16-byte prologue (the sentinel plus
+    # three masked-zero pads) and the Rich marker, one (comp.id, count) pair
+    # of dwords each; comp.id splits into product id and build number.
+    entries: list[dict[str, int]] = []
+    for entry_at in range(dans_at + 16, rich_at - 7, 8):
+        if len(entries) >= _PE_MAX_RICH_ENTRIES:
+            break
+        comp = unmask(entry_at)
+        entries.append(
+            {"product_id": comp >> 16, "build": comp & 0xFFFF, "count": unmask(entry_at + 4)}
+        )
+    return {"rich_header": {"checksum": key, "entries": entries}}
+
+
+def _pe_version_info(path: Path) -> dict[str, Any]:
+    """VS_VERSIONINFO -- the PE's self-declared identity -- as ``{"version_info": ...}``.
+
+    The pair to an APK's package identity, a .NET assembly version and an
+    ELF/Mach-O soname/install_name: the numeric file and product versions from
+    VS_FIXEDFILEINFO and the StringFileInfo table (CompanyName, ProductName,
+    OriginalFilename, FileDescription, ...) that Explorer's Details pane shows.
+    Self-declared, so a claim to triage, not a verdict -- malware routinely
+    fakes a Microsoft identity here, which is exactly why the strings must be
+    on the record next to the signature facts that could back them.
+
+    Bounded and fail-closed: the resource walk to the RT_VERSION leaf is depth-
+    and entry-capped, the blob and every string are size-capped, and a PE
+    without the resource (or with one that decodes to nothing) carries no fact
+    -- absence is a real answer.
+    """
+    try:
+        if path.stat().st_size > _PE_MAX_IMPORT_FILE:
+            return {}
+        with path.open("rb") as stream:
+            raw = stream.read(_PE_MAX_IMPORT_FILE)
+    except OSError:
+        return {}
+    view = _pe_header_view(raw)
+    if view is None:
+        return {}
+    _magic, dir_count, dir_off, sections = view
+    blob = _pe_version_blob(raw, dir_count, dir_off, sections)
+    if blob is None:
+        return {}
+    parsed = _vs_versioninfo(blob)
+    if parsed is None:
+        return {}
+    return {"version_info": parsed}
+
+
+def _pe_version_blob(
+    raw: bytes,
+    dir_count: int,
+    dir_off: int,
+    sections: list[tuple[int, int, int, int]],
+) -> bytes | None:
+    """The first RT_VERSION leaf's bytes out of the resource tree, or None."""
+    entry = dir_off + _PE_RESOURCE_DIR * 8
+    if dir_count <= _PE_RESOURCE_DIR or entry + 8 > len(raw):
+        return None
+    res_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    res_size = int.from_bytes(raw[entry + 4 : entry + 8], "little")
+    if res_rva == 0 or res_size == 0:
+        return None
+    res_base = _pe_rva_to_offset(sections, res_rva)
+    if res_base is None:
+        return None
+    tree = raw[res_base : res_base + min(res_size, _PE_RES_MAX_TREE)]
+
+    def first_leaf(node_off: int, depth: int) -> bytes | None:
+        # Under the RT_VERSION type node: name then language levels, ending in
+        # an IMAGE_RESOURCE_DATA_ENTRY whose bytes live inside the tree.
+        if depth > _PE_RES_MAX_DEPTH or node_off + 16 > len(tree):
+            return None
+        named = int.from_bytes(tree[node_off + 12 : node_off + 14], "little")
+        idd = int.from_bytes(tree[node_off + 14 : node_off + 16], "little")
+        cursor = node_off + 16
+        for _ in range(min(named + idd, _PE_RES_MAX_ENTRIES)):
+            if cursor + 8 > len(tree):
+                return None
+            offset_field = int.from_bytes(tree[cursor + 4 : cursor + 8], "little")
+            cursor += 8
+            if offset_field & 0x80000000:
+                found = first_leaf(offset_field & 0x7FFFFFFF, depth + 1)
+                if found is not None:
+                    return found
+                continue
+            if offset_field + 16 > len(tree):
+                continue
+            data_rva = int.from_bytes(tree[offset_field : offset_field + 4], "little")
+            size = int.from_bytes(tree[offset_field + 4 : offset_field + 8], "little")
+            if res_rva <= data_rva and data_rva - res_rva + size <= len(tree):
+                start = data_rva - res_rva
+                return tree[start : start + min(size, _PE_MAX_VERSION_BLOB)]
+        return None
+
+    if len(tree) < 16:
+        return None
+    named = int.from_bytes(tree[12:14], "little")
+    idd = int.from_bytes(tree[14:16], "little")
+    cursor = 16
+    for _ in range(min(named + idd, _PE_RES_MAX_ENTRIES)):
+        if cursor + 8 > len(tree):
+            return None
+        name_field = int.from_bytes(tree[cursor : cursor + 4], "little")
+        offset_field = int.from_bytes(tree[cursor + 4 : cursor + 8], "little")
+        cursor += 8
+        if name_field == _PE_RT_VERSION and offset_field & 0x80000000:
+            return first_leaf(offset_field & 0x7FFFFFFF, 1)
+    return None
+
+
+def _vs_block(blob: bytes, pos: int) -> tuple[int, int, str, int] | None:
+    """``(end, value_len, key, value_pos)`` for the version block at ``pos``.
+
+    Every VS_VERSIONINFO node shares one shape: wLength, wValueLength, wType,
+    a NUL-terminated UTF-16 key, then 32-bit padding before the value.
+    """
+    if pos + 6 > len(blob):
+        return None
+    w_length = int.from_bytes(blob[pos : pos + 2], "little")
+    if w_length < 6:
+        return None
+    end = min(pos + w_length, len(blob))
+    value_len = int.from_bytes(blob[pos + 2 : pos + 4], "little")
+    key_end = pos + 6
+    while key_end + 2 <= end and blob[key_end : key_end + 2] != b"\x00\x00":
+        key_end += 2
+    key = blob[pos + 6 : key_end].decode("utf-16-le", errors="replace")
+    value_pos = (key_end + 2 + 3) & ~3
+    return end, value_len, key, value_pos
+
+
+def _vs_versioninfo(blob: bytes) -> dict[str, Any] | None:
+    """The decoded VS_VERSIONINFO facts, or None when the blob is not one."""
+    root = _vs_block(blob, 0)
+    if root is None:
+        return None
+    end, value_len, key, value_pos = root
+    if key != "VS_VERSION_INFO":
+        return None
+    strings: dict[str, str] = {}
+    out: dict[str, Any] = {"file_version": None, "product_version": None, "strings": strings}
+    has_fixed = (
+        value_len >= _VS_FIXED_SIZE
+        and value_pos + _VS_FIXED_SIZE <= len(blob)
+        and int.from_bytes(blob[value_pos : value_pos + 4], "little") == _VS_FIXED_SIG
+    )
+    if has_fixed:
+
+        def dotted(at: int) -> str:
+            ms = int.from_bytes(blob[value_pos + at : value_pos + at + 4], "little")
+            ls = int.from_bytes(blob[value_pos + at + 4 : value_pos + at + 8], "little")
+            return f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
+
+        out["file_version"] = dotted(8)
+        out["product_version"] = dotted(16)
+    pos = (value_pos + value_len + 3) & ~3
+    while pos + 6 <= end:  # the children: StringFileInfo and VarFileInfo
+        child = _vs_block(blob, pos)
+        if child is None:
+            break
+        child_end, _len, child_key, table_pos = child
+        if child_key == "StringFileInfo":
+            _vs_string_tables(blob, table_pos, child_end, strings)
+        if child_end <= pos:
+            break
+        pos = (child_end + 3) & ~3
+    if out["file_version"] is None and not strings:
+        return None  # a version resource that decodes to nothing is no identity
+    return out
+
+
+def _vs_string_tables(blob: bytes, pos: int, end: int, strings: dict[str, str]) -> None:
+    """Collect String entries from every StringTable under StringFileInfo."""
+    while pos + 6 <= end:
+        table = _vs_block(blob, pos)
+        if table is None:
+            return
+        table_end, _len, _key, entry_pos = table
+        while entry_pos + 6 <= table_end:
+            block = _vs_block(blob, entry_pos)
+            if block is None:
+                return
+            block_end, _vlen, name, text_pos = block
+            if name and name not in strings and len(strings) < _PE_MAX_VERSION_STRINGS:
+                text_end = text_pos
+                while text_end + 2 <= block_end and blob[text_end : text_end + 2] != b"\x00\x00":
+                    text_end += 2
+                value = blob[text_pos:text_end].decode("utf-16-le", errors="replace")
+                strings[name[:_PE_MAX_VERSION_CHARS]] = value[:_PE_MAX_VERSION_CHARS]
+            if block_end <= entry_pos:
+                return
+            entry_pos = (block_end + 3) & ~3
+        if table_end <= pos:
+            return
+        pos = (table_end + 3) & ~3
+
+
 def _pe_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
     """Resources whose bytes open with executable magic -- the dropper's stash.
 
@@ -4553,11 +4931,15 @@ def _elf_layout_facts(
     # empty census is then a real "nothing hidden in a section" answer, while a
     # header-only object with no section table omits the fact entirely.
     if shoff > 0 and 0 < shnum <= _ELF_MAX_SHNUM:
-        section_payloads, section_count = _elf_section_payloads(
-            stream, order, bits, shoff, shentsize, shnum, shstrndx
-        )
+        sections = _elf_named_sections(stream, order, bits, shoff, shentsize, shnum, shstrndx)
+        section_payloads, section_count = _elf_section_payloads(stream, sections)
         facts["section_payloads"] = section_payloads
         facts["section_payload_count"] = section_count
+        # Compiler records out of .comment -- the toolchain provenance, the
+        # pair to the WASM producers section; absent stays absent.
+        toolchain = _elf_toolchain(stream, sections)
+        if toolchain:
+            facts["toolchain"] = toolchain
 
 
 def _elf_program_headers(
@@ -5167,7 +5549,7 @@ def _native_sniff_kind(head: bytes) -> str | None:
     return None
 
 
-def _elf_section_payloads(
+def _elf_named_sections(
     stream: BinaryIO,
     order: str,
     bits: int,
@@ -5175,24 +5557,16 @@ def _elf_section_payloads(
     shentsize: int,
     shnum: int,
     shstrndx: int,
-) -> tuple[list[dict[str, Any]], int]:
-    """Sections whose bytes open with executable magic, and how many there are.
+) -> list[tuple[str, int, int, int]]:
+    """``(name, sh_type, sh_offset, sh_size)`` per section header, names resolved.
 
-    The ELF arm of the payload census: a dropper linked as an ELF hides its
-    stage two in a section it later writes out and runs (a nested ELF loader,
-    a PE for a Windows drop, a zipped bundle). This walks the section header
-    table, sniffs the first bytes of every section that occupies file bytes
-    (SHT_NOBITS and SHT_NULL hold none), and names each hit by its section
-    name -- the objcopy ``--dump-section`` view an analyst would reach for.
-    A census, not a verdict: a legitimate embedded blob lists here too.
-
-    Bounded and fail-closed: the section count is already capped by the caller
-    bounds, only the first 0x40 bytes of each section are read, the reported
-    list is capped (the count stays exact), and any structural surprise yields
-    whatever parsed cleanly.
+    The shared table walk under the section-payload census and the .comment
+    toolchain read: reads the header table once, resolves names through
+    e_shstrndx, and falls back to ``section_{index}`` when the string table is
+    missing or lying. Callers apply their own skip rules and bounds.
     """
     if shoff <= 0 or shnum <= 0 or shnum > _ELF_MAX_SHNUM:
-        return [], 0
+        return []
     want = 64 if bits == 64 else 40
     entsize = max(shentsize, want)
     try:
@@ -5200,7 +5574,7 @@ def _elf_section_payloads(
         stream.seek(shoff)
         table = stream.read(entsize * shnum)
     except OSError:
-        return [], 0
+        return []
 
     def sh_fields(entry: bytes) -> tuple[int, int, int, int]:
         name = int.from_bytes(entry[0:4], order)  # type: ignore[arg-type]
@@ -5214,7 +5588,7 @@ def _elf_section_payloads(
         return name, stype, off, size
 
     # The section-name string table, resolved through e_shstrndx; without it
-    # names fall back to their index, so the census still lists the hits.
+    # names fall back to their index, so callers still see every section.
     strtab = b""
     if 0 < shstrndx < shnum:
         entry = table[shstrndx * entsize : shstrndx * entsize + want]
@@ -5234,13 +5608,77 @@ def _elf_section_payloads(
                 return strtab[name_off:end].decode("utf-8", errors="replace")
         return f"section_{index}"
 
-    payloads: list[dict[str, Any]] = []
-    found = 0
+    sections: list[tuple[str, int, int, int]] = []
     for i in range(shnum):
         entry = table[i * entsize : i * entsize + want]
         if len(entry) < want:
             break
         name_off, stype, sh_offset, sh_size = sh_fields(entry)
+        sections.append((section_name(name_off, i), stype, sh_offset, sh_size))
+    return sections
+
+
+def _elf_toolchain(
+    stream: BinaryIO,
+    sections: list[tuple[str, int, int, int]],
+) -> list[str]:
+    """Compiler records out of ``.comment`` -- the ELF toolchain provenance.
+
+    Every compiler that contributed objects to the link appends one
+    NUL-terminated record ("GCC: (Ubuntu 13.2.0-4ubuntu3) 13.2.0", "clang
+    version 17.0.6") -- the pair to the WASM producers section, a Mach-O
+    LC_BUILD_VERSION tool entry and a PE Rich header, and the same strings
+    ``readelf -p .comment`` prints. Deduplicated in first-seen order, both the
+    list and each record bounded; a stripped or comment-less image yields an
+    empty list, which the caller reads as "no provenance recorded".
+    """
+    for name, stype, sh_offset, sh_size in sections:
+        if name != _ELF_TOOLCHAIN_SECTION or stype != _SHT_PROGBITS:
+            continue
+        if sh_offset <= 0 or sh_size <= 0:
+            return []
+        try:
+            stream.seek(sh_offset)
+            blob = stream.read(min(sh_size, _ELF_MAX_COMMENT))
+        except OSError:
+            return []
+        records: list[str] = []
+        for chunk in blob.split(b"\x00"):
+            text = chunk.decode("utf-8", errors="replace").strip()[:_ELF_MAX_TOOLCHAIN_CHARS]
+            if text and text not in records:
+                records.append(text)
+                if len(records) >= _ELF_MAX_TOOLCHAIN:
+                    break
+        return records
+    return []
+
+
+def _elf_section_payloads(
+    stream: BinaryIO,
+    sections: list[tuple[str, int, int, int]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Sections whose bytes open with executable magic, and how many there are.
+
+    The ELF arm of the payload census: a dropper linked as an ELF hides its
+    stage two in a section it later writes out and runs (a nested ELF loader,
+    a PE for a Windows drop, a zipped bundle). This sniffs the first bytes of
+    every section that occupies file bytes (SHT_NOBITS and SHT_NULL hold
+    none), naming each hit by its section name -- the objcopy
+    ``--dump-section`` view an analyst would reach for. A census, not a
+    verdict: a legitimate embedded blob lists here too.
+
+    Bounded and fail-closed: the section list is already capped by the header
+    walk, only the first 0x40 bytes of each section are read, the reported
+    list is capped (the count stays exact), and any structural surprise yields
+    whatever parsed cleanly.
+    """
+    try:
+        file_size = stream.seek(0, 2)
+    except OSError:
+        return [], 0
+    payloads: list[dict[str, Any]] = []
+    found = 0
+    for name, stype, sh_offset, sh_size in sections:
         if stype in (_SHT_NULL, _SHT_NOBITS):
             continue
         if sh_size < 4 or sh_offset <= 0 or sh_offset >= file_size:
@@ -5257,9 +5695,7 @@ def _elf_section_payloads(
             continue
         found += 1
         if len(payloads) < _NATIVE_MAX_SECTION_PAYLOADS:
-            payloads.append(
-                {"section": section_name(name_off, i), "kind": kind, "size": sh_size}
-            )
+            payloads.append({"section": name, "kind": kind, "size": sh_size})
     return payloads, found
 
 
@@ -5366,7 +5802,15 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         # LC_RPATH entries, the ELF rpath/runpath analogue; absent stays absent.
         if lc["rpaths"]:
             facts["rpath"] = lc["rpaths"]
-        for key in ("interpreter", "install_name", "uuid", "platform", "min_os", "sdk"):
+        for key in (
+            "interpreter",
+            "install_name",
+            "uuid",
+            "platform",
+            "min_os",
+            "sdk",
+            "build_tools",
+        ):
             if lc[key] is not None:
                 facts[key] = lc[key]
         entry = _macho_entry(lc["entryoff"], lc["segments"])
@@ -5710,6 +6154,8 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
         "platform": None,
         "min_os": None,
         "sdk": None,
+        # LC_BUILD_VERSION's ntools entries: the toolchain provenance.
+        "build_tools": None,
         # The load-time constructor surface off the segments' section headers:
         # how many init/term entries dyld runs around the entry point.
         "mod_init": 0,
@@ -5741,8 +6187,9 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
             if name:
                 names.append(name)
         elif cmd == _LC_BUILD_VERSION and result["platform"] is None and cmdsize >= 24:
-            # platform/minos/sdk as u32s after cmd/cmdsize; ntools entries follow
-            # but carry toolchain identity, not target identity.
+            # platform/minos/sdk as u32s after cmd/cmdsize, then ntools
+            # build_tool_version entries -- the toolchain provenance, the pair
+            # to an ELF .comment and the WASM producers section.
             plat = int.from_bytes(cmds[pos + 8 : pos + 12], order)  # type: ignore[arg-type]
             result["platform"] = _MACHO_PLATFORMS.get(plat, f"platform_{plat}")
             result["min_os"] = _macho_version(
@@ -5751,6 +6198,22 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
             sdk = int.from_bytes(cmds[pos + 16 : pos + 20], order)  # type: ignore[arg-type]
             if sdk:
                 result["sdk"] = _macho_version(sdk)
+            ntools = int.from_bytes(cmds[pos + 20 : pos + 24], order)  # type: ignore[arg-type]
+            tools: list[dict[str, str]] = []
+            for index in range(min(ntools, _MACHO_MAX_TOOLS)):
+                tool_off = pos + 24 + index * 8
+                if tool_off + 8 > pos + cmdsize:
+                    break  # a lying ntools must not read past its own command
+                tool_id = int.from_bytes(cmds[tool_off : tool_off + 4], order)  # type: ignore[arg-type]
+                tool_ver = int.from_bytes(cmds[tool_off + 4 : tool_off + 8], order)  # type: ignore[arg-type]
+                tools.append(
+                    {
+                        "tool": _MACHO_TOOLS.get(tool_id, f"tool_{tool_id}"),
+                        "version": _macho_version(tool_ver),
+                    }
+                )
+            if tools:
+                result["build_tools"] = tools
         elif cmd in _LC_VERSION_MIN_CMDS and result["platform"] is None and cmdsize >= 16:
             # version_min_command: version then sdk; the command kind itself
             # names the platform (the pre-LC_BUILD_VERSION encoding).

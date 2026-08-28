@@ -12,6 +12,7 @@ facts flowing through session creation.
 from __future__ import annotations
 
 import struct
+import uuid
 from pathlib import Path
 
 import pytest
@@ -22,10 +23,13 @@ from headless_re_mcp.core.session import (
     _dotnet_resource_payloads,
     _pe_authenticode,
     _pe_capability_surface,
+    _pe_debug_fingerprint,
     _pe_hardening_facts,
     _pe_overlay,
     _pe_resource_payloads,
+    _pe_rich_header,
     _pe_tls_facts,
+    _pe_version_info,
     describe_pe_clr,
 )
 
@@ -859,6 +863,400 @@ class TestPeTlsFacts:
         path.write_bytes(_pe_with_tls(callback_count=2))
         session = SessionRegistry().create(str(path))
         assert session.metadata["pe"]["tls"] == {"present": True, "callbacks": 2}
+
+
+_GUID = "a1b2c3d4-e5f6-4788-99aa-bbccddeeff00"
+
+
+def _rsds_blob(guid: str, age: int, path: str) -> bytes:
+    """An RSDS CodeView blob: sig, mixed-endian GUID, age, NUL-terminated path."""
+    return b"RSDS" + uuid.UUID(guid).bytes_le + age.to_bytes(4, "little") + path.encode() + b"\x00"
+
+
+def _pe_with_debug(
+    records: list[tuple[int, bytes]],
+    *,
+    zero_file_pointer: bool = False,
+    declared_size: int | None = None,
+) -> bytes:
+    """A minimal one-section PE whose debug directory (index 6) holds ``records``.
+
+    Each record is ``(type, blob)``; the IMAGE_DEBUG_DIRECTORY table sits at
+    the section start with the blobs behind it, each entry carrying both the
+    blob's RVA and its file pointer. ``zero_file_pointer`` leaves every
+    PointerToRawData 0 so the reader must fall back to the RVA;
+    ``declared_size`` overrides each entry's SizeOfData.
+    """
+    sect_rva = 0x1000
+    dos = bytearray(0x40)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x40)
+    opt_size = 0xF0
+    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", 0x8664, 1, 0, 0, 0, opt_size, 0)
+    raw_off = 0x40 + len(coff) + opt_size + 40
+    if raw_off % 0x200:
+        raw_off += 0x200 - (raw_off % 0x200)
+
+    table_size = len(records) * 28
+    sec = bytearray(table_size)
+    placed: list[tuple[int, int, int]] = []
+    for dbg_type, blob in records:
+        off = len(sec)
+        sec.extend(blob)
+        placed.append((dbg_type, off, len(blob)))
+    for i, (dbg_type, off, size) in enumerate(placed):
+        struct.pack_into(
+            "<IIHHIIII",
+            sec,
+            i * 28,
+            0,
+            0,
+            0,
+            0,
+            dbg_type,
+            declared_size if declared_size is not None else size,
+            sect_rva + off,
+            0 if zero_file_pointer else raw_off + off,
+        )
+
+    opt = bytearray(opt_size)
+    struct.pack_into("<H", opt, 0, 0x20B)
+    struct.pack_into("<Q", opt, 24, 0x1_4000_0000)
+    struct.pack_into("<I", opt, 32, 0x1000)  # SectionAlignment
+    struct.pack_into("<I", opt, 36, 0x200)  # FileAlignment
+    struct.pack_into("<I", opt, 56, sect_rva + 0x1000)  # SizeOfImage
+    struct.pack_into("<I", opt, 60, raw_off)  # SizeOfHeaders
+    struct.pack_into("<I", opt, 108, 16)  # NumberOfRvaAndSizes
+    struct.pack_into("<II", opt, 112 + 6 * 8, sect_rva, table_size)  # debug dir
+
+    sect = bytearray(40)
+    sect[0:6] = b".rdata"
+    struct.pack_into("<I", sect, 8, len(sec))
+    struct.pack_into("<I", sect, 12, sect_rva)
+    struct.pack_into("<I", sect, 16, (len(sec) + 0x1FF) & ~0x1FF)
+    struct.pack_into("<I", sect, 20, raw_off)
+    struct.pack_into("<I", sect, 36, 0x40000040)
+
+    out = bytearray(dos + coff + opt + sect)
+    if len(out) < raw_off:
+        out += b"\x00" * (raw_off - len(out))
+    return bytes(out + sec)
+
+
+class TestPeDebugFingerprint:
+    """_pe_debug_fingerprint reads the CodeView RSDS record -- the PE build id.
+
+    The pair to an ELF build-id and a Mach-O UUID, now tool-free for every PE:
+    the per-build PDB GUID and age (whose concatenation is the symbol-server
+    key) and the PDB path the linker baked in, which routinely leaks user and
+    project names. No fingerprint is a real answer, so a debug-less PE simply
+    carries no ``pdb`` fact.
+    """
+
+    def test_a_pe_without_a_debug_directory_has_no_fingerprint(self, tmp_path: Path) -> None:
+        path = tmp_path / "bare.exe"
+        path.write_bytes(_native_pe())
+        assert _pe_debug_fingerprint(path) == {}
+
+    def test_the_rsds_record_reads_guid_age_path_and_symbol_key(self, tmp_path: Path) -> None:
+        path = tmp_path / "app.exe"
+        path.write_bytes(_pe_with_debug([(2, _rsds_blob(_GUID, 3, r"C:\build\app.pdb"))]))
+        assert _pe_debug_fingerprint(path) == {
+            "pdb": {
+                "guid": _GUID,
+                "age": 3,
+                "path": r"C:\build\app.pdb",
+                # The symbol-server key: 32 upper-case GUID hex digits with the
+                # age appended in hex -- what symstore names the directory.
+                "signature": "A1B2C3D4E5F6478899AABBCCDDEEFF003",
+            }
+        }
+
+    def test_non_codeview_records_are_stepped_over(self, tmp_path: Path) -> None:
+        # A repro record (type 16) first, the CodeView record second: the walk
+        # must key on the Type field, not assume the first entry.
+        path = tmp_path / "repro.exe"
+        path.write_bytes(
+            _pe_with_debug(
+                [(16, b"\x00" * 32), (2, _rsds_blob(_GUID, 1, "out.pdb"))]
+            )
+        )
+        assert _pe_debug_fingerprint(path)["pdb"]["age"] == 1
+
+    def test_a_foreign_codeview_signature_is_not_a_fingerprint(self, tmp_path: Path) -> None:
+        # NB10 is the ancient PDB 2.0 shape; misreading its layout as RSDS
+        # would fabricate a GUID from path bytes.
+        path = tmp_path / "nb10.exe"
+        path.write_bytes(_pe_with_debug([(2, b"NB10" + b"\x00" * 24)]))
+        assert _pe_debug_fingerprint(path) == {}
+
+    def test_a_zero_file_pointer_falls_back_to_the_rva(self, tmp_path: Path) -> None:
+        # Some linkers leave PointerToRawData 0 and address the blob only by
+        # RVA; the fingerprint must still resolve through the section table.
+        path = tmp_path / "rva_only.exe"
+        path.write_bytes(
+            _pe_with_debug([(2, _rsds_blob(_GUID, 2, "a.pdb"))], zero_file_pointer=True)
+        )
+        assert _pe_debug_fingerprint(path)["pdb"]["age"] == 2
+
+    def test_a_truncated_declared_size_is_skipped(self, tmp_path: Path) -> None:
+        # SizeOfData smaller than sig+GUID+age cannot hold an RSDS record.
+        path = tmp_path / "tiny.exe"
+        path.write_bytes(
+            _pe_with_debug([(2, _rsds_blob(_GUID, 1, "a.pdb"))], declared_size=10)
+        )
+        assert _pe_debug_fingerprint(path) == {}
+
+    def test_a_non_pe_has_no_fingerprint(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _pe_debug_fingerprint(path) == {}
+
+    def test_session_over_a_pe_carries_the_fingerprint(self, tmp_path: Path) -> None:
+        path = tmp_path / "app.exe"
+        path.write_bytes(_pe_with_debug([(2, _rsds_blob(_GUID, 3, r"C:\build\app.pdb"))]))
+        session = SessionRegistry().create(str(path))
+        assert session.metadata["pe"]["pdb"]["signature"] == "A1B2C3D4E5F6478899AABBCCDDEEFF003"
+
+    def test_the_committed_fixture_fingerprint_matches_the_deep_reader(self) -> None:
+        # The managed fixture bakes in a known RSDS record that dotnet.inspect
+        # already reports; the session-level fact must read the same bytes.
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        pdb = _pe_debug_fingerprint(_DOTNET_FIXTURE)["pdb"]
+        assert pdb["guid"] == _GUID
+        assert pdb["path"] == r"C:\build\headless\MyAssembly.pdb"
+
+
+def _vs_node(
+    key: str, value: bytes, value_len: int, children: list[bytes], w_type: int = 0
+) -> bytes:
+    """One VS_VERSIONINFO node: header, UTF-16 key, padded value, padded children."""
+    body = bytearray(key.encode("utf-16-le") + b"\x00\x00")
+    while (6 + len(body)) % 4:
+        body += b"\x00"
+    body += value
+    for child in children:
+        while (6 + len(body)) % 4:
+            body += b"\x00"
+        body += child
+    return struct.pack("<HHH", 6 + len(body), value_len, w_type) + bytes(body)
+
+
+def _vs_string(key: str, value: str) -> bytes:
+    text = value.encode("utf-16-le") + b"\x00\x00"
+    return _vs_node(key, text, len(value) + 1, [], w_type=1)  # wValueLength is in WCHARs
+
+
+def _version_blob(
+    *,
+    file_version: tuple[int, int, int, int] = (1, 2, 3, 4),
+    product_version: tuple[int, int, int, int] = (9, 8, 7, 6),
+    strings: dict[str, str] | None = None,
+    with_fixed: bool = True,
+    root_key: str = "VS_VERSION_INFO",
+) -> bytes:
+    """A VS_VERSIONINFO blob with the given fixed versions and string table."""
+    fixed = b""
+    if with_fixed:
+        fms = (file_version[0] << 16) | file_version[1]
+        fls = (file_version[2] << 16) | file_version[3]
+        pms = (product_version[0] << 16) | product_version[1]
+        pls = (product_version[2] << 16) | product_version[3]
+        fixed = struct.pack("<IIIIII", 0xFEEF04BD, 0x0001_0000, fms, fls, pms, pls)
+        fixed += b"\x00" * 28  # flags/OS/type/date fields the reader ignores
+    children: list[bytes] = []
+    if strings:
+        table = _vs_node("040904b0", b"", 0, [_vs_string(k, v) for k, v in strings.items()])
+        children.append(_vs_node("StringFileInfo", b"", 0, [table]))
+    return _vs_node(root_key, fixed, len(fixed), children)
+
+
+class TestPeVersionInfo:
+    """_pe_version_info reads VS_VERSIONINFO -- the PE's self-declared identity.
+
+    The pair to an APK's package identity and a .NET assembly version: numeric
+    file/product versions from VS_FIXEDFILEINFO plus the StringFileInfo table
+    Explorer's Details pane shows. Self-declared, so a claim for triage --
+    malware fakes a Microsoft identity here -- never a verdict.
+    """
+
+    def test_a_pe_without_resources_carries_no_identity(self, tmp_path: Path) -> None:
+        path = tmp_path / "bare.exe"
+        path.write_bytes(_native_pe())
+        assert _pe_version_info(path) == {}
+
+    def test_versions_and_strings_read_exactly(self, tmp_path: Path) -> None:
+        blob = _version_blob(
+            strings={
+                "CompanyName": "Contoso Ltd",
+                "ProductName": "Widget",
+                "OriginalFilename": "widget.exe",
+            }
+        )
+        path = tmp_path / "widget.exe"
+        path.write_bytes(_pe_with_resources([(16, 1, blob)]))
+        assert _pe_version_info(path) == {
+            "version_info": {
+                "file_version": "1.2.3.4",
+                "product_version": "9.8.7.6",
+                "strings": {
+                    "CompanyName": "Contoso Ltd",
+                    "ProductName": "Widget",
+                    "OriginalFilename": "widget.exe",
+                },
+            }
+        }
+
+    def test_a_resource_without_fixed_info_still_reads_strings(self, tmp_path: Path) -> None:
+        # Some resource editors drop VS_FIXEDFILEINFO but keep the strings;
+        # the identity claim is the strings, so they must survive alone.
+        blob = _version_blob(with_fixed=False, strings={"CompanyName": "Contoso Ltd"})
+        path = tmp_path / "nofixed.exe"
+        path.write_bytes(_pe_with_resources([(16, 1, blob)]))
+        info = _pe_version_info(path)["version_info"]
+        assert info["file_version"] is None
+        assert info["strings"] == {"CompanyName": "Contoso Ltd"}
+
+    def test_other_resources_without_rt_version_read_nothing(self, tmp_path: Path) -> None:
+        path = tmp_path / "manifest_only.exe"
+        path.write_bytes(
+            _pe_with_resources([(24, 1, b'<?xml version="1.0"?><assembly/>')])
+        )
+        assert _pe_version_info(path) == {}
+
+    def test_a_foreign_root_key_is_not_version_info(self, tmp_path: Path) -> None:
+        blob = _version_blob(root_key="NOT_VERSION_INFO", strings={"CompanyName": "X"})
+        path = tmp_path / "foreign.exe"
+        path.write_bytes(_pe_with_resources([(16, 1, blob)]))
+        assert _pe_version_info(path) == {}
+
+    def test_the_string_table_is_bounded(self, tmp_path: Path) -> None:
+        blob = _version_blob(strings={f"Key{i:02d}": "v" for i in range(40)})
+        path = tmp_path / "many.exe"
+        path.write_bytes(_pe_with_resources([(16, 1, blob)]))
+        info = _pe_version_info(path)["version_info"]
+        assert len(info["strings"]) == 32  # _PE_MAX_VERSION_STRINGS
+
+    def test_a_truncated_blob_fails_closed(self, tmp_path: Path) -> None:
+        # The root declares a 52-byte fixed value the cut blob cannot hold:
+        # nothing decodes, so no identity is claimed and nothing raises.
+        blob = _version_blob(strings={"CompanyName": "Contoso Ltd"})[:30]
+        path = tmp_path / "cut.exe"
+        path.write_bytes(_pe_with_resources([(16, 1, blob)]))
+        assert _pe_version_info(path) == {}
+
+    def test_session_over_a_pe_carries_the_identity(self, tmp_path: Path) -> None:
+        blob = _version_blob(strings={"CompanyName": "Contoso Ltd"})
+        path = tmp_path / "app.exe"
+        path.write_bytes(_pe_with_resources([(16, 1, blob)]))
+        session = SessionRegistry().create(str(path))
+        info = session.metadata["pe"]["version_info"]
+        assert info["file_version"] == "1.2.3.4"
+        assert info["strings"]["CompanyName"] == "Contoso Ltd"
+
+
+def _pe_with_rich(
+    entries: list[tuple[int, int, int]],
+    *,
+    key: int = 0x1F2E3D4C,
+    corrupt_dans: bool = False,
+    stray_rich: bool = False,
+) -> bytes:
+    """A minimal PE32 whose pre-header bytes carry a Rich header.
+
+    ``entries`` are (product id, build, count) rows, masked the way MSVC's
+    linker masks them: DanS ^ key at 0x80, three masked zeros, the pairs, the
+    plain ``Rich`` marker and the plain key. ``corrupt_dans`` writes a wrong
+    sentinel so the mask must be rejected; ``stray_rich`` plants only the
+    marker text with no census behind it.
+    """
+
+    def mask(value: int) -> bytes:
+        return (value ^ key).to_bytes(4, "little")
+
+    if stray_rich:
+        region = b"prose mentioning Rich" + key.to_bytes(4, "little") + b"\x00" * 3
+    else:
+        sentinel = 0x536E6144 ^ (0xFF if corrupt_dans else 0)
+        region = mask(sentinel) + mask(0) * 3
+        for product_id, build, count in entries:
+            region += mask((product_id << 16) | build) + mask(count)
+        region += b"Rich" + key.to_bytes(4, "little")
+    dos = bytearray(0x80)
+    dos[0:2] = b"MZ"
+    e_lfanew = 0x80 + ((len(region) + 7) & ~7)
+    dos[0x3C:0x40] = e_lfanew.to_bytes(4, "little")
+    stub = bytes(dos) + region + bytes(e_lfanew - 0x80 - len(region))
+    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", 0x014C, 0, 0, 0, 0, 0xE0, 0)
+    optional = bytearray(0xE0)
+    optional[0:2] = (0x10B).to_bytes(2, "little")  # PE32
+    optional[92:96] = (16).to_bytes(4, "little")  # NumberOfRvaAndSizes
+    return stub + coff + bytes(optional)
+
+
+class TestPeRichHeader:
+    """_pe_rich_header decodes MSVC's toolchain census -- the PE provenance.
+
+    The pair to an ELF .comment, a Mach-O build-tool entry and the WASM
+    producers section: one (product id, build, count) row per tool the
+    Microsoft linker consumed objects from, XOR-masked between the DOS stub
+    and the PE header. Only MSVC-family linkers write it, so absence is a
+    real answer; the mask is trusted only once the DanS sentinel confirms it.
+    """
+
+    def test_a_pe_without_a_rich_header_reports_nothing(self, tmp_path: Path) -> None:
+        path = tmp_path / "bare.exe"
+        path.write_bytes(_native_pe())
+        assert _pe_rich_header(path) == {}
+
+    def test_planted_census_rows_decode_exactly(self, tmp_path: Path) -> None:
+        path = tmp_path / "msvc.exe"
+        path.write_bytes(_pe_with_rich([(0x104, 31933, 5), (0x0F2, 40116, 1)]))
+        rich = _pe_rich_header(path)["rich_header"]
+        assert rich["checksum"] == 0x1F2E3D4C
+        assert rich["entries"] == [
+            {"product_id": 0x104, "build": 31933, "count": 5},
+            {"product_id": 0x0F2, "build": 40116, "count": 1},
+        ]
+
+    def test_an_empty_census_is_still_a_census(self, tmp_path: Path) -> None:
+        # DanS immediately followed by Rich: present, zero rows -- distinct
+        # from a PE with no Rich header at all.
+        path = tmp_path / "empty.exe"
+        path.write_bytes(_pe_with_rich([]))
+        assert _pe_rich_header(path)["rich_header"]["entries"] == []
+
+    def test_a_rich_marker_without_dans_is_not_a_census(self, tmp_path: Path) -> None:
+        path = tmp_path / "prose.exe"
+        path.write_bytes(_pe_with_rich([], stray_rich=True))
+        assert _pe_rich_header(path) == {}
+
+    def test_a_corrupt_sentinel_rejects_the_mask(self, tmp_path: Path) -> None:
+        path = tmp_path / "corrupt.exe"
+        path.write_bytes(_pe_with_rich([(0x104, 31933, 5)], corrupt_dans=True))
+        assert _pe_rich_header(path) == {}
+
+    def test_the_walk_is_bounded_at_the_entry_cap(self, tmp_path: Path) -> None:
+        # 64 rows (the cap) decode; a census larger than the backwards-walk
+        # bound never reaches its sentinel and fails closed.
+        path = tmp_path / "cap.exe"
+        path.write_bytes(_pe_with_rich([(i, i, 1) for i in range(64)]))
+        assert len(_pe_rich_header(path)["rich_header"]["entries"]) == 64
+        path.write_bytes(_pe_with_rich([(i, i, 1) for i in range(80)]))
+        assert _pe_rich_header(path) == {}
+
+    def test_a_non_pe_reports_nothing(self, tmp_path: Path) -> None:
+        path = tmp_path / "not.exe"
+        path.write_bytes(b"\x7fELF" + bytes(0x100))
+        assert _pe_rich_header(path) == {}
+
+    def test_session_over_a_rich_pe_carries_the_census(self, tmp_path: Path) -> None:
+        path = tmp_path / "msvc.exe"
+        path.write_bytes(_pe_with_rich([(0x105, 31937, 12)]))
+        session = SessionRegistry().create(str(path))
+        rich = session.metadata["pe"]["rich_header"]
+        assert rich["entries"] == [{"product_id": 0x105, "build": 31937, "count": 12}]
 
 
 class TestPeResourcePayloads:
