@@ -1143,6 +1143,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **create_session 的“记账失败落 meta、不改结局”契约补齐 create 侧**：`note_session_created`
+  在会话已经存在之后才跑——注册表已持有它、调用方正要拿到它的 id。记账打不开 store(磁盘清理、
+  扫描器隔离、卷重挂后失踪)时,绝不能把一个确实建成的会话包装成 traceback 交回(调用方会对着一个
+  已持有“失败”会话的注册表重试),也不能整个吞掉——此刻这个会话只活在进程内存里,重启后
+  `hydrate_persisted_sessions` 从 store 读不到它、审计线里也从未有它。契约是 `_note_failed` 的:
+  失败落进 `result.meta`(`persisted: False` 加 `persist_error`),结果保持 ok。close 侧的这条契约
+  早有 `test_close_returns_an_envelope_even_if_the_bookkeeping_throws` 钉着,create 侧走的是同一个
+  helper,却没有任何用例逼出它的 except 分支——变异实测:把 create 调用点的 try/except 整个删掉
+  (记账失败直接抛穿 create_session),最相关的三套既有套件 230 个用例全绿。新增 2 个用例:让真实
+  service 的 repository 在 `note_session_created` 上抛 OSError,断言会话照样建成且可用(注册表能取
+  到)、meta 带上 `persisted: False` 与含原始信息的 `persist_error`;对照用例断言健康路径的 meta
+  不带这两个键(旗标只有在无事发生时缺席才有含义)。变异被对应用例逮住,源文件
+  `core/service_ext.py` 未改。
 - **会话层对敌意与降级输入的 fail-closed 契约成套固定**（`core/session.py` 85%→99%）：
   崩溃残留的 SQLite 行——带路径分隔符的 id(遍历企图)、空 locator、未知 state 列、
   非法 architecture、天真/垃圾时间戳、`resolve()` 抛 OSError 的死挂载——一律安静跳过或
