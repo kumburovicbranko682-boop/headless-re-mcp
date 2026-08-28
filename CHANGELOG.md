@@ -30,6 +30,8 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 非 PE 工具 schema 通告给 agent 的数值天花板与后端实际执行的钳取值现在由一条契约测试锁死同步。agent 传输绕过 schema、直接调服务层，所以每个后端会对调用方给的 `timeout` 与分页 `limit` 二次钳取；`timeout` 各后端夹到自己的具名常量（`clamp_cli_timeout(_MAX_TIMEOUT_S)` / `_MAX_UNPACK_TIMEOUT_S`、web 的 `_bound_nav_timeout` + `_MAX_NAV_TIMEOUT_S`），`limit` 各分页读取器夹到自己的每页上限。既有各后端钳取测试只证明"后端夹到它自己的常量"，却没人验证 agent 读到的 schema `le` 与被执行的那个数是同一个——于是改了 schema `le` 却没同步后端常量（或反之）能全绿通过，而 agent 会送一个 schema 合法、随后被后端悄悄夹小的值（`timeout` 会比要求的更早超时，`limit` 分页虽靠 `has_more` 不丢数据但请求的页大小未被兑现）。为让契约能读到"活的"后端值而非重复字面量，web（network/scripts/wasm 的 `_MAX_PAGE`）、proxy（`_MAX_FLOWS_PAGE`）、ghidra（`_MAX_LIST_PAGE`）、frida（`_MAX_{MODULES,EXPORTS,APPLICATIONS,JAVA}_PAGE`）此前散落的裸字面量上限统一收敛成具名常量，与 apk（`_MAX_*_PAGE`）、jsre（`_MAX_LISTED_FILES`）、adb（`_MAX_PROPERTIES`/`_MAX_PACKAGES`）、web 控制台（`_MAX_CONSOLE`）既有做法一致。`test_tool_schema_backend_bound_alignment.py` 从真实生成的 JSON schema 与活的后端常量两头读数，逐工具固定 25 个带 `timeout` 的工具其 `maximum` 等于后端天花板且 `exclusiveMinimum==0`、20 个带 `limit` 的工具（proxy/web/apk/jsre/ghidra/frida/device 全线）其 `maximum` 等于后端每页上限且 `minimum==1`；两张映射均自审——新增暴露 `timeout` 或 `limit` 的非 PE 工具若不登记进对应映射，覆盖测试即失败——从而把漂移变成红灯而非线上惊喜。
 
+同一"schema 通告 == 后端执行"的对齐也补到唯一带枚举的非 PE 工具 `frida.hook.template` 上（它按名字加载一段*注入*脚本，枚举漂移意味着 agent 被误导能注入什么）。三处必须命名同一集合：schema 的正则枚举 `^(a|b|c)$`、后端真正执行的 `_HOOK_TEMPLATES` 注册表、以及命中失败时回给调用方自纠的 `allowed=sorted(_HOOK_TEMPLATES)`。旧 `test_frida_template_schema.py` 只用源码文本判定四个固定名字"存在于"注册表（`⊇`，单向），于是往 `_HOOK_TEMPLATES` 新增一个模板却没放宽 schema（agent 永远够不着的注入能力），或 schema 仍通告后端已删的名字，都能溜过去。现改为从活的注册表与 schema 正则两头解析并断言二者*相等*、把失败 `allowed` 提示也钉到同一集合、并统一锁到一个显式的受审集合，使新增可注入模板成为需要三处一并对齐的自觉改动而非静默的字典编辑。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
