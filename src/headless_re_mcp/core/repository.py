@@ -692,13 +692,19 @@ class InMemoryAnalysisRepository:
         offset: int = 0,
         limit: int = 100,
     ) -> JsonObject:
-        limit = max(1, min(int(limit), 1000))
+        # 256, not 1000, to match the file-backed list_session_timeline and the
+        # timeline.list schema cap (le=256): a direct-transport caller (agent /
+        # OpenAI bridge, which skip the pydantic schema) passing limit=500 must
+        # get the same page size from either store, not 256 via SQLite and 500
+        # here.
+        limit = max(1, min(int(limit), 256))
         offset = max(0, int(offset))
         with self._lock:
+            known = session_id in self._timeline
             events = [dict(item) for item in self._timeline.get(session_id, [])]
         total = len(events)
         page = events[offset : offset + limit]
-        return {
+        result: JsonObject = {
             "events": page,
             "count": len(page),
             "total": total,
@@ -706,6 +712,18 @@ class InMemoryAnalysisRepository:
             "limit": limit,
             "has_more": offset + len(page) < total,
         }
+        if not known:
+            # Mirror the file-backed timeline: no timeline at all means no such
+            # session, which application_services.list_timeline turns into
+            # session_not_found. Session creation writes a "session.created"
+            # entry into _timeline (as it writes the first file line), so a key
+            # is present iff the session was created. Without this, a bogus or
+            # post-restart id read back as an ok empty timeline through this
+            # port but as session_not_found through SQLite -- the exact "no
+            # analysis reads as did-nothing" gap the exists-check was added to
+            # close, and which timeline.list documents as session_not_found.
+            result["exists"] = False
+        return result
 
     def list_unclean_sessions(
         self, *, offset: int = 0, limit: int = 100

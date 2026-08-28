@@ -24,6 +24,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（内存版仓库 `list_timeline` 与文件版(SQLite 端口)在两处可观测行为上分道,而 `application_services.list_timeline` 正靠其一区分“无此会话”与“空时间线”:①文件版在无时间线文件时回 `exists: False`,内存版按 session_id 取字典、缺失即回空页且无 `exists` 标记——于是同一个伪造/重启后失效的 id,经内存端口读回是“ok+空时间线”,经 SQLite 却是 `session_not_found`;`timeline.list` 文档明写“从未创建的会话答 session_not_found、而非空 events”,内存端口违背了这条已修契约。②文件版与 `timeline.list` schema 都把 limit 钳到 256,内存版钳到 1000——直连(agent/OpenAI 跳过 pydantic)传 limit=500 时,SQLite 回 ≤256 而内存回 ≤500)
+
+- 内存版 `list_timeline`:无 `session_id` 记录时补 `exists: False`(会话创建会写 `session.created` 进 `_timeline`,故键在即会话曾创建,与文件版“有文件即存在”同义),已创建会话不带该标记;limit 钳制 256↔1000 改为 256,与文件版及 schema 上限一致。两端在“缺失=exists False/total 0”“已创建=无 exists/total≥1”“limit=500→256”三点上现完全一致。
+- 测试:`test_timeline_secret_redaction.py`(双仓库参数化)新增两例——“从未创建的会话在两端都被标记 exists False、已创建会话不被误标”与“两端 limit 都钳到 256”。带外验证:回退内存两处改动 → 仅 InMemory 变体如期失败(`exists` 缺失、`500 == 256`)、SQLite 变体仍绿——精确点名分歧后端,证明有牙。
+
 ### 修复（内存版仓库(`InMemoryAnalysisRepository`,自称“与 SQLite 同一可观测契约”的生产端口)在“空串过滤”上与 SQLite 分道:`list_audit`/`list_knowledge` 的过滤谓词两边不同——SQLite 用真值判断(`if session_id:` / `if kind:`),内存版用 `is None`。于是 `session_id=""`/`kind=""`(schema 允许、agent 与 OpenAI 直连可直接传)在两端结果相反:SQLite 视空串为“无过滤、全返回”,内存版按字面 `== ""` 过滤而返空——会话行的 id 恒为 uuid、无会话行为 None、知识 kind 恒为非空标签,故内存版那条永远返空,是“静默返空”的迷惑结果)
 
 - 内存版 `list_audit` 改 `if session_id:`、`list_knowledge` 改 `not kind or ...`,与 SQLite 真值语义对齐:空白过滤=无过滤(等同 None,全返回),真实 id/kind 仍精确过滤,空白与 None 两端一致。选向 SQLite 对齐因其为默认生产库,且“空串=全集”避免了内存版那条恒空的迷惑结果;既有 `test_a_finding_too_large...` 早已把 SQLite–内存分歧当 bug 修,此处同理。
