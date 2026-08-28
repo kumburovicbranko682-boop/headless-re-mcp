@@ -98,8 +98,17 @@ def test_logcat_clamps_the_requested_line_count() -> None:
     assert dev.calls == [["logcat", "-d", "-t", "5000"]]
 
 
-def test_packages_reports_has_more_and_sorts_the_page() -> None:
-    """A list longer than the cap says has_more and comes back sorted."""
+def test_packages_reports_has_more_and_returns_the_alphabetical_head() -> None:
+    """A list longer than the cap says has_more and returns the true sorted head.
+
+    pm list packages is not ordered. The page must be the alphabetically-first
+    `limit` packages, not the first `limit` in device order alphabetized: the
+    device here hands packages back reverse-sorted, so a page of three must be
+    com.a/com.b/com.c (the real head), not com.c/com.d/com.e (the head of the
+    device-order prefix). The old code sorted only after capping and so returned
+    the latter, silently dropping com.a and com.b -- alphabetically-early names
+    that sat past the cap in device order.
+    """
     listing = "\n".join(
         f"package:{name}" for name in ("com.e", "com.d", "com.c", "com.b", "com.a")
     )
@@ -108,8 +117,7 @@ def test_packages_reports_has_more_and_sorts_the_page() -> None:
     assert payload["count"] == 3
     assert payload["has_more"] is True
     assert payload["third_party_only"] is False
-    assert payload["packages"] == sorted(payload["packages"])
-    assert set(payload["packages"]) <= {"com.a", "com.b", "com.c", "com.d", "com.e"}
+    assert payload["packages"] == ["com.a", "com.b", "com.c"]
 
 
 def test_packages_complete_list_is_not_labelled_partial() -> None:

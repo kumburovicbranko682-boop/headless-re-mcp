@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（device.packages 先截断后排序，默认 limit 下会静默丢掉字母序靠前的包）
+
+- `pm list packages` 的输出不是有序的，但 `AdbBackend.packages` 先按设备顺序取前 `capped` 个、`break`，
+  再对这几个 `pkgs.sort()`——于是返回的"页"看着是字母序的（内部有序），实则是"设备顺序前 N 个再排
+  序"，把恰好排在设备顺序 cap 之后、但字母序靠前的包悄悄丢了。默认 `limit=500`，任何包数超过 500 的
+  设备都会中招：查某个字母靠前的包却在页里找不到，而 `has_more=True` 又会让人以为"后面的都排在已
+  显示的最后一个之后"（错的，被丢的包字母序可能在任意位置）。代码末尾那句 `pkgs.sort()` 也表明作者本
+  意就是返回有序列表，只是排晚了。现改为先解析全部包名、`sort()`、再窗口化到 `capped`，页即真正的字母
+  序头部，`has_more` 也名副其实（与 frida.applications 的先排序后开窗同理）。`_MAX_PACKAGES=2000`
+  足够一次取全，故维持游标式（有 has_more、无 offset）不动，只修排序时机这个正确性 bug。原回归测试用
+  倒序输入、limit 3，却只断言"页内有序且是子集"，正好漏掉该 bug（[c,d,e] 也满足）；现改为断言页等于真正
+  的字母序头部 `[com.a, com.b, com.c]`，旧实现返回 `[com.c, com.d, com.e]` 即失败。
+
 ### 修复（frida.modules 报 total/has_more 却没有 offset，翻不到第一页之后的模块）
 
 - 与之前修的 frida.applications 同一个缺陷：`frida.modules` 返回 `count`/`total`/`has_more`（工具文案还

@@ -511,21 +511,26 @@ class AdbBackend:
         if _is_host_error_output(text):
             raise AdbError("backend_error", "pm list failed", output=text[:800])
         pkgs: list[str] = []
-        has_more = False
         for line in text.splitlines():
             if not line.startswith("package:"):
                 continue
             name = line.split(":", 1)[1].strip()
-            if not name:
-                continue
-            if len(pkgs) >= capped:
-                has_more = True
-                break
-            pkgs.append(name)
+            if name:
+                pkgs.append(name)
+        # Sort the full list before windowing, not the page after. pm list
+        # packages is not ordered, so breaking at the cap and sorting only those
+        # returned the first `capped` in device order alphabetized -- a page that
+        # looked like the alphabetical head but silently dropped alphabetically-
+        # early packages that happened to sit past the cap in device order. With
+        # the default limit any device over that many packages hit this. Sorting
+        # first makes the page the true alphabetical head and has_more mean "more
+        # sort after these", the same sort-before-window frida.applications does.
         pkgs.sort()
+        has_more = len(pkgs) > capped
+        page = pkgs[:capped]
         return {
-            "packages": pkgs,
-            "count": len(pkgs),
+            "packages": page,
+            "count": len(page),
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
