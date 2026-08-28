@@ -7,6 +7,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 新增（原生 Mach-O 离线速览，无需任何外部后端）
 
+- 新增 `macho.symbols`：纯 stdlib 分页读取 `LC_SYMTAB` 的 nlist 符号表——即离线 `nm -m`，与 `elf.symbols`
+  对齐。符号表是二进制的链接面:它从其它 dylib **导入**的函数（undefined 的外部项）与它**导出**给别人
+  链接的函数/对象（已定义的外部项）。每条符号给出名字（经字符串表解引用）、类型（undefined/section/
+  absolute/indirect，或 debug stab）、`external`、value，以及 `imported`/`exported` 布尔;更进一步——
+  **导入符号会解析出来自哪个库**:nlist 的 `n_desc` 高字节是两级命名空间的库序号，映射回有序依赖列表得到
+  dylib 路径（特殊序号 self/executable/dynamic_lookup 也识别）——这是 Mach-O 特有、`nm -m` 才给的信息。
+  返回带 `imported_listed`/`exported_listed`/`symbols_total`/`has_more` 诚实分页。32/64 位 nlist 记录
+  大小不同（12 vs 16 字节）、字段按各自布局解析，大小端都支持;`n_desc` 按无符号读（它是位域容器，库序号
+  在高字节）。fat 二进制读取首个架构 slice 并报出 `arch` 与全部 `available_arches`;无 `LC_SYMTAB`（静态
+  剥离）返回空列表加 warning;符号记录越界记 warning 停页。已对真实 Mach-O 验证:PyPI macOS wheel 里的
+  CPython 扩展——唯一导出正是模块初始化函数 `_PyInit__speedups`，导入 `_memcpy`/`dyld_stub_binder` 解析到
+  libSystem，而 Python C API 符号标为 `dynamic_lookup`（平铺命名空间运行时解析，正是 Python 扩展的正确
+  行为）;universal2 wheel 的双架构 fat 读首个 slice 并列出两个架构。工具为**核心、按路径、只读**，各工作
+  方向均可见。新增手工汇编夹具单测（64/32 位 nlist、四类符号分类与库解析、分页、无 symtab、越界、fat 首
+  slice、服务四类信封）与扩展的 MCP stdio Gate（同时打 `macho.symbols`，断言导入库解析与导出）。
+
 - 新增 `macho.summary`：纯 stdlib 直接解析 macOS/iOS 二进制（可执行文件、`.dylib`、bundle），thin 与
   universal（fat）都支持——等价于离线 `otool -h -l`。PE 有整条工具线、ELF 已有 `elf.summary`/`elf.symbols`
   之后，Mach-O 是三大原生格式里唯一完全打不开的一个；而它就是"一个头 + 一串 load command"的精确结构，
@@ -122,7 +138,7 @@ until 1.0 the tool surface may still change between minor versions.
   先例：去掉 POSIX-only 前置断言，只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **271（154 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **272（155 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 

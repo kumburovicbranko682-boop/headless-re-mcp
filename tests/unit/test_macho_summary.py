@@ -1,16 +1,18 @@
-"""The stdlib Mach-O reader (summarize_macho) and macho.summary service routing.
+"""The stdlib Mach-O readers (summarize_macho, list_macho_symbols) and routing.
 
 With PE covered by a whole tool line and ELF by elf.summary/elf.symbols, Mach-O
 -- a macOS dylib, an iOS app's main binary, a Mach-O malware sample -- was the
-one native format that could not be opened here at all. The header and load
-commands are exact structures. These tests pin the reader on hand-assembled
-Mach-O images (portable, so they run on Windows CI too where no real Mach-O
-exists): a 64-bit LE dylib with segments/dylibs/rpath/uuid/platform/symtab, an
-executable with PIE/LC_MAIN/encryption-info, a 32-bit big-endian image, a fat
-binary with per-slice summaries, resilience to truncated load commands and
-out-of-file slices, refusal of a non-Mach-O (including a Java class file that
-shares the 0xcafebabe magic), and the service routing that turns a bad file
-into a precise envelope rather than a fault.
+one native format that could not be opened here at all. The header, load
+commands and LC_SYMTAB nlist array are exact structures. These tests pin the
+readers on hand-assembled Mach-O images (portable, so they run on Windows CI too
+where no real Mach-O exists): a 64-bit LE dylib with segments/dylibs/rpath/uuid/
+platform/symtab, an executable with PIE/LC_MAIN/encryption-info, a 32-bit
+big-endian image, a fat binary with per-slice summaries, the LC_SYMTAB symbol
+page with its import/export classification and library resolution (64- and
+32-bit nlist), honest pagination, resilience to truncated load commands, out-of-
+file slices and symbol records, refusal of a non-Mach-O (including a Java class
+file that shares the 0xcafebabe magic), and the service routing that turns a bad
+file into a precise envelope rather than a fault.
 """
 
 from __future__ import annotations
@@ -21,11 +23,16 @@ from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.backends.common.macho import MachoParseError, summarize_macho
+from headless_re_mcp.backends.common.macho import (
+    MachoParseError,
+    list_macho_symbols,
+    summarize_macho,
+)
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 
 _MAGIC_64_LE = b"\xcf\xfa\xed\xfe"
+_MAGIC_32_LE = b"\xce\xfa\xed\xfe"
 _MAGIC_32_BE = b"\xfe\xed\xfa\xce"
 _FAT_MAGIC = b"\xca\xfe\xba\xbe"
 
@@ -208,6 +215,158 @@ def test_a_fat_with_no_slices_is_refused() -> None:
         summarize_macho(_FAT_MAGIC + struct.pack(">I", 0))
 
 
+# --- LC_SYMTAB symbols --------------------------------------------------------
+
+
+def _build_symbolic(*, bits: int = 64) -> bytes:
+    """A little-endian dylib with an LC_SYMTAB: one import per kind and an export.
+
+    Two dylib dependencies make the library ordinals resolvable (ordinal 1 =
+    libSystem, ordinal 2 = libweak). The five nlist entries are: an undefined
+    external from ordinal 1, an undefined external via dynamic_lookup, a defined
+    external (exported), a defined local, and a debug stab.
+    """
+    magic = _MAGIC_64_LE if bits == 64 else _MAGIC_32_LE
+    cputype = 0x0100000C if bits == 64 else 7
+
+    strtab = bytearray(b"\x00")
+
+    def add(text: str) -> int:
+        off = len(strtab)
+        strtab.extend(text.encode() + b"\x00")
+        return off
+
+    off_malloc = add("_malloc")
+    off_dyn = add("_PyInit_x")
+    off_export = add("_myfunc")
+    off_local = add("_local")
+    off_stab = add("stab.c")
+
+    # n_type: N_EXT=0x01, N_SECT|N_EXT=0x0f, N_SECT=0x0e, N_FUN stab=0x24.
+    entries = [
+        (off_malloc, 0x01, 0, (1 << 8), 0),  # undefined external, ordinal 1
+        (off_dyn, 0x01, 0, (0xFE << 8), 0),  # undefined external, dynamic_lookup
+        (off_export, 0x0F, 1, 0, 0x1000),  # defined external -> exported
+        (off_local, 0x0E, 1, 0, 0x2000),  # defined local
+        (off_stab, 0x24, 1, 0, 0x3000),  # debug stab
+    ]
+    nl_fmt = "<IBBHQ" if bits == 64 else "<IBBHI"
+    nlist = b"".join(struct.pack(nl_fmt, *entry) for entry in entries)
+
+    dylib_cmds = [
+        _dylib_cmd(0xC, "/usr/lib/libSystem.B.dylib"),
+        _dylib_cmd(0x80000018, "libweak.dylib"),
+    ]
+    hdr_size = 32 if bits == 64 else 28
+    payload_len = sum(len(c) for c in dylib_cmds) + 24  # + LC_SYMTAB (24 bytes)
+    symoff = hdr_size + payload_len
+    stroff = symoff + len(nlist)
+    symtab_cmd = _cmd(0x2, struct.pack("<IIII", symoff, len(entries), stroff, len(strtab)))
+    commands = [*dylib_cmds, symtab_cmd]
+    payload = b"".join(commands)
+    assert len(payload) == payload_len
+
+    if bits == 64:
+        header = magic + struct.pack(
+            "<iiIIIII", cputype, 0, 6, len(commands), len(payload), 0, 0
+        )
+    else:
+        header = magic + struct.pack("<iiIIII", cputype, 0, 6, len(commands), len(payload), 0)
+    return header + payload + nlist + bytes(strtab)
+
+
+def test_symbols_are_classified_and_libraries_resolved() -> None:
+    out = list_macho_symbols(_build_symbolic())
+    assert out["format"] == "Mach-O"
+    assert out["fat"] is False
+    assert out["cpu"] == "AArch64"
+    assert out["symbols_total"] == 5
+    assert out["symbols_listed"] == 5
+    assert out["imported_listed"] == 2
+    assert out["exported_listed"] == 1
+
+    by_name = {s["name"]: s for s in out["symbols"]}
+    malloc = by_name["_malloc"]
+    assert malloc["imported"] is True and malloc["exported"] is False
+    assert malloc["external"] is True
+    assert malloc["type"] == "undefined"
+    assert malloc["library_ordinal"] == 1
+    assert malloc["library"] == "/usr/lib/libSystem.B.dylib"
+
+    dyn = by_name["_PyInit_x"]
+    assert dyn["imported"] is True
+    assert dyn["library"] == "dynamic_lookup"
+
+    exported = by_name["_myfunc"]
+    assert exported["exported"] is True and exported["imported"] is False
+    assert exported["type"] == "section"
+    assert exported["value"] == "0x1000"
+    assert "library" not in exported
+
+    local = by_name["_local"]
+    assert local["external"] is False
+    assert local["imported"] is False and local["exported"] is False
+
+    stab = by_name["stab.c"]
+    assert stab["type"] == "debug"
+    assert stab["external"] is False
+
+
+def test_symbols_32bit_nlist_path() -> None:
+    out = list_macho_symbols(_build_symbolic(bits=32))
+    assert out["cpu"] == "x86"
+    assert out["symbols_total"] == 5
+    by_name = {s["name"]: s for s in out["symbols"]}
+    assert by_name["_malloc"]["library"] == "/usr/lib/libSystem.B.dylib"
+    assert by_name["_myfunc"]["exported"] is True
+
+
+def test_symbols_paginate_honestly() -> None:
+    data = _build_symbolic()
+    page = list_macho_symbols(data, offset=0, limit=2)
+    assert [s["name"] for s in page["symbols"]] == ["_malloc", "_PyInit_x"]
+    assert page["has_more"] is True
+    tail = list_macho_symbols(data, offset=4, limit=10)
+    assert [s["name"] for s in tail["symbols"]] == ["stab.c"]
+    assert tail["has_more"] is False
+    past = list_macho_symbols(data, offset=99, limit=10)
+    assert past["symbols"] == []
+    assert past["has_more"] is False
+
+
+def test_no_symtab_is_an_empty_listing_with_a_warning() -> None:
+    out = list_macho_symbols(_build_executable64())  # segment/LC_MAIN/encryption only
+    assert out["symbols"] == []
+    assert out["symbols_total"] == 0
+    assert any("LC_SYMTAB" in w for w in out["warnings"])
+
+
+def test_fat_symbols_read_first_slice() -> None:
+    out = list_macho_symbols(_build_fat([_build_symbolic(), _build_executable64()]))
+    assert out["fat"] is True
+    assert out["arch"] == "AArch64"
+    assert out["available_arches"] == ["AArch64", "x86-64"]
+    assert out["exported_listed"] == 1
+    assert any("fat binary" in w for w in out["warnings"])
+
+
+def test_a_symbol_record_past_eof_is_a_warning() -> None:
+    data = bytearray(_build_symbolic())
+    # Point LC_SYMTAB's nsyms absurdly high without extending the file.
+    marker = struct.pack("<II", 0x2, 24)
+    pos = data.find(marker)
+    struct.pack_into("<I", data, pos + 8 + 4, 100000)  # nsyms field
+    out = list_macho_symbols(bytes(data))
+    assert out["symbols_total"] == 100000
+    assert out["symbols_listed"] < 100000
+    assert any("past end of file" in w for w in out["warnings"])
+
+
+def test_list_symbols_rejects_non_macho() -> None:
+    with pytest.raises(MachoParseError):
+        list_macho_symbols(b"MZ\x00\x00" + b"\x00" * 60)
+
+
 # --- service routing ----------------------------------------------------------
 
 
@@ -247,3 +406,26 @@ def test_service_refuses_oversized_file(tmp_path: Path, monkeypatch: pytest.Monk
     result = _service(tmp_path).macho_summary(str(binary))
     assert not result.ok
     assert result.error.code == "too_large"
+
+
+def test_service_lists_symbols(tmp_path: Path) -> None:
+    binary = tmp_path / "libsym.dylib"
+    binary.write_bytes(_build_symbolic())
+    result = _service(tmp_path).macho_symbols(str(binary), offset=0, limit=2)
+    assert result.ok, result.model_dump(mode="json")
+    assert [s["name"] for s in result.data["symbols"]] == ["_malloc", "_PyInit_x"]
+    assert result.data["has_more"] is True
+
+
+def test_service_symbols_refuses_a_non_macho(tmp_path: Path) -> None:
+    junk = tmp_path / "not.dylib"
+    junk.write_bytes(b"this is not a mach-o binary")
+    result = _service(tmp_path).macho_symbols(str(junk))
+    assert not result.ok
+    assert result.error.code == "invalid_params"
+
+
+def test_service_symbols_reports_missing_file(tmp_path: Path) -> None:
+    result = _service(tmp_path).macho_symbols(str(tmp_path / "nope.dylib"))
+    assert not result.ok
+    assert result.error.code == "not_found"

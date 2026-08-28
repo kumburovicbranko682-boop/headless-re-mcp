@@ -35,8 +35,20 @@ def _cmd(cmd_id: int, body: bytes) -> bytes:
 
 
 def _build_dylib64() -> bytes:
-    """An arm64 LE dylib with __TEXT segment, libSystem dependency and macOS target."""
-    commands = [
+    """An arm64 LE dylib with __TEXT, libSystem, macOS target and a real symtab.
+
+    The LC_SYMTAB points at a two-entry nlist appended after the load commands:
+    an undefined external import (_malloc, from library ordinal 1 = libSystem)
+    and a defined external export (_gate_open).
+    """
+    strtab = b"\x00_malloc\x00_gate_open\x00"
+    off_malloc = strtab.index(b"_malloc")
+    off_export = strtab.index(b"_gate_open")
+    nlist = struct.pack("<IBBHQ", off_malloc, 0x01, 0, 1 << 8, 0) + struct.pack(
+        "<IBBHQ", off_export, 0x0F, 1, 0, 0x4000
+    )
+
+    fixed = [
         _cmd(
             0x19,
             struct.pack(
@@ -46,13 +58,16 @@ def _build_dylib64() -> bytes:
         _cmd(0xD, struct.pack("<IIII", 24, 0, 0, 0) + b"libgate.dylib\x00"),
         _cmd(0xC, struct.pack("<IIII", 24, 0, 0, 0) + b"/usr/lib/libSystem.B.dylib\x00"),
         _cmd(0x32, struct.pack("<IIII", 1, 0x000B0000, 0x000E0000, 0)),  # macOS 11.0
-        _cmd(0x2, struct.pack("<IIII", 0, 3, 0, 0)),
     ]
+    payload_len = sum(len(c) for c in fixed) + 24  # + LC_SYMTAB
+    symoff = 32 + payload_len
+    stroff = symoff + len(nlist)
+    commands = [*fixed, _cmd(0x2, struct.pack("<IIII", symoff, 2, stroff, len(strtab)))]
     payload = b"".join(commands)
     header = b"\xcf\xfa\xed\xfe" + struct.pack(
         "<iiIIIII", 0x0100000C, 0, 6, len(commands), len(payload), 0, 0
     )
-    return header + payload
+    return header + payload + nlist + strtab
 
 
 def _structured(result: object) -> dict[str, Any]:
@@ -86,6 +101,7 @@ async def test_mcp_stdio_macho_summary(tmp_path: Path) -> None:
         await client.initialize()
         tools = {tool.name for tool in (await client.list_tools()).tools}
         assert "macho.summary" in tools
+        assert "macho.symbols" in tools
 
         full = await _call(client, "macho.summary", {"path": str(binary)})
         assert full["ok"] is True, full
@@ -99,6 +115,19 @@ async def test_mcp_stdio_macho_summary(tmp_path: Path) -> None:
         assert data["platform"] == {"name": "macOS", "min_os": "11.0.0", "sdk": "14.0.0"}
         assert [segment["name"] for segment in data["segments"]] == ["__TEXT"]
 
+        symbols = await _call(client, "macho.symbols", {"path": str(binary)})
+        assert symbols["ok"] is True, symbols
+        listing = symbols["data"]
+        assert listing["symbols_total"] == 2
+        by_name = {s["name"]: s for s in listing["symbols"]}
+        assert by_name["_malloc"]["imported"] is True
+        assert by_name["_malloc"]["library"] == "/usr/lib/libSystem.B.dylib"
+        assert by_name["_gate_open"]["exported"] is True
+
         bad = await _call(client, "macho.summary", {"path": str(junk)})
         assert bad["ok"] is False
         assert bad["error"]["code"] == "invalid_params"
+
+        bad_symbols = await _call(client, "macho.symbols", {"path": str(junk)})
+        assert bad_symbols["ok"] is False
+        assert bad_symbols["error"]["code"] == "invalid_params"

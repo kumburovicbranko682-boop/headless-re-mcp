@@ -487,7 +487,9 @@ def _list_thin_symbols(data: bytes, *, offset: int, limit: int, extra: JsonObjec
         else:
             warn("string table is past end of file; names unavailable")
         nl_size = 16 if bits == 64 else 12
-        nl_fmt = endian + ("IBBHQ" if bits == 64 else "IBBhI")
+        # n_desc is read unsigned in both classes: it is a bitfield container,
+        # and the library ordinal lives in its high byte.
+        nl_fmt = endian + ("IBBHQ" if bits == 64 else "IBBHI")
         for index in range(start, min(total, start + window)):
             eoff = symoff + index * nl_size
             if eoff < 0 or eoff + nl_size > len(data):
