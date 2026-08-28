@@ -96,16 +96,27 @@ def test_run_rejects_an_existing_output_path(tmp_path: Path) -> None:
 
 
 def test_run_rejects_an_output_path_aliasing_the_input(tmp_path: Path) -> None:
-    """A dot-dot spelling can stat as absent yet resolve onto the input."""
+    """A dot-dot spelling that resolves onto the input must be rejected.
+
+    On POSIX ``missing/../input.exe`` stats as absent (the missing/ segment
+    cannot be traversed) yet ``resolve()`` collapses it onto the existing
+    input, so the alias slips past the exists() guard and is caught by the
+    resolve-equality guard ("differ from input_path"). Windows collapses the
+    ``..`` lexically before the stat, so the same spelling stats as *present*
+    and is rejected one guard earlier ("must not already exist"). Either guard
+    rejecting the alias is correct, so assert on the shared outcome (the
+    INVALID_ARGUMENT code) and accept either platform's message rather than
+    the POSIX-only "stats as absent" premise.
+    """
     exe, source, _, sha = _sample(tmp_path)
     aliased = tmp_path / "missing" / ".." / "input.exe"
-    assert not aliased.exists()
 
     with pytest.raises(De4dotError) as exc:
         run_de4dot(exe, source, aliased, input_sha256=sha)
 
     assert exc.value.code == De4dotErrorCode.INVALID_ARGUMENT
-    assert "differ from input_path" in str(exc.value)
+    message = str(exc.value)
+    assert "differ from input_path" in message or "must not already exist" in message
 
 
 def test_run_rejects_a_stale_input_sha(tmp_path: Path) -> None:

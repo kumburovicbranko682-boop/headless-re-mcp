@@ -126,16 +126,21 @@ def test_an_input_that_is_not_a_file_is_refused(tmp_path: Path) -> None:
 
 def test_output_equal_to_input_is_refused(tmp_path: Path) -> None:
     exe, source, _, sha = _inputs(tmp_path)
-    # A non-existent path that still normalizes onto the source: exists() fails
-    # on the missing "nope" component, so the earlier "must not exist" guard is
-    # skipped and the "must differ from input" guard is the one that fires.
+    # A dot-dot spelling that resolves onto the source must be rejected. On
+    # POSIX exists() fails on the missing "nope" component, so the alias slips
+    # past the "must not exist" guard and the "must differ from input" guard
+    # fires. Windows collapses the ".." lexically before the stat, so the same
+    # spelling stats as the existing source and the "must not already exist"
+    # guard fires first. Either rejection is correct; assert the shared
+    # INVALID_ARGUMENT code and accept either guard's message.
     aliased = tmp_path / "nope" / ".." / "managed.exe"
 
     with pytest.raises(NetReactorSlayerError) as caught:
         run_net_reactor_slayer(exe, source, aliased, input_sha256=sha)
 
     assert caught.value.code == NetReactorSlayerErrorCode.INVALID_ARGUMENT
-    assert "differ from input" in str(caught.value)
+    message = str(caught.value)
+    assert "differ from input" in message or "must not already exist" in message
 
 
 def test_a_sha_that_changed_before_the_run_is_refused(tmp_path: Path) -> None:
