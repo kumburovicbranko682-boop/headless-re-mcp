@@ -42,6 +42,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   可重试且 code/message/details 原样保留、六个转换器经 `_failure` 端到端各自让 `timeout` 上报为 retryable(断言里点名
   backend,单点回退即精确指认)、以及镜像方向(确定性码 `invalid_params` 经每个转换器仍 retryable=False,防止在某处放宽
   规则)。以非空注入验证:把 `service_web._as_rpc` 临时退回丢标志的裸构造式,守卫精确报出 `web`,还原后转绿。
+- 补齐第二处 Frida 面:`_as_rpc` 只覆盖 Android 线(`service_frida`),但 optional-backend 的五个 Frida 方法
+  (`frida.attach` / `frida.modules` / `frida.exports` / `frida.memory.read` / `frida.hook.template`)在 `service_ext` 里各有
+  自己的 `except FridaError` 块,绕开 `_as_rpc` 就地写 `XdbgRpcError(exc.code, exc.message, details=...)`——同一 `FridaError`
+  类、同一丢 `retryable` 的构造默认,于是这条支路上的 `frida` 超时仍报“永久失败”,恰是 `_as_rpc` 修复漏掉的第二个 Frida
+  表面。五处全部改走 `backend_error_as_rpc`(r2 / ghidra / windbg 属原生/PE 邻接线,不在本轮范围,保持不动)。新增
+  `test_frida_ext_error_retryable.py`:以抛错的 FridaClient 替身 + monkeypatch `_require_debuggee_pid`,端到端驱动这五个
+  服务方法,参数化断言 `timeout` 上报 retryable、确定性码 `invalid_params` 不报;以“把 `frida.modules` 退回丢标志构造式”
+  验证非空,守卫精确点名 `frida.modules`,还原后 14 条(10 参数化 + 4 单元)全绿。
 
 ### 测试（非 PE 后端错误码词表守卫：八个后端的 code 是 agent 路由所依的机器契约，此前为散落的裸字符串、无枚举无校验，新增守卫钉住“抛出的 code 恰等于 canonical 词表”——拼写错 / 混入 PE 线方言 / 词表烂成宽集三向皆拦）
 
