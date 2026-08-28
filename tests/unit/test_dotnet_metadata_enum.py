@@ -4,10 +4,20 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.dotnet.metadata_enum import CAPABILITY, _disassemble_il, enumerate_metadata
+from headless_re_mcp.dotnet.clr_inspect import DotnetInspectError
+from headless_re_mcp.dotnet.metadata_enum import (
+    CAPABILITY,
+    MAX_LIMIT,
+    _clamp_page,
+    _disassemble_il,
+    enumerate_metadata,
+)
 
 
 def _write_minimal_clr(path: Path) -> None:
@@ -90,6 +100,69 @@ def test_il_branch_and_constant_operands_are_signed() -> None:
         ("call", 0x0A000001),
     ]
     assert partial is False
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [float("inf"), float("nan"), None, "abc", {}, [], True],
+    ids=["inf", "nan", "none", "non-numeric", "dict", "list", "bool"],
+)
+def test_clamp_page_rejects_a_non_integer_offset(bad: Any) -> None:
+    # offset indexes items[offset:...]; a str/None breaks the comparison and a
+    # float breaks the slice with a TypeError -- not the DotnetInspectError the
+    # service maps to a clean code, so it used to become an internal_error.
+    with pytest.raises(DotnetInspectError) as caught:
+        _clamp_page(bad, 64)
+    assert caught.value.code == "invalid_argument"
+    assert "offset" in str(caught.value)
+
+
+@pytest.mark.parametrize("bad", [float("inf"), None, "x", {}], ids=["inf", "none", "str", "dict"])
+def test_clamp_page_rejects_a_non_integer_limit(bad: Any) -> None:
+    with pytest.raises(DotnetInspectError) as caught:
+        _clamp_page(0, bad)
+    assert caught.value.code == "invalid_argument"
+    assert "limit" in str(caught.value)
+
+
+def test_clamp_page_coerces_int_like_values_and_clamps_the_limit() -> None:
+    assert _clamp_page("5", "10") == (5, 10)
+    assert _clamp_page(2.9, 64) == (2, 64)  # truncates, matching the sibling backends
+    assert _clamp_page(0, 10_000) == (0, MAX_LIMIT)
+
+
+def test_clamp_page_still_rejects_out_of_range_values() -> None:
+    with pytest.raises(DotnetInspectError):
+        _clamp_page(-1, 64)
+    with pytest.raises(DotnetInspectError):
+        _clamp_page(0, 0)
+
+
+@pytest.mark.parametrize("bad_offset", [float("inf"), None, "abc"], ids=["inf", "none", "str"])
+def test_service_enumerate_with_a_bad_page_is_a_client_error_not_an_incident(
+    tmp_path: Path, bad_offset: Any
+) -> None:
+    """The agent transport can hand dotnet_enumerate a non-int offset. Before
+    _clamp_page coerced, that reached a list slice and raised TypeError, which
+    fell through to _failure's ``except BaseException`` as an internal_error
+    incident. It must be a clean invalid_argument instead.
+    """
+    binary = tmp_path / "empty_tables.exe"
+    _write_minimal_clr(binary)
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    session_id = service.create_session(str(binary)).data["session"]["id"]
+    result = service.dotnet_enumerate(session_id, "strings", offset=bad_offset, limit=5)
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "invalid_argument", result.error
 
 
 def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:

@@ -112,12 +112,35 @@ class Page:
         }
 
 
+def _page_int(value: object, name: str) -> int:
+    """Coerce a paging argument to int, or raise a structured invalid_argument.
+
+    offset/limit are handler kwargs the enumerate tool schema types as integers,
+    but the agent and OpenAI-bridge transports call the handler straight from
+    model arguments with no pydantic coercion, so a float, string, or null
+    reaches here. Both values index a list slice in the callers
+    (``items[offset:offset+limit]``): a str/None breaks the comparisons below and
+    a float breaks the slice, each with a TypeError that is not the
+    DotnetInspectError the service maps to a clean code, so a bad page turned
+    into an internal_error incident. A bool is an int subclass but never a valid
+    page bound.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise DotnetInspectError("invalid_argument", f"{name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise DotnetInspectError("invalid_argument", f"{name} must be an integer") from exc
+
+
 def _clamp_page(offset: int, limit: int) -> tuple[int, int]:
-    if offset < 0:
+    off = _page_int(offset, "offset")
+    lim = _page_int(limit, "limit")
+    if off < 0:
         raise DotnetInspectError("invalid_argument", "offset must be >= 0")
-    if limit < 1:
+    if lim < 1:
         raise DotnetInspectError("invalid_argument", "limit must be >= 1")
-    return offset, min(limit, MAX_LIMIT)
+    return off, min(lim, MAX_LIMIT)
 
 
 def enumerate_metadata(
