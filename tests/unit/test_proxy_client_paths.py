@@ -739,7 +739,11 @@ def test_backend_stop_and_status_report_a_live_instance() -> None:
 
 def test_backend_flows_paginates_and_reports_dropped() -> None:
     entries = [{"id": f"f{i}", "seq": i + 10} for i in range(5)]
-    recorder = SimpleNamespace(snapshot=lambda: entries)
+    # dropped is the recorder's own eviction counter, surfaced verbatim by
+    # flows(); it is not re-derived from the retained rows' sequence numbers (a
+    # flow re-recorded under one id -- a response then a late error -- would
+    # otherwise read as a drop even though nothing left the ring).
+    recorder = SimpleNamespace(snapshot=lambda: entries, dropped=lambda: 9)
     backend = ProxyBackend()
     backend._get = cast(Any, lambda session_id: SimpleNamespace(recorder=recorder))  # type: ignore[method-assign]
     payload = backend.flows("s", offset=1, limit=2)
@@ -747,12 +751,11 @@ def test_backend_flows_paginates_and_reports_dropped() -> None:
     assert payload["total"] == 5
     assert payload["offset"] == 1
     assert payload["has_more"] is True
-    # last seq 14, len 5 -> 9 dropped before the ring window.
     assert payload["dropped"] == 9
 
 
 def test_backend_flows_on_an_empty_capture() -> None:
-    recorder = SimpleNamespace(snapshot=lambda: [])
+    recorder = SimpleNamespace(snapshot=lambda: [], dropped=lambda: 0)
     backend = ProxyBackend()
     backend._get = cast(Any, lambda session_id: SimpleNamespace(recorder=recorder))  # type: ignore[method-assign]
     payload = backend.flows("s")
