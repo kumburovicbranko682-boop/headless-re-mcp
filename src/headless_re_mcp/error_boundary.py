@@ -40,10 +40,20 @@ _LOG_PATH: Path | None = None
 # envelope. The strict ``[:=]`` boundary (rather than a trailing ``\w*``) is
 # deliberate -- it keeps "tokenized=false" and similar diagnostics readable.
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+"),
+    # Mask any bearer credential, not only one introduced by an authorization
+    # key. httpx/urllib errors quote header values and URLs verbatim, so a raw
+    # "Bearer <token>" reaches an exception message with no key in front of it,
+    # and redaction.py masks bearer values wherever they appear. Requiring an
+    # "authorization" prefix here let that bare form through to the incident
+    # log, the 500 body and the CLI stderr envelope.
+    re.compile(r"(?i)(bearer\s+)[^\s,;]+"),
+    # Inline "key: value" / "key=value" secrets. The key set mirrors
+    # redaction.py's structured _SECRET_KEY -- including ``authorization`` (for
+    # non-bearer schemes) and ``providerApiKeys`` -- so a field masked under a
+    # dict key is masked here too when it lands in a message instead.
     re.compile(
-        r"(?i)((?:api[_-]?key|private[_-]?key|access[_-]?key|token|secret"
-        r"|password|passwd|credential)\s*[:=]\s*)[^\s,;]+"
+        r"(?i)((?:api[_-]?key|private[_-]?key|access[_-]?key|authorization|token"
+        r"|secret|password|passwd|credential|providerapikeys)\s*[:=]\s*)[^\s,;]+"
     ),
 )
 

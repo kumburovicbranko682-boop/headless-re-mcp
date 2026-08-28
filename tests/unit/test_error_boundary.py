@@ -63,6 +63,11 @@ def test_tool_exception_returns_ai_envelope_and_logs(
         "access_key=sk-DEADBEEFsecret",
         "passwd=sk-DEADBEEFsecret",
         "credential: sk-DEADBEEFsecret",
+        # authorization as a plain key (a non-bearer scheme value) and the
+        # provider-key config field: both masked by redaction.py's key set, so
+        # the inline scrubber must cover them too.
+        "authorization=sk-DEADBEEFsecret",
+        "providerApiKeys: sk-DEADBEEFsecret",
     ],
 )
 def test_every_sensitive_keyword_form_is_redacted(marker: str) -> None:
@@ -75,6 +80,21 @@ def test_every_sensitive_keyword_form_is_redacted(marker: str) -> None:
     keep it aligned with the structured redactor's key set in redaction.py.
     """
     redacted = boundary._redact_text(f"connect failed while sending {marker} to host")
+
+    assert "sk-DEADBEEFsecret" not in redacted
+    assert "[REDACTED]" in redacted
+
+
+def test_a_bare_bearer_token_is_redacted_without_an_authorization_prefix() -> None:
+    """redaction.py masks "bearer <token>" anywhere; the inline scrubber must too.
+
+    httpx and urllib quote header values and URLs verbatim into their error
+    text, so a credential reaches an exception message as a lone "Bearer
+    <token>" with no "authorization" key ahead of it. The old pattern required
+    that prefix and let the bare form through to the incident log, the 500 body
+    and the CLI stderr envelope.
+    """
+    redacted = boundary._redact_text("upstream rejected the call: Bearer sk-DEADBEEFsecret")
 
     assert "sk-DEADBEEFsecret" not in redacted
     assert "[REDACTED]" in redacted
