@@ -457,24 +457,34 @@ class AdbBackend:
     def info(self, serial: str) -> JsonObject:
         dev = self._device(serial)
         try:
+            state = _call(dev.get_state, timeout=_ADB_PROBE_TIMEOUT_S)
+
+            def _prop(name: str) -> str:
+                text = _device_shell(
+                    dev, f"getprop {name}", timeout=_ADB_PROBE_TIMEOUT_S
+                )
+                # Same host-error guard as properties/packages/logcat/pm_path: an
+                # offline or unauthorized device answers getprop with the adb
+                # host's own "error:"/"adb:" line as stdout rather than raising,
+                # and without this info would report that error string as the
+                # device's model or abi -- a read that failed dressed up as a
+                # successful readout. info was the one readout that skipped it.
+                if _is_host_error_output(text):
+                    raise AdbError(
+                        "backend_error",
+                        "failed to read device info",
+                        output=text[:800],
+                    )
+                return text.strip()
+
             return {
                 "serial": _check_serial(serial),
-                "state": _call(dev.get_state, timeout=_ADB_PROBE_TIMEOUT_S),
-                "model": _device_shell(
-                    dev, "getprop ro.product.model", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "device": _device_shell(
-                    dev, "getprop ro.product.device", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "sdk": _device_shell(
-                    dev, "getprop ro.build.version.sdk", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "release": _device_shell(
-                    dev, "getprop ro.build.version.release", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "abi": _device_shell(
-                    dev, "getprop ro.product.cpu.abi", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
+                "state": state,
+                "model": _prop("ro.product.model"),
+                "device": _prop("ro.product.device"),
+                "sdk": _prop("ro.build.version.sdk"),
+                "release": _prop("ro.build.version.release"),
+                "abi": _prop("ro.product.cpu.abi"),
             }
         except AdbError:
             raise

@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（device.info 缺少 host-error 守卫，离线设备把 "error: device offline" 当成机型返回）
+
+- `properties`/`packages`/`logcat`/`_pm_path` 都用 `_is_host_error_output` 守卫：离线或未授权的设备会把 adb
+  主机自己的 `error:`/`adb:` 行当作 stdout 返回（而非抛异常），这几处据此把它识别为失败而非空结果。唯独
+  `info` 漏了这道守卫——它对每个 `getprop` 直接 `.strip()` 取值，于是离线设备会让 `info` 返回
+  `{state: ..., model: "error: device offline", abi: "error: device offline", ...}`，把一次失败的读取伪装成
+  成功的机型信息，无人值守的 agent 会据此以为设备正常。现在 `info` 的每个 getprop 结果都过一遍
+  `_is_host_error_output`，命中即 `backend_error`（output 里带上那行），与其它读出方法一致；get_state 先读、
+  命令字符串不变，成功路径与字段顺序不动。新增回归测试：设备 `getprop` 一律回 `error: device offline`、
+  get_state 正常，断言 `info` 抛 backend_error 且 output 含 offline；旧实现不抛（把错误行当机型返回）即失败。
+
 ### 修复（apk.native_libs 先截断后排序，多 ABI 应用超过 256 个 .so 时不是真正的字母序头部）
 
 - 与刚修的 apk.components / jadx / device.packages 同一类缺陷：`native_libs` 按 `get_files()` 的 zip 条目

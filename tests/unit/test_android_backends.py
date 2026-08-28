@@ -592,6 +592,41 @@ class TestPackagesDoesNotInventAnEmptyDevice:
         assert result["count"] == 2
 
 
+class TestInfoDoesNotInventADevice:
+    """A host error line used to look like the device's model/abi.
+
+    Measured: an offline device answers getprop with the adb host's own
+    ``error: device offline`` line as stdout, and info -- the one readout that
+    skipped the host-error guard its siblings (properties/packages/logcat) apply
+    -- reported that string as ``model``/``abi``. An unattended agent then treats
+    a dead device as a real one with a nonsense model.
+    """
+
+    def test_an_adb_error_line_is_not_the_device_model(self) -> None:
+        # info reads get_state first, so the fake needs it; the state resolves
+        # fine and the read then reaches getprop, where the host-error guard must
+        # fire on the "error:" stdout instead of returning it as the model.
+        class _OfflineDev:
+            def get_state(self, timeout: float | None = None) -> str:
+                del timeout
+                return "device"
+
+            def shell(self, cmd: object, timeout: float | None = None) -> str:
+                del cmd, timeout
+                return "error: device offline"
+
+        backend = AdbBackend()
+        backend._available = True
+        backend._adbutils = object()
+        backend._device = lambda serial: _OfflineDev()  # type: ignore[method-assign]
+
+        with pytest.raises(AdbError) as info:
+            backend.info("emulator-5554")
+        assert info.value.code == "backend_error"
+        assert "failed to read device info" in info.value.message
+        assert "offline" in str(info.value.details.get("output", ""))
+
+
 class TestLogcatDoesNotInventASnapshot:
     """A host error line used to look like a one-line log snapshot.
 
