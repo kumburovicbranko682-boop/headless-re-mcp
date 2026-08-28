@@ -7,6 +7,7 @@ needs Node.js 22 or 24; wabt provides ``wasm2wat`` and ``wasm-objdump``.
 
 from __future__ import annotations
 
+import bisect
 import os
 import re
 import shutil
@@ -35,6 +36,19 @@ _MAX_JS_STRINGS_PAGE = 5000
 _MAX_JS_STRINGS_CONTAINS = 256
 _MAX_JS_TEMPLATE_DEPTH = 32
 _JS_CATEGORIES = frozenset({"url", "path", "text"})
+# js.imports reads a module's dependency edges straight from the source with no
+# external tool. Bound the edges collected, the page, the named bindings kept
+# per import, the specifier length, the unique-specifier summary and the
+# look-ahead window used to find `from "spec"`, so a hostile or machine-
+# generated bundle cannot make one call build an unbounded reply.
+_MAX_JS_IMPORTS_SCAN = 100_000
+_MAX_JS_IMPORTS_PAGE = 2000
+_MAX_JS_IMPORT_NAMES = 256
+_MAX_JS_SPECIFIER_LEN = 4096
+_MAX_JS_SPECIFIERS_SUMMARY = 2000
+_JS_IMPORT_FROM_WINDOW = 8192
+_JS_IMPORT_KINDS = frozenset({"import", "export_from", "dynamic_import", "require"})
+_JS_NAME_RE = re.compile(r"[A-Za-z_$][\w$]*")
 # A '/' begins a regex literal (rather than division) only in expression
 # position -- i.e. right after one of these, or at the very start of input.
 _JS_REGEX_PRECEDERS = frozenset("([{,;:?=!&|^~+-*/%<>")
@@ -405,6 +419,423 @@ def _classify_js_string(value: str) -> str:
     return "text"
 
 
+def _js_line_starts(text: str) -> list[int]:
+    """Offsets where each source line begins, for O(log n) line lookups."""
+    starts = [0]
+    idx = text.find("\n")
+    while idx != -1:
+        starts.append(idx + 1)
+        idx = text.find("\n", idx + 1)
+    return starts
+
+
+def _js_is_ident_char(c: str) -> bool:
+    return c.isalnum() or c in "_$" or ord(c) > 127
+
+
+def _js_read_word(text: str, i: int, n: int) -> tuple[str, int]:
+    """Read a maximal identifier / keyword run starting at i; ('', i) if none."""
+    j = i
+    while j < n and _js_is_ident_char(text[j]):
+        j += 1
+    return text[i:j], j
+
+
+def _js_skip_ws_comments(text: str, i: int, n: int) -> int:
+    """Advance past any run of whitespace and // or /* */ comments."""
+    while i < n:
+        c = text[i]
+        if c in " \t\r\n\f\v":
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            i += 2
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i = min(n, i + 2)
+            continue
+        break
+    return i
+
+
+def _clip_specifier(value: str) -> str:
+    return value[:_MAX_JS_SPECIFIER_LEN]
+
+
+def _js_skip_template(text: str, i: int, n: int, depth: int = 0) -> int:
+    """Return the index just past the template literal whose backtick is at i.
+
+    Walks ${...} interpolations (skipping strings, comments and nested
+    templates inside them) so a } or ` sitting in a string cannot end the
+    template early and desync the caller.
+    """
+    i += 1  # past the opening backtick
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            i += 2 if i + 1 < n else 1
+            continue
+        if c == "`":
+            return i + 1
+        if c == "$" and i + 1 < n and text[i + 1] == "{":
+            i = _js_skip_interp(text, i + 2, n, depth + 1)
+            continue
+        i += 1
+    return i
+
+
+def _js_skip_interp(text: str, i: int, n: int, depth: int) -> int:
+    """Return the index just past a template ${...} whose body starts at i."""
+    if depth > _MAX_JS_TEMPLATE_DEPTH:
+        brace = 1
+        while i < n and brace > 0:
+            if text[i] == "{":
+                brace += 1
+            elif text[i] == "}":
+                brace -= 1
+            i += 1
+        return i
+    brace = 1
+    while i < n and brace > 0:
+        c = text[i]
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            i += 2
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i = min(n, i + 2)
+            continue
+        if c in ("'", '"'):
+            _, i = _scan_js_quoted(text, i, n, c)
+            continue
+        if c == "`":
+            i = _js_skip_template(text, i, n, depth)
+            continue
+        if c == "{":
+            brace += 1
+        elif c == "}":
+            brace -= 1
+        i += 1
+    return i
+
+
+def _js_read_specifier_literal(text: str, i: int, n: int) -> tuple[str | None, int]:
+    """If text[i] opens a string / no-interpolation template, return its value.
+
+    A template that contains ${...} is a computed specifier, so it yields None
+    (the caller then records no concrete edge).
+    """
+    if i >= n:
+        return None, i
+    c = text[i]
+    if c in ("'", '"'):
+        value, j = _scan_js_quoted(text, i, n, c)
+        return _clip_specifier(value), j
+    if c == "`":
+        j = i + 1
+        buf: list[str] = []
+        while j < n:
+            ch = text[j]
+            if ch == "\\" and j + 1 < n:
+                buf.append(text[j + 1])
+                j += 2
+                continue
+            if ch == "`":
+                return _clip_specifier(_unescape_js("".join(buf))), j + 1
+            if ch == "$" and j + 1 < n and text[j + 1] == "{":
+                return None, i  # computed template specifier
+            buf.append(ch)
+            j += 1
+        return None, i
+    return None, i
+
+
+def _js_find_from_specifier(
+    text: str, p: int, n: int, window_end: int
+) -> tuple[str | None, int]:
+    """Scan an import/export clause for `from "spec"`.
+
+    Returns (specifier, index-of-the-`from`-keyword) or (None, -1). Brace depth
+    is tracked so a `from` used as a binding name -- import {from} from "x" --
+    is not mistaken for the module keyword, and strings / comments / templates
+    are skipped so their contents never trigger a false match.
+    """
+    i = p
+    depth = 0
+    while i < window_end and i < n:
+        c = text[i]
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            i += 2
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i = min(n, i + 2)
+            continue
+        if c in ("'", '"'):
+            _, i = _scan_js_quoted(text, i, n, c)
+            continue
+        if c == "`":
+            i = _js_skip_template(text, i, n)
+            continue
+        if c == "{":
+            depth += 1
+            i += 1
+            continue
+        if c == "}":
+            depth = max(0, depth - 1)
+            i += 1
+            continue
+        if c == ";" and depth == 0:
+            return None, -1
+        if depth == 0 and _js_is_ident_char(c) and not c.isdigit():
+            word, j = _js_read_word(text, i, n)
+            if word == "from":
+                k = _js_skip_ws_comments(text, j, n)
+                spec, _ = _js_read_specifier_literal(text, k, n)
+                return (spec, i) if spec is not None else (None, -1)
+            i = j
+            continue
+        i += 1
+    return None, -1
+
+
+def _js_strip_comments(s: str) -> str:
+    out: list[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        if s[i] == "/" and i + 1 < n and s[i + 1] == "/":
+            i += 2
+            while i < n and s[i] != "\n":
+                i += 1
+        elif s[i] == "/" and i + 1 < n and s[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (s[i] == "*" and s[i + 1] == "/"):
+                i += 1
+            i = min(n, i + 2)
+        else:
+            out.append(s[i])
+            i += 1
+    return "".join(out)
+
+
+def _parse_js_import_bindings(
+    clause: str,
+) -> tuple[str | None, str | None, list[str]]:
+    """Pull (default, namespace, named-imports) from an import/export clause.
+
+    Best-effort: the specifier and kind are always exact, these binding names
+    are a convenience. Handles ``default``, ``* as ns``, ``{ a, b as c }`` and
+    a leading TypeScript ``type`` modifier before ``{`` / ``*``.
+    """
+    s = _js_strip_comments(clause)
+    n = len(s)
+    default: str | None = None
+    namespace: str | None = None
+    names: list[str] = []
+
+    def skip_ws(i: int) -> int:
+        while i < n and s[i].isspace():
+            i += 1
+        return i
+
+    def read_word(i: int) -> tuple[str, int]:
+        j = i
+        while j < n and (s[j].isalnum() or s[j] in "_$"):
+            j += 1
+        return s[i:j], j
+
+    i = skip_ws(0)
+    if i < n and s[i] not in "{*":
+        word, j = read_word(i)
+        if word == "type":  # TS `import type ...` modifier
+            k = skip_ws(j)
+            if k < n and s[k] in "{*":
+                i = k
+            elif word:
+                default, i = word, skip_ws(j)
+        elif word:
+            default = word
+            i = skip_ws(j)
+        if i < n and s[i] == ",":
+            i = skip_ws(i + 1)
+    if i < n and s[i] == "*":
+        i = skip_ws(i + 1)
+        kw, j = read_word(i)
+        if kw == "as":
+            i = skip_ws(j)
+            ns, _ = read_word(i)
+            if ns:
+                namespace = ns
+    elif i < n and s[i] == "{":
+        close = s.find("}", i + 1)
+        inner = s[i + 1 : close if close != -1 else n]
+        for part in inner.split(","):
+            m = _JS_NAME_RE.search(part)
+            if m is None:
+                continue
+            name = m.group(0)
+            if name == "type":  # `import { type X }` -- take the real name
+                rest = part[m.end() :]
+                m2 = _JS_NAME_RE.search(rest)
+                if m2 is not None:
+                    name = m2.group(0)
+            names.append(name)
+            if len(names) >= _MAX_JS_IMPORT_NAMES:
+                break
+    return default, namespace, names
+
+
+def _js_import_lookahead(text: str, kw_end: int, n: int) -> JsonObject | None:
+    """Classify what follows a top-level ``import`` keyword into one edge."""
+    p = _js_skip_ws_comments(text, kw_end, n)
+    if p >= n:
+        return None
+    ch = text[p]
+    if ch == ".":  # import.meta -- not a dependency
+        return None
+    if ch == "(":  # dynamic import()
+        q = _js_skip_ws_comments(text, p + 1, n)
+        spec, _ = _js_read_specifier_literal(text, q, n)
+        if spec is None:
+            return None
+        return {"kind": "dynamic_import", "specifier": spec}
+    if ch in ("'", '"', "`"):  # side-effect import "mod"
+        spec, _ = _js_read_specifier_literal(text, p, n)
+        if spec is None:
+            return None
+        return {"kind": "import", "specifier": spec}
+    spec, from_start = _js_find_from_specifier(
+        text, p, n, min(n, p + _JS_IMPORT_FROM_WINDOW)
+    )
+    if spec is None:
+        return None
+    edge: JsonObject = {"kind": "import", "specifier": spec}
+    default, namespace, names = _parse_js_import_bindings(text[p:from_start])
+    if default:
+        edge["default"] = default
+    if namespace:
+        edge["namespace"] = namespace
+    if names:
+        edge["names"] = names
+    return edge
+
+
+def _js_export_lookahead(text: str, kw_end: int, n: int) -> JsonObject | None:
+    """Detect a re-export (``export ... from "mod"``) after an ``export`` word."""
+    p = _js_skip_ws_comments(text, kw_end, n)
+    if p >= n or text[p] not in "*{":
+        return None  # export default / declarations carry no dependency edge
+    spec, from_start = _js_find_from_specifier(
+        text, p, n, min(n, p + _JS_IMPORT_FROM_WINDOW)
+    )
+    if spec is None:
+        return None
+    edge: JsonObject = {"kind": "export_from", "specifier": spec}
+    _, namespace, names = _parse_js_import_bindings(text[p:from_start])
+    if namespace:
+        edge["namespace"] = namespace
+    if names:
+        edge["names"] = names
+    return edge
+
+
+def _js_require_lookahead(text: str, kw_end: int, n: int) -> JsonObject | None:
+    """Detect a CommonJS ``require("mod")`` call after a ``require`` word."""
+    p = _js_skip_ws_comments(text, kw_end, n)
+    if p >= n or text[p] != "(":
+        return None
+    q = _js_skip_ws_comments(text, p + 1, n)
+    spec, _ = _js_read_specifier_literal(text, q, n)
+    if spec is None:
+        return None
+    return {"kind": "require", "specifier": spec}
+
+
+def _scan_js_imports(text: str, *, max_edges: int) -> tuple[list[JsonObject], bool]:
+    """Collect a module's dependency edges (import / export-from / require).
+
+    One left-to-right pass that skips comments, regex literals and string /
+    template literals (so a keyword inside one is never read as code), then --
+    when ``import``, ``export`` or ``require`` appears in code position -- looks
+    ahead to classify the edge without moving the main cursor past the keyword,
+    so the clause is still re-scanned normally and cannot desync. Returns the
+    edges in source order and whether the edge cap stopped the scan early.
+    """
+    edges: list[JsonObject] = []
+    n = len(text)
+    line_starts = _js_line_starts(text)
+    state = {"capped": False}
+
+    def add(edge: JsonObject | None, start: int) -> None:
+        if edge is None or state["capped"]:
+            return
+        if len(edges) >= max_edges:
+            state["capped"] = True
+            return
+        edge["line"] = bisect.bisect_right(line_starts, start)
+        edges.append(edge)
+
+    i = 0
+    last_sig = ""
+    while i < n and not state["capped"]:
+        c = text[i]
+        if c in " \t\r\n\f\v":
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            i += 2
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i = min(n, i + 2)
+            continue
+        if c == "/" and _js_regex_allowed(last_sig):
+            end = _scan_js_regex(text, i, n)
+            i = end if end is not None else i + 1
+            last_sig = "/"
+            continue
+        if c in ("'", '"'):
+            _, i = _scan_js_quoted(text, i, n, c)
+            last_sig = c
+            continue
+        if c == "`":
+            i = _js_skip_template(text, i, n)
+            last_sig = "`"
+            continue
+        if _js_is_ident_char(c) and not c.isdigit():
+            word, j = _js_read_word(text, i, n)
+            prev_dot = last_sig == "."
+            if word == "import" and not prev_dot:
+                add(_js_import_lookahead(text, j, n), i)
+            elif word == "export" and not prev_dot:
+                add(_js_export_lookahead(text, j, n), i)
+            elif word == "require":
+                add(_js_require_lookahead(text, j, n), i)
+            last_sig = word[-1] if word else c
+            i = j
+            continue
+        last_sig = c
+        i += 1
+    return edges, state["capped"]
+
+
 class JsClient:
     """webcrack-backed JavaScript deobfuscation and bundle unpacking."""
 
@@ -594,6 +1025,98 @@ class JsClient:
         }
         if category:
             result["category"] = category
+        if contains:
+            result["contains"] = contains
+        return result
+
+    def imports(
+        self,
+        path: Path,
+        *,
+        kind: str = "",
+        contains: str = "",
+        offset: int = 0,
+        limit: int = 200,
+    ) -> JsonObject:
+        """Extract a JS/ES module's dependency edges, no webcrack needed.
+
+        Reads the source directly (so it works with no external tool) and
+        answers the module-graph question of web-app triage -- which modules,
+        packages and URLs a file pulls in. The JS analogue of r2.imports /
+        wasm.summary imports: a single pass (skipping comments, regex and
+        string/template literals so a keyword inside one is never read as code)
+        finds every static ``import`` (side-effect, default, ``* as ns`` and
+        named), ``export ... from`` re-export, dynamic ``import("mod")`` and
+        CommonJS ``require("mod")``. Only edges with a literal specifier are
+        recorded; a computed ``import(expr)`` / ``require(expr)`` is skipped.
+
+        Each edge carries specifier, kind (import, export_from,
+        dynamic_import or require), line, and -- for static imports and named
+        re-exports -- default, namespace and names when present. kind filters
+        the listing to one mechanism and contains is a case-insensitive
+        substring over the specifier.
+
+        Answers with imports (the edge list, paged), count, total, offset and
+        has_more over the filtered set, specifiers (the sorted unique module
+        list for the whole file, capped at 2000), distinct (its true size),
+        kind_counts (the import/export_from/dynamic_import/require breakdown for
+        the whole file) and scan_capped (set once the 100000-edge ceiling
+        stopped the scan). The list field is imports, not results.
+        """
+        if kind and kind not in _JS_IMPORT_KINDS:
+            raise JsReError(
+                "invalid_params",
+                "kind must be import, export_from, dynamic_import, require or empty",
+                kind=kind,
+            )
+        if not isinstance(contains, str):
+            contains = ""
+        if len(contains) > _MAX_JS_STRINGS_CONTAINS:
+            raise JsReError(
+                "invalid_params",
+                f"contains must be at most {_MAX_JS_STRINGS_CONTAINS} chars",
+            )
+        resolved = _require_existing_file(path, missing="input file not found")
+        try:
+            raw_bytes = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        text = raw_bytes.decode("utf-8", errors="replace")
+        edges, scan_capped = _scan_js_imports(text, max_edges=_MAX_JS_IMPORTS_SCAN)
+        kind_counts = {name: 0 for name in sorted(_JS_IMPORT_KINDS)}
+        unique: dict[str, None] = {}
+        for edge in edges:
+            kind_counts[str(edge["kind"])] += 1
+            unique.setdefault(str(edge["specifier"]), None)
+        distinct = len(unique)
+        specifiers = sorted(unique)[:_MAX_JS_SPECIFIERS_SUMMARY]
+        needle = contains.lower()
+        selected = [
+            edge
+            for edge in edges
+            if (not kind or edge["kind"] == kind)
+            and (not needle or needle in str(edge["specifier"]).lower())
+        ]
+        total = len(selected)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_JS_IMPORTS_PAGE))
+        window = selected[start : start + cap]
+        result: JsonObject = {
+            "path": str(resolved),
+            "imports": window,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
+            "specifiers": specifiers,
+            "distinct": distinct,
+            "kind_counts": kind_counts,
+            "scan_capped": scan_capped,
+        }
+        if kind:
+            result["kind"] = kind
         if contains:
             result["contains"] = contains
         return result

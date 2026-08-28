@@ -141,6 +141,28 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
+    def js_imports(
+        self,
+        path: str,
+        kind: str = "",
+        contains: str = "",
+        offset: int = 0,
+        limit: int = 200,
+    ) -> Result[JsonObject]:
+        try:
+            data = JsClient(getattr(self.settings, "webcrack", None)).imports(
+                Path(path),
+                kind=kind,
+                contains=contains,
+                offset=offset,
+                limit=limit,
+            )
+            return _success(data, backend="jsre")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
     def js_unpack_bundle(
         self,
         path: str,
