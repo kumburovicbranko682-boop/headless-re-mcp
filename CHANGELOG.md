@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **282（165 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **283（166 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -545,6 +545,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   该方法调用了谁（`get_xref_to`，静态调用图的出边，含框架与应用代码），复用已加载的
   androguard 分析，与 `apk.xrefs` 共用 1000 的分页上限；输出 `callees`（class/method）、
   `method_name`、`count` 与仅在真丢行时才为真的 `has_more`。
+- **`apk.string_xrefs`**：从字符串常量反查到代码——给定一个（用 `apk.strings` 找到的）值，
+  列出引用该字符串的每个方法（`StringAnalysis.get_xref_from`，triage 里"谁用了这个 URL/密钥"
+  的第一步）。值**逐字节精确匹配、绝不 trim**（字符串常量的首尾空白有意义）；输出
+  `referrers`（class/method）、回显的 `value`、`found`（该字符串是否存在于模块中，借此把"存在但
+  无人引用"与"根本不存在"区分开）、`count` 与仅在真丢行时才为真的 `has_more`。与 `apk.xrefs`
+  共用 1000 的分页上限。
 - **改包**：`apk.decode/repack/sign`，apktool 解包回编 + apksigner 重签，缺省用 Android
   debug keystore；签名失败时 stderr 里的口令会被抹掉再进错误信封。
 - **设备**：`device.*` 15 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、

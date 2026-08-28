@@ -162,6 +162,26 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_callees(session_id, method_name, limit=limit))
 
+    @tools.tool(name="apk.string_xrefs")
+    def apk_string_xrefs(
+        session_id: str,
+        value: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List the methods that reference a given DEX string constant.
+
+        The pivot from a string to code: given a value found via apk.strings
+        (a URL, a crypto constant, an error message, a secret), this reports
+        every method that loads that exact string -- "who uses this". The
+        value is matched byte for byte and never trimmed, so surrounding
+        whitespace is significant. Answers with referrers (class and method),
+        the echoed value, found (true when the string exists in the module at
+        all, so an unreferenced string reads apart from a string that is not
+        present), count, and has_more so a page that filled the limit is not
+        read as the whole list. There is no callers or callees field here.
+        """
+        return _dump(analysis.apk_string_xrefs(session_id, value, limit=limit))
+
     @tools.tool(name="apk.decompile")
     def apk_decompile(
         session_id: str,

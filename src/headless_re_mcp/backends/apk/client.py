@@ -485,6 +485,44 @@ class ApkClient:
             "has_more": has_more,
         }
 
+    def string_xrefs(self, path: Path, value: str, *, limit: int = 100) -> JsonObject:
+        parsed = self._parsed(path)
+        # Do NOT strip: unlike a method name, a string constant can carry
+        # meaningful leading/trailing whitespace, so the query is matched byte
+        # for byte. Only a truly empty query is rejected.
+        if value == "":
+            raise ApkError("invalid_params", "value is required")
+        _, cap = _clamp_page(0, limit, max_limit=_MAX_XREFS_PAGE)
+        referrers: list[JsonObject] = []
+        found = False
+        has_more = False
+        for string in parsed.analysis.get_strings():
+            if string.get_value() != value:
+                continue
+            found = True
+            # StringAnalysis.get_xref_from yields (class, method) pairs; the
+            # method is a MethodAnalysis with the same class_name/name the
+            # xrefs/callees rows read.
+            for _, method in string.get_xref_from():
+                if len(referrers) >= cap:
+                    has_more = True
+                    break
+                referrers.append(
+                    {
+                        "class": str(method.class_name),
+                        "method": str(method.name),
+                    }
+                )
+            # The string pool is keyed by value, so one match is the whole set.
+            break
+        return {
+            "value": value,
+            "found": found,
+            "referrers": referrers,
+            "count": len(referrers),
+            "has_more": has_more,
+        }
+
 
 def _dotted_to_smali(name: str) -> str:
     """com.example.Foo -> Lcom/example/Foo; so either form resolves a class."""
