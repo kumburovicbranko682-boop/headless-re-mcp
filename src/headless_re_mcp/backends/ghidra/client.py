@@ -245,6 +245,46 @@ class GhidraClient:
             max_heap=max_heap,
         )
 
+    def disassemble(
+        self,
+        binary: Path,
+        project_dir: Path,
+        address: str | int,
+        *,
+        limit: int = 512,
+        timeout: float = 180.0,
+        max_heap: str = "2G",
+    ) -> JsonObject:
+        return self._export(
+            binary,
+            project_dir,
+            mode="disassemble",
+            limit=limit,
+            address=address,
+            timeout=timeout,
+            max_heap=max_heap,
+        )
+
+    def function(
+        self,
+        binary: Path,
+        project_dir: Path,
+        address: str | int,
+        *,
+        limit: int = 256,
+        timeout: float = 180.0,
+        max_heap: str = "2G",
+    ) -> JsonObject:
+        return self._export(
+            binary,
+            project_dir,
+            mode="function",
+            limit=limit,
+            address=address,
+            timeout=timeout,
+            max_heap=max_heap,
+        )
+
     def decompile(
         self,
         binary: Path,
@@ -454,14 +494,15 @@ def _export_has_content(payload: JsonObject, mode: str) -> bool:
     if mode == "decompile":
         text = payload.get("decompiled")
         return isinstance(text, str) and bool(text.strip())
-    if mode == "callgraph":
-        # A resolved function with no calls either way is still real content:
-        # `found` is the signal, not the presence of edges.
+    if mode in ("callgraph", "disassemble", "function"):
+        # A resolved function is real content even when it has no edges, no
+        # instructions listed yet, or no parameters: `found` is the signal.
         if payload.get("found"):
             return True
         callees = payload.get("callees")
         callers = payload.get("callers")
-        return bool(callees) or bool(callers)
+        items = payload.get("items")
+        return bool(callees) or bool(callers) or bool(items)
     items = payload.get("items")
     return isinstance(items, list) and bool(items)
 

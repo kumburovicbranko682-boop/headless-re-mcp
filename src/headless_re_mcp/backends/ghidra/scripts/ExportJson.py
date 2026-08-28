@@ -207,6 +207,117 @@ elif mode == "callgraph":
     payload["callers"] = callers
     payload["callee_count"] = len(callees)
     payload["caller_count"] = len(callers)
+elif mode == "disassemble":
+    items = []
+    found = False
+    if address_arg:
+        addr = _addr(address_arg)
+        fn = fm.getFunctionContaining(addr) if addr is not None else None
+        if fn is not None:
+            found = True
+            payload["function"] = fn.getName()
+            payload["entry"] = str(fn.getEntryPoint())
+            for instr in listing.getInstructions(fn.getBody(), True):
+                if len(items) >= limit:
+                    payload["has_more"] = True
+                    break
+                try:
+                    raw = instr.getBytes()
+                    hexbytes = "".join("%02x" % (octet & 0xFF) for octet in raw)
+                except Exception:
+                    hexbytes = ""
+                items.append(
+                    {
+                        "address": str(instr.getAddress()),
+                        "mnemonic": str(instr.getMnemonicString()),
+                        "text": str(instr),
+                        "bytes": hexbytes,
+                        "length": int(instr.getLength()),
+                    }
+                )
+    payload["found"] = found
+    payload["items"] = items
+elif mode == "function":
+    found = False
+    if address_arg:
+        addr = _addr(address_arg)
+        fn = fm.getFunctionContaining(addr) if addr is not None else None
+        if fn is not None:
+            found = True
+            payload["function"] = fn.getName()
+            payload["entry"] = str(fn.getEntryPoint())
+            try:
+                payload["signature"] = str(fn.getPrototypeString(True, False))
+            except Exception:
+                try:
+                    payload["signature"] = str(fn.getSignature().getPrototypeString())
+                except Exception:
+                    payload["signature"] = ""
+            try:
+                payload["calling_convention"] = str(fn.getCallingConventionName())
+            except Exception:
+                payload["calling_convention"] = ""
+            try:
+                payload["return_type"] = str(fn.getReturnType().getName())
+            except Exception:
+                payload["return_type"] = ""
+            try:
+                payload["body_size"] = int(fn.getBody().getNumAddresses())
+            except Exception:
+                payload["body_size"] = 0
+            try:
+                payload["stack_frame_size"] = int(fn.getStackFrame().getFrameSize())
+            except Exception:
+                payload["stack_frame_size"] = 0
+            payload["is_thunk"] = bool(fn.isThunk())
+            payload["is_external"] = bool(fn.isExternal())
+            payload["has_no_return"] = bool(fn.hasNoReturn())
+            payload["is_varargs"] = bool(fn.hasVarArgs())
+            parameters = []
+            try:
+                for prm in fn.getParameters():
+                    if len(parameters) >= limit:
+                        payload["parameters_has_more"] = True
+                        break
+                    try:
+                        storage = str(prm.getVariableStorage())
+                    except Exception:
+                        storage = ""
+                    parameters.append(
+                        {
+                            "name": str(prm.getName()),
+                            "data_type": str(prm.getDataType().getName()),
+                            "length": int(prm.getLength()),
+                            "storage": storage,
+                        }
+                    )
+            except Exception:
+                parameters = []
+            locals_out = []
+            try:
+                for var in fn.getLocalVariables():
+                    if len(locals_out) >= limit:
+                        payload["locals_has_more"] = True
+                        break
+                    try:
+                        offset = int(var.getStackOffset())
+                    except Exception:
+                        offset = None
+                    locals_out.append(
+                        {
+                            "name": str(var.getName()),
+                            "data_type": str(var.getDataType().getName()),
+                            "length": int(var.getLength()),
+                            "stack_offset": offset,
+                        }
+                    )
+            except Exception:
+                locals_out = []
+            payload["parameters"] = parameters
+            payload["parameter_count"] = len(parameters)
+            payload["local_variables"] = locals_out
+            payload["local_count"] = len(locals_out)
+    payload["found"] = found
 elif mode == "data":
     items = []
     for data in listing.getDefinedData(True):

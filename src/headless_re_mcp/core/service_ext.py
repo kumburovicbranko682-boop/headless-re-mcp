@@ -486,6 +486,20 @@ class ExtAnalysisMixin(UiDriveMixin):
             self, session_id, "callgraph", limit=limit, address=address, timeout=timeout
         )
 
+    def ghidra_disassemble(
+        self, session_id: str, address: str | int, limit: int = 512, timeout: float = 180.0
+    ) -> Result[JsonObject]:
+        return _ghidra_export(
+            self, session_id, "disassemble", limit=limit, address=address, timeout=timeout
+        )
+
+    def ghidra_function(
+        self, session_id: str, address: str | int, limit: int = 256, timeout: float = 180.0
+    ) -> Result[JsonObject]:
+        return _ghidra_export(
+            self, session_id, "function", limit=limit, address=address, timeout=timeout
+        )
+
     def ghidra_decompile(
         self, session_id: str, address: str | int, timeout: float = 180.0
     ) -> Result[JsonObject]:
@@ -1204,6 +1218,18 @@ def _ghidra_export(
             if address is None:
                 raise GhidraError("invalid_params", "address required for ghidra.callgraph")
             data = client.callgraph(
+                session.require_binary(), project, address, limit=limit, timeout=timeout
+            )
+        elif mode == "disassemble":
+            if address is None:
+                raise GhidraError("invalid_params", "address required for ghidra.disassemble")
+            data = client.disassemble(
+                session.require_binary(), project, address, limit=limit, timeout=timeout
+            )
+        elif mode == "function":
+            if address is None:
+                raise GhidraError("invalid_params", "address required for ghidra.function")
+            data = client.function(
                 session.require_binary(), project, address, limit=limit, timeout=timeout
             )
         elif mode == "xrefs":

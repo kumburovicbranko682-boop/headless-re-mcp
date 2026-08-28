@@ -207,6 +207,64 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.ghidra_callgraph(session_id, address, limit=limit, timeout=timeout)
         )
 
+    @tools.tool(name="ghidra.disassemble")
+    def ghidra_disassemble(
+        session_id: str,
+        address: str,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 512,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
+    ) -> dict[str, Any]:
+        """The instruction listing of the function containing address.
+
+        ghidra.decompile gives Ghidra's C; this gives the machine instructions
+        under it -- the view an analyst drops to when the decompiler lied,
+        inlined the interesting part away, or choked. Instructions are read from
+        the function's body in address order, so address may land anywhere
+        inside it, not just at the entry.
+
+        Answers with found (false when no function contains address, so an empty
+        items then means "no function here" rather than a bodyless function),
+        function and entry (the resolved function), items and count, and
+        has_more when the body ran past limit. Each instruction carries address,
+        mnemonic, text (the full "mnemonic operands" line Ghidra renders), bytes
+        (the raw opcode bytes, hex) and length. A failed export is an error, not
+        a function with no instructions. Minutes on a large binary; requires
+        HEADLESS_RE_GHIDRA_HOME.
+        """
+        return _dump(
+            analysis.ghidra_disassemble(session_id, address, limit=limit, timeout=timeout)
+        )
+
+    @tools.tool(name="ghidra.function")
+    def ghidra_function(
+        session_id: str,
+        address: str,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
+    ) -> dict[str, Any]:
+        """The recovered prototype and variables of the function at address.
+
+        ghidra.functions lists names and entry points; this is the one-function
+        detail behind a name: the prototype Ghidra recovered, its calling
+        convention and return type, the parameters (with data types and storage
+        locations) and the local variables (with data types and stack offsets),
+        plus the stack frame size. The machine-readable form of the header
+        ghidra.decompile only prints, so a caller can reason about a function's
+        interface without parsing C.
+
+        Answers with found (false when no function contains address), function
+        and entry, signature, calling_convention, return_type, body_size,
+        stack_frame_size, is_thunk, is_external, has_no_return, is_varargs,
+        parameters (each name/data_type/length/storage) with parameter_count,
+        and local_variables (each name/data_type/length/stack_offset) with
+        local_count; parameters_has_more / locals_has_more flag a list capped at
+        limit. A failed export is an error, not a function with no signature.
+        Minutes on a large binary; requires HEADLESS_RE_GHIDRA_HOME.
+        """
+        return _dump(
+            analysis.ghidra_function(session_id, address, limit=limit, timeout=timeout)
+        )
+
     @tools.tool(name="ghidra.decompile")
     def ghidra_decompile(
         session_id: str,

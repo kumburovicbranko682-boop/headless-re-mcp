@@ -609,6 +609,54 @@ def test_ghidra_callgraph_passes_the_callgraph_mode_and_address(
     assert listed["export_path"]
 
 
+def test_ghidra_disassemble_passes_the_disassemble_mode_and_address(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = (
+        '{"mode": "disassemble", "found": true, "function": "main",'
+        ' "entry": "00401000",'
+        ' "items": [{"address": "00401000", "mnemonic": "PUSH", "text": "PUSH EBP",'
+        ' "bytes": "55", "length": 1}]}'
+    )
+    calls = _capture_mode_run(monkeypatch, payload)
+    client = _client(tmp_path)
+
+    listed = client.disassemble(_binary(tmp_path), tmp_path / "project", "0x00401004")
+
+    assert "disassemble" in calls[0]
+    assert "0x00401004" in calls[0]
+    assert listed["found"] is True
+    assert listed["items"][0]["mnemonic"] == "PUSH"
+    assert listed["items"][0]["bytes"] == "55"
+    assert listed["export_path"]
+
+
+def test_ghidra_function_passes_the_function_mode_and_address(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = (
+        '{"mode": "function", "found": true, "function": "parse", "entry": "00401100",'
+        ' "signature": "int parse(char * s)", "calling_convention": "__cdecl",'
+        ' "return_type": "int", "stack_frame_size": 32,'
+        ' "parameters": [{"name": "s", "data_type": "char *", "length": 4, "storage": "EAX"}],'
+        ' "parameter_count": 1,'
+        ' "local_variables": [{"name": "i", "data_type": "int", "length": 4, "stack_offset": -8}],'
+        ' "local_count": 1}'
+    )
+    calls = _capture_mode_run(monkeypatch, payload)
+    client = _client(tmp_path)
+
+    listed = client.function(_binary(tmp_path), tmp_path / "project", "0x00401100")
+
+    assert "function" in calls[0]
+    assert "0x00401100" in calls[0]
+    assert listed["found"] is True
+    assert listed["signature"] == "int parse(char * s)"
+    assert listed["parameters"][0]["storage"] == "EAX"
+    assert listed["local_variables"][0]["stack_offset"] == -8
+    assert listed["export_path"]
+
+
 def test_ghidra_imports_and_strings_descriptions_name_their_fields() -> None:
     imports = _tool_docstring("ghidra.imports")
     assert "library" in imports
@@ -639,3 +687,13 @@ def test_ghidra_imports_and_strings_descriptions_name_their_fields() -> None:
     assert "callees" in callgraph
     assert "callers" in callgraph
     assert "found" in callgraph
+
+    disassemble = _tool_docstring("ghidra.disassemble")
+    assert "mnemonic" in disassemble
+    assert "bytes" in disassemble
+    assert "has_more" in disassemble
+
+    function = _tool_docstring("ghidra.function")
+    assert "signature" in function
+    assert "parameters" in function
+    assert "local_variables" in function

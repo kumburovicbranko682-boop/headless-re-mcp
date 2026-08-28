@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **310（192 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **312（194 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -390,6 +390,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `end`、`size`、`permissions`——rwx 串、`read`/`write`/`execute` 布尔、`initialized`——无文件字节的
   .bss 类块为 false、`overlay`)、`count`、`has_more`。导出失败是错误,不是"没有内存"。大二进制耗时以
   分钟计;需 `HEADLESS_RE_GHIDRA_HOME`。
+- 新增 `ghidra.disassemble`:给出 address 所在函数的指令清单。`ghidra.decompile` 给 Ghidra 的 C,这个给
+  其下的机器指令——反编译器说谎、把关键处内联掉或干脆罢工时,分析员就降到这一层。指令按地址序从函数体读出,
+  address 可落在函数体任意处、不限入口。回 `found`(无函数含该地址为 false,此时空 items 意为"这里没函数"
+  而非无体函数)、`function`/`entry`、`items` 与 `count`,以及函数体超出 limit 时的 `has_more`。每条指令带
+  `address`、`mnemonic`、`text`(Ghidra 渲染的整行"助记符 操作数")、`bytes`(原始操作码字节,十六进制)与
+  `length`。导出失败是错误,不是"没有指令"。大二进制耗时以分钟计;需 `HEADLESS_RE_GHIDRA_HOME`。
+- 新增 `ghidra.function`:给出 address 处函数被还原出的原型与变量。`ghidra.functions` 只列名字与入口,这个是
+  名字背后的单函数细节:Ghidra 还原的原型、其调用约定与返回类型、参数(带数据类型与存储位置)与局部变量(带数据
+  类型与栈偏移),外加栈帧大小。是 `ghidra.decompile` 只打印的函数头的机器可读形式,于是调用方无需解析 C 就能
+  推理某函数的接口。回 `found`、`function`/`entry`、`signature`、`calling_convention`、`return_type`、
+  `body_size`、`stack_frame_size`、`is_thunk`、`is_external`、`has_no_return`、`is_varargs`、`parameters`
+  (各 name/data_type/length/storage)与 `parameter_count`、`local_variables`(各 name/data_type/length/
+  stack_offset)与 `local_count`;列表被 limit 截断时带 `parameters_has_more`/`locals_has_more`。导出失败是
+  错误,不是"没有签名"。大二进制耗时以分钟计;需 `HEADLESS_RE_GHIDRA_HOME`。
 - 新增 `ghidra.callgraph`:给出 address 所在函数四周的调用边。`ghidra.xrefs` 只列到某地址的原始入引用,
   这个把外层函数解析出来,给分析员据以导航的两条调用图边:callees(这个函数调用了谁)与 callers(谁调用了
   它)——不必读反汇编就能上溯到入口点或下钻进 helper。address 可落在函数体任意处,不限入口。回 `found`
