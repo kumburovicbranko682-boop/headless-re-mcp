@@ -72,6 +72,24 @@ class AdbError(RuntimeError):
         self.details = details
 
 
+def _local_path(raw: str, *, what: str) -> Path:
+    """Expand a caller-supplied local path, refusing one that cannot be resolved.
+
+    install/push/ensure_frida_server took ``Path(raw).expanduser()`` bare.
+    expanduser() is not just string work: for a ~user whose home cannot be
+    resolved it raises RuntimeError, and the following is_file() raises
+    ValueError on a path with an embedded NUL. Neither is an AdbError, so the
+    service's ``except BaseException`` filed an internal_error incident (the
+    RuntimeError) or leaked the raw "embedded null byte" message (the
+    ValueError) for a local path the caller fully controls. Map both to the same
+    not_found this code already raises when the expanded path is not a file.
+    """
+    try:
+        return Path(raw).expanduser()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise AdbError("not_found", f"{what} path could not be resolved", path=raw) from exc
+
+
 def _check_serial(serial: str) -> str:
     value = (serial or "").strip()
     if not _SERIAL_RE.match(value):
@@ -532,7 +550,7 @@ class AdbBackend:
         # reaches the adb server. Ordering it first means a bad path fails fast
         # as not_found instead of being masked by a device error when the server
         # or device is also unreachable.
-        path = Path(apk_path).expanduser()
+        path = _local_path(apk_path, what="apk")
         if not path.is_file():
             raise AdbError("not_found", "apk not found", path=str(path))
         _require_apk_zip(path)
@@ -781,7 +799,7 @@ class AdbBackend:
         # device: all cheap local facts, and a bad path or oversized file should
         # fail fast rather than after a device round-trip -- or be masked by a
         # device error when the adb server is unreachable.
-        path = Path(local_path).expanduser()
+        path = _local_path(local_path, what="local file")
         if not path.is_file():
             raise AdbError("not_found", "local file not found", path=str(path))
         try:
@@ -838,7 +856,7 @@ class AdbBackend:
             return {"running": True, "pushed": False, "port": port}
         pushed = False
         if server_binary:
-            path = Path(server_binary).expanduser()
+            path = _local_path(server_binary, what="frida-server binary")
             if not path.is_file():
                 raise AdbError("not_found", "frida-server binary not found", path=str(path))
             try:

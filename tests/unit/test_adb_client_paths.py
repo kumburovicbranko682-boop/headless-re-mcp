@@ -881,6 +881,30 @@ def test_ensure_frida_server_rejects_a_missing_binary(tmp_path: Path) -> None:
     assert exc.value.code == "not_found"
 
 
+def test_install_rejects_an_unresolvable_home() -> None:
+    """A ~user with no resolvable home makes Path.expanduser() raise
+    RuntimeError -- not the AdbError the service maps -- so before the guard a
+    local path the caller controls filed an internal_error incident."""
+    with pytest.raises(AdbError) as exc:
+        AdbBackend().install("emulator-5554", "~nosuchuser_zzz/app.apk")
+    assert exc.value.code == "not_found"
+
+
+def test_push_rejects_an_unresolvable_home() -> None:
+    with pytest.raises(AdbError) as exc:
+        AdbBackend().push("emulator-5554", "~nosuchuser_zzz/lib.so", "/sdcard/lib.so")
+    assert exc.value.code == "not_found"
+
+
+def test_ensure_frida_server_rejects_an_unresolvable_home() -> None:
+    dev = _FridaDev({("ps", "-A"): "", ("ps",): ""})
+    with pytest.raises(AdbError) as exc:
+        _backend_with_dev(dev).ensure_frida_server(
+            "emulator-5554", server_binary="~nosuchuser_zzz/frida-server"
+        )
+    assert exc.value.code == "not_found"
+
+
 def test_ensure_frida_server_pushes_and_reports_visibility(tmp_path: Path) -> None:
     binary = tmp_path / "frida-server"
     binary.write_bytes(b"ELF-ish")
