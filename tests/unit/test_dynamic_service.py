@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from collections import deque
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -1912,6 +1913,27 @@ def test_breakpoint_set_rebases_static_and_rva_coordinates(tmp_path: Path) -> No
     rejected = service.dynamic_breakpoint_set(session_id, 0x1000, address_space="bogus")
     assert not rejected.ok and rejected.error is not None
     assert rejected.error.code == "invalid_request"
+
+
+@pytest.mark.parametrize("bad_address", [-1, "0x1000", 1.5, None, True])
+def test_breakpoint_set_rejects_a_bad_runtime_address_before_the_worker(
+    tmp_path: Path, bad_address: object
+) -> None:
+    """The default runtime coordinate validates its address like static/rva do.
+
+    A negative, non-integer or otherwise malformed address used to be returned
+    untranslated and forwarded whole to breakpoints.set; only the static and rva
+    coordinates -- which round-trip through _require_address -- rejected it. The
+    guard now makes the default space fail the same structured invalid_address
+    way, and nothing reaches the worker.
+    """
+    service, session_id, dynamic = _rebased_service(tmp_path, 0x7FF700000000)
+
+    rejected = service.dynamic_breakpoint_set(session_id, cast(int, bad_address))
+
+    assert not rejected.ok and rejected.error is not None
+    assert rejected.error.code == "invalid_address"
+    assert not [command for command, _ in dynamic.requests if command == "breakpoints.set"]
 
 
 def test_analyze_function_dynamic_reports_stop_on_its_breakpoint(tmp_path: Path) -> None:

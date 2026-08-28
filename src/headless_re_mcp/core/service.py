@@ -2037,6 +2037,21 @@ class AnalysisService(
         """Translate a caller coordinate into the live runtime VA."""
         normalized = (address_space or "runtime").strip().casefold()
         if normalized == "runtime":
+            # The static and rva coordinates below reach _require_address through
+            # to_rva/from_rva, so a malformed address there already fails as a
+            # structured invalid_address. The runtime coordinate returned the value
+            # untouched, so the default -- and most common -- address_space was the
+            # one that skipped that check and forwarded a non-integer or negative
+            # address whole to breakpoints.set. Validate it here, the same way
+            # _require_address and resolve_runtime_address do, so every space
+            # rejects a bad address identically.
+            if isinstance(address, bool) or not isinstance(address, int) or address < 0:
+                raise AddressSyncError(
+                    "invalid_address",
+                    "address must be a non-negative integer",
+                    field="address",
+                    value=address,
+                )
             return address
         if normalized not in {"static", "rva"}:
             raise ValueError("address_space must be one of: runtime, static, rva")
