@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（事件边界内联脱敏与结构化脱敏器不对齐，导致部分密钥泄漏到事故日志/500 正文/CLI）
+
+- `error_boundary.py` 的 `_SECRET_PATTERNS` 声称与 `redaction.py` 的结构化脱敏器
+  “保持一致”，实则漏了两类：其一，只在 `authorization:` 之后才脱敏 `bearer` 令牌，而
+  `redaction.py` 的 `_BEARER` 会在字符串值里任意位置脱敏 `bearer <tok>`——于是像
+  `retrying with bearer <jwt>` 这样的异常消息会把令牌原样写进事故日志、HTTP 500 正文与
+  CLI stderr；其二，关键字集缺了 `authorization`（非 bearer 形式，如 `authorization: <key>`）
+  与 `providerApiKeys`，二者 `redaction.py` 都会按 dict key 脱敏。
+- 改为两条规则：先用 `(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+`（与 `_BEARER` 同字符类）在
+  任意位置脱敏 bearer 令牌，且排在关键字规则之前——否则关键字规则会把 `authorization:`
+  后的 `bearer` 当成值吞掉、把真正的令牌留在明文；关键字规则补上 `authorization` 与
+  `providerapikeys`，仍保留严格的 `[:=]` 边界（不吞 `tokenized=false` 这类诊断）。
+- `test_every_sensitive_keyword_form_is_redacted` 矩阵新增三例：
+  `authorization: <secret>`、`providerApiKeys=<secret>`、任意位置的 `bearer <secret>`。
+  非空验证：回退到旧两条正则后，这三例都会漏出 `sk-DEADBEEFsecret`。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

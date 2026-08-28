@@ -63,6 +63,13 @@ def test_tool_exception_returns_ai_envelope_and_logs(
         "access_key=sk-DEADBEEFsecret",
         "passwd=sk-DEADBEEFsecret",
         "credential: sk-DEADBEEFsecret",
+        # redaction.py masks these two under a dict key; the inline scrubber must
+        # too, or a payload-safe secret leaks when it lands in a message.
+        "authorization: sk-DEADBEEFsecret",
+        "providerApiKeys=sk-DEADBEEFsecret",
+        # A bearer credential anywhere -- not only after "authorization" -- the
+        # way redaction.py's _BEARER already scrubs it on structured values.
+        "bearer sk-DEADBEEFsecret",
     ],
 )
 def test_every_sensitive_keyword_form_is_redacted(marker: str) -> None:

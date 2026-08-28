@@ -40,10 +40,23 @@ _LOG_PATH: Path | None = None
 # envelope. The strict ``[:=]`` boundary (rather than a trailing ``\w*``) is
 # deliberate -- it keeps "tokenized=false" and similar diagnostics readable.
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+"),
+    # Mask a bearer credential wherever it appears, not only right after an
+    # "authorization" key -- redaction.py's _BEARER does the same on structured
+    # string values, and an exception that echoed "retrying with bearer <jwt>"
+    # otherwise leaked it here (this text reaches the on-disk incident log, the
+    # HTTP 500 body and CLI stderr). Same JWT-ish character class as _BEARER.
+    # Runs before the keyword rule below: that rule would otherwise consume the
+    # word "bearer" as the value after an "authorization:" key and strand the
+    # real token unmasked.
+    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+"),
+    # The keyword set mirrors redaction.py's _SECRET_KEY so a value masked under
+    # a dict key is masked the same way when it lands inline in a message --
+    # ``authorization`` and ``providerApiKeys`` were the two the structured
+    # redactor masked but this one did not. The strict ``[:=]`` boundary (not a
+    # trailing ``\w*``) keeps "tokenized=false" and similar diagnostics readable.
     re.compile(
-        r"(?i)((?:api[_-]?key|private[_-]?key|access[_-]?key|token|secret"
-        r"|password|passwd|credential)\s*[:=]\s*)[^\s,;]+"
+        r"(?i)((?:authorization|api[_-]?key|private[_-]?key|access[_-]?key|token"
+        r"|secret|password|passwd|credential|providerapikeys)\s*[:=]\s*)[^\s,;]+"
     ),
 )
 
