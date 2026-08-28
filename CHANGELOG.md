@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **280（162 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **281（163 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -261,6 +261,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不敏感子串匹配、在分页前应用，故 `total` 为匹配数。计数与单值都在浏览器内先行设限（`_MAX_STORAGE_ITEMS`/`_MAX_STORAGE_VALUE`），
   百万键或数 MB 的值都不会整体序列化进本进程。`data:`/`about:blank` 这类不透明源没有存储，返回 `invalid_state`（提示先导航到 http(s) 页面）
   而非伪装成空 jar。只读，工具总数 272→273（155 只读 / 118 写）。
+- **`web.cookies`/`web.storage` 只读顶层文档所属源，页面里嵌的 iframe 及其独立源根本看不见，动态 web 线缺一张"页面由哪些框架组成"的图**。
+  `web.cookies`、`web.storage` 明说只覆盖顶层源，`web.dom.snapshot` 也只是顶层文档的 HTML——而现代页面把登录/支付/验证码/广告放进
+  跨源 iframe，这些框架的源、存储、cookie 都是另一条边界，此前没有工具能把它们列出来。新增只读工具 `web.frames`：走 CDP
+  `Page.getFrameTree` 把框架树按广度优先摊平成每帧一行。答复带 `frames`、`count`、`total`、`offset`、`has_more`，页面嵌套超
+  1024 上限时置 `frames_truncated`。每行 `{frame_id, url, security_origin, depth, is_main}`，浏览器给出时再带 `parent_id`
+  （外层帧 id，主帧没有）、`name`（iframe 的 name 属性）与 `mime_type`；主帧 `depth` 为 0、`is_main` 为真居首，子帧紧随其父，
+  故从扁平表经 `parent_id` 即可重建嵌套。`url_filter` 对帧 url 做大小写不敏感子串匹配、在分页前应用，故 `total` 为匹配数——在
+  一堆第三方追踪帧里定位某个内嵌源的办法。于是 `web.frames` 补上了 `web.cookies`/`web.storage`/`web.dom.snapshot` 看不到的那部分
+  页面，某个跨源 iframe 的 `security_origin` 成为下一步的支点。树用带上限的队列摊平（而非递归），病态深嵌套也压不爆栈。只读，
+  工具总数 280→281（163 只读 / 118 写）。
 - **`proxy.start` 同样不限并发实例，跨会话可无界累积线程与抓包缓冲**。每个活的代理都占一个事件循环线程、一个绑定端口，并可
   保留至多 `_MAX_RETAINED_BYTES`（64 MiB）的抓包体；单会话有「一会话一代理」和端口占用检查约束，但总数无界——一个在多会话
   间反复 `proxy.start` 的调用方能攒下 N 个线程和 N×64 MiB。仿照刚给 web 加的并发上限，加上 `_MAX_PROXIES`（8）：持锁、在

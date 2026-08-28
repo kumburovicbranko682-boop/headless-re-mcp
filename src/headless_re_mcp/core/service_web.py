@@ -218,6 +218,22 @@ class WebAnalysisMixin:
             key_filter=key_filter,
         )
 
+    def web_frames(
+        self,
+        session_id: str,
+        offset: int = 0,
+        limit: int = 200,
+        url_filter: str = "",
+    ) -> Result[JsonObject]:
+        return self._web_wrap(
+            session_id,
+            "frames",
+            session_id,
+            offset=offset,
+            limit=limit,
+            url_filter=url_filter,
+        )
+
     def web_scripts(
         self,
         session_id: str,

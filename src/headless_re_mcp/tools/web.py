@@ -221,6 +221,38 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="web.frames")
+    def web_frames(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+        url_filter: str = "",
+    ) -> dict[str, Any]:
+        """Enumerate the page's frame tree -- the main document and its iframes.
+
+        web.cookies and web.storage only reach the top document's origin, and
+        web.dom.snapshot is the top document's HTML; this lists the iframes those
+        tools do not see -- the cross-origin auth/payment/CAPTCHA/ad frames whose
+        own origin, storage and cookies form a separate boundary -- so an
+        embedded origin becomes a pivot. Answers with frames, count, total,
+        offset, has_more, and frames_truncated when a page nested more frames
+        than the 1024 cap. Each frames row is {frame_id, url, security_origin,
+        depth, is_main} plus parent_id (the enclosing frame's id, absent on the
+        main frame), name (the iframe's name attribute) and mime_type when the
+        browser reported them. Rows are breadth-first: the main frame (depth 0,
+        is_main true) leads and each child follows its parent, so the nesting is
+        reconstructable from the flat list via parent_id. url_filter keeps only
+        frames whose url contains that substring (case-insensitive), applied
+        before paging so total is the match count -- the way to find one embedded
+        origin among the trackers a real page pulls in. The list field is frames.
+        Read-only: it only observes the frame tree.
+        """
+        return _dump(
+            analysis.web_frames(
+                session_id, offset=offset, limit=limit, url_filter=url_filter
+            )
+        )
+
     @tools.tool(name="web.scripts")
     def web_scripts(
         session_id: str,

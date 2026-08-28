@@ -35,6 +35,11 @@ T = TypeVar("T")
 _MAX_REQUESTS = 3000
 _MAX_CONSOLE = 2000
 _MAX_SCRIPTS = 2000
+# web.frames flattens Page.getFrameTree; a hostile page can insert or deeply
+# nest many iframes, so cap the tree walked (frames_truncated when hit) and page
+# the flattened list the same way the other web reads do.
+_MAX_FRAMES = 1024
+_MAX_FRAMES_PAGE = 1000
 _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 # CDP caps console previews at a handful of members; bound our own render too.
@@ -1302,6 +1307,91 @@ class WebBackend:
             }
 
         return self._runner(handle).call(work)
+
+    def frames(
+        self, session_id: str, *, offset: int = 0, limit: int = 200, url_filter: str = ""
+    ) -> JsonObject:
+        """Flatten Page.getFrameTree into one row per frame (main + iframes).
+
+        web.cookies and web.storage only reach the top document's origin, and
+        dom_snapshot is the top document's HTML; this reveals the iframes those
+        tools do not see -- the cross-origin auth/payment/CAPTCHA/ad frames whose
+        own origin, storage and cookies are a separate boundary -- so their
+        security_origin becomes a pivot. The tree is walked breadth-first, so the
+        main frame leads and each child follows its parent; the collection is
+        bounded (frames_truncated when a hostile page nests past the cap).
+        """
+        handle = self._get(session_id)
+        try:
+            resp = self._runner(handle).call(
+                lambda: handle.cdp.send("Page.getFrameTree")
+            )
+        except WebError:
+            # Session-level fault (wedged/timed-out/closed runner) keeps its own
+            # code, as the other CDP reads do.
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise WebError("backend_error", f"cannot read frame tree: {exc}") from exc
+        tree = resp.get("frameTree") if isinstance(resp, dict) else None
+        rows: list[JsonObject] = []
+        collection_over = False
+        # Breadth-first over the frame tree: the main frame is depth 0, and every
+        # child records its parent's frame id so the nesting is reconstructable
+        # from a flat list. A depth-first recursion could blow the stack on a
+        # pathologically nested page; a queue with an explicit cap cannot.
+        queue: list[tuple[Any, int, str]] = []
+        if isinstance(tree, dict):
+            queue.append((tree, 0, ""))
+        while queue:
+            node, depth, parent_id = queue.pop(0)
+            if not isinstance(node, dict):
+                continue
+            frame_obj = node.get("frame")
+            frame = frame_obj if isinstance(frame_obj, dict) else {}
+            if len(rows) >= _MAX_FRAMES:
+                collection_over = True
+                break
+            frame_id = _bounded_metadata(frame.get("id"), _MAX_METADATA_BYTES)[0]
+            row: JsonObject = {
+                "frame_id": frame_id,
+                "url": _bounded_metadata(frame.get("url"), _MAX_URL_BYTES)[0],
+                "security_origin": _bounded_metadata(
+                    frame.get("securityOrigin"), _MAX_URL_BYTES
+                )[0],
+                "depth": depth,
+                "is_main": depth == 0,
+            }
+            if parent_id:
+                row["parent_id"] = parent_id
+            name = _bounded_metadata(frame.get("name"), _MAX_METADATA_BYTES)[0]
+            if name:
+                row["name"] = name
+            mime = _bounded_metadata(frame.get("mimeType"), _MAX_METADATA_BYTES)[0]
+            if mime:
+                row["mime_type"] = mime
+            rows.append(row)
+            children = node.get("childFrames")
+            if isinstance(children, list):
+                for child in children:
+                    queue.append((child, depth + 1, frame_id))
+        # A case-insensitive substring on the frame url, applied before paging so
+        # total is the match count -- the way to find one embedded origin among
+        # the many trackers a real page pulls in.
+        needle = url_filter.strip().lower() if isinstance(url_filter, str) else ""
+        if needle:
+            rows = [row for row in rows if needle in str(row.get("url", "")).lower()]
+        total = len(rows)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_FRAMES_PAGE))
+        window = rows[start : start + cap]
+        return {
+            "frames": window,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
+            "frames_truncated": collection_over,
+        }
 
     def scripts(
         self,
