@@ -14,6 +14,8 @@ seam under test, which is where the client's own translation logic lives.
 
 from __future__ import annotations
 
+import sys
+import types
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -265,6 +267,23 @@ def test_backend_without_adbutils_reports_unavailable(monkeypatch: Any) -> None:
     assert caught.value.code == "capability_unavailable"
 
 
+def test_backend_with_adbutils_present_reports_available(monkeypatch: Any) -> None:
+    """With adbutils importable, construction records it and reports available.
+
+    CI installs only the core extras, so the real ``import adbutils`` fails and
+    the constructor takes its degraded branch. Planting a stub module lets the
+    success branch -- the one every real Android host takes -- run here too, so
+    ``available`` and the retained handle are pinned rather than only their
+    absence. ``setitem`` restores the previous state (usually nothing), so an
+    installed adbutils is left untouched for other tests.
+    """
+    stub = types.ModuleType("adbutils")
+    monkeypatch.setitem(sys.modules, "adbutils", stub)
+    backend = AdbBackend()
+    assert backend.available is True
+    assert backend._adbutils is stub
+
+
 def test_client_falls_back_when_socket_timeout_is_unsupported() -> None:
     """Older adbutils AdbClient has no socket_timeout kwarg.
 
@@ -508,6 +527,28 @@ def test_launch_wraps_a_failure_and_notes_an_unreadable_foreground() -> None:
     assert "note" in payload
 
 
+def test_launch_reguards_a_non_adberror_leaking_from_the_shell_helper(
+    monkeypatch: Any,
+) -> None:
+    """launch's own except is the belt to _device_shell's suspenders.
+
+    ``_device_shell`` already turns any device failure into an AdbError, so the
+    realistic path (covered above) exits through launch's ``except AdbError``.
+    This pins the second guard: were a non-AdbError ever to leak from the shell
+    helper -- a future refactor, a different call site -- launch still returns a
+    structured backend_error rather than letting a raw exception escape.
+    """
+
+    def _leak(*_a: Any, **_k: Any) -> str:
+        raise RuntimeError("shell contract changed under us")
+
+    monkeypatch.setattr(adbmod, "_device_shell", _leak)
+    with pytest.raises(AdbError) as caught:
+        _backend_with(object()).launch("emulator-5554", "com.example.app")
+    assert caught.value.code == "backend_error"
+    assert "launch failed" in caught.value.message
+
+
 def test_force_stop_wraps_a_backend_failure() -> None:
     class _Dev:
         def shell(self, args: Any, timeout: float | None = None) -> str:
@@ -516,6 +557,21 @@ def test_force_stop_wraps_a_backend_failure() -> None:
     with pytest.raises(AdbError) as caught:
         _backend_with(_Dev()).force_stop("emulator-5554", "com.example.app")
     assert caught.value.code == "backend_error"
+
+
+def test_force_stop_reguards_a_non_adberror_leaking_from_the_shell_helper(
+    monkeypatch: Any,
+) -> None:
+    # The force-stop counterpart of the launch re-guard above: a non-AdbError
+    # out of the shell helper still becomes a structured backend_error.
+    def _leak(*_a: Any, **_k: Any) -> str:
+        raise RuntimeError("shell contract changed under us")
+
+    monkeypatch.setattr(adbmod, "_device_shell", _leak)
+    with pytest.raises(AdbError) as caught:
+        _backend_with(object()).force_stop("emulator-5554", "com.example.app")
+    assert caught.value.code == "backend_error"
+    assert "force-stop failed" in caught.value.message
 
 
 def test_current_activity_wraps_a_failure() -> None:
