@@ -133,7 +133,8 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Return the current foreground package and activity.
 
         Answers with package and activity. There is no foreground, current,
-        component or app field.
+        component or app field. A read that returns no package is a backend
+        error, not an empty foreground.
         """
         return _dump(analysis.device_current_activity(serial))
 
@@ -143,9 +144,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Return the last N lines of logcat (non-streaming snapshot).
 
-        Answers with lines, requested, and truncated when the dump was cut
-        at the character cap. An adb error line (a dead or offline device) is
-        a failure, not a one-line snapshot.
+        Answers with lines, count, requested, and truncated. When the dump
+        exceeds the character cap the oldest bytes are dropped and the leading
+        partial line is removed, so every returned line is a complete entry.
+        An adb error line (a dead or offline device) is a failure, not a
+        one-line snapshot.
         """
         return _dump(analysis.device_logcat(serial, lines=lines))
 
