@@ -107,7 +107,9 @@ def run_de4dot(
 ) -> De4dotResult:
     """Run ``de4dot -f <input> -o <output>`` with hard bounds."""
     exe = Path(executable).expanduser()
-    source = Path(input_path).expanduser().resolve(strict=True)
+    # resolve() without strict=True so a missing input reaches the INPUT_NOT_FOUND
+    # check below instead of leaking a raw FileNotFoundError from resolve().
+    source = Path(input_path).expanduser().resolve()
     destination = Path(output_path).expanduser()
     if not exe.is_file():
         raise De4dotError(

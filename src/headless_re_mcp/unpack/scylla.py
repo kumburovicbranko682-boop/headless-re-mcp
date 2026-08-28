@@ -165,7 +165,9 @@ def run_scylla(
 ) -> ScyllaResult:
     """Run Scylla on a work copy; publish the newest PE output to output_path."""
     exe = Path(executable).expanduser()
-    source = Path(input_path).expanduser().resolve(strict=True)
+    # resolve() without strict=True so a missing input reaches the INPUT_NOT_FOUND
+    # check below instead of leaking a raw FileNotFoundError from resolve().
+    source = Path(input_path).expanduser().resolve()
     destination = Path(output_path).expanduser()
     if not exe.is_file():
         raise ScyllaError(
