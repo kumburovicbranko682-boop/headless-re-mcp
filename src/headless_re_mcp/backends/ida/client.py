@@ -266,7 +266,9 @@ class IdaWorkerClient(ManagedSubprocessMixin):
                     self.request("close", timeout=timeout)
             finally:
                 self._closed = True
-                if self._process.stdin is not None:
+                # stdin is typed Optional but the worker is always spawned
+                # with stdin=PIPE, so the None arm cannot occur.
+                if self._process.stdin is not None:  # pragma: no branch
                     self._process.stdin.close()
                 try:
                     self._process.wait(timeout=timeout)
