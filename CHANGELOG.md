@@ -19,6 +19,41 @@ until 1.0 the tool surface may still change between minor versions.
   `capability_unavailable`），唯一变化的"缺模块 + 坏 pid"此前无测试覆盖；新增变异验证的回归测试
   `test_require_hides_the_allow_set_when_the_module_is_absent` 钉死"缺模块时坏 pid 与好 pid 同样
   回 `capability_unavailable`"。
+### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
+
+- `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
+  `request_workflow_module_refresh` 对未跟踪的模块 key 必须拒绝（抛
+  `cannot refresh untracked modules`），而不是替它们静默下发刷新；`prepare_workflow_reset`
+  会禁用所有已启用的断点意图，并对本就禁用的意图跳过（循环里的 skip 分支）。
+- `workflows/executor.py` 的 `_remaining(deadline)` 在截止时间已过时抛 `TimeoutError`
+  （第 175 行），让多步工作流停下而不是拿非正的 timeout 去发调用；此前只覆盖了正常返回。
+- 新增 `tests/unit/test_workflow_engine_reset_refresh_guards.py` 与
+  `tests/unit/test_workflow_executor_remaining.py`：覆盖未跟踪 key 拒绝（含多 key 排序渲染）、
+  已跟踪 key 与空参刷新、重置时禁用/跳过的组合，以及 `_remaining` 的超时、恰好到点、
+  截止前返回三条路径。两个模块补齐至 100% 行覆盖，只加测试、不改源码。
+
+### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
+
+- main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
+  `_ProxyInstance.start()/_run()` 的串行化 bring-up 改造（`_STARTUP_LOCK` +
+  `_ReadyMarker` addon，防两个 DumpMaster 抢共享的 mitmproxy 全局 ctx）在合并树上
+  语义冲突：`test_instance_start_returns_once_the_port_accepts` 的假 `_run` 不会像真
+  `_run` 那样经 running() 钩子置位 `_ready`，start() 在新形态下等 `_ready` 而超时；
+  `test_instance_run_drives_a_master_to_completion` 钉死 `added == [recorder]`，而新
+  形态多挂一个 `_ReadyMarker`。两侧各自的树都绿，只有合并树红——与此前 .NET 元数据
+  API 的语义冲突同类。改法（两树兼容）：假 `_run` 若实例有 `_ready` 就置位；addon
+  断言改钉 `added[0] is recorder`（顺序而非全等）。两棵树上该文件 57 例均过。
+
+### 修复（audit trim 测试假设时钟每次调用严格递增）
+
+- main 新落的 `test_repository_inmemory_close_trim.py::test_audit_log_trims_to_the_newest_rows`
+  连续 6 次 `append_audit` 后断言 `list_audit` 按 `action-5,4,3` 返回。`list_audit`
+  只按 `at` 时间戳降序排（内存仓稳定排序、SQLite `ORDER BY at DESC`，平局序两侧都无契约）；
+  POSIX 上 `datetime.now()` 微秒级分辨率让 6 行时间戳严格递增，断言恰好成立，但 Windows
+  系统时钟 ~15.6 ms 一跳，6 次背靠背写入共享同一时间戳，稳定排序平局退回插入序，返回
+  `action-3,4,5`，双版本同点失败。产品的平局序本就未定义，是测试编码了"时钟严格递增"的
+  POSIX-only 前提。修复已落 main（monkeypatch 仓库模块的 `datetime` 为每次调用递增
+  1 秒的假时钟，平台无关地钉住 newest-first 序，也顺带让测试不再依赖真实时钟）。
 
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
