@@ -322,7 +322,16 @@ class AgentStore:
 
     def list_threads(self, *, limit: int = 100) -> list[AgentThread]:
         with self._reading() as con:
-            rows = con.execute("SELECT * FROM threads ORDER BY updated_at DESC LIMIT ?", (max(1, min(limit, 500)),)).fetchall()
+            # id DESC breaks ties on the non-unique wall-clock updated_at, like
+            # every sibling reader here (list_missions and the OFFSET-paged thread
+            # lists all end ... DESC, id DESC). Without it, threads sharing an
+            # updated_at -- created together, or touched in the same instant --
+            # have no defined order, so the list reshuffles between identical
+            # refreshes and a thread on the LIMIT boundary can flicker in and out.
+            rows = con.execute(
+                "SELECT * FROM threads ORDER BY updated_at DESC, id DESC LIMIT ?",
+                (max(1, min(limit, 500)),),
+            ).fetchall()
         return [AgentThread(**dict(row)) for row in rows]
 
     def get_thread(self, thread_id: str) -> AgentThread | None:

@@ -820,6 +820,49 @@ def test_cancelling_an_older_mission_after_newer_ones_returns_it_not_a_crash(
     assert store.get_mission(newer.id) is None
 
 
+def test_list_threads_breaks_a_tied_updated_at_by_id_for_a_stable_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Threads sharing an updated_at must fall back to id DESC, deterministically.
+
+    updated_at is a wall-clock isoformat string, so threads created together or
+    touched in the same instant tie. list_threads is the only reader here that
+    ordered by that column alone -- its siblings (list_missions, the OFFSET-paged
+    thread lists) all end ... DESC, id DESC -- so a tie left SQLite free to pick
+    any order, and the list reshuffled between identical refreshes while a thread
+    on the LIMIT boundary flickered in and out. This freezes the clock so every
+    thread shares one updated_at and hands out ascending ids 00..05 in creation
+    order, making id DESC the reverse of insertion order: without the tiebreaker
+    SQLite returns the tied rows in rowid (insertion) order -- ascending, exactly
+    the wrong answer -- so the assertion is non-vacuous.
+    """
+    from headless_re_mcp.agent import store as store_module
+
+    store = AgentStore(tmp_path / "threads-tie.db")
+    monkeypatch.setattr(store_module, "utc_now", lambda: "2026-01-01T00:00:00+00:00")
+
+    class _Id:
+        def __init__(self, hex_str: str) -> None:
+            self.hex = hex_str
+
+    counter = {"n": 0}
+
+    def fake_uuid4() -> _Id:
+        value = _Id(f"{counter['n']:02d}")
+        counter["n"] += 1
+        return value
+
+    monkeypatch.setattr(store_module.uuid, "uuid4", fake_uuid4)
+
+    for _ in range(6):
+        store.create_thread(title="tied")
+
+    ordered = [thread.id for thread in store.list_threads(limit=10)]
+    assert ordered == ["05", "04", "03", "02", "01", "00"], (
+        "a tied updated_at must fall back to id DESC for a stable, newest-first order"
+    )
+
+
 def test_completing_an_older_run_after_newer_ones_returns_it_not_a_crash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

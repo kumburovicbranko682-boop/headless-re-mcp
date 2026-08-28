@@ -5,6 +5,10 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Agent 工作台会话存储 `list_threads` 只按非唯一的 `updated_at DESC` 排序,时间列打平时线程列表次序不确定、边界线程会闪进闪出）
+
+- `agent/store.py` 的 `threads` 表以 `id TEXT PRIMARY KEY` 为唯一键,`updated_at` 则是墙钟 isoformat 字符串:同批创建或同一瞬间被触达的线程会打平。该存储里其余读取(`list_missions`、以及 `OFFSET` 翻页的线程列表)一律以 `... DESC, id DESC` 收尾唯一次键,唯独 `list_threads` 只写 `ORDER BY updated_at DESC`——SQLite 对并列组次序不保证,于是同样的刷新之间线程列表会重排,恰卡在 `LIMIT` 边界上的线程还会在结果里闪进闪出。补上 `, id DESC` 使其与兄弟读取一致,次序确定。带外验证:去掉 `, id DESC` → 新用例失败(冻结时钟令六行全并列、受控自增 id 使插入序恰为 `id DESC` 的反序,读取退化成升序插入序 `00,01,…` 而非应有的 `05,04,…`),复原后全绿。补 `test_list_threads_breaks_a_tied_updated_at_by_id_for_a_stable_order`。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
