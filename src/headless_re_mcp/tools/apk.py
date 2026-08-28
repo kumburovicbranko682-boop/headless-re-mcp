@@ -72,14 +72,21 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.apk_components(session_id))
 
     @tools.tool(name="apk.native_libs")
-    def apk_native_libs(session_id: str) -> dict[str, Any]:
-        """List bundled native libraries and their ABIs.
+    def apk_native_libs(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=256)] = 256,
+    ) -> dict[str, Any]:
+        """List bundled native libraries and their ABIs, with pagination.
 
-        Answers with native_libs, abis, count, and has_more so a list that
-        filled the cap is not read as every .so. There is no libs or
-        libraries field.
+        Answers with native_libs, abis, count, total, offset, has_more, and
+        scan_capped. The .so paths are sorted, and offset pages through that one
+        stable order: advance offset by the page size to reach libraries past
+        has_more. abis stays complete even when the list is paged or capped.
+        scan_capped is true when more than the collection ceiling were present,
+        so total is a floor. There is no libs or libraries field.
         """
-        return _dump(analysis.apk_native_libs(session_id))
+        return _dump(analysis.apk_native_libs(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="apk.classes")
     def apk_classes(

@@ -23,6 +23,10 @@ _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
 _MAX_NATIVE_LIBS = 256
+# Collection ceiling for the native-lib scan, well above the page cap so a real
+# APK's every .so is collected and reachable by offset; a hostile entry flood
+# trips scan_capped instead of growing the list without bound.
+_MAX_NATIVE_LIBS_COLLECT = 4096
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
@@ -302,11 +306,13 @@ class ApkClient:
             "has_more": a_more or s_more or r_more or p_more,
         }
 
-    def native_libs(self, path: Path) -> JsonObject:
+    def native_libs(
+        self, path: Path, *, offset: int = 0, limit: int = _MAX_NATIVE_LIBS
+    ) -> JsonObject:
         apk = self._apk(path)
         libs: list[str] = []
         abis: set[str] = set()
-        has_more = False
+        scan_capped = False
         for name in apk.get_files() or []:
             text = str(name)
             if not text.startswith("lib/"):
@@ -314,16 +320,29 @@ class ApkClient:
             parts = text.split("/")
             if len(parts) >= 3:
                 abis.add(parts[1])
-            if len(libs) >= _MAX_NATIVE_LIBS:
-                has_more = True
+            if len(libs) >= _MAX_NATIVE_LIBS_COLLECT:
+                # Bound the collected list, but keep scanning so abis stays
+                # complete across every ABI directory the APK ships.
+                scan_capped = True
                 continue
             libs.append(text)
+        # Sort the whole collected list, then window by offset. get_files yields
+        # zip order, so the old code -- cap in that order, then sort -- returned
+        # a sorted view of an arbitrary subset while reading as the sorted list,
+        # and left every .so past the cap unreachable with no offset. Sorting
+        # first makes each page a slice of one stable order; scan_capped says the
+        # collection itself was bounded, has_more that a larger offset has rows.
         libs.sort()
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_NATIVE_LIBS)
+        window = libs[start : start + cap]
         return {
-            "native_libs": libs,
+            "native_libs": window,
             "abis": sorted(abis),
-            "count": len(libs),
-            "has_more": has_more,
+            "count": len(window),
+            "total": len(libs),
+            "offset": start,
+            "has_more": start + len(window) < len(libs),
+            "scan_capped": scan_capped,
         }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:

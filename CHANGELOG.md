@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 改进（`apk.native_libs` 增加 offset 分页并先排序后开窗，超出上限的 .so 可达）
+
+- `apk/client.py::native_libs` 与 `device.packages`/`device.properties` 同病：按 `get_files()`
+  的 zip 顺序在 `_MAX_NATIVE_LIBS` 处截断、再对 survivors 排序，返回的是任意子集的排序视图；
+  且工具 `apk.native_libs(session_id)` 无 offset，`has_more` 为真时上限之外的 .so 无从取回。
+- 改法：收集全部 `lib/` 条目（收集上限 `_MAX_NATIVE_LIBS_COLLECT=4096`，超出置 `scan_capped`
+  并继续扫描以让 `abis` 保持完整）后 `sort()`，再经 `_clamp_page` 按 offset/limit 开窗，返回
+  `native_libs, abis, count, total, offset, has_more, scan_capped`，与 `apk.classes`/`apk.strings`
+  的分页契约一致。服务层改为直调（不再走 `_apk_call`），工具层新增 `offset: Field(ge=0)=0` 与
+  `limit: Field(ge=1, le=256)=256`（默认沿用旧的 256 页大小）。
+- 新增 `tests/unit/test_apk_client_paths.py::test_native_libs_offset_pages_a_stable_sorted_order`：
+  四个 .so 横跨两个 ABI、以逆序给出，`offset=0/2` 取到排序前缀与后半段（覆盖全部）、`has_more`
+  只在首页为真、`offset=99` 得空页，且每页（含空页）`abis` 均完整。相应更新两处测试假后端签名。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

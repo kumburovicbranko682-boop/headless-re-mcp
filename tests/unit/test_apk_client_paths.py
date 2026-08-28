@@ -509,3 +509,47 @@ def test_native_libs_ignore_lib_paths_without_an_abi_segment(
     assert payload["abis"] == ["arm64-v8a"]
     assert payload["native_libs"] == ["lib/arm64-v8a/libnative.so", "lib/toplevel.so"]
     assert payload["has_more"] is False
+
+
+def test_native_libs_offset_pages_a_stable_sorted_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """offset reaches .so files past the cap, over one sorted order; abis stay whole.
+
+    get_files yields zip order, so the old code capped in that order and sorted
+    the survivors -- an arbitrary subset that read as the sorted list, with
+    everything past the cap unreachable. Feeding four libs across two ABIs in
+    reverse order, offset=0 then offset=2 with limit=2 must return the sorted
+    prefix and the next slice (covering all four), has_more true only on the
+    first page, and abis complete on every page including the empty one.
+    """
+    apk = _NativeLibApk(
+        [
+            "lib/x86/libd.so",
+            "lib/arm64-v8a/libc.so",
+            "lib/x86/libb.so",
+            "lib/arm64-v8a/liba.so",
+            "res/layout/main.xml",  # not a lib
+        ]
+    )
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: apk)
+
+    first = client.native_libs(tmp_path / "app.apk", offset=0, limit=2)
+    assert first["native_libs"] == ["lib/arm64-v8a/liba.so", "lib/arm64-v8a/libc.so"]
+    assert first["total"] == 4
+    assert first["offset"] == 0
+    assert first["has_more"] is True
+    assert first["abis"] == ["arm64-v8a", "x86"]
+
+    second = client.native_libs(tmp_path / "app.apk", offset=2, limit=2)
+    assert second["native_libs"] == ["lib/x86/libb.so", "lib/x86/libd.so"]
+    assert second["has_more"] is False
+    assert second["abis"] == ["arm64-v8a", "x86"]
+
+    past = client.native_libs(tmp_path / "app.apk", offset=99, limit=2)
+    assert past["native_libs"] == []
+    assert past["count"] == 0
+    assert past["has_more"] is False
+    # abis are gathered from the whole APK, so they survive an out-of-range page.
+    assert past["abis"] == ["arm64-v8a", "x86"]

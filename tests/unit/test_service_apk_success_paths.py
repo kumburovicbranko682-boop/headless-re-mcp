@@ -56,8 +56,8 @@ class _FakeApkClient:
     def components(self, path: Path) -> JsonObject:
         return {"activities": []}
 
-    def native_libs(self, path: Path) -> JsonObject:
-        return {"native_libs": []}
+    def native_libs(self, path: Path, *, offset: int = 0, limit: int = 256) -> JsonObject:
+        return {"native_libs": [], "count": 0, "total": 0, "has_more": False, "offset": offset}
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         return {"classes": [], "count": 0, "total": 0, "has_more": False, "offset": offset}

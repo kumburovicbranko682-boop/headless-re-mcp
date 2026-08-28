@@ -53,7 +53,7 @@ class _FakeApk:
     def components(self, binary: Path) -> dict[str, Any]:
         return {"components": []}
 
-    def native_libs(self, binary: Path) -> dict[str, Any]:
+    def native_libs(self, binary: Path, *, offset: int = 0, limit: int = 256) -> dict[str, Any]:
         return {"native_libs": []}
 
 
