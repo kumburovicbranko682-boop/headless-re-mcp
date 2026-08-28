@@ -31,6 +31,10 @@ _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
 _MAX_XREFS_COLLECT = 5000
+# Each string-xref caller echoes the matched constant to disambiguate a
+# fragment that hit several strings; clip that echo so a page of callers to a
+# long (up to _MAX_STRING_LEN) URL cannot bloat the answer.
+_MAX_XREF_STRING_ECHO = 256
 _MAX_NATIVE_LIBS = 256
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
@@ -963,6 +967,66 @@ class ApkClient:
             "offset": start,
             # A caller deciding "these are all the callers" has to know whether
             # the page ended the list or merely filled the limit.
+            "has_more": start + len(window) < len(callers),
+            "scan_capped": scan_more,
+        }
+
+    def string_xrefs(
+        self, path: Path, value: str, *, offset: int = 0, limit: int = 100
+    ) -> JsonObject:
+        """Methods that reference a DEX string constant.
+
+        The companion to apk.strings: an analyst copies an interesting string
+        (a C2 URL, a suspect log line, a crypto label) and asks where it is
+        used. androguard's StringAnalysis.get_xref_from() gives the referencing
+        (class, method) pairs; each caller row echoes the matched string so a
+        fragment that hit several constants stays disambiguable.
+        """
+        parsed = self._parsed(path)
+        needle = value.strip() if isinstance(value, str) else ""
+        if not needle:
+            raise ApkError("invalid_params", "value is required")
+        callers: list[JsonObject] = []
+        matched = 0
+        scan_more = False
+        for item in parsed.analysis.get_strings():
+            text = str(item.get_value())
+            # Substring match, like apk.strings' name_filter, so a URL/key
+            # fragment works and the caller need not reproduce a 300-char string
+            # verbatim. Case-sensitive to match the sibling tools.
+            if needle not in text:
+                continue
+            matched += 1
+            echo = text[:_MAX_XREF_STRING_ECHO]
+            for caller in item.get_xref_from():
+                # androguard hands back (ClassAnalysis, MethodAnalysis); older
+                # shapes tack on an offset, so unpack defensively.
+                if not isinstance(caller, (tuple, list)) or len(caller) < 2:
+                    continue
+                method = caller[1]
+                if method is None:
+                    continue
+                if len(callers) >= _MAX_XREFS_COLLECT:
+                    scan_more = True
+                    break
+                callers.append(
+                    {
+                        "class": str(getattr(method, "class_name", "")),
+                        "method": str(getattr(method, "name", "")),
+                        "string": echo,
+                    }
+                )
+            if scan_more:
+                break
+        start, capped = _page_bounds(offset, limit, cap=_MAX_XREFS_PAGE)
+        window = callers[start : start + capped]
+        return {
+            "value": needle,
+            "matched_strings": matched,
+            "callers": window,
+            "count": len(window),
+            "total": len(callers),
+            "offset": start,
             "has_more": start + len(window) < len(callers),
             "scan_capped": scan_more,
         }

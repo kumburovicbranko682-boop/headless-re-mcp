@@ -219,6 +219,32 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="apk.string_xrefs")
+    def apk_string_xrefs(
+        session_id: str,
+        value: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List methods that reference a DEX string constant.
+
+        The companion to apk.strings: copy an interesting string (a C2 URL, a
+        suspect log line, a crypto label) and find where it is used. value is
+        matched as a case-sensitive substring across the string pool, so a
+        fragment works; each caller row is {class, method, string}, where string
+        echoes the matched constant (clipped to 256 chars) so a fragment that hit
+        several strings stays disambiguable. Answers with value, matched_strings
+        (how many string constants the fragment hit), callers, count, total,
+        offset and has_more so a page that filled the limit is not read as the
+        whole set, plus scan_capped when the caller collection hit its 5000-row
+        ceiling. An empty value is invalid_params. A string with no references
+        (dead constant, or reached only via reflection) yields an empty callers
+        list, not an error.
+        """
+        return _dump(
+            analysis.apk_string_xrefs(session_id, value, offset=offset, limit=limit)
+        )
+
     @tools.tool(name="apk.decompile")
     def apk_decompile(
         session_id: str,

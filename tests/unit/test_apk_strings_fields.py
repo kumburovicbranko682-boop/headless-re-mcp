@@ -6,7 +6,9 @@ import ast
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.apk.client import ApkClient
+import pytest
+
+from headless_re_mcp.backends.apk.client import ApkClient, ApkError
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -145,3 +147,93 @@ def test_apk_strings_min_len_and_name_filter_combine() -> None:
     )
     assert none_match["strings"] == []
     assert none_match["total"] == 0
+
+
+class _XrefMethod:
+    def __init__(self, class_name: str, name: str) -> None:
+        self.class_name = class_name
+        self.name = name
+
+
+class _XrefString:
+    def __init__(self, value: str, methods: list[_XrefMethod]) -> None:
+        self._value = value
+        self._methods = methods
+
+    def get_value(self) -> str:
+        return self._value
+
+    def get_xref_from(self, with_offset: bool = False) -> list[tuple[object, _XrefMethod]]:
+        return [(object(), method) for method in self._methods]
+
+
+class _XrefParsed:
+    def __init__(self, strings: list[_XrefString]) -> None:
+        self.analysis = self
+        self._strings = strings
+
+    def get_strings(self) -> list[_XrefString]:
+        return self._strings
+
+
+def test_apk_string_xrefs_lists_the_referencing_methods() -> None:
+    """The companion to apk.strings: where is this constant used."""
+    parsed = _XrefParsed(
+        [
+            _XrefString(
+                "https://c2.example.com/collect",
+                [
+                    _XrefMethod("Lcom/evil/Net;", "beacon"),
+                    _XrefMethod("Lcom/evil/Net;", "exfil"),
+                ],
+            )
+        ]
+    )
+    client = ApkClient()
+    client._parsed = lambda _path: parsed  # type: ignore[method-assign]
+    payload = client.string_xrefs(Path("dummy.apk"), "c2.example.com")
+    assert payload["matched_strings"] == 1
+    assert payload["total"] == 2
+    assert payload["callers"] == [
+        {"class": "Lcom/evil/Net;", "method": "beacon", "string": "https://c2.example.com/collect"},
+        {"class": "Lcom/evil/Net;", "method": "exfil", "string": "https://c2.example.com/collect"},
+    ]
+    doc = _tool_docstring("apk.string_xrefs")
+    assert "matched_strings" in doc
+
+
+def test_apk_string_xrefs_requires_a_value() -> None:
+    """An empty needle would match the whole pool; refuse it up front."""
+    client = ApkClient()
+    client._parsed = lambda _path: _XrefParsed([])  # type: ignore[method-assign]
+    with pytest.raises(ApkError) as excinfo:
+        client.string_xrefs(Path("dummy.apk"), "   ")
+    assert excinfo.value.code == "invalid_params"
+
+
+def test_apk_string_xrefs_substring_hits_several_strings_and_echoes_each() -> None:
+    """A fragment can hit several constants; each caller row keeps its own
+    string so the results stay disambiguable."""
+    parsed = _XrefParsed(
+        [
+            _XrefString("Bearer token A", [_XrefMethod("La;", "one")]),
+            _XrefString("refresh token B", [_XrefMethod("Lb;", "two")]),
+        ]
+    )
+    client = ApkClient()
+    client._parsed = lambda _path: parsed  # type: ignore[method-assign]
+    payload = client.string_xrefs(Path("dummy.apk"), "token")
+    assert payload["matched_strings"] == 2
+    strings = {row["string"] for row in payload["callers"]}
+    assert strings == {"Bearer token A", "refresh token B"}
+
+
+def test_apk_string_xrefs_unreferenced_string_is_empty_not_an_error() -> None:
+    """A dead constant (or one reached only via reflection) has no callers."""
+    parsed = _XrefParsed([_XrefString("https://dead.example/x", [])])
+    client = ApkClient()
+    client._parsed = lambda _path: parsed  # type: ignore[method-assign]
+    payload = client.string_xrefs(Path("dummy.apk"), "dead.example")
+    assert payload["matched_strings"] == 1
+    assert payload["callers"] == []
+    assert payload["total"] == 0

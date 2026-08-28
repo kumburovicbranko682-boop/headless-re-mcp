@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **268（151 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **269（152 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -633,6 +633,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `min_len` 参数，即 `strings(1)` 的长度下限惯用法：在**收集阶段、上限之前**丢弃短于该长度的字符串（与 `name_filter`
   同处一处、两者需同时满足），于是设个 6~8 的下限就能让埋在 5000 条噪声之后的长字符串真正可达，而不只是让结果更干净。
   既有行为不变（`min_len` 默认 0，即不设下限）。
+- **`apk.strings` 找到一条可疑常量后，没法回答「它在哪里被用到」**。`apk.xrefs` 只做方法调用点（谁调了这个方法），
+  而分析恶意样本时更常见的一步是：从 `apk.strings` 里抄出一条 C2 URL / 可疑日志串 / 加密标签，问「哪些方法引用了它」。
+  新增只读工具 **`apk.string_xrefs`**（工具数 268→269）：`value` 按大小写敏感子串在字符串池里匹配（片段即可），逐个命中的
+  常量取 androguard `StringAnalysis.get_xref_from()` 的 `(class, method)` 引用点；每个 caller 行为 `{class, method, string}`，
+  其中 `string` 回显命中的常量（截到 256 字符）以便一个片段命中多条常量时仍可区分。返回 `value`、`matched_strings`（片段命中了
+  几条常量）、`callers`、`count`/`total`/`offset`/`has_more` 及 `scan_capped`（收集触及 5000 行上限）；空 `value` 报
+  `invalid_params`，无人引用的死常量（或仅经反射到达）给出空 `callers` 而非报错。与 native 侧 `frida` 的枚举链对称，把
+  Android 静态侧的「串 → 用它的代码」这条 pivot 补齐。
 - **`apk.manifest` 过了 200 KB 就把 XML 从中间切断、剩下的没了，而截断处的 XML 根本不成文档**。它把
   `manifest_xml` 内联切到 `_MAX_MANIFEST_CHARS`（200000 字符）、置 `truncated`，此外无任何补救——可
   AndroidManifest 在组件/intent-filter/metadata 堆多了的大 App 里确实会超，被切的那份既解析不了（元素切一半）、
