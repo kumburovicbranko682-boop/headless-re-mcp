@@ -300,13 +300,15 @@ class WasmClient:
         return self._wasm2wat is not None
 
     def _require_input(self, path: Path, tool: Path | None, name: str) -> Path:
-        # Validate the caller's file before the tool gate, the same order
-        # web.open, adb._device and frida.spawn settled on: a missing file
-        # (not_found), an oversized one (too_large) or a non-module
-        # (invalid_params) is the caller's mistake with or without wabt
-        # configured, and an agent routes on code -- capability_unavailable would
-        # send it to install a tool when the real fix is the path. The size cap
-        # inside _require_existing_file still runs before the magic check below.
+        # Capability before the file checks, deliberately: when wabt is not
+        # configured a missing/oversized/non-module input must still read as
+        # capability_unavailable (the degradation contract in
+        # test_backend_degradation), so a missing optional tool is never
+        # misreported as a bad path. Existence, size and the \0asm magic are all
+        # resource facts (they require reading the file), so unlike a structurally
+        # malformed *argument* they wait until the tool is known present.
+        if tool is None:
+            raise JsReError("capability_unavailable", f"{name} (wabt) is not configured")
         resolved = _require_existing_file(path, missing="wasm file not found")
         # The size cap runs first (above): an oversized non-module is still
         # refused as too_large, not misreported as a bad-magic file.
@@ -316,8 +318,6 @@ class WasmClient:
                 "not a WebAssembly module: missing the \\0asm magic",
                 path=str(resolved),
             )
-        if tool is None:
-            raise JsReError("capability_unavailable", f"{name} (wabt) is not configured")
         return resolved
 
     def wat(

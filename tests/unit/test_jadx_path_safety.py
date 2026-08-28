@@ -97,25 +97,6 @@ def test_jadx_validates_class_name_before_the_whole_apk_decompile(
     assert len(calls) == 1, "a valid class name must still reach export_sources exactly once"
 
 
-def test_jadx_validates_the_apk_before_the_capability_gate(tmp_path: Path) -> None:
-    """A missing apk reads as not_found even where jadx is not configured.
-
-    _run() (reached by export_sources and, through it, decompile) used to check
-    the jadx capability before the apk path, so on a host without jadx a missing
-    apk surfaced as capability_unavailable rather than the not_found it is -- the
-    same masking decompile's class_name check (above) already rejects for its own
-    input, now extended to the apk. An agent routes on code, and "fix the path"
-    is a different fix from "install jadx". With jadx unconfigured (so the gate
-    would fire if reached first), a missing apk is not_found.
-    """
-    client = JadxClient(tmp_path / "jadx")  # executable absent -> not available
-    assert client.available is False
-
-    with pytest.raises(JadxError) as missing:
-        client.export_sources(tmp_path / "absent.apk", tmp_path / "out")
-    assert missing.value.code == "not_found"
-
-
 @pytest.mark.skipif(os.name == "nt", reason="creating test symlinks needs Windows privileges")
 def test_jadx_does_not_read_a_source_symlink_outside_its_output(
     tmp_path: Path,

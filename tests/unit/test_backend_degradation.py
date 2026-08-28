@@ -24,8 +24,10 @@ from pathlib import Path
 import pytest
 
 from headless_re_mcp.backends.apk.client import ApkClient, ApkError
+from headless_re_mcp.backends.apktool.client import ApktoolClient, ApktoolError
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.backends.jadx.client import JadxClient, JadxError
+from headless_re_mcp.backends.jsre.client import JsReError, WasmClient
 from headless_re_mcp.backends.proxy.client import ProxyBackend, ProxyError
 from headless_re_mcp.backends.web.client import WebBackend, WebError
 
@@ -71,3 +73,39 @@ def test_apk_client_without_androguard_degrades(tmp_path: Path) -> None:
     with pytest.raises(ApkError) as caught:
         client.open(tmp_path / "nonexistent.apk")
     assert caught.value.code == "capability_unavailable"
+
+
+def test_apktool_decode_without_a_jre_degrades(tmp_path: Path) -> None:
+    # apktool needs a JRE; ApktoolClient(None, None) leaves it unconfigured. Like
+    # jadx above, the capability guard must fire before the apk checks so a
+    # missing tool is not misreported as a bad path -- the apk existence and
+    # zip-shape are resource facts, not the structurally-malformed arguments
+    # (bad class_name, bad serial, bad url) that legitimately fail earlier.
+    client = ApktoolClient(None, None)
+    with pytest.raises(ApktoolError) as caught:
+        client.decode(tmp_path / "nonexistent.apk", tmp_path / "out")
+    assert caught.value.code == "capability_unavailable"
+
+
+def test_apktool_sign_without_a_jre_degrades(tmp_path: Path) -> None:
+    client = ApktoolClient(None, None)
+    with pytest.raises(ApktoolError) as caught:
+        client.sign(tmp_path / "nonexistent.apk", tmp_path / "signed.apk")
+    assert caught.value.code == "capability_unavailable"
+
+
+def test_wasm_client_without_wabt_degrades(tmp_path: Path) -> None:
+    # wat/info need wabt; with both tools unconfigured a missing input still
+    # reports the missing tool, not not_found -- the same ordering as jadx, so a
+    # core install (no wabt) reads as "skip this line", not "the caller's path
+    # is wrong". A structurally malformed argument would still fail earlier; a
+    # file's existence and \0asm magic are resource facts that wait for the tool.
+    client = WasmClient()
+    client._wasm2wat = None
+    client._objdump = None
+    with pytest.raises(JsReError) as wat_caught:
+        client.wat(tmp_path / "nonexistent.wasm")
+    assert wat_caught.value.code == "capability_unavailable"
+    with pytest.raises(JsReError) as info_caught:
+        client.info(tmp_path / "nonexistent.wasm")
+    assert info_caught.value.code == "capability_unavailable"

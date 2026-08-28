@@ -124,12 +124,14 @@ class ApktoolClient:
         # with or without a JRE, and capability_unavailable would send an agent to
         # install a tool when the real fix is the path. All three are pure file
         # reads, and the bomb check still lands before the JVM starts.
-        # Validate the caller's apk before the capability gate, matching web.open,
-        # adb._device, jsre and jadx: a missing apk (not_found), a non-zip
-        # (invalid_params) or a declared bomb (too_large) is the caller's mistake
-        # with or without a JRE, and capability_unavailable would send an agent to
-        # install a tool when the real fix is the path. All three are pure file
-        # reads, and the bomb check still lands before the JVM starts.
+        # Capability before the apk checks, deliberately: when apktool (its JRE)
+        # is absent a missing/non-zip apk must still read as capability_unavailable
+        # (the degradation contract in test_backend_degradation), so a missing
+        # optional tool is never misreported as a bad path on a core install.
+        # A malformed *argument* would fail before this, but apk existence and
+        # zip-shape are resource facts that wait until the tool is known present.
+        if not self.available or self.apktool is None:
+            raise ApktoolError("capability_unavailable", "apktool is not configured (needs a JRE)")
         if not apk.is_file():
             raise ApktoolError("not_found", "apk not found", path=str(apk))
         _require_apk_zip(apk)
@@ -140,8 +142,6 @@ class ApktoolClient:
             check_zip_expansion(apk)
         except ZipExpansionError as exc:
             raise ApktoolError(exc.code, exc.message, **exc.details) from exc
-        if not self.available or self.apktool is None:
-            raise ApktoolError("capability_unavailable", "apktool is not configured (needs a JRE)")
         out_dir.parent.mkdir(parents=True, exist_ok=True)
         args = [str(self.apktool), "d", str(apk), "-o", str(out_dir), "-f"]
         if no_resources:
@@ -222,17 +222,18 @@ class ApktoolClient:
         # above and the rest of the non-PE line: a missing apk (not_found) or a
         # non-zip (invalid_params) is the caller's mistake with or without a JRE,
         # and must not be masked as capability_unavailable. Both are pure reads.
-        # Validate the caller's apk before the capability gate, matching decode
-        # above and the rest of the non-PE line: a missing apk (not_found) or a
-        # non-zip (invalid_params) is the caller's mistake with or without a JRE,
-        # and must not be masked as capability_unavailable. Both are pure reads.
-        if not apk.is_file():
-            raise ApktoolError("not_found", "apk not found", path=str(apk))
-        _require_apk_zip(apk)
+        # Capability before the apk checks, deliberately: like decode above, a
+        # missing/non-zip apk on a host without apksigner must read as
+        # capability_unavailable, not be misreported as a bad path (the
+        # degradation contract). apk existence and zip-shape are resource facts
+        # that wait until the tool that would consume them is known present.
         if not self.signer_available or self.apksigner is None:
             raise ApktoolError(
                 "capability_unavailable", "apksigner is not configured (needs a JRE)"
             )
+        if not apk.is_file():
+            raise ApktoolError("not_found", "apk not found", path=str(apk))
+        _require_apk_zip(apk)
         store = keystore or _DEBUG_KEYSTORE
         if not store.is_file():
             raise ApktoolError(

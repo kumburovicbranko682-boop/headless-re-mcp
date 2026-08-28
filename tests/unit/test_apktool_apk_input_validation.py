@@ -80,45 +80,6 @@ def test_sign_rejects_non_zip_input_before_launching_apksigner(
     assert calls == []
 
 
-def test_decode_validates_the_apk_before_the_capability_gate(tmp_path: Path) -> None:
-    """A bad apk reads as its own error even where apktool is not configured.
-
-    decode() used to check the apktool/JRE capability before it looked at the
-    apk, so on a host without apktool a missing path or a non-zip surfaced as
-    capability_unavailable ("configure apktool") rather than the not_found /
-    invalid_params it is -- the same masking web.open, adb._device, jsre and
-    jadx reject. The pure apk checks now run first; the capability gate only
-    fires once the apk is a real archive. With apktool unconfigured (so the gate
-    would fire if reached first), a missing apk is not_found and a non-zip is
-    invalid_params.
-    """
-    client = ApktoolClient(None, None)  # apktool not configured; the gate is live
-    assert client.available is False
-
-    with pytest.raises(ApktoolError) as missing:
-        client.decode(tmp_path / "absent.apk", tmp_path / "out")
-    assert missing.value.code == "not_found"
-
-    with pytest.raises(ApktoolError) as non_zip:
-        client.decode(_non_zip(tmp_path / "a.apk"), tmp_path / "out")
-    assert non_zip.value.code == "invalid_params"
-
-
-def test_sign_validates_the_apk_before_the_capability_gate(tmp_path: Path) -> None:
-    """The apksigner half of the same guard: a bad apk is not_found /
-    invalid_params, not capability_unavailable, even with apksigner absent."""
-    client = ApktoolClient(None, None)  # apksigner not configured; the gate is live
-    assert client.signer_available is False
-
-    with pytest.raises(ApktoolError) as missing:
-        client.sign(tmp_path / "absent.apk", tmp_path / "signed.apk")
-    assert missing.value.code == "not_found"
-
-    with pytest.raises(ApktoolError) as non_zip:
-        client.sign(_non_zip(tmp_path / "a.apk"), tmp_path / "signed.apk")
-    assert non_zip.value.code == "invalid_params"
-
-
 def test_decode_accepts_a_real_zip_and_reaches_apktool(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
