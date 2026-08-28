@@ -339,6 +339,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   drain-先于-shutdown 的接线与旧版 mitmproxy 无 Servers API 时的退化路径；真 gate 在装了
   mitmproxy 的机器上验证端口确实释放。
 
+### 修复（`dotnet.enumerate` 遇到 EnC(`#-`)元数据时提前中止后续表枚举）
+
+- `_table_row_size` 给出了每张元数据表的行宽,却漏了 `EnCLog`(0x1E)与 `EnCMap`(0x1F)。这两张
+  表只出现在未压缩的 `#-` 流里(edit-and-continue / 未优化元数据),列都是定长 4 字节 token、
+  不含堆或编码索引,宽度不随 `heap_sizes` 变。缺了它们,一个携带 EnC 表的 `#-` 程序集就无法把
+  行宽算过 0x1E 位,`_table_start` 抛 `unsupported_metadata` 并中止其后每一张表的枚举——`File`、
+  `ExportedType`、`ManifestResource`(`dotnet.enumerate kind=resources`)、`NestedClass`、
+  `GenericParam`、`MethodSpec`——尽管这些行本身完全可读。现补上 `0x1E: 4 + 4`(Token+FuncCode)
+  与 `0x1F: 4`(Token),与其上已定尺的 `FieldPtr`/`MethodPtr`/`ParamPtr`/`EventPtr`/`PropertyPtr`
+  指针表同属 `#-` 形态。新增直测钉住两张 EnC 表的行宽与「其后表照常枚举」。
+
 ### 修复（`dotnet.il` 漏认 `ldc.i4.s` 导致方法体从此处起整体错位）
 
 - `_OPCODES` 覆盖了整族 `ldc.i4.0`..`ldc.i4.8`(0x16..0x1E)与 4 字节的 `ldc.i4`(0x20),
