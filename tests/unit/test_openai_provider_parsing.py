@@ -225,6 +225,58 @@ def test_ingest_defaults_a_missing_index_to_zero() -> None:
     assert frags[0]["name"] == "n"
 
 
+def test_ingest_keeps_snapshot_calls_without_index_distinct() -> None:
+    """A non-streaming message lists complete tool calls with no per-call index.
+
+    Defaulting a missing index to 0 collapsed every call in the message onto one
+    fragment: names, ids and JSON argument blobs concatenated into
+    "foobar"/"call_acall_b"/"{...}{...}", so a multi-tool turn either ran one
+    garbled call or failed the whole run on the unparseable merged arguments.
+    Position keeps each snapshot call its own fragment.
+    """
+    frags: dict[int, dict[str, str]] = {}
+    oc._ingest_tool_calls(
+        [
+            {"id": "call_a", "function": {"name": "foo", "arguments": '{"x": 1}'}},
+            {"id": "call_b", "function": {"name": "bar", "arguments": '{"y": 2}'}},
+        ],
+        frags,
+        0,
+    )
+    assert len(frags) == 2
+    assert (frags[0]["id"], frags[0]["name"], frags[0]["arguments"]) == (
+        "call_a",
+        "foo",
+        '{"x": 1}',
+    )
+    assert (frags[1]["id"], frags[1]["name"], frags[1]["arguments"]) == (
+        "call_b",
+        "bar",
+        '{"y": 2}',
+    )
+
+
+def test_ingest_still_stitches_streaming_fragments_by_their_index() -> None:
+    """A real per-delta index must keep stitching fragments across chunks, so the
+    position fallback for index-less snapshots does not disturb the stream path.
+    """
+    frags: dict[int, dict[str, str]] = {}
+    oc._ingest_tool_calls(
+        [{"index": 0, "id": "call_x", "function": {"name": "get", "arguments": '{"a":'}}],
+        frags,
+        0,
+    )
+    oc._ingest_tool_calls([{"index": 0, "function": {"arguments": "1}"}}], frags, 0)
+    oc._ingest_tool_calls(
+        [{"index": 1, "id": "call_y", "function": {"name": "put", "arguments": "{}"}}],
+        frags,
+        0,
+    )
+    assert frags[0]["name"] == "get"
+    assert frags[0]["arguments"] == '{"a":1}'
+    assert frags[1]["name"] == "put"
+
+
 def test_ingest_does_not_duplicate_an_id_or_name_already_seen() -> None:
     frags = {0: {"id": "call-a", "name": "session.get", "arguments": ""}}
     total, pieces = oc._ingest_tool_calls(

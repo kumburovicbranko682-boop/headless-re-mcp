@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（非流式快照的多个工具调用因缺 index 被并到 index 0，合成一个乱码调用）
+
+- `agent/providers/openai_compatible.py::_ingest_tool_calls` 用 `int(raw_call.get("index", 0))`
+  作分片键。流式 delta 每片都带 `index`（把一个调用的 id/name/arguments 跨 chunk 拼起来），
+  但非流式快照（`message.tool_calls`）列的是完整调用、根本没有 `index` 字段。于是把缺失的
+  `index` 默认成 0，会把该消息里的每个调用都并到同一个分片：name 拼成 `foobar`、id 拼成
+  `call_acall_b`、JSON 参数拼成 `{...}{...}`——一次多工具轮次要么只跑出一个乱码调用，要么在无法
+  解析的合并参数上让整轮失败。有些 OpenAI 兼容提供方正是一次性回完整消息，故可达。
+- 改为：`index` 缺失时回退用列表位置（`enumerate`），每个快照调用各自成片；真实的 0 号 index
+  仍按 0 处理，流式跨 chunk 的按 index 拼接不受影响。
+- 新增用例（改前红、改后绿，非空洞）：`test_openai_provider_parsing.py` 的
+  `test_ingest_keeps_snapshot_calls_without_index_distinct`（两个无 index 的快照调用须成两片）与
+  `test_ingest_still_stitches_streaming_fragments_by_their_index`（带 index 的流式分片仍跨 chunk
+  拼接）。既有 `test_ingest_defaults_a_missing_index_to_zero` 对单个无 index 调用仍成立（位置 0）。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
