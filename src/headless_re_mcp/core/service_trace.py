@@ -327,7 +327,9 @@ class TraceMixin:
                         backend=BackendKind.X64DBG.value,
                     )
                 data = self._validate_trace_status(state, native, require_recording=False)
-                if data["recording"] is True:
+                # _validate_trace_status(require_recording=False) already rejects a
+                # still-recording status, so this is a redundant defensive re-check.
+                if data["recording"] is True:  # pragma: no cover - unreachable re-check
                     raise XdbgRpcError(
                         "trace_stop_failed",
                         "x64dbg still reports trace recording after trace.stop",
@@ -398,7 +400,9 @@ class TraceMixin:
                         stopped,
                         require_recording=False,
                     )
-                    if data["recording"] is True:
+                    # The validate above already rejects a still-recording status,
+                    # so this is a redundant defensive re-check.
+                    if data["recording"] is True:  # pragma: no cover - unreachable re-check
                         raise XdbgRpcError(
                             "trace_quota_enforcement_failed",
                             "trace remained active after a service-side quota stop",
@@ -722,7 +726,9 @@ class TraceMixin:
                 if not isinstance(candidate, int) or isinstance(candidate, bool):
                     raise ValueError("symbol resolution did not return an address")
                 target_address = candidate
-            if target_address is None:
+            # Exactly one of expression/address is set (checked above), so a
+            # resolved-or-supplied address is always present here.
+            if target_address is None:  # pragma: no cover - unreachable given the input invariant
                 raise ValueError("unable to determine a trace address")
 
             armed = self.dynamic_breakpoint_set(session_id, target_address)
