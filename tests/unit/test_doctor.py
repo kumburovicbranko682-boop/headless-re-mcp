@@ -112,6 +112,62 @@ def test_radare2_probe_missing_when_neither_configured_nor_on_path(
     assert probe.status == ProbeStatus.MISSING
 
 
+def test_wabt_probe_resolves_a_configured_install_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """doctor must not report wabt MISSING for a directory WasmClient accepts.
+
+    HEADLESS_RE_WABT may point at the wabt install directory (or its bin/), which
+    ``backends/jsre._resolve_wabt_tool`` resolves to ``<dir>/bin/wasm2wat`` --
+    ``WasmClient(dir).available`` is true and ``wasm.wat`` works. The old generic
+    probe only credited a configured path that ``is_file()``, so this same dir
+    read MISSING (verified: the client succeeded while doctor said otherwise).
+    """
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
+    wabt_dir = tmp_path / "wabt"
+    (wabt_dir / "bin").mkdir(parents=True)
+    for tool in ("wasm2wat", "wasm-objdump"):
+        exe = wabt_dir / "bin" / tool
+        exe.write_text("#!/bin/sh\n", encoding="utf-8")
+    settings = replace(_settings(None, tmp_path / "artifacts"), wabt=wabt_dir)
+
+    report = run_doctor(settings)
+
+    probe = next(p for p in report.probes if p.name == "wabt")
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.details.get("wasm2wat") == str(wabt_dir / "bin" / "wasm2wat")
+    assert probe.details.get("wasm-objdump") == str(wabt_dir / "bin" / "wasm-objdump")
+
+
+def test_wabt_probe_falls_back_to_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    on_path = tmp_path / "wasm2wat"
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_module.shutil,
+        "which",
+        lambda cmd: str(on_path) if cmd == "wasm2wat" else None,
+    )
+    settings = replace(_settings(None, tmp_path / "artifacts"), wabt=None)
+
+    probe = doctor_module.probe_wabt(settings)
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.details.get("wasm2wat") == str(on_path)
+
+
+def test_wabt_probe_missing_when_neither_configured_nor_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
+    settings = replace(_settings(None, tmp_path / "artifacts"), wabt=None)
+
+    probe = doctor_module.probe_wabt(settings)
+
+    assert probe.status == ProbeStatus.MISSING
+
+
 def test_x64dbg_source_probe_requires_official_target(tmp_path: Path) -> None:
     source = tmp_path / "x64dbg"
     (source / "src" / "headless").mkdir(parents=True)

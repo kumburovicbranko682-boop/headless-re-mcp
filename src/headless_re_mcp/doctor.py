@@ -206,7 +206,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         probe_python_module("playwright", "playwright"),
         probe_python_module("mitmproxy", "mitmproxy"),
         probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
-        probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
+        probe_wabt(current),
     ]
     return DoctorReport(
         probes=tuple(probes),
@@ -1095,6 +1095,45 @@ def probe_optional_tool(
     if found:
         return Probe(name, ProbeStatus.DETECTED, f"{name} command detected", found)
     return Probe(name, ProbeStatus.MISSING, f"Optional {name} tool is not installed")
+
+
+def probe_wabt(settings: Settings) -> Probe:
+    """Report wabt exactly as WasmClient resolves it, directory forms included.
+
+    HEADLESS_RE_WABT may name the wabt *install directory* (or its ``bin/``), not
+    only the ``wasm2wat`` file -- ``backends/jsre`` accepts all three via
+    ``_resolve_wabt_tool``, and ``WasmClient(settings.wabt).available`` is true
+    for each. The generic ``probe_optional_tool`` only credits a configured path
+    when it ``is_file()``, so a directory-configured wabt with ``wasm2wat`` off
+    PATH was reported MISSING while ``wasm.wat`` / ``wasm.info`` worked -- the
+    same doctor/tool split the radare2 and webcrack probes already close. Resolve
+    through the client's own resolver so the verdict cannot drift from it. Mirrors
+    how ``probe_ghidra`` reuses ``_find_analyze_headless``.
+    """
+    from headless_re_mcp.backends.jsre.client import _resolve_wabt_tool
+
+    configured = getattr(settings, "wabt", None)
+    root = Path(str(configured)) if configured is not None else None
+    wasm2wat = _resolve_wabt_tool(root, "wasm2wat")
+    objdump = _resolve_wabt_tool(root, "wasm-objdump")
+    if wasm2wat is None:
+        return Probe(
+            "wabt",
+            ProbeStatus.MISSING,
+            "Optional wabt tool is not installed",
+            {"configured": str(configured)} if configured is not None else {},
+            "Install wabt, or set HEADLESS_RE_WABT to its install directory, its "
+            "bin/ directory, or the wasm2wat executable.",
+        )
+    details: dict[str, Any] = {
+        "wasm2wat": str(wasm2wat),
+        # wasm.info needs wasm-objdump; surface whether it resolved too so a
+        # wat-only install (wasm2wat present, objdump absent) reads honestly.
+        "wasm-objdump": str(objdump) if objdump is not None else None,
+    }
+    if configured is not None:
+        details["configured"] = str(configured)
+    return Probe("wabt", ProbeStatus.DETECTED, "wabt detected", details)
 
 
 def probe_python_module(name: str, module: str) -> Probe:

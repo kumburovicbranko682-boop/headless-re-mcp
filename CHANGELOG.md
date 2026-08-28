@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（doctor 对 wabt 的可用性判断与实际后端解析不一致——目录形式的 HEADLESS_RE_WABT 被误报「缺失」）
+
+- 缺陷：`backends/jsre` 的 `_resolve_wabt_tool` 允许 `HEADLESS_RE_WABT` 指向 wabt 的**安装目录**
+  或其 `bin/`（解析成 `<dir>/bin/wasm2wat`），`WasmClient(dir).available` 为真、`wasm.wat`/`wasm.info`
+  能跑；但 doctor 走的是通用 `probe_optional_tool`，只在配置路径 `is_file()` 时才认账。于是当 wabt
+  以目录形式配置、且 `wasm2wat` 不在 PATH 上时，doctor 报 `missing`——而后端其实可用。实测复现：同一
+  目录配置下 `WasmClient.available=True`，doctor 却给 `MISSING`。这正是此前 radare2、webcrack 两个探针
+  修过的「doctor 与工具各自解析、结论漂移」同类问题，只是 wabt 独有的目录形式漏在了 `is_file()` 之外。
+- 改法：新增 `probe_wabt`，直接复用后端的 `_resolve_wabt_tool`（与 `probe_ghidra` 复用
+  `_find_analyze_headless` 同一手法），让 doctor 的判定按构造无法再偏离客户端；同时如实回报解析到的
+  `wasm2wat` 与 `wasm-objdump` 路径（后者供 `wasm.info`，wat-only 安装会显示 objdump 为 null 而非假装齐全）。
+  配置目录、配置 `bin/`、配置 `wasm2wat` 文件、以及纯靠 PATH 兜底四种形式现在与客户端一致。
+- 测试：新增三个 doctor 用例（目录配置解析为 DETECTED 并带正确子工具路径、PATH 兜底、两者皆无时 MISSING）。
+  本机 `pytest tests/unit/test_doctor.py` 30 项通过，`ruff`/`mypy --strict` 干净，并用真实文件树端到端
+  复验「客户端可用 ⇔ doctor DETECTED」。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
