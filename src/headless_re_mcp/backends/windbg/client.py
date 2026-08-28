@@ -6,7 +6,12 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 
 JsonObject = dict[str, Any]
 _ALLOWED_CMDS = frozenset({"lm", "k", "r", "u", "~*", "version", "vertarget"})
@@ -33,6 +38,18 @@ def _require_allowed_cmd(cmd: str) -> None:
     ):
         raise WindbgError("invalid_params", "cdb command not whitelisted", command=cmd)
 
+
+# The dump ops declare le=300 in their schema; the live/attach ops le=120.
+# Clamp against those here too, not only at the tool boundary: the agent
+# transport invokes these handlers straight from model arguments with no schema
+# enforcement (the same gap clamp_cli_timeout guards for the JVM/node adapters).
+# Left unchecked, a non-positive deadline makes cdb launch only to be killed on
+# the first loop and reported as a timeout for what is a bad parameter, a NaN
+# never trips the deadline at all so a cdb attached to a live target runs
+# unbounded, and a huge value lets a probe hold that target for as long as the
+# caller named.
+_MAX_DUMP_TIMEOUT_S = 300.0
+_MAX_PROCESS_TIMEOUT_S = 120.0
 
 # cdb prints the whole session, and the analytical answer is in it. A listing
 # that stopped at the cap is indistinguishable from a listing that ended, so
@@ -239,6 +256,10 @@ class WindbgClient:
             )
         for cmd in commands:
             _require_allowed_cmd(cmd)
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_PROCESS_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise WindbgError("invalid_params", str(exc)) from exc
         script = "; ".join([*commands, "q"])
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         # -pv: non-invasive; can coexist with another debugger on the same PID.
@@ -281,6 +302,10 @@ class WindbgClient:
             raise WindbgError("not_found", "dump file not found", path=str(dump))
         for cmd in commands:
             _require_allowed_cmd(cmd)
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_DUMP_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise WindbgError("invalid_params", str(exc)) from exc
         script = "; ".join([*commands, "q"])
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         try:

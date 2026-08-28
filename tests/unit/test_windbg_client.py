@@ -186,6 +186,104 @@ def test_windbg_descriptions_name_the_fields_cdb_text_comes_back_in() -> None:
     assert "Answers with disasm" in docs["windbg.live_disasm"]
 
 
+def test_dump_timeout_is_clamped_to_the_dump_ceiling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The agent transport calls handlers with no schema enforcement, so a huge
+    caller deadline must be capped in the adapter, not just at the tool boundary.
+    Left raw it would let a cdb dump probe hold the sample for as long as named.
+    """
+    from headless_re_mcp.backends.common.bounded_run import Completed
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    dump = tmp_path / "crash.dmp"
+    dump.write_bytes(b"dump")
+    seen: dict[str, float] = {}
+
+    def capture(*_args: Any, timeout: float, **_kwargs: Any) -> Completed:
+        seen["timeout"] = timeout
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", capture)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+
+    WindbgClient(cdb).modules(dump, timeout=99999.0)
+
+    assert seen["timeout"] == windbg_module._MAX_DUMP_TIMEOUT_S
+
+
+def test_live_timeout_is_clamped_to_the_process_ceiling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from headless_re_mcp.backends.common.bounded_run import Completed
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    seen: dict[str, float] = {}
+
+    def capture(*_args: Any, timeout: float, **_kwargs: Any) -> Completed:
+        seen["timeout"] = timeout
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", capture)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+
+    WindbgClient(cdb).live_modules(4242, allowed_pid=4242, timeout=1e12)
+
+    assert seen["timeout"] == windbg_module._MAX_PROCESS_TIMEOUT_S
+
+
+@pytest.mark.parametrize("bad", [0.0, -5.0, float("nan")])
+def test_a_non_positive_or_nan_dump_timeout_is_invalid_params_not_a_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bad: float,
+) -> None:
+    """A NaN deadline never trips run_bounded's own check, so cdb would run
+    unbounded; a non-positive one launches only to be killed and misreported as
+    a timeout. Both must be refused as a bad parameter before anything spawns.
+    """
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    dump = tmp_path / "crash.dmp"
+    dump.write_bytes(b"dump")
+
+    def never(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("run_bounded must not be reached for a bad timeout")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", never)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+
+    with pytest.raises(WindbgError) as exc:
+        WindbgClient(cdb).modules(dump, timeout=bad)
+
+    assert exc.value.code == "invalid_params"
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan")])
+def test_a_non_positive_or_nan_live_timeout_is_invalid_params(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bad: float,
+) -> None:
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+
+    def never(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("run_bounded must not be reached for a bad timeout")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", never)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+
+    with pytest.raises(WindbgError) as exc:
+        WindbgClient(cdb).live_threads(4242, allowed_pid=4242, timeout=bad)
+
+    assert exc.value.code == "invalid_params"
+
+
 def test_windbg_listing_does_not_echo_the_nested_session_as_raw(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
