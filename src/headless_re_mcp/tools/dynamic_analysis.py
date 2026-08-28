@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
@@ -8,6 +8,33 @@ from headless_re_mcp.core.models import ModuleSelector, Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.tools.binding import BoundTool, ToolSetBuilder
 from headless_re_mcp.tools.limits import RunControlTimeout
+
+# The native RPC's IsAllowedPageRights accepts only these exact, case-sensitive
+# x64dbg page-protection names (the eight base flags plus their guard-page "G"
+# variants); SetPageRights is what consumes them. Left as a bare str, the tool's
+# schema gave the agent no hint of the vocabulary, so a natural guess like "rw"
+# or "rwx" (which *is* valid for a breakpoint type) round-tripped to a paused
+# debuggee only to come back "rights string is not in the allowlist". Mirroring
+# the allowlist as a Literal turns the schema into an enum and rejects the bad
+# value at the boundary, the same way bp_type already mirrors its own allowlist.
+PageRights = Literal[
+    "Execute",
+    "ExecuteRead",
+    "ExecuteReadWrite",
+    "ExecuteWriteCopy",
+    "NoAccess",
+    "ReadOnly",
+    "ReadWrite",
+    "WriteCopy",
+    "GExecute",
+    "GExecuteRead",
+    "GExecuteReadWrite",
+    "GExecuteWriteCopy",
+    "GNoAccess",
+    "GReadOnly",
+    "GReadWrite",
+    "GWriteCopy",
+]
 
 
 def _dump(result: Result[JsonObject]) -> dict[str, Any]:
@@ -58,14 +85,16 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
     def memory_protection(
         session_id: str,
         address: Annotated[int, Field(ge=0)],
-        rights: str | None = None,
+        rights: PageRights | None = None,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
         """Query memory protection or optionally set allowlisted page rights.
 
         A query (no rights) answers with protect_name and protect, same as
         memory.protect.query. A set answers with set, rights, rights_now and
-        address. There is no ok, protection or region field.
+        address. There is no ok, protection or region field. rights must be one
+        of the exact x64dbg names in the enum (e.g. ReadWrite, ExecuteReadWrite),
+        not a short "rw"/"rwx" form.
         """
         return _dump(
             analysis.memory_protection(session_id, address, rights=rights, timeout=timeout)
