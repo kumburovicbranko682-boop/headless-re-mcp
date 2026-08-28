@@ -63,6 +63,25 @@ def _iso_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _safe_text(value: object) -> str:
+    """A str with no lone surrogates, so the serialized HAR stays encodable UTF-8.
+
+    A captured URL, method or content-type can carry a lone surrogate. mitmproxy
+    decodes a request's non-UTF-8 path bytes with ``surrogateescape`` (and the
+    proxy recorder stores ``pretty_url`` verbatim, since ``_bounded_metadata``
+    only *measures* the replace-encoded length in the common fits-case), and a
+    ``\\udcXX`` escape from the DevTools protocol decodes to one as well.
+    ``json.dumps`` with ``ensure_ascii=False`` passes such a code point straight
+    through, and the ``text.encode("utf-8")`` in :func:`serialize_har` -- and the
+    callers' ``write_text(..., encoding="utf-8")`` -- then raise
+    UnicodeEncodeError, failing the whole export from one hostile flow.
+    Round-tripping through UTF-8 with ``replace`` drops only the unencodable code
+    points and leaves every valid character (including legitimate non-ASCII)
+    intact, so ``ensure_ascii=False`` still reads cleanly.
+    """
+    return str(value or "").encode("utf-8", "replace").decode("utf-8")
+
+
 def _query_string(url: str) -> list[JsonObject]:
     """Parse the URL's query into HAR ``name``/``value`` pairs, bounded.
 
@@ -102,7 +121,7 @@ def har_entry(
     browser capture keeps that hint.
     """
     status_code = int(status) if isinstance(status, int) else 0
-    url_text = str(url or "")
+    url_text = _safe_text(url)
     if isinstance(response_body_size, int) and response_body_size >= 0:
         content_size = response_body_size
     else:
@@ -111,7 +130,7 @@ def har_entry(
         "startedDateTime": started_date_time or _iso_now(),
         "time": 0,
         "request": {
-            "method": str(method or ""),
+            "method": _safe_text(method),
             "url": url_text,
             "httpVersion": "",
             "cookies": [],
@@ -126,7 +145,7 @@ def har_entry(
             "httpVersion": "",
             "cookies": [],
             "headers": [],
-            "content": {"size": content_size, "mimeType": str(mime_type or "")},
+            "content": {"size": content_size, "mimeType": _safe_text(mime_type)},
             "redirectURL": "",
             "headersSize": _UNKNOWN_SIZE,
             "bodySize": content_size,
@@ -136,7 +155,7 @@ def har_entry(
         "comment": _ENTRY_COMMENT,
     }
     if resource_type:
-        entry["_resourceType"] = str(resource_type)
+        entry["_resourceType"] = _safe_text(resource_type)
     return entry
 
 

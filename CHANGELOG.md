@@ -127,6 +127,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（HAR 导出：URL 里的孤立代理项让整份导出崩溃）
+
+- `web.har.export` 与 `proxy.export_har` 都把抓包里的 URL / method / content-type 直接喂给
+  `har_entry`，而 `serialize_har` 用 `ensure_ascii=False` 编码、两个导出器再
+  `write_text(..., encoding="utf-8")` 落盘。只要其中任一字符串含一个孤立代理项（lone
+  surrogate），`str.encode("utf-8")` 就抛 `UnicodeEncodeError`，一条恶意流即让整份 HAR
+  导出失败（记成 internal_error）。这条路径可达：mitmproxy 用 `surrogateescape` 解码请求行里
+  的非 UTF-8 路径字节，而代理录制器的 `_bounded_metadata` 在未超长的常见分支只“测量”
+  replace 编码后的长度、返回的却是原始串，于是 `pretty_url` 里的孤立代理项被原样存进流摘要。
+  现由单一构造点 `har_entry` 用 `encode("utf-8","replace").decode("utf-8")` 清洗
+  method / url / mimeType / _resourceType（`queryString` 由清洗后的 URL 解析而来，一并干净），
+  只丢不可编码的码点、保留一切合法字符（含正常非 ASCII），`ensure_ascii=False` 的可读性不变。
+  新增回归：共享序列化器面对代理项 URL 不再抛异常且产物可作为 UTF-8 重新载入、四个字段都被
+  清洗、合法非 ASCII（中文 + café）原样保留，以及 web / proxy 两个导出器端到端在代理项 URL
+  下仍写出可解析的 HAR。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
