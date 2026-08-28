@@ -65,6 +65,33 @@ class TestProxyCaptureIsBounded:
         assert recorder.raw("flow-499") is not None
         assert recorder.raw("flow-0") is None
 
+    def test_a_rerecorded_flow_keeps_the_two_views_consistent(self) -> None:
+        """A flow seen twice under one id must not desync the summary ring.
+
+        mitmproxy can deliver the same flow twice -- a completed response and
+        then a late error on that flow -- and _record already replaces its
+        retained body in _raw (keyed by id). The summary ring must replace the
+        flow's row too: appending a second row instead evicted the oldest
+        *distinct* flow's summary from the maxlen deque while _raw still held
+        it, so flows() stopped listing a flow that flow_get() could still
+        return. The two views must stay 1:1, and nothing was actually dropped.
+        """
+        recorder = _FlowRecorder(capacity=3)
+        for index in range(3):  # fills the ring: flow-0, flow-1, flow-2
+            recorder.response(_FakeFlow(index))
+
+        recorder.error(_FakeFlow(2))  # flow-2 responded, then errors: same id
+
+        summarised = [item["id"] for item in recorder.snapshot()]
+        assert sorted(summarised) == ["flow-0", "flow-1", "flow-2"]
+        assert len(summarised) == len(set(summarised))  # no duplicate rows
+        assert set(recorder._raw) == set(summarised)  # retrievable iff listed
+        for flow_id in ("flow-0", "flow-1", "flow-2"):
+            assert recorder.raw(flow_id) is not None
+        assert recorder.dropped() == 0  # a re-record is not an eviction
+        row = next(item for item in recorder.snapshot() if item["id"] == "flow-2")
+        assert row["error"] is True  # the row reflects the flow's final state
+
     def test_a_huge_body_is_not_kept_in_the_raw_ring(self, monkeypatch: Any) -> None:
         from headless_re_mcp.backends.proxy import client as mod
 

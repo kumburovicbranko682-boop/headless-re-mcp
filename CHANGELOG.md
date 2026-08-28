@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（proxy 抓包环的摘要视图与可取回视图会在同一 flow 被记录两次时错位）
+
+- `_FlowRecorder` 的 `_raw`（保留整条 flow，供 `flow_get`/`replay` 取回）按 `flow.id` 去重
+  （记录前先 `pop` 再重加），但摘要环 `self.flows`（`flows()` 列出的分页视图）是无脑
+  `append`。mitmproxy 会对同一条 flow 触发两次回调——一次完成的 `response`，随后一次迟到的
+  `error`（连接在收完响应后被重置，正是当初补 `error` 钩子要抓的场景）——于是 `_record` 用同一
+  `flow.id` 跑第二次：`_raw` 原地替换，`self.flows` 却又追加一行，把已满的 `maxlen` 环里最老的
+  **另一条**仍被保留的 flow 的摘要挤了出去。复现（容量 3，记录 A、B、C 后 C 再报错）：`snapshot`
+  变成 `[B, C, C]` 而 `_raw` 仍是 `{A, B, C}`——`flow_get("A")` 能取回，`flows()` 却不再列出 A，
+  且 C 出现重复行，违背了类里自述的"两个视图对哪些 flow 可取回永不分歧"的不变量。改法：re-record
+  时先移除该 `flow.id` 的旧摘要行再追加替换行，令摘要环与 `_raw` 恒为 1:1（仅 re-record 付出这次
+  扫描，新 flow 的常见路径不受影响）。同时把 `dropped` 从脆弱的"序号减行数"启发式改为一个只在真正
+  因容量驱逐时自增的显式计数器：否则一次 re-record 会被误报成一次丢弃。新增变异验证的回归测试
+  `test_a_rerecorded_flow_keeps_the_two_views_consistent`。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言

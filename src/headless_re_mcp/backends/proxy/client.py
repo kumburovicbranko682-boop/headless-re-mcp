@@ -317,6 +317,12 @@ class _FlowRecorder:
         self._raw: OrderedDict[str, Any] = OrderedDict()
         self._raw_sizes: dict[str, int] = {}
         self._retained_bytes = 0
+        # Flows actually evicted from the ring for capacity. Counted directly
+        # rather than derived from the sequence number, because a flow can be
+        # recorded more than once under the same id (a response followed by a
+        # late error), and "records seen minus rows kept" would then report a
+        # re-record as a drop even though nothing left the ring.
+        self._dropped = 0
         self._lock = threading.RLock()
 
     def _omit_retained(self, flow_id: str) -> None:
@@ -373,6 +379,13 @@ class _FlowRecorder:
         with self._lock:
             self._seq += 1
             flow_id = str(getattr(flow, "id", None) or self._seq)
+            # A flow reaching us twice under the same id -- a completed response
+            # followed by a late error on the same flow -- replaces its retained
+            # body below; its summary row has to be replaced in step, not
+            # appended alongside, or the extra append would push a still-retained
+            # flow's summary out of the maxlen ring while _raw kept it, so
+            # flows() would stop listing a flow flow_get() can still return.
+            rerecord = flow_id in self._raw
             self._raw.pop(flow_id, None)
             self._retained_bytes -= self._raw_sizes.pop(flow_id, 0)
             if not omitted:
@@ -391,6 +404,7 @@ class _FlowRecorder:
             while len(self._raw) > self._capacity:
                 evicted_id, _ = self._raw.popitem(last=False)
                 self._retained_bytes -= self._raw_sizes.pop(evicted_id, 0)
+                self._dropped += 1
             entry: JsonObject = {
                 "id": flow_id,
                 "seq": self._seq,
@@ -414,6 +428,15 @@ class _FlowRecorder:
                 or error_truncated
             ):
                 entry["metadata_truncated"] = True
+            # For a re-record, drop the flow's existing summary row before
+            # appending its replacement so the ring keeps one row per flow_id,
+            # 1:1 with _raw. Only re-records pay this scan; a brand-new flow (the
+            # common case) skips it and the deque's maxlen handles eviction.
+            if rerecord:
+                for existing in self.flows:
+                    if existing.get("id") == flow_id:
+                        self.flows.remove(existing)
+                        break
             self.flows.append(entry)
 
     def snapshot(self) -> list[JsonObject]:
@@ -427,6 +450,10 @@ class _FlowRecorder:
     def count(self) -> int:
         with self._lock:
             return len(self.flows)
+
+    def dropped(self) -> int:
+        with self._lock:
+            return self._dropped
 
     def retained_bytes(self) -> int:
         with self._lock:
@@ -632,9 +659,7 @@ class ProxyBackend:
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = items[start : start + cap]
-        dropped = 0
-        if items:
-            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
+        dropped = inst.recorder.dropped()
         return {
             "flows": window,
             "count": len(window),
