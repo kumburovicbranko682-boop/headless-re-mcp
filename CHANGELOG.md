@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 加固（单元套件以固定种子乱序执行——「顺序无关」从口头承诺变成每次运行都验证的契约）
+
+- 动机：套件此前始终按定义序运行，而定义序永远无法证伪「测试间无耦合」——泄漏的环境变量、
+  模块级缓存、共享单例造成的顺序依赖只有换序才会暴露。test extra 新增 `pytest-randomly`，
+  `addopts` 固定 `--randomly-seed=987654321`，此后每次运行（CI 与本地）都按同一乱序排列执行。
+- 为何钉死种子而非每次随机：保住 CI 的确定性——红了本地零参数即可复现，无关 PR 也不会因为
+  新种子撞出某个潜在配对而无辜变红。想探索其他排列用 `--randomly-seed=<n>`，临时禁用乱序用
+  `-p no:randomly`。
+- 实测：该排列下全量单元套件在两种环境均绿——稀疏 CI 同构环境（`[test,dev,web]`：
+  6043 passed / 54 skipped / 0 failed，3m12s）与满配环境（android/proxy/browser extras 全装、
+  合并 pin-dep-absence 修复后 6047 passed，并以第二种子 42424242 复验）。`ruff` / `mypy --strict` 干净。
+- 边界说明：满配环境下 main 现存 6 个「假设可选依赖缺席」的用例失败与乱序无关（顺序执行同样红），
+  由 `cursor/pin-dep-absence-in-new-path-tests-4586` 修复；本改动不依赖该分支——CI 的稀疏环境里
+  那些用例的依赖真实缺席，本就走通过路径。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
