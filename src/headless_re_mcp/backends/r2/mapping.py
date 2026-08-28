@@ -97,7 +97,7 @@ def address_dict(
 def parse_r2_json(raw: str) -> Any | None:
     """Extract the first JSON value from r2 -q0 output (may include banners).
 
-    ``rfind("[")`` is wrong here: ``pdj`` / ``axj`` / ``izj`` put ``[`` inside
+    ``rfind("[")`` is wrong here: ``pdj`` / ``axtj`` / ``izj`` put ``[`` inside
     opcodes (``mov eax, dword [rbp+0x10]``), C++ names, and strings. That
     slice is not the root array, so the ``{…}`` fallback loaded only the last
     object and ``enrich_r2_payload`` reported ``parsed: True`` with no items.

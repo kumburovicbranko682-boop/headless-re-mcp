@@ -271,7 +271,7 @@ def test_enrich_flags_when_the_item_list_is_capped(tmp_path: Path) -> None:
     binary = _minimal_pe(tmp_path, x64=True)
     total = _MAX_ITEMS + 5
     raw = json.dumps([{"offset": 0x140000000 + index * 4} for index in range(total)])
-    enriched = enrich_r2_payload({"raw": raw, "commands": ["axj"]}, binary=binary)
+    enriched = enrich_r2_payload({"raw": raw, "commands": ["axtj"]}, binary=binary)
     assert enriched["count"] == _MAX_ITEMS
     assert len(enriched["items"]) == _MAX_ITEMS
     assert enriched["items_truncated"] is True
@@ -608,15 +608,17 @@ def test_disasm_disassembles_at_the_request_address_with_the_request_count(
     assert "aa" in script.splitlines()
 
 
-def test_xrefs_asks_for_axj_at_the_request_address_and_echoes_it(
+def test_xrefs_asks_for_axtj_at_the_request_address_and_echoes_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """xrefs must query axj at the asked address and carry that address back.
+    """xrefs must query axtj (references to) at the asked address and echo it.
 
     The reply lists references to one address; without echoing which address was
     queried the list is unanchored, so the payload has to carry it alongside the
-    ``axj @ <address>`` command that produced it.
+    ``axtj @ <address>`` command that produced it. axtj -- not the whole-program
+    ``axj`` -- is what scopes the result to this address and stays parseable
+    across r2 versions (it returns [] rather than empty for no references).
     """
     recorded: list[list[str]] = []
 
@@ -632,7 +634,9 @@ def test_xrefs_asks_for_axj_at_the_request_address_and_echoes_it(
     assert payload["address_va"] == 0x140002000
     argv = recorded[0]
     script = argv[argv.index("-c") + 1]
-    assert f"axj @ {0x140002000}" in script
+    assert f"axtj @ {0x140002000}" in script
+    # The dead whole-program command must not be what we send.
+    assert "axj @" not in script
 
 
 def test_open_reports_a_missing_binary_as_not_found(tmp_path: Path) -> None:

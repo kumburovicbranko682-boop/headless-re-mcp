@@ -62,9 +62,11 @@ def test_m11_r2_live_address_mapping() -> None:
     instruction = disasm["items"][0]
     assert "opcode" in instruction or "disasm" in instruction
 
-    # xrefs (axj) exercises the second parameterized whitelist command; the
-    # reference count is data-dependent, so only its shape and the round-tripped
-    # request address are asserted.
+    # xrefs (axtj) exercises the second parameterized whitelist command; the
+    # reference count is data-dependent (the first listed function is often the
+    # entry point, which nothing references), so only its shape and the
+    # round-tripped request address are asserted -- axtj answers [] for a
+    # referent-free address, which must still read back as parsed with count 0.
     xrefs = client.xrefs(fixture, va, timeout=60.0)
     assert xrefs.get("parsed") is True
     assert isinstance(xrefs.get("count"), int)

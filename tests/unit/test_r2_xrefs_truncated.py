@@ -43,7 +43,7 @@ def test_r2_xrefs_says_when_the_list_was_cut(tmp_path: Path) -> None:
         for index in range(_MAX_ITEMS + 3)
     ]
     payload = enrich_r2_payload(
-        {"raw": json.dumps(entries), "commands": ["axj"], "address": 0x140001000},
+        {"raw": json.dumps(entries), "commands": ["axtj"], "address": 0x140001000},
         binary=binary,
     )
     assert payload["count"] == 4096

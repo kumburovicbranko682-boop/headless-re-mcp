@@ -32,12 +32,12 @@ _ALLOWED = frozenset(
         "iij",
         "iEj",
         "pdj",
-        "axj",
+        "axtj",
         "aa",
     }
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
-_AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+_AXTJ_COMMAND = re.compile(r"axtj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 
 
 class R2Error(RuntimeError):
@@ -54,7 +54,7 @@ def _require_allowed_command(command: str) -> None:
     pdj = _PDJ_COMMAND.fullmatch(command)
     if pdj is not None and int(pdj.group(1)) <= 512:
         return
-    if _AXJ_COMMAND.fullmatch(command) is not None:
+    if _AXTJ_COMMAND.fullmatch(command) is not None:
         return
     raise R2Error("invalid_params", "r2 command not whitelisted", command=command)
 
@@ -107,7 +107,14 @@ class R2Client:
     ) -> JsonObject:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
-        cmd = f"axj @ {address}"
+        # axtj lists references *to* the seeked address (its callers) as a JSON
+        # array -- [] when there are none. The older `axj` listed the whole
+        # program's ref database, ignoring the seek, so the address parameter was
+        # only echoed and never scoped the result; worse, on radare2 6.x `axj`
+        # prints nothing at all, which read back through parse_r2_json as a parse
+        # failure (parsed False) even though the query succeeded. axtj is both
+        # address-scoped and stable across r2 versions.
+        cmd = f"axtj @ {address}"
         data = self.run(binary, ["aa", cmd], timeout=timeout)
         data = dict(data)
         data["address"] = address

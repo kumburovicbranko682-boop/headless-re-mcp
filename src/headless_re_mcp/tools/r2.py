@@ -121,13 +121,17 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         address: Annotated[int, Field(ge=0)],
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
-        """References to and from address, as radare2 resolved them.
+        """References to address (its callers), as radare2 resolved them.
 
-        Answers with items, each carrying from, to, type, from_address and
-        to_address, plus address (va/rva/module) and address_va (the integer
-        that was asked). Read items_truncated, items_total and items_limit
-        when the list filled the cap (4096). There is no integer address,
-        xrefs, truncated or has_more field.
+        Address-scoped: answers with the cross-references that target this
+        address, not the whole-program ref list. items each carry from, type
+        and from_address (the referencing site), plus address (va/rva/module)
+        and address_va (the integer that was asked); an address nothing
+        references answers items [] with count 0, not an error. The outgoing
+        references from this address are its own instructions -- read them with
+        r2.disasm. Read items_truncated, items_total and items_limit when the
+        list filled the cap (4096). There is no integer address, xrefs,
+        truncated or has_more field.
         """
         return _dump(analysis.r2_xrefs(session_id, address, timeout=timeout))
     return tools.bindings
