@@ -2177,7 +2177,7 @@ class AnalysisService(
             execution: JsonObject = {"resumed": bool(resumed.ok)}
             if resumed.ok and resumed.data is not None:
                 execution["state"] = resumed.data.get("state")
-            elif resumed.error is not None:
+            elif resumed.error is not None:  # pragma: no branch - Result invariant
                 execution["error"] = resumed.error.model_dump(mode="json")
 
             registers: JsonObject | None = None
