@@ -31,6 +31,11 @@ until 1.0 the tool surface may still change between minor versions.
   webcrack deobfuscate、wasm2wat），72 个诚实跳过，0 失败，测试段约 10 秒；
   工具核验 wabt 1.0.34 / radare2 5.5.0 / webcrack 2.16.0 / mitmproxy、androguard、
   playwright 导入齐全。YAML 经 safe_load 校验。
+- 终态预演：把本批九个待合分支（union 合并驱动、webcrack -f 修复、wasm.info /
+  r2 disasm / proxy 捕获 / web 网络四个新 Gate、browser smoke 修复、刷新续跑修复、
+  本 CI 通道）合成一棵验证树——九支互相零冲突（CHANGELOG 冲突被 union 驱动当场
+  自动消解），去掉 smoke 的 deselect 后整目录 **22 通过、72 跳过、0 失败**（约 15
+  秒）。即全部合入后，本通道无需任何再调整即可把新 Gate 全部纳管。
 
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
