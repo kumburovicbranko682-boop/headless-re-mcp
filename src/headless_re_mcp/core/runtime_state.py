@@ -9,7 +9,7 @@ from threading import RLock
 from typing import Generic, TypeVar
 
 from headless_re_mcp.core.models import BackendKind, SessionState
-from headless_re_mcp.core.session import SessionRegistry
+from headless_re_mcp.core.session import SessionNotFound, SessionRegistry
 
 RuntimeT = TypeVar("RuntimeT")
 WorkflowT = TypeVar("WorkflowT")
@@ -271,6 +271,21 @@ class DebuggeeStateOwner:
         debuggee_pid = process_id if isinstance(process_id, int) and process_id > 0 else None
         snapshot = DebuggeeSnapshot(target, debuggee_pid, debugger_pid)
         with self._lock:
+            # Observations arrive after a debugger RPC that blocks for up to
+            # its 30s timeout while holding only runtime.lock, and close does
+            # not need that lock: it can transition the session and clear()
+            # this owner inside the RPC. Writing the snapshot afterwards
+            # re-inserted an entry for a session that never reopens -- one
+            # retained snapshot per lost race, the leak clear() exists to
+            # prevent. The check is race-free without the service lock
+            # because clear() serializes on this same lock and close
+            # transitions to CLOSING before clearing: either this critical
+            # section wins and clear() then removes the fresh write, or
+            # clear() already ran and the registry must show CLOSING. FAILED
+            # stays observable -- close has not cleared a failed session yet,
+            # and its final state is still worth recording.
+            if not self._session_accepts_observations(session_id):
+                return self.annotate(state, snapshot)
             self._snapshots[session_id] = snapshot
         self._project_legacy_session_state(session_id, target)
         self._registry.update_metadata(
@@ -278,6 +293,13 @@ class DebuggeeStateOwner:
             {"debuggee_pid": debuggee_pid, "debugger_pid": debugger_pid},
         )
         return self.annotate(state, snapshot)
+
+    def _session_accepts_observations(self, session_id: str) -> bool:
+        try:
+            session = self._registry.get(session_id)
+        except SessionNotFound:
+            return False
+        return session.state not in {SessionState.CLOSING, SessionState.CLOSED}
 
     @staticmethod
     def annotate(

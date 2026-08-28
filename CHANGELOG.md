@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（close 竞态后 debuggee 快照被复活 / 已注销会话观察先泄漏后抛错）
+
+- debuggee 观察（`DebuggeeStateOwner.observe`）总在一次调试器 RPC 之后到达——
+  `debug.state`、`wait_for_state` 等可阻塞至 30 秒超时，期间只持 runtime.lock；
+  `close_session` 不需要该锁，可在 RPC 中途完成 CLOSING 迁移并
+  `_debuggee_owner.clear()`。随后无条件的快照写入会为永不重开的会话重新插入
+  `_snapshots` 条目——每输一次竞态永久泄漏一份，正是 clear() 要回收的内存。
+  另外会话若已被注册表注销，投影阶段会在快照已写入之后才抛
+  `SessionNotFound`——泄漏与报错双收。修复：写入前在 owner 自身锁内校验会话
+  存活（CLOSING/CLOSED/已注销则跳过写入与投影、仍返回带注解的状态——RPC 确实
+  完成了）。该校验无需服务锁即无窗口：clear() 与写入串行于同一把 owner 锁，
+  且 close 先迁移到 CLOSING 再清理，故临界区要么先于 clear 完成而后被其回收，
+  要么必然看见 CLOSING。FAILED 仍可观察——close 尚未清理故障会话，其最终状态
+  值得保留到 close 收割为止。回归测试钉住：close 后迟到观察不复活快照且调用方
+  仍得到注解回复、存活/FAILED 会话照常记录、已注销会话安静返回不再抛错。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
