@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（r2.symbols：完整符号表，含全局数据符号，工具面 266→267）
+
+- 新增只读工具 `r2.symbols`（跑 `isj`）：列出二进制的符号表——每条带 `name`、`type`
+  （`FUNC`/`OBJ`/`FILE`/`NOTYPE`…）、`bind`（`GLOBAL`/`LOCAL`/`WEAK`…）、`size`、`vaddr`、
+  `paddr` 与映射好的 `address`（va/rva/module），外加 `count`。这是最全的符号视图：不同于
+  `r2.functions`（分析出的代码）和 `r2.imports`/`r2.exports`（动态表），它还会给出
+  **`OBJ` 符号——全局变量与数据**，以及 `LOCAL` 函数，这些是此前任何工具都拿不到的一类。
+  列表走符号表、无需分析 pass。命令 `isj` 已加入 r2 命令白名单；读写归类记为只读；沿用既有
+  `enrich_r2_payload`，`vaddr` 照常映射成统一 `Address`、超过 4096 条时以 `items_truncated`/
+  `items_total`/`items_limit` 明示截断。已在真 radare2 5.5.0 上用现编的 x86-64 ELF 核验：
+  `global_table`（`OBJ`/`GLOBAL`）、`secret_counter`（`OBJ`/`LOCAL`）如实列出并带地址——这两个
+  全局变量正是 `functions`/`imports`/`exports` 都看不到的；`main`/`add` 为 `FUNC`。单测另钉住
+  `isj` 在白名单内、`type`/`bind` 保留与 `vaddr→address` 映射、截断语义与 docstring。README 与
+  工具计数同步更新为 267（150 只读 / 117 写）。
+
 ### 新增（r2.sections：radare2 从头部读出的节区布局，工具面 265→266）
 
 - 新增只读工具 `r2.sections`（跑 `iSj`）：列出二进制的节区——`name`、`size`、`vsize`、

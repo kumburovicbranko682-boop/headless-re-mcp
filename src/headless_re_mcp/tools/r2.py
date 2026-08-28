@@ -117,6 +117,24 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_sections(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.symbols")
+    def r2_symbols(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """The binary's symbol table, as radare2 read it.
+
+        Answers with items, each carrying name, type (FUNC, OBJ, FILE,
+        NOTYPE...), bind (GLOBAL, LOCAL, WEAK...), size, vaddr, paddr and
+        address (va/rva/module), plus count. The fullest symbol view: unlike
+        r2.functions (analysed code) and r2.imports/r2.exports (the dynamic
+        tables), this includes OBJ symbols -- global variables and data -- and
+        LOCAL functions, which no other tool surfaces. Needs no analysis pass.
+        There is no integer address field. Read items_truncated, items_total
+        and items_limit when the list filled the cap (4096). There is no
+        symbols, truncated or has_more field.
+        """
+        return _dump(analysis.r2_symbols(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,
