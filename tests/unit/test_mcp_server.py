@@ -309,6 +309,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "js.unpack_bundle",
         "js.strings",
         "js.endpoints",
+        "js.secrets",
         "wasm.info",
         "wasm.summary",
         "wasm.names",

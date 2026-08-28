@@ -294,6 +294,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **`js.strings` 倒出全部字面量、`js.endpoints` 给出网络面，但静态 bundle 分析价值最高的一问是「前端到底把哪些凭据写死进去了」——AWS/Google/GitHub
+  key、JWT、私钥……以前得肉眼在字面量里翻**。新增只读工具 `js.secrets`：复用 `js.strings`/`js.endpoints` 的同一词法器（故注释与正则里的引号不误判、
+  `\x`/`\u` 转义的 key 先解码再匹配），对字符串字面量跑一组高精度凭据探测器——AWS access-key id、Google API key 与 OAuth token、GitHub token
+  （classic 与 fine-grained）、Slack token 与 webhook、Stripe secret key、Twilio SID/key、SendGrid 与 Mailgun key、npm token、JWT、PEM 私钥头，
+  以及带 `user:pass@` 的 URL。答复带 `secrets`（每行 `{detector, value（命中的凭据，过长时置 value_truncated 截断）, count（全文件出现次数）,
+  first_offset（首个来源字面量的字符下标）}`，按 detector 再按 count 再按 value 排序）、`count`/`total`/`offset`/`has_more`、`detectors`
+  （命中的探测器种类集合——一眼看清「泄了哪几类」），以及不同命中数超采集上限时的 `scan_capped`。探测器均加锚以压低误报，故一条普通的长随机串不会
+  被报出，除非置 `include_generic`——它对整条即为高熵 base64/hex token 的字面量补一个 `generic_high_entropy` 探测器（仅对没有被具体探测器命中的
+  字面量生效）。`name_filter` 对 detector 或 value 做大小写不敏感子串匹配、在分页前应用，故 `total` 是命中数——只看 aws 或 jwt 命中的办法。列表
+  字段是 `secrets`；与 `js.strings`/`endpoints` 一致只扫字符串字面量，故藏在注释里的凭据不报。缺文件 `not_found`、超 16 MiB `too_large`。只读，
+  工具总数 287→288（170 只读 / 118 写）。
 - **`js.strings` 把所有字面量都倒出来，但 JS/移动逆向最先要问的是「这份 bundle 到底连哪些后端」——URL、host、api 路径，得自己从上千条
   字符串里挑**。新增只读工具 `js.endpoints`：复用 `js.strings` 的同一词法器（故 `\x`/`\u` 转义的 URL 会被解码还原、注释与正则里的引号
   不会误判），从字符串字面量里抽出带协议的 URL（http/https/ws/wss/ftp）以及（`include_paths` 为真时）整条即路径的请求路径（`/api/...`、

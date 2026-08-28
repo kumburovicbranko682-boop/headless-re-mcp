@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.jsre.js_strings import extract_endpoints as extract_js_endpoints
+from headless_re_mcp.backends.jsre.js_strings import extract_secrets as extract_js_secrets
 from headless_re_mcp.backends.jsre.js_strings import extract_strings as extract_js_strings
 from headless_re_mcp.backends.jsre.wasm_summary import WasmParseError
 from headless_re_mcp.backends.jsre.wasm_summary import parse_data_strings as parse_wasm_strings
@@ -54,6 +55,8 @@ _MAX_WASM_STRINGS_PAGE = 2000
 _MAX_JS_STRINGS_PAGE = 2000
 # Same rationale for js.endpoints.
 _MAX_JS_ENDPOINTS_PAGE = 2000
+# Same rationale for js.secrets.
+_MAX_JS_SECRETS_PAGE = 2000
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -339,6 +342,48 @@ class JsClient:
             "has_more": start + len(window) < len(endpoints),
             "hosts": hosts,
             "hosts_truncated": hosts_truncated,
+            "scan_capped": scan_capped,
+        }
+
+    def secrets(
+        self,
+        path: Path,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        include_generic: bool = False,
+    ) -> JsonObject:
+        """Detect embedded credentials in a JavaScript file, without webcrack.
+
+        Dependency-free, built on the same lexer as strings()/endpoints(): a set
+        of high-precision credential detectors (plus an opt-in high-entropy
+        catch-all) is run over the string literals, escape-decoded and
+        comment/regex safe. Paged; total is the count that matched the filter,
+        detectors is the distinct detector set present, and scan_capped marks a
+        file with more distinct findings than the collect ceiling.
+        """
+        resolved = _require_existing_file(path, missing="input file not found")
+        try:
+            raw = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        source = raw.decode("utf-8", errors="replace")
+        secrets, detectors, scan_capped = extract_js_secrets(
+            source, name_filter=name_filter, include_generic=include_generic
+        )
+        start = max(0, int(offset))
+        capped = max(1, min(int(limit), _MAX_JS_SECRETS_PAGE))
+        window = secrets[start : start + capped]
+        return {
+            "secrets": window,
+            "count": len(window),
+            "total": len(secrets),
+            "offset": start,
+            "has_more": start + len(window) < len(secrets),
+            "detectors": detectors,
             "scan_capped": scan_capped,
         }
 

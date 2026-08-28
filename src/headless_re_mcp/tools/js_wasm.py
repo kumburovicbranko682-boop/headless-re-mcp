@@ -157,6 +157,54 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="js.secrets")
+    def js_secrets(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        name_filter: str = "",
+        include_generic: bool = False,
+    ) -> dict[str, Any]:
+        """Detect embedded credentials (API keys, tokens, private keys) in a JS file.
+
+        The credential cut of the js-line triage triad, without webcrack:
+        js.strings returns every literal and js.endpoints the network surface;
+        this runs a set of high-precision secret detectors over the same
+        escape-decoded, comment/regex-safe string literals, so a leaked key ships
+        the shortest path from a bundle to "what did the frontend hardcode".
+        Detectors cover AWS access-key ids, Google API keys and OAuth tokens,
+        GitHub tokens (classic and fine-grained), Slack tokens and webhooks,
+        Stripe secret keys, Twilio SIDs/keys, SendGrid and Mailgun keys, npm
+        tokens, JWTs, PEM PRIVATE KEY headers, and user:pass@ URLs. Because it
+        reuses the lexer, a key an obfuscator hid as a \\x/\\u-escaped string is
+        decoded before matching. Answers with secrets (each {detector, value (the
+        matched credential, clipped with value_truncated when long), count
+        (occurrences across the file), first_offset (char index of the first
+        literal it came from)}, sorted by detector then count then value), count,
+        total, offset, has_more, detectors (the distinct detector set present, the
+        at-a-glance "what kinds leaked"), and scan_capped when the file held more
+        distinct findings than the collect ceiling. The detectors are anchored to
+        keep false positives low, so an ordinary long random-looking string is
+        not reported unless include_generic is set -- which adds a
+        generic_high_entropy detector for a whole-literal base64/hex token with
+        high Shannon entropy (only for a literal no specific detector already
+        claimed). name_filter keeps only findings whose detector or value contains
+        that substring (case-insensitive), applied before paging so total is the
+        match count -- the way to pull just the aws or jwt hits. The list field is
+        secrets; only string literals are scanned (as with js.strings/endpoints),
+        so a secret sitting in a comment is not reported. A missing file is
+        not_found; one over 16 MiB is too_large.
+        """
+        return _dump(
+            analysis.js_secrets(
+                path,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_generic=include_generic,
+            )
+        )
+
     @tools.tool(name="wasm.summary")
     def wasm_summary(
         path: str,
