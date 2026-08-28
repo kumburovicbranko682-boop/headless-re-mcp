@@ -26,7 +26,7 @@ async def test_full_profile_exposes_every_tool(tmp_path) -> None:
     finally:
         analysis.close_all()
     names = {tool.name for tool in tools}
-    assert len(names) == 276
+    assert len(names) == 277
     assert "apk.open" in names
     assert "web.open" in names
     assert "dex.summary" in names
@@ -39,6 +39,7 @@ async def test_full_profile_exposes_every_tool(tmp_path) -> None:
     assert "elf.strings" in names
     assert "macho.summary" in names
     assert "macho.symbols" in names
+    assert "macho.strings" in names
     assert "macho.signature" in names
 
 
@@ -81,6 +82,7 @@ async def test_web_profile_hides_android_domain(tmp_path) -> None:
     assert "elf.strings" in names
     assert "macho.summary" in names
     assert "macho.symbols" in names
+    assert "macho.strings" in names
     assert "macho.signature" in names
 
 
@@ -103,6 +105,7 @@ async def test_pe_profile_hides_both_android_and_web(tmp_path) -> None:
     assert "elf.strings" in names
     assert "macho.summary" in names
     assert "macho.symbols" in names
+    assert "macho.strings" in names
     assert "macho.signature" in names
 
 

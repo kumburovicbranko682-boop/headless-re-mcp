@@ -5,12 +5,14 @@ was the one native format that could not be opened here at all. The header and
 load commands are an exact binary format that reads with the stdlib alone. This
 gate drives the real stdio server end to end on hand-assembled Mach-O images
 (portable, so it runs anywhere) and pins the round trip: macho.summary,
-macho.symbols and macho.signature are advertised, the summary returns the cpu,
-filetype, segments, linked dylibs and platform, the symbol page classifies
-imports and exports, the signature decode surfaces the CodeDirectory identity,
-team ID, flags and entitlements (and says unsigned when there is no signature),
-and a file that is not a Mach-O fails with invalid_params rather than an
-internal fault. It needs no analysis backend, so it always runs.
+macho.symbols, macho.signature and macho.strings are advertised, the summary
+returns the cpu, filetype, segments, linked dylibs and platform, the symbol page
+classifies imports and exports, the signature decode surfaces the CodeDirectory
+identity, team ID, flags and entitlements (and says unsigned when there is no
+signature), the string extraction pulls printable literals tagged with the
+two-level __TEXT,__cstring section they came from, and a file that is not a
+Mach-O fails with invalid_params rather than an internal fault. It needs no
+analysis backend, so it always runs.
 """
 
 from __future__ import annotations
@@ -127,6 +129,33 @@ def _build_signed_dylib() -> bytes:
     return header + payload + sig
 
 
+def _build_string_dylib() -> bytes:
+    """An arm64 dylib with a __TEXT,__cstring section carrying known constants.
+
+    The single LC_SEGMENT_64 declares one real section_64 whose file offset is
+    wired to the appended content, so macho.strings must return those literals
+    tagged with the two-level __TEXT,__cstring label.
+    """
+    content = b"\x00hello_gate\x00yaml_parse_error\x00"
+    hdr_size, seg_hdr, sect_size = 32, 72, 80
+    seg_cmd_size = seg_hdr + sect_size
+    content_off = hdr_size + seg_cmd_size
+    section = struct.pack(
+        "<16s16sQQIIIIIIII",
+        b"__cstring", b"__TEXT", 0x1000, len(content), content_off, 0, 0, 0, 0x2, 0, 0, 0
+    )
+    seg = struct.pack(
+        "<II16sQQQQiiII",
+        0x19, seg_cmd_size, b"__TEXT", 0x100000000, 0x10000, 0, content_off + len(content),
+        0x7, 0x5, 1, 0,
+    )
+    payload = seg + section
+    header = b"\xcf\xfa\xed\xfe" + struct.pack(
+        "<iiIIIII", 0x0100000C, 0, 6, 1, len(payload), 0, 0
+    )
+    return header + payload + content
+
+
 def _structured(result: object) -> dict[str, Any]:
     content = getattr(result, "structuredContent", None)
     assert isinstance(content, dict), result
@@ -143,6 +172,8 @@ async def test_mcp_stdio_macho_summary(tmp_path: Path) -> None:
     binary.write_bytes(_build_dylib64())
     signed = tmp_path / "libsigned.dylib"
     signed.write_bytes(_build_signed_dylib())
+    stringy = tmp_path / "libstrings.dylib"
+    stringy.write_bytes(_build_string_dylib())
     junk = tmp_path / "bad.dylib"
     junk.write_bytes(b"not a mach-o binary at all")
 
@@ -162,6 +193,7 @@ async def test_mcp_stdio_macho_summary(tmp_path: Path) -> None:
         assert "macho.summary" in tools
         assert "macho.symbols" in tools
         assert "macho.signature" in tools
+        assert "macho.strings" in tools
 
         full = await _call(client, "macho.summary", {"path": str(binary)})
         assert full["ok"] is True, full
@@ -201,6 +233,18 @@ async def test_mcp_stdio_macho_summary(tmp_path: Path) -> None:
         assert unsigned["ok"] is True, unsigned
         assert unsigned["data"]["signed"] is False
 
+        strings = await _call(
+            client, "macho.strings", {"path": str(stringy), "min_length": 4, "section": "__cstring"}
+        )
+        assert strings["ok"] is True, strings
+        str_data = strings["data"]
+        assert str_data["sections_scanned"] == ["__TEXT,__cstring"]
+        by_value = {s["value"]: s for s in str_data["strings"]}
+        assert "hello_gate" in by_value
+        assert "yaml_parse_error" in by_value
+        assert by_value["hello_gate"]["segment"] == "__TEXT"
+        assert by_value["hello_gate"]["section"] == "__cstring"
+
         bad = await _call(client, "macho.summary", {"path": str(junk)})
         assert bad["ok"] is False
         assert bad["error"]["code"] == "invalid_params"
@@ -212,3 +256,7 @@ async def test_mcp_stdio_macho_summary(tmp_path: Path) -> None:
         bad_signature = await _call(client, "macho.signature", {"path": str(junk)})
         assert bad_signature["ok"] is False
         assert bad_signature["error"]["code"] == "invalid_params"
+
+        bad_strings = await _call(client, "macho.strings", {"path": str(junk)})
+        assert bad_strings["ok"] is False
+        assert bad_strings["error"]["code"] == "invalid_params"

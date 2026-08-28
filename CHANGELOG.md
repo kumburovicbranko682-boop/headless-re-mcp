@@ -7,6 +7,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 新增（原生 Mach-O 离线速览，无需任何外部后端）
 
+- 新增 `macho.strings`：纯 stdlib 抽取可打印字符串，并保留**两级来源**——Mach-O 是「段 + 节」两级命名,裸
+  `strings` 把整个文件压成匿名列表,这里深入 LC_SEGMENT(_64) 的 section 表,给每条串标注它所在的段与节:
+  `__TEXT,__cstring` 是 C 字符串常量、`__TEXT,__objc_methname` 是 Objective-C 的 **selector** 名、
+  `__TEXT,__objc_classname` 是类名、`__TEXT,__const` 是其它字面量——加上文件偏移与虚拟地址 `vaddr`。这层
+  provenance 正是 iOS 逆向要的:ObjC 的 selector/类名一眼定位到 `__objc_methname`/`__objc_classname`,不必
+  在噪声里翻。`section` 过滤器同时接受全名 `__TEXT,__cstring` 或裸节名 `__cstring`;`min_length`(默认 4)设
+  长度下限。zerofill/bss 类节(`flags & 0xff` 属 S_ZEROFILL/S_GB_ZEROFILL/S_THREAD_LOCAL_ZEROFILL)无文件
+  内容,跳过;`strings_total` 有硬上限(`truncated` 标记触顶)并用 `offset`/`limit` 诚实分页。section 记录
+  逐条防御式跟随——越界记 warning 跳过而非抛异常;32/64 位 section 记录大小不同(68 vs 80 字节)按各自布局
+  解析;fat 二进制读首个架构 slice 并报出 `arch` 与全部 `available_arches`。已对真实二进制验证:PyPI macOS
+  arm64 wheel 里的 CPython 扩展,`__TEXT,__cstring` 抽出的正是模块名 `markupsafe._speedups` 与函数名
+  `_escape_inner`,**逐条偏移自校验全中**,裸节名与全名两种过滤都命中同一节。工具为**核心、按路径、只读**,
+  各工作方向均可见。新增可移植的手工汇编夹具单测(段/节两级标注、zerofill 跳过、偏移/vaddr 精确、min_length
+  过滤、全名与裸名两种过滤、诚实分页、32 位 section 记录、fat 首 slice、section 内容越界、非 Mach-O 拒绝、
+  服务三类信封);Mach-O MCP stdio Gate 扩到同时打 `macho.strings`(断言从 `__TEXT,__cstring` 抽出常量并标注
+  两级来源)。
 - 新增 `macho.signature`：纯 stdlib 解码 `LC_CODE_SIGNATURE` 指向的代码签名 SuperBlob——即离线
   `codesign -dvv --entitlements`。`macho.summary` 只说"有没有签名"，这里打开签名本体，读出分析 macOS/iOS
   样本最先问的"**谁签的、按什么规则跑**"：CodeDirectory 的签名标识符（identifier）、Apple Developer
@@ -198,7 +214,7 @@ until 1.0 the tool surface may still change between minor versions.
   先例：去掉 POSIX-only 前置断言，只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **276（159 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **277（160 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 

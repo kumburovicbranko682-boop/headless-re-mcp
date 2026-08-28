@@ -11,11 +11,14 @@ big-endian image, a fat binary with per-slice summaries, the LC_SYMTAB symbol
 page with its import/export classification and library resolution (64- and
 32-bit nlist), honest pagination, the code-signature decode (CodeDirectory
 identity/team/flags/cdhash, entitlements plist, adhoc vs hardened-runtime vs
-linker-signed verdicts, unsigned images, corrupt superblobs), resilience to
-truncated load commands, out-of-file slices and symbol records, refusal of a
-non-Mach-O (including a Java class file that shares the 0xcafebabe magic), and
-the service routing that turns a bad file into a precise envelope rather than a
-fault.
+linker-signed verdicts, unsigned images, corrupt superblobs), the printable-
+string extraction (labelled by the two-level __TEXT,__cstring / __objc_methname
+section, exact offset/vaddr, zerofill skipped, the min_length floor, a full or
+bare section filter, honest pagination, the 32-bit record path and the fat
+first-slice path), resilience to truncated load commands, out-of-file slices and
+symbol records, refusal of a non-Mach-O (including a Java class file that shares
+the 0xcafebabe magic), and the service routing that turns a bad file into a
+precise envelope rather than a fault.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ import pytest
 
 from headless_re_mcp.backends.common.macho import (
     MachoParseError,
+    list_macho_strings,
     list_macho_symbols,
     read_macho_signature,
     summarize_macho,
@@ -558,6 +562,179 @@ def test_signature_rejects_non_macho() -> None:
         read_macho_signature(b"MZ\x00\x00" + b"\x00" * 60)
 
 
+# --- printable strings (per section) --------------------------------------------
+
+
+def _build_macho_sections(
+    specs: list[tuple[str, int, int, bytes]], *, bits: int = 64, extra_zerofill: bool = False
+) -> bytes:
+    """A Mach-O with one __TEXT segment carrying the given (sect, addr, flags, bytes).
+
+    Each section's file offset is wired to content appended after the load
+    command; with ``extra_zerofill`` a bss-like __bss section (S_ZEROFILL, no
+    file bytes) is appended so the scanner must skip it.
+    """
+    if bits == 64:
+        magic, cputype = _MAGIC_64_LE, 0x0100000C
+        hdr_size, seg_hdr, sect_size = 32, 72, 80
+        seg_fmt, sect_fmt = "<II16sQQQQiiII", "<16s16sQQIIIIIIII"
+        # cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags, reserved
+        hdr_fmt, hdr_args = "<iiIIIII", (cputype, 0, 6, 1, 0, 0, 0)
+    else:
+        magic, cputype = _MAGIC_32_LE, 7
+        hdr_size, seg_hdr, sect_size = 28, 56, 68
+        seg_fmt, sect_fmt = "<II16sIIIIiiII", "<16s16sIIIIIIIII"
+        # cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags
+        hdr_fmt, hdr_args = "<iiIIII", (cputype, 0, 6, 1, 0, 0)
+
+    n = len(specs) + (1 if extra_zerofill else 0)
+    seg_cmd_size = seg_hdr + n * sect_size
+    content_base = hdr_size + seg_cmd_size
+
+    sect_records = b""
+    contents = bytearray()
+    cur = content_base
+    for sectname, addr, flags, content in specs:
+        reserved = (0, 0, 0) if bits == 64 else (0, 0)
+        fields = (sectname.encode(), b"__TEXT", addr, len(content), cur, 0, 0, 0, flags, *reserved)
+        sect_records += struct.pack(sect_fmt, *fields)
+        contents += content
+        cur += len(content)
+    if extra_zerofill:
+        reserved = (0, 0, 0) if bits == 64 else (0, 0)
+        # __bss: S_ZEROFILL type (0x1), offset 0 -- no file content.
+        sect_records += struct.pack(
+            sect_fmt, b"__bss", b"__TEXT", 0x9000, 0x100, 0, 0, 0, 0, 0x1, *reserved
+        )
+
+    if bits == 64:
+        seg = struct.pack(
+            seg_fmt, 0x19, seg_cmd_size, b"__TEXT", 0x100000000, 0x10000, 0, cur, 0x7, 0x5, n, 0
+        )
+    else:
+        seg = struct.pack(
+            seg_fmt, 0x1, seg_cmd_size, b"__TEXT", 0x1000, 0x10000, 0, cur, 0x7, 0x5, n, 0
+        )
+    payload = seg + sect_records
+    assert len(payload) == seg_cmd_size
+    args = list(hdr_args)
+    args[4] = len(payload)  # sizeofcmds (ncmds stays 1 from the template)
+    header = magic + struct.pack(hdr_fmt, *args)
+    return header + payload + bytes(contents)
+
+
+_CSTRING = b"\x00hello\x00xy\x00worldwide\x00"
+_METHNAME = b"initWithFrame:\x00dealloc\x00"
+_CLASSNAME = b"MyController\x00"
+
+
+def _strings_fixture(*, bits: int = 64) -> bytes:
+    return _build_macho_sections(
+        [
+            ("__cstring", 0x1000, 0x2, _CSTRING),  # S_CSTRING_LITERALS
+            ("__objc_methname", 0x2000, 0x2, _METHNAME),
+            ("__objc_classname", 0x3000, 0x2, _CLASSNAME),
+        ],
+        bits=bits,
+        extra_zerofill=True,
+    )
+
+
+def test_strings_labelled_by_two_level_section() -> None:
+    out = list_macho_strings(_strings_fixture(), min_length=4, limit=1000)
+    assert out["format"] == "Mach-O"
+    assert out["fat"] is False
+    assert out["cpu"] == "AArch64"
+    assert "__TEXT,__bss" not in out["sections_scanned"]  # zerofill: no file content
+    by_value = {s["value"]: s for s in out["strings"]}
+    assert "hello" in by_value
+    assert "worldwide" in by_value
+    assert "xy" not in by_value  # length 2, below min_length
+    assert "initWithFrame:" in by_value
+    assert "MyController" in by_value
+    assert by_value["hello"]["segment"] == "__TEXT"
+    assert by_value["hello"]["section"] == "__cstring"
+    assert by_value["initWithFrame:"]["section"] == "__objc_methname"
+    assert by_value["MyController"]["section"] == "__objc_classname"
+
+
+def test_string_offset_and_vaddr_are_exact() -> None:
+    data = _strings_fixture()
+    out = list_macho_strings(data, min_length=4, limit=1000)
+    hello = next(s for s in out["strings"] if s["value"] == "hello")
+    assert data[hello["offset"] : hello["offset"] + 5] == b"hello"
+    # __cstring sits at addr 0x1000; "hello" starts one NUL in.
+    assert hello["vaddr"] == "0x1001"
+
+
+def test_strings_min_length_floor() -> None:
+    out = list_macho_strings(_strings_fixture(), min_length=10, limit=1000)
+    values = {s["value"] for s in out["strings"]}
+    assert "worldwide" not in values  # 9 chars
+    assert "initWithFrame:" in values  # 14 chars
+    assert "hello" not in values
+
+
+def test_strings_section_filter_bare_and_full() -> None:
+    bare = list_macho_strings(_strings_fixture(), section="__objc_methname", min_length=4)
+    assert bare["sections_scanned"] == ["__TEXT,__objc_methname"]
+    assert {s["value"] for s in bare["strings"]} == {"initWithFrame:", "dealloc"}
+    full = list_macho_strings(_strings_fixture(), section="__TEXT,__cstring", min_length=4)
+    assert full["sections_scanned"] == ["__TEXT,__cstring"]
+    assert {s["value"] for s in full["strings"]} == {"hello", "worldwide"}
+
+
+def test_strings_section_filter_miss_warns() -> None:
+    out = list_macho_strings(_strings_fixture(), section="__nope")
+    assert out["strings_total"] == 0
+    assert any("no section named" in w for w in out["warnings"])
+
+
+def test_strings_paginate_honestly() -> None:
+    data = _strings_fixture()
+    total = list_macho_strings(data, min_length=4, limit=1000)["strings_total"]
+    assert total >= 5
+    page = list_macho_strings(data, min_length=4, offset=0, limit=2)
+    assert page["strings_listed"] == 2
+    assert page["has_more"] is True
+    tail = list_macho_strings(data, min_length=4, offset=total - 1, limit=10)
+    assert tail["strings_listed"] == 1
+    assert tail["has_more"] is False
+
+
+def test_strings_32bit_section_records() -> None:
+    out = list_macho_strings(_strings_fixture(bits=32), min_length=4, limit=1000)
+    assert out["cpu"] == "x86"
+    by_value = {s["value"]: s for s in out["strings"]}
+    assert "worldwide" in by_value
+    assert by_value["worldwide"]["section"] == "__cstring"
+
+
+def test_fat_strings_read_first_slice() -> None:
+    out = list_macho_strings(
+        _build_fat([_strings_fixture(), _build_executable64()]), min_length=4, limit=1000
+    )
+    assert out["fat"] is True
+    assert out["arch"] == "AArch64"
+    assert out["available_arches"] == ["AArch64", "x86-64"]
+    assert "hello" in {s["value"] for s in out["strings"]}
+    assert any("fat binary" in w for w in out["warnings"])
+
+
+def test_a_section_content_past_eof_is_a_warning() -> None:
+    data = bytearray(_strings_fixture())
+    rec = data.find(b"__cstring\x00")
+    struct.pack_into("<I", data, rec + 48, 0xFFFFFF00)  # section.offset -> past EOF
+    out = list_macho_strings(bytes(data), min_length=4, limit=1000)
+    assert "__TEXT,__cstring" not in out["sections_scanned"]
+    assert any("past end of file" in w for w in out["warnings"])
+
+
+def test_list_strings_rejects_non_macho() -> None:
+    with pytest.raises(MachoParseError):
+        list_macho_strings(b"MZ\x00\x00" + b"\x00" * 60)
+
+
 # --- service routing ----------------------------------------------------------
 
 
@@ -643,5 +820,27 @@ def test_service_signature_refuses_a_non_macho(tmp_path: Path) -> None:
 
 def test_service_signature_reports_missing_file(tmp_path: Path) -> None:
     result = _service(tmp_path).macho_signature(str(tmp_path / "nope.dylib"))
+    assert not result.ok
+    assert result.error.code == "not_found"
+
+
+def test_service_extracts_strings(tmp_path: Path) -> None:
+    binary = tmp_path / "libstr.dylib"
+    binary.write_bytes(_strings_fixture())
+    result = _service(tmp_path).macho_strings(str(binary), min_length=4, section="__cstring")
+    assert result.ok, result.model_dump(mode="json")
+    assert {s["value"] for s in result.data["strings"]} == {"hello", "worldwide"}
+
+
+def test_service_strings_refuses_a_non_macho(tmp_path: Path) -> None:
+    junk = tmp_path / "not.dylib"
+    junk.write_bytes(b"this is not a mach-o binary")
+    result = _service(tmp_path).macho_strings(str(junk))
+    assert not result.ok
+    assert result.error.code == "invalid_params"
+
+
+def test_service_strings_reports_missing_file(tmp_path: Path) -> None:
+    result = _service(tmp_path).macho_strings(str(tmp_path / "nope.dylib"))
     assert not result.ok
     assert result.error.code == "not_found"
