@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（web 入口把非有限数值 body 字段误判为 500 事故）
+
+- `web/routes/agent.py` 的两个处理器用 `int(body.get(...))` 在 `except (TypeError,
+  ValueError)` 内强转不可信 body 数字:`POST /api/agent/missions` 的 `max_runs`(默认 8)
+  与 `PUT /api/providers/{id}` 的 `context_compression_threshold_percent`(默认 75)。该守卫
+  能接住 `"abc"`(ValueError)与 `None`/list/dict(TypeError),却接不住裸 `1e999`——这是
+  **标准 JSON** 数字字面量,`json.loads`(Starlette `Request.json()` 用它)将其解析为
+  `float('inf')`,而 `int(inf)` 抛的是 `OverflowError`(非 `ValueError`/`TypeError` 子类)。
+  该异常逃逸到 FastAPI 异常边界,变成带事故日志的 500,而其余每种畸形字段都干净返回
+  400。若服务暴露于网络,攻击者可借此刷 500 与事故日志。两处 except 均补入
+  `OverflowError`,映射为 400。新增「修复前必失败」的 TestClient 回归(直接发标准 JSON
+  `1e999` body,断言 400 而非 500)。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
