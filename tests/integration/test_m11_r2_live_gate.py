@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from headless_re_mcp.backends.r2.client import R2Client
+from headless_re_mcp.backends.r2.mapping import elf_preferred_base
+from headless_re_mcp.core.models import Architecture
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -284,3 +286,84 @@ def test_m11_r2_live_elf_address_mapping(tmp_path: Path) -> None:
     for key in ("section", "type", "vaddr"):
         assert key in literal, f"izj dropped the documented {key} key"
     assert literal["address"]["rva"] == literal["vaddr"] - image_base
+
+
+def _readelf_lowest_load(readelf: str, binary: Path) -> int | None:
+    """The lowest PT_LOAD p_vaddr readelf reports, as an independent oracle.
+
+    readelf's -l lines start with the segment type, then file offset, then the
+    virtual address, so the third column of each LOAD row is the p_vaddr we
+    compare against.
+    """
+    proc = subprocess.run(
+        [readelf, "-l", str(binary)], capture_output=True, text=True, timeout=60.0
+    )
+    vaddrs: list[int] = []
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == "LOAD":
+            try:
+                vaddrs.append(int(parts[2], 16))
+            except ValueError:
+                continue
+    return min(vaddrs) if vaddrs else None
+
+
+@pytest.mark.integration
+def test_elf_preferred_base_matches_readelf_on_a_real_binary(tmp_path: Path) -> None:
+    """Our ELF load base must equal readelf's, cross-checked on real gcc output.
+
+    elf_preferred_base is hand-written binary parsing, and its only current
+    proofs share a blind spot. The synthetic unit fixtures write e_phoff /
+    e_phentsize / p_vaddr at the very offsets the parser reads them from, so a
+    shared wrong offset would pass every unit test yet misread real binaries.
+    The r2 ELF gate above only checks self-consistency -- rva == va - base, where
+    rva is computed from that same base -- so a wrong-but-positive base slips
+    through it too. Nothing measures the base against an independent oracle on a
+    real ELF. readelf is that oracle: it reports the program headers from its own
+    parser, so requiring our base to equal readelf's lowest PT_LOAD p_vaddr, on a
+    genuine gcc build (56-byte phentsize, several LOAD segments, real alignment
+    the tiny fixtures lack), pins the parse against reality. A -no-pie build has
+    a fixed base; a PIE's first LOAD sits at vaddr 0, which must read back as
+    va-only (None), not an invented base. skip != pass: skips when gcc or readelf
+    is absent.
+    """
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    readelf = shutil.which("readelf")
+    if gcc is None or readelf is None:
+        pytest.skip("gcc/readelf not available — ELF base oracle Gate not run (skip != pass)")
+
+    source = tmp_path / "base_fixture.c"
+    source.write_text("int main(void){return 0;}\n", encoding="utf-8")
+
+    def _build(name: str, *flags: str) -> Path | None:
+        out = tmp_path / name
+        proc = subprocess.run(
+            [gcc, *flags, "-O0", "-o", str(out), str(source)],
+            capture_output=True,
+            text=True,
+            timeout=120.0,
+        )
+        return out if proc.returncode == 0 and out.is_file() else None
+
+    non_pie = _build("base_nopie", "-no-pie")
+    if non_pie is None:
+        pytest.skip("toolchain cannot link -no-pie — skip != pass")
+    readelf_base = _readelf_lowest_load(readelf, non_pie)
+    assert (
+        readelf_base is not None and readelf_base > 0
+    ), "readelf found no fixed-base LOAD in a -no-pie build"
+    arch, base = elf_preferred_base(non_pie)
+    # The exact independent-oracle check: our hand parse of the lowest load
+    # vaddr must equal what readelf's own parser reports, to the byte.
+    assert base == readelf_base, f"our base {base!r} != readelf lowest LOAD {readelf_base:#x}"
+    # The machine byte must decode to a real arch too (the runner is x86-64);
+    # a mis-decoded e_machine would drop the tag or invent the wrong one.
+    assert arch in (Architecture.X64, Architecture.X86), arch
+
+    # A PIE reads back as va-only: its first LOAD is at vaddr 0, so there is no
+    # fixed base to invent. readelf confirms the 0, then our parser must say None.
+    pie = _build("base_pie", "-pie", "-fPIE")
+    if pie is not None and _readelf_lowest_load(readelf, pie) == 0:
+        _, pie_base = elf_preferred_base(pie)
+        assert pie_base is None, f"a PIE (LOAD at vaddr 0) must be va-only, got {pie_base!r}"

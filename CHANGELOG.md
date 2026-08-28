@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（给 elf_preferred_base 补一条独立 oracle gate：真实 gcc 产物 base 必须与 readelf 一致）
+
+- `elf_preferred_base` 是手写的 ELF 二进制解析，而它现有的两处证明有同一个盲区：合成单测夹具
+  （`_minimal_elf`）把 e_phoff/e_phentsize/p_vaddr 写在解析器读取它们的**同一批偏移**上，所以一个
+  "解析器与夹具共享的错误偏移"能过掉每一条单测、却在真实二进制上读错；而 r2 ELF live gate 只校验
+  自洽性——`rva == va - base`，其中 rva 正是用那个 base 算出来的——所以一个"错但为正"的 base 也能
+  从它眼皮底下溜过去。没有任何测试用**独立 oracle** 在真实 ELF 上核对过这个 base。
+- 用真实 gcc + readelf 实测确认：`-no-pie` 构建有固定 base（本机 0x400000），readelf 从它自己的解析器
+  报出最低 PT_LOAD 的 p_vaddr，我们的手解析必须与之逐字节相等；`-pie` 构建首个 LOAD 落在 vaddr 0，
+  必须读回 va-only（None）而非臆造一个 base。真实 gcc 产物有 56 字节 phentsize、多个 LOAD 段、真实
+  对齐——都是那些微型合成夹具没有的复杂度。
+- 在 `test_m11_r2_live_gate.py` 新增一条 gate（不需要 r2，只用 gcc+readelf，缺任一诚实跳过），跑在
+  linux-integration（ubuntu-latest 自带 gcc/binutils）。核心断言就一句：`base == readelf_lowest_load`。
+- 变异验证承重，且专门证明它补的是 r2 gate 的盲区：把选 base 的比较从"取最低 vaddr"改成"取最高
+  vaddr"（一个**错但为正**的 base），本 gate 立即失败（0x4022b8 != 0x400000）——而 r2 gate 那条
+  `rva == va - base` 自洽断言对这种错 base 根本无感；再把 64 位 p_vaddr 偏移从 16 读成 8，base 变
+  None，本 gate 同样失败。改回后复绿。
+
 ### 文档+测试（补上 web.script.source→js.deobfuscate 的 JS 交接：obfuscated 源码的下一步）
 
 - `service_jsre` 的模块 docstring 早就写明 js.*/wasm.* 工具"既可独立用、也可对着一个 web 会话存下的
