@@ -1382,6 +1382,52 @@ def _so_with_exports(names: list[str], *, machine: int = 62) -> bytes:
     return ehdr + bytes(dynstr) + bytes(syms) + sections
 
 
+class TestApkContainerSlack:
+    """describe_apk measures data glued on before the ZIP container.
+
+    Every ZIP offset is relative to the container's own start, so prepending
+    data shifts the central directory's real file position past the offset the
+    EOCD records -- the Janus smuggling shape (CVE-2017-13156), where one file
+    is both a DEX and a signed APK. The reader reports that difference as
+    prepended_size: 0 for clean, the byte count when smuggled, None only when
+    the shape cannot be measured.
+    """
+
+    def test_the_committed_fixture_is_a_clean_container(self) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        assert describe_apk(_APK_FIXTURE)["apk"]["prepended_size"] == 0
+
+    def test_prepended_bytes_are_measured_exactly(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        # A Janus-shaped file: a DEX-looking blob, then the whole signed APK.
+        path = tmp_path / "janus.apk"
+        path.write_bytes(b"dex\n035\x00" + b"\x00" * 92 + _APK_FIXTURE.read_bytes())
+        facts = describe_apk(path)["apk"]
+        assert facts["prepended_size"] == 100
+        # The archive still reads normally -- that is the point of the attack
+        # shape -- so the other identity facts must survive the shift.
+        assert facts["manifest"]["package"] == "com.example.headless"
+        assert facts["dex"]["class_count"] == 1
+
+    def test_an_eocd_comment_still_measures_clean(self, tmp_path: Path) -> None:
+        path = tmp_path / "commented.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.comment = b"release notes live here"
+        assert describe_apk(path)["apk"]["prepended_size"] == 0
+
+    def test_an_unmeasurable_shape_reads_as_none(self, tmp_path: Path) -> None:
+        from headless_re_mcp.core.session import _apk_prepended_size
+
+        # No EOCD at all: nothing to anchor the measurement, so None -- never
+        # a guessed zero that would vouch for a container we could not read.
+        blob = tmp_path / "notazip.bin"
+        blob.write_bytes(b"just bytes, no zip structure")
+        assert _apk_prepended_size(blob) is None
+
+
 class TestApkNativeLibFacts:
     """describe_apk parses each bundled lib/<abi>/*.so with the ELF reader.
 

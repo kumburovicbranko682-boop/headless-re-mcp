@@ -929,6 +929,9 @@ def describe_apk(path: Path) -> dict[str, Any]:
             # Who signed it, not just that someone did: the SHA-256 of each
             # signer's certificate, per scheme -- the identity Android pins.
             "signers": signers,
+            # Bytes glued on before the ZIP container (the Janus smuggling
+            # shape): 0 for a clean archive, None when unmeasurable.
+            "prepended_size": _apk_prepended_size(path),
             "manifest": _apk_manifest_facts_from_apk(path),
             "dex": _apk_dex_facts(path),
             # The JNI surface of each bundled .so, parsed with the same ELF
@@ -1316,6 +1319,43 @@ def _apk_manifest_facts_from_apk(path: Path) -> dict[str, Any]:
     if len(data) > _AXML_MAX_BYTES:
         return {}
     return _apk_manifest_facts(data)
+
+
+def _apk_prepended_size(path: Path) -> int | None:
+    """Bytes prepended before the ZIP container starts, or None if unmeasurable.
+
+    Every offset a ZIP records is relative to the container's own start, so
+    when data is glued on in front -- the Janus smuggling shape
+    (CVE-2017-13156: a DEX prepended to a signed APK, one file that is both) --
+    the central directory's actual file position exceeds the offset the EOCD
+    records by exactly the prepended byte count. That difference is the same
+    "concat" the stdlib zipfile computes to keep reading such archives, and
+    what Info-ZIP's unzip warns about as "extra bytes at beginning". 0 means a
+    clean container; None means the shape could not be measured (no EOCD, a
+    lying comment length, or ZIP64), never a guess.
+    """
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            tail_len = min(size, _ZIP_EOCD_MIN + _ZIP_MAX_COMMENT)
+            handle.seek(size - tail_len)
+            tail = handle.read(tail_len)
+    except OSError:
+        return None
+    eocd = tail.rfind(_ZIP_EOCD_SIGNATURE)
+    if eocd < 0 or eocd + _ZIP_EOCD_MIN > len(tail):
+        return None
+    comment_len = int.from_bytes(tail[eocd + 20 : eocd + 22], "little")
+    if eocd + _ZIP_EOCD_MIN + comment_len != len(tail):
+        return None
+    cd_size = int.from_bytes(tail[eocd + 12 : eocd + 16], "little")
+    cd_offset = int.from_bytes(tail[eocd + 16 : eocd + 20], "little")
+    if _ZIP64_SENTINEL in (cd_size, cd_offset):
+        return None
+    actual_cd = (size - tail_len + eocd) - cd_size
+    if actual_cd < 0 or actual_cd < cd_offset:
+        return None
+    return actual_cd - cd_offset
 
 
 def _apk_signature_schemes(path: Path) -> tuple[bool, bool, list[dict[str, Any]]]:
@@ -1914,6 +1954,7 @@ def describe_wasm(path: Path) -> dict[str, Any]:
     start_index: int | None = None
     well_formed = True
     pos = 8
+    parsed_end = 8  # end of the last fully parsed section (the header at least)
     walked = 0
     while pos < len(data) and walked < _WASM_MAX_SECTIONS:
         section_id = data[pos]
@@ -1970,7 +2011,17 @@ def describe_wasm(path: Path) -> dict[str, Any]:
                         data, name_pos + name_len, body_end
                     )
         pos = body_end
+        parsed_end = body_end
         walked += 1
+    # Bytes past the last well-formed section -- the WASM analogue of a PE/ELF
+    # overlay. A module is a header plus back-to-back sections, so anything the
+    # section walk cannot account for was appended after (or broke) the module
+    # the engine sees. Reported only when the whole file was read and the walk
+    # stopped on the data, not on its own section cap, so a bounded stop cannot
+    # masquerade as appended payload.
+    overlay: dict[str, int] | None = None
+    if not truncated and walked < _WASM_MAX_SECTIONS and parsed_end < len(data):
+        overlay = {"offset": parsed_end, "size": len(data) - parsed_end}
     # The module's whole linear-memory footprint: imported memories (which come
     # first in the index space) then the ones the Memory section defines. Each
     # is min/max pages of 64 KiB, whether the host must supply it or the module
@@ -2031,6 +2082,10 @@ def describe_wasm(path: Path) -> dict[str, Any]:
             "function_names": name_facts.get("function_names", []),
             "exports": exports,
             "imports": imports,
+            # Data past the last well-formed section: None for a clean module,
+            # else {offset, size} of the residue (appended payload or a broken
+            # tail -- well_formed says which module the engine would accept).
+            "overlay": overlay,
             "well_formed": well_formed and not truncated,
             "truncated": truncated,
         }

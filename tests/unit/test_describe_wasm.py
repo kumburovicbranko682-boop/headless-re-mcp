@@ -73,6 +73,8 @@ def test_describe_wasm_reads_a_real_add_module(tmp_path: Path) -> None:
     assert info["module_name"] is None
     assert info["function_name_count"] is None
     assert info["function_names"] == []
+    # Every byte is a header or a section: nothing appended, no overlay.
+    assert info["overlay"] is None
 
 
 def test_describe_wasm_lists_import_and_export_names_with_kinds(tmp_path: Path) -> None:
@@ -483,6 +485,38 @@ def test_describe_wasm_is_fail_closed_on_a_malformed_tail(tmp_path: Path) -> Non
     assert info["type_count"] == 1
     # The unreadable export section contributed no count.
     assert info["export_count"] is None
+    # The broken tail is located precisely: everything past the last section
+    # that parsed (the type section) is the residue.
+    assert info["overlay"] == {"offset": len(module) - 2, "size": 2}
+
+
+def test_appended_bytes_read_as_the_wasm_overlay(tmp_path: Path) -> None:
+    # A clean module with a payload glued on after the last section -- the
+    # WASM analogue of a PE/ELF overlay. The walk accounts for every real
+    # section, then reports exactly the appended bytes; the module the engine
+    # would accept ends where the overlay starts, so well_formed goes False.
+    module = _module([_section(1, _leb(1) + b"\x00")])
+    path = tmp_path / "padded.wasm"
+    path.write_bytes(module + b"DROPPER!")
+    info = describe_wasm(path)["wasm"]
+    assert info["overlay"] == {"offset": len(module), "size": 8}
+    assert info["well_formed"] is False
+    assert info["type_count"] == 1
+
+
+def test_the_section_cap_does_not_claim_an_overlay(tmp_path: Path) -> None:
+    # More sections than the walk's own bound: the stop is the reader's, not
+    # the data's, so the unwalked remainder must not masquerade as appended
+    # payload -- no overlay, rather than a wrong one.
+    from headless_re_mcp.core.session import _WASM_MAX_SECTIONS
+
+    empty_custom = _section(0, _leb(0))
+    module = _module([empty_custom] * (_WASM_MAX_SECTIONS + 5))
+    path = tmp_path / "crowded.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["overlay"] is None
+    assert info["section_counts"]["custom"] == _WASM_MAX_SECTIONS
 
 
 def test_describe_wasm_ignores_a_non_wasm_file(tmp_path: Path) -> None:

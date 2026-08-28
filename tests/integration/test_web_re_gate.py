@@ -8,6 +8,8 @@ when Chrome / webcrack / wabt are present.
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -402,6 +404,67 @@ def test_wasm_target_features_agree_with_wabt(tmp_path: Path) -> None:
         expected = [("+", "mutable-globals"), ("+", "sign-ext"), ("=", "atomics")]
         assert reader_features == expected
         assert wabt_features == expected
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_overlay_marks_bytes_wabt_also_rejects(tmp_path: Path) -> None:
+    """The reader's overlay bound and wabt's strict decode must agree.
+
+    describe_wasm now reports bytes past the last well-formed section as an
+    overlay -- the WASM analogue of the PE/ELF/Mach-O appended-data fact, and a
+    classic payload-smuggling spot. The parser and its unit fixtures are both
+    ours, so two independent checks anchor the bound to wabt's decoder: the
+    pristine module must dump cleanly under wasm-objdump with the reader
+    seeing no overlay, and the padded copy must be rejected by the same strict
+    decoder -- proving the residue the reader flagged really is outside any
+    valid section, at exactly the offset where the clean module ends. Needs
+    wabt; skip != pass when it is absent.
+    """
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm-objdump) not installed — WASM overlay gate not run (skip != pass)")
+    objdump = shutil.which("wasm-objdump")
+    if objdump is None:
+        pytest.skip("wasm-objdump not on PATH — WASM overlay gate not run (skip != pass)")
+
+    service = AnalysisService()
+    try:
+        # The pristine module: wabt dumps it cleanly, the reader sees no
+        # overlay -- every byte is the header or a section.
+        pristine = tmp_path / "clean.wasm"
+        pristine.write_bytes(_ADD_WASM)
+        info = service.wasm_info(str(pristine))
+        assert info.ok, info.error
+        created = service.create_session(str(pristine))
+        assert created.ok, created.error
+        wasm = created.data["session"]["metadata"]["wasm"]
+        assert wasm["overlay"] is None
+        assert wasm["well_formed"] is True
+
+        # The same module with a payload glued on. The reader must place the
+        # overlay exactly at the clean module's end and cover every appended
+        # byte, and the module stops being well-formed.
+        payload = b"SMUGGLED-PAYLOAD"
+        padded = tmp_path / "padded.wasm"
+        padded.write_bytes(_ADD_WASM + payload)
+        created = service.create_session(str(padded))
+        assert created.ok, created.error
+        wasm = created.data["session"]["metadata"]["wasm"]
+        assert wasm["overlay"] == {"offset": len(_ADD_WASM), "size": len(payload)}
+        assert wasm["well_formed"] is False
+        # The real sections still read: the payload hides after the module,
+        # not instead of it.
+        assert wasm["exports"] == [{"name": "add", "kind": "func"}]
+
+        # wabt's verdict on the same bytes: the strict decoder refuses the
+        # padded file outright, confirming the flagged residue is not some
+        # valid section shape the tool-free walk merely failed to recognize.
+        result = subprocess.run(
+            [objdump, "-h", str(padded)], capture_output=True, text=True, timeout=60
+        )
+        assert result.returncode != 0, result.stdout
+        assert "error" in (result.stderr + result.stdout).lower()
     finally:
         service.close_all()
 
