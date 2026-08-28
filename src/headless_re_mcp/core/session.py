@@ -1032,6 +1032,7 @@ def describe_apk(path: Path) -> dict[str, Any]:
     )
     signed_v2, signed_v3, signers = _apk_signature_schemes(path)
     payloads, payload_count = _apk_embedded_payloads(path)
+    entropy_flags, entropy_count = _apk_high_entropy_members(path)
     return {
         "apk": {
             "format": "apk",
@@ -1063,6 +1064,11 @@ def describe_apk(path: Path) -> dict[str, Any]:
             # shape. The count is exact; the listed sample is bounded.
             "embedded_payloads": payloads,
             "embedded_payload_count": payload_count,
+            # Decompressed members that measure near-random with no magic to
+            # explain it -- the encrypted-payload shape the magic census
+            # cannot see. The count is exact; the listed sample is bounded.
+            "high_entropy_members": entropy_flags,
+            "high_entropy_member_count": entropy_count,
         }
     }
 
@@ -1596,6 +1602,27 @@ _APK_PAYLOAD_KINDS: tuple[tuple[bytes, str], ...] = (
 _APK_CANONICAL_DEX_RE = re.compile(r"classes\d*\.dex")
 _APK_MAX_PAYLOAD_MEMBERS = 4096
 _APK_MAX_PAYLOADS = 32
+# Members that legitimately measure near-random and say so up front: the
+# compressed media and font containers an app ships in bulk. Their magic is
+# their explanation, so the entropy census skips them -- an encrypted payload
+# carries no such self-declaration (MP4-family files declare via "ftyp" at
+# offset 4 and are handled separately).
+_APK_MEDIA_MAGICS = (
+    b"\x89PNG",  # PNG
+    b"\xff\xd8\xff",  # JPEG
+    b"GIF8",  # GIF
+    b"RIFF",  # WebP / WAV / AVI
+    b"OggS",  # Ogg audio
+    b"ID3",  # MP3 with ID3 tag
+    b"\x1f\x8b",  # gzip
+    b"wOFF",  # WOFF font
+    b"wOF2",  # WOFF2 font
+    b"\x28\xb5\x2f\xfd",  # zstd
+)
+# Total decompressed bytes the APK entropy census will measure: a member is
+# read to at most _ENTROPY_MAX_READ, and a hostile archive full of huge
+# members cannot make the census inflate more than this in aggregate.
+_APK_ENTROPY_BUDGET = 64 * 1024 * 1024
 
 
 def _apk_embedded_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
@@ -1644,6 +1671,76 @@ def _apk_embedded_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
     except (OSError, zipfile.BadZipFile):
         return [], 0
     return payloads, count
+
+
+def _apk_member_self_declares(head: bytes) -> bool:
+    """True when a member's magic already explains its near-random bytes.
+
+    Executable and container magic belongs to the embedded-payload census;
+    compressed media and font formats are near-random by design and say so in
+    their first bytes. Neither is the encrypted-payload shape the entropy
+    census exists to flag.
+    """
+    if any(head.startswith(magic) for magic, _ in _APK_PAYLOAD_KINDS):
+        return True
+    if any(head.startswith(magic) for magic in _APK_MEDIA_MAGICS):
+        return True
+    return head[4:8] == b"ftyp"
+
+
+def _apk_high_entropy_members(path: Path) -> tuple[list[dict[str, Any]], int]:
+    """Members whose decompressed bytes measure near-random with no magic.
+
+    The Android packer shape the embedded-payload census cannot see: an
+    encrypted classes.dex (or native stage) parked under ``assets/`` opens
+    with no magic at all, so only the Shannon measure gives it away. Measured
+    over each member's *decompressed* bytes -- a deflated text file's raw
+    stream looks random too, but what the app reads back is the text.
+
+    Skipped up front: the canonical homes with their own facts (classes*.dex,
+    lib/<abi>/*.so), META-INF/ (signature files are DER-wrapped key material,
+    self-declared by location), and members whose magic already explains the
+    randomness (executables for the payload census, compressed media and
+    fonts). Bounded and fail-closed: per-member and aggregate read budgets,
+    a capped member scan, an exact count with a capped list, and unreadable
+    members are skipped rather than raised on.
+    """
+    flagged: list[dict[str, Any]] = []
+    count = 0
+    budget = _APK_ENTROPY_BUDGET
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for info in archive.infolist()[:_APK_MAX_PAYLOAD_MEMBERS]:
+                if budget < _ENTROPY_MIN_SIZE:
+                    break
+                name = info.filename
+                if info.is_dir() or info.file_size < _ENTROPY_MIN_SIZE:
+                    continue
+                if _APK_CANONICAL_DEX_RE.fullmatch(name):
+                    continue
+                if name.startswith("lib/") and name.endswith(".so"):
+                    continue
+                if name.startswith("META-INF/"):
+                    continue
+                try:
+                    with archive.open(info) as member:
+                        head = member.read(0x40)
+                        if _apk_member_self_declares(head):
+                            continue
+                        data = head + member.read(min(_ENTROPY_MAX_READ, budget) - len(head))
+                except (OSError, RuntimeError, NotImplementedError, zipfile.BadZipFile):
+                    continue
+                budget -= len(data)
+                entropy = _shannon_entropy(data)
+                if entropy >= _ENTROPY_THRESHOLD:
+                    count += 1
+                    if len(flagged) < _ENTROPY_MAX_FLAGGED:
+                        flagged.append(
+                            {"path": name, "entropy": round(entropy, 2), "size": info.file_size}
+                        )
+    except (OSError, zipfile.BadZipFile):
+        return [], 0
+    return flagged, count
 
 
 def _apk_signature_schemes(path: Path) -> tuple[bool, bool, list[dict[str, Any]]]:

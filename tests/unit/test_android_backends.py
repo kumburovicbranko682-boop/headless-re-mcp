@@ -1711,6 +1711,99 @@ class TestApkEmbeddedPayloads:
         assert len(facts["embedded_payloads"]) == 32
 
 
+class TestApkHighEntropyMembers:
+    """describe_apk flags near-random members with no magic to explain them.
+
+    The Android packer shape the embedded-payload census cannot see: an
+    encrypted stage two under assets/ opens with no magic at all. Measured
+    over decompressed bytes; media and executable magic is a self-declaration
+    that routes the member to its own census instead, and an empty list is a
+    real "nothing encrypted here" answer.
+    """
+
+    def test_the_committed_fixture_carries_no_opaque_blobs(self) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        facts = describe_apk(_APK_FIXTURE)["apk"]
+        assert facts["high_entropy_member_count"] == 0
+        assert facts["high_entropy_members"] == []
+
+    def test_a_planted_uniform_blob_flags_at_eight(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        # Every byte value equally often: exactly 8.0 bits per byte, the
+        # deterministic stand-in for an AES-encrypted classes.dex.
+        planted = {"assets/payload.bin": bytes(range(256)) * 4}
+        facts = describe_apk(_apk_with_members(tmp_path, planted))["apk"]
+        assert facts["high_entropy_member_count"] == 1
+        assert facts["high_entropy_members"] == [
+            {"path": "assets/payload.bin", "entropy": 8.0, "size": 1024}
+        ]
+
+    def test_the_measure_reads_decompressed_bytes_not_the_raw_stream(
+        self, tmp_path: Path
+    ) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        # Deflate makes any text's *raw stream* look random; what the app
+        # reads back is the text, and the text is what must be measured.
+        path = tmp_path / "planted.apk"
+        path.write_bytes(_APK_FIXTURE.read_bytes())
+        with zipfile.ZipFile(path, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("assets/strings.txt", b"the quick brown fox " * 200)
+        facts = describe_apk(path)["apk"]
+        assert facts["high_entropy_member_count"] == 0
+
+    def test_media_magic_is_a_self_declaration_and_skips(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        # A PNG is near-random by design and says so in its first bytes; the
+        # same spread with no magic is exactly what must flag.
+        blob = bytes(range(256)) * 4
+        planted = {
+            "res/drawable/icon.png": b"\x89PNG\r\n\x1a\n" + blob,
+            "assets/song.mp3": b"ID3" + blob,
+            "assets/opaque.dat": blob,
+        }
+        facts = describe_apk(_apk_with_members(tmp_path, planted))["apk"]
+        assert [flag["path"] for flag in facts["high_entropy_members"]] == ["assets/opaque.dat"]
+
+    def test_executable_magic_belongs_to_the_payload_census(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        planted = {"assets/stage.dex": b"dex\n035\x00" + bytes(range(256)) * 4}
+        facts = describe_apk(_apk_with_members(tmp_path, planted))["apk"]
+        assert facts["high_entropy_member_count"] == 0
+        assert facts["embedded_payload_count"] == 1
+
+    def test_canonical_homes_and_signatures_are_never_measured(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        blob = bytes(range(256)) * 4
+        planted = {
+            "classes2.dex": blob,
+            "lib/armeabi-v7a/libx.so": blob,
+            "META-INF/CERT.RSA": blob,
+        }
+        facts = describe_apk(_apk_with_members(tmp_path, planted))["apk"]
+        assert facts["high_entropy_member_count"] == 0
+
+    def test_a_member_below_the_size_floor_is_not_measured(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        planted = {"assets/tiny.bin": bytes(range(128))}
+        facts = describe_apk(_apk_with_members(tmp_path, planted))["apk"]
+        assert facts["high_entropy_member_count"] == 0
+
+    def test_the_list_is_bounded_but_the_count_exact(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        planted = {f"assets/enc_{i}.bin": bytes(range(256)) * 4 for i in range(40)}
+        facts = describe_apk(_apk_with_members(tmp_path, planted))["apk"]
+        assert facts["high_entropy_member_count"] == 40
+        assert len(facts["high_entropy_members"]) == 32
+
+
 class TestApkNativeLibFacts:
     """describe_apk parses each bundled lib/<abi>/*.so with the ELF reader.
 

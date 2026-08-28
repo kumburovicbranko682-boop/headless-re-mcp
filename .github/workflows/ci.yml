@@ -250,7 +250,7 @@ jobs:
         # mono-mcs supplies mcs, whose compiled output gives the PE hardening
         # gate one real-producer binary (subsystem/DllCharacteristics/entry
         # written by Mono's linker, not by either test builder).
-        run: sudo apt-get update && sudo apt-get install -y apksigner mono-utils mono-mcs llvm
+        run: sudo apt-get update && sudo apt-get install -y apksigner mono-utils mono-mcs llvm unzip
 
       - name: Install rcodesign for the Mach-O code-signature gate
         # apple-codesign is an independent, production Apple code-signing
