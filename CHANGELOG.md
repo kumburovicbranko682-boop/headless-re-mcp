@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（x64 上 x86-only 的 armadillo 抢跑会把可用的 x64 profile 降级为 basic）
+
+- `backends/x64dbg/stealth.py` 的 `profile_from_candidates` 在得分最高的 profile 属于
+  `X64_FORBIDDEN_PROFILES`（即 x86-only 的 armadillo）且架构为 x64 时，直接返回 `basic`。
+  可当同一样本还命中了别的合法 x64 profile（如 Themida）却因得分略低被忽略时，这就把一个
+  真实可用的 profile 丢掉、退回泛用的 basic，削弱了反反调试针对性。改法：在扫描时额外跟踪
+  "本架构下可用的最高分 profile"（`best_applicable`）；当榜首 profile 被架构禁用时优先返回它，
+  仅当 armadillo 是唯一命中才退回 basic。既有契约不变（armadillo-only 于 x64 仍是 basic、
+  x86 与不指定架构仍保留 armadillo），只在混合命中场景下严格改善。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
