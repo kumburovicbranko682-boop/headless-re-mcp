@@ -212,6 +212,10 @@ class SessionRegistry:
                 # native sections plus UTF-16LE ones (a managed assembly's #US
                 # string heap stores its C# literals wide).
                 metadata["pe"].update(_file_url_facts(path))
+                # Go build info -- toolchain version, module path and build
+                # settings a Go-compiled PE self-declares, the same fact
+                # ``go version -m`` reads. Absent for a non-Go binary.
+                metadata["pe"].update(_go_build_info(path))
                 # Managed resources are a separate store from the PE resource
                 # tree: the ManifestResource census covers the Assembly.Load
                 # packer pattern.
@@ -6243,6 +6247,10 @@ def describe_native(path: Path) -> dict[str, Any]:
     # The URL census over the whole image -- string literals live in .rodata /
     # __cstring, uncompressed, so the raw bytes are the right place to look.
     facts.update(_file_url_facts(path))
+    # Go build info: the toolchain version, module path and build settings a
+    # Go-compiled ELF/Mach-O self-declares -- the same fact ``go version -m``
+    # reads, absent for a binary no Go toolchain produced.
+    facts.update(_go_build_info(path))
     return {"native": facts}
 
 
@@ -7356,6 +7364,104 @@ def _file_url_facts(path: Path) -> dict[str, Any]:
     with contextlib.suppress(OSError), path.open("rb") as stream:
         _scan_urls(stream, found, _URL_SCAN_BUDGET)
     return _url_facts(found)
+
+
+# Go stamps every binary it links with a build-info blob the runtime and
+# ``go version -m`` read back. It opens with this 14-byte magic, then a
+# ptrSize byte and a flags byte; since Go 1.18 (flags bit 0x2) the version
+# and module strings are stored inline, varint-length-prefixed from offset
+# 32 -- endian- and pointer-independent, so the same reader works on an ELF,
+# a Mach-O or a PE. The magic is unique enough to locate by scan; a version
+# that is not a real ``go`` toolchain string is the sanity check that a
+# coincidental match is not mistaken for a stamp.
+_GO_BUILDINFO_MAGIC = b"\xff Go buildinf:"
+_GO_BUILDINFO_INLINE = 0x02
+_GO_MAX_FILE = 128 * 1024 * 1024
+_GO_MAX_STRING = 64 * 1024
+_GO_MAX_SETTINGS = 64
+_GO_MAX_FIELD = 256
+
+
+def _go_uvarint(data: bytes, off: int, end: int) -> tuple[int | None, int]:
+    """``(value, next_off)`` for a LEB128 uvarint; ``(None, off)`` if malformed.
+
+    Capped at the 10 bytes a 64-bit uvarint needs, so a run-on high-bit
+    sequence fails closed instead of scanning forward forever.
+    """
+    result = 0
+    shift = 0
+    for _ in range(10):
+        if off >= end:
+            return None, off
+        byte = data[off]
+        off += 1
+        result |= (byte & 0x7F) << shift
+        if byte < 0x80:
+            return result, off
+        shift += 7
+    return None, off
+
+
+def _go_build_info(path: Path) -> dict[str, Any]:
+    """Go build info (``.go.buildinfo``) as ``{"go": {...}}``, or ``{}``.
+
+    The self-declared provenance of a Go-compiled binary and a first-order
+    triage fact -- a growing share of malware is written in Go, and this
+    names the toolchain version, the main package/module path and the build
+    settings (GOOS/GOARCH, -buildmode, CGO_ENABLED) that ``go version -m``
+    prints. Cross-format by construction: the inline blob is the same in an
+    ELF, a Mach-O and a PE, so one reader serves all three lines.
+
+    Only the inline layout (Go 1.18+, which every current toolchain emits) is
+    read; the legacy pointer format, and any binary without the stamp, yield
+    ``{}`` -- absence, not a guess. Bounded and fail-closed: the file read,
+    both strings, the settings map and every field are capped, and a version
+    that is not a ``go`` toolchain string is rejected as a coincidental magic.
+    """
+    try:
+        if path.stat().st_size > _GO_MAX_FILE:
+            return {}
+        raw = path.read_bytes()
+    except OSError:
+        return {}
+    at = raw.find(_GO_BUILDINFO_MAGIC)
+    if at < 0 or at + 32 > len(raw):
+        return {}
+    if not raw[at + 15] & _GO_BUILDINFO_INLINE:
+        return {}  # pre-1.18 pointer format: fact absent rather than guessed
+    end = len(raw)
+    vlen, off = _go_uvarint(raw, at + 32, end)
+    if vlen is None or not 0 < vlen <= _GO_MAX_STRING or off + vlen > end:
+        return {}
+    version = raw[off : off + vlen].decode("utf-8", errors="replace")
+    off += vlen
+    if not version.startswith("go"):
+        return {}  # the sanity check on a scanned magic
+    info: dict[str, Any] = {"version": version}
+    mlen, off = _go_uvarint(raw, off, end)
+    mod = ""
+    if mlen is not None and 0 < mlen <= _GO_MAX_STRING and off + mlen <= end:
+        blob = raw[off : off + mlen]
+        # The linker brackets the module text with two 16-byte sentinels; the
+        # trailing one begins right after a newline, which is how the runtime
+        # tells a real module block from an empty one.
+        if len(blob) >= 33 and blob[len(blob) - 17] == 0x0A:
+            mod = blob[16 : len(blob) - 16].decode("utf-8", errors="replace")
+    settings: dict[str, str] = {}
+    for line in mod.split("\n"):
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[0] == "path":
+            info["path"] = parts[1][:_GO_MAX_FIELD]
+        elif len(parts) >= 3 and parts[0] == "mod":
+            info["main_module"] = parts[1][:_GO_MAX_FIELD]
+            info["main_module_version"] = parts[2][:_GO_MAX_FIELD]
+        elif len(parts) >= 2 and parts[0] == "build" and len(settings) < _GO_MAX_SETTINGS:
+            key, sep, value = parts[1].partition("=")
+            if sep:
+                settings[key[:_GO_MAX_FIELD]] = value[:_GO_MAX_FIELD]
+    if settings:
+        info["settings"] = settings
+    return {"go": info}
 
 
 def _dwarf_normalize(name: str) -> str:

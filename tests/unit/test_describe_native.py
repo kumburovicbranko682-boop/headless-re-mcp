@@ -20,6 +20,7 @@ import pytest
 from headless_re_mcp.core.models import TargetKind, TargetMismatch
 from headless_re_mcp.core.session import (
     SessionRegistry,
+    _go_build_info,
     classify_target,
     describe_native,
 )
@@ -3260,3 +3261,129 @@ def test_session_opens_over_a_native_binary(tmp_path: Path) -> None:
     # ...but the PE-only debuggers refuse it like any other non-PE session.
     with pytest.raises(TargetMismatch):
         session.require_pe()
+
+
+def _uvarint(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _go_buildinfo_blob(
+    version: str, mod_text: str | None, *, flags: int = 0x02, ptr_size: int = 8
+) -> bytes:
+    """A Go build-info blob in the inline layout, mirroring the linker's output.
+
+    14-byte magic, a ptrSize byte and a flags byte, then 16 reserved bytes
+    (the legacy pointer slots the inline format ignores) before the
+    varint-length-prefixed version and module strings. ``mod_text`` is
+    wrapped in the two 16-byte sentinels the runtime uses to bracket the
+    module block; None emits an empty module string.
+    """
+    blob = bytearray(b"\xff Go buildinf:")
+    blob.append(ptr_size)
+    blob.append(flags)
+    blob += b"\x00" * 16  # reserved: offset 16..31
+    blob += _uvarint(len(version)) + version.encode()
+    if mod_text is None:
+        blob += _uvarint(0)
+    else:
+        sentinel = bytes(range(16))
+        wrapped = sentinel + mod_text.encode() + sentinel
+        blob += _uvarint(len(wrapped)) + wrapped
+    return bytes(blob)
+
+
+_GO_MOD_TEXT = (
+    "path\texample.com/tool\n"
+    "mod\texample.com/tool\t(devel)\t\n"
+    "build\t-buildmode=exe\n"
+    "build\tGOOS=linux\n"
+    "build\tCGO_ENABLED=0\n"
+)
+
+
+class TestGoBuildInfo:
+    """_go_build_info reads the ``.go.buildinfo`` stamp, cross-format.
+
+    The self-declared provenance of a Go binary -- toolchain version, module
+    path and build settings -- the same fact ``go version -m`` prints. The
+    inline layout is identical in an ELF, a Mach-O and a PE, so the reader
+    scans for the magic and decodes it the same way regardless of container.
+    """
+
+    def test_a_full_inline_stamp_decodes_every_field(self, tmp_path: Path) -> None:
+        path = tmp_path / "stamp.bin"
+        path.write_bytes(b"\x00" * 64 + _go_buildinfo_blob("go1.22.2", _GO_MOD_TEXT))
+        assert _go_build_info(path) == {
+            "go": {
+                "version": "go1.22.2",
+                "path": "example.com/tool",
+                "main_module": "example.com/tool",
+                "main_module_version": "(devel)",
+                "settings": {
+                    "-buildmode": "exe",
+                    "GOOS": "linux",
+                    "CGO_ENABLED": "0",
+                },
+            }
+        }
+
+    def test_an_empty_module_block_reports_version_only(self, tmp_path: Path) -> None:
+        path = tmp_path / "veronly.bin"
+        path.write_bytes(_go_buildinfo_blob("go1.21.0", None))
+        assert _go_build_info(path) == {"go": {"version": "go1.21.0"}}
+
+    def test_the_legacy_pointer_format_is_not_read(self, tmp_path: Path) -> None:
+        # flags without the 0x2 inline bit is the pre-1.18 pointer layout,
+        # which this reader does not follow: absence, not a guess.
+        path = tmp_path / "legacy.bin"
+        path.write_bytes(_go_buildinfo_blob("go1.16", _GO_MOD_TEXT, flags=0x00))
+        assert _go_build_info(path) == {}
+
+    def test_a_coincidental_magic_without_a_go_version_is_rejected(self, tmp_path: Path) -> None:
+        # The magic can in principle appear in data; a version string that is
+        # not a "go" toolchain string is the sanity check that rejects it.
+        path = tmp_path / "coincidence.bin"
+        path.write_bytes(_go_buildinfo_blob("notgo-1.0", None))
+        assert _go_build_info(path) == {}
+
+    def test_a_truncated_version_varint_fails_closed(self, tmp_path: Path) -> None:
+        # The length says 200 bytes but only a few follow: the read is
+        # bounded and yields nothing rather than running off the end.
+        blob = bytearray(b"\xff Go buildinf:")
+        blob += bytes([8, 0x02]) + b"\x00" * 16
+        blob += _uvarint(200) + b"go1."
+        path = tmp_path / "cut.bin"
+        path.write_bytes(bytes(blob))
+        assert _go_build_info(path) == {}
+
+    def test_a_file_without_the_stamp_reads_absent(self, tmp_path: Path) -> None:
+        path = tmp_path / "plain.bin"
+        path.write_bytes(b"not a go binary at all" * 16)
+        assert _go_build_info(path) == {}
+
+    def test_the_settings_map_is_bounded(self, tmp_path: Path) -> None:
+        many = "".join(f"build\tK{i}=v{i}\n" for i in range(200))
+        path = tmp_path / "many.bin"
+        path.write_bytes(_go_buildinfo_blob("go1.22.2", "path\tx\n" + many))
+        settings = _go_build_info(path)["go"]["settings"]
+        assert len(settings) == 64  # _GO_MAX_SETTINGS
+
+    def test_session_over_a_go_elf_carries_the_stamp(self, tmp_path: Path) -> None:
+        # A real ELF header so describe_native produces facts, with the Go
+        # stamp appended where the reader's whole-file scan finds it -- the
+        # facts and the go block must both land on the native metadata.
+        data = _elf64_le() + b"\x00" * 64 + _go_buildinfo_blob("go1.22.2", _GO_MOD_TEXT)
+        path = _write(tmp_path, "go.elf", data)
+        session = SessionRegistry().create(str(path))
+        native = session.metadata["native"]
+        assert native["format"] == "elf"
+        assert native["go"]["version"] == "go1.22.2"
+        assert native["go"]["main_module"] == "example.com/tool"
