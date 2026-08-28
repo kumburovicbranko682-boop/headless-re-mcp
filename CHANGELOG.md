@@ -101,6 +101,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（frida 设备授权测试缺 frida 即跳过、安全路径在 CI 从不跑）
+
+- `TestFridaTargetAuthorization` 的四个用例(设备 `java_enumerate`/`hook_template_device` 对未授权
+  pid 报 `permission_denied`、本地 `modules` 单 pid 规则、未知模板报 `invalid_params` 且 allowed
+  列表含 `android_ssl_unpin`)都先构造 `FridaClient()`、`if not client.available: pytest.skip(... skip
+  != pass)`。frida 是 `android` extra 的依赖,故这些**安全**用例在本仓 android 测试环境里跑、却在
+  CI 的纯 pip 安装里一律跳过——正是消息自己点名的“skip != pass”,而设备侧授权与 Android 特有的
+  `android_ssl_unpin` 白名单恰是 frida 守卫套件未覆盖的部分。查明授权检查(`_authorize`/`_require`)
+  与模板查找都发生在 `_resolve_device` **之前**,故一个假的模块对象足以抵达它们:改为强制
+  `client._available = True; client._frida = object()`(与 frida 守卫套件 `_local_client` 同法),这些
+  路径于是在任何环境都跑。变异实测:抽掉 `_authorize` 里的 `permission_denied` 分支,两个设备授权
+  用例当场失败(旧用例在缺 frida 的 CI 里会跳过、什么都逮不到);另两个用例各测独立判别式、不受该
+  变异影响。产品代码 `backends/frida/client.py` 未改。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

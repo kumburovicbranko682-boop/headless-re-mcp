@@ -118,10 +118,23 @@ class TestDevicePullSaysWhenNothingLanded:
 
 
 class TestFridaTargetAuthorization:
-    def test_device_operations_refuse_unauthorized_pid(self) -> None:
+    # Force the available state instead of gating on a real frida install. The
+    # authorization guard (_authorize / _require) and the template lookup all
+    # run before _resolve_device, so a fake module object is enough to reach
+    # them -- and forcing it makes these security paths run everywhere. frida
+    # ships in the android extra, so the old `if not client.available: skip`
+    # ran here but never in CI's pip-only install, exactly the "skip != pass"
+    # the messages named; the frida guard suite forces availability the same
+    # way (_available=True, _frida=object()).
+    @staticmethod
+    def _available_client() -> FridaClient:
         client = FridaClient()
-        if not client.available:
-            pytest.skip("frida not installed — authorization path not exercised (skip != pass)")
+        client._available = True
+        client._frida = object()
+        return client
+
+    def test_device_operations_refuse_unauthorized_pid(self) -> None:
+        client = self._available_client()
         with pytest.raises(FridaError) as info:
             client.java_enumerate(
                 "usb", 4242, allowed_pids=[1, 2, 3], mode="classes", limit=1
@@ -130,26 +143,20 @@ class TestFridaTargetAuthorization:
         assert info.value.details["pid"] == 4242
 
     def test_device_hook_refuses_unauthorized_pid(self) -> None:
-        client = FridaClient()
-        if not client.available:
-            pytest.skip("frida not installed — authorization path not exercised (skip != pass)")
+        client = self._available_client()
         with pytest.raises(FridaError) as info:
             client.hook_template_device("usb", 99, "noop", allowed_pids=[7])
         assert info.value.code == "permission_denied"
 
     def test_local_single_pid_rule_is_unchanged(self) -> None:
         """The pre-existing PE contract must survive the device generalisation."""
-        client = FridaClient()
-        if not client.available:
-            pytest.skip("frida not installed — authorization path not exercised (skip != pass)")
+        client = self._available_client()
         with pytest.raises(FridaError) as info:
             client.modules(4242, allowed_pid=4243, limit=1)
         assert info.value.code == "permission_denied"
 
     def test_unknown_hook_template_is_rejected_with_allowed_list(self) -> None:
-        client = FridaClient()
-        if not client.available:
-            pytest.skip("frida not installed — template path not exercised (skip != pass)")
+        client = self._available_client()
         with pytest.raises(FridaError) as info:
             client.hook_template_device("usb", 5, "arbitrary-script", allowed_pids=[5])
         assert info.value.code == "invalid_params"
