@@ -127,6 +127,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`apk.*` 在 androguard 进程内解析前先限制输入文件大小）
+
+- 其它非 PE 工具都把文件交给带独立内存和 `run_bounded` 输出上限的子进程，唯独 apk
+  后端用 androguard 在本服务进程内解析：`_apk` 读取整包、`_parsed` 跑完整 DEX 分析，其
+  内存图是 DEX 体积的数倍。会话创建只读 zip 中央目录（`describe_apk`），因此没有任何环节
+  约束调用方指向的文件——一个多 GB 文件或 zip 炸弹会让服务 RSS 无界增长。现在在两条解析路径
+  共用的唯一收敛点 `_require` 里先行拒绝，返回带 `size`/`max_file_size` 的 `too_large`，与
+  `jsre._require_existing_file` 守卫 node 工具的方式一致。512 MiB 上限远超任何真实 APK
+  （Play base-APK 上限 150 MB），只挡病态输入；`is_file()` 之后 `stat()` 失败映射为
+  `backend_error` 而非 `internal_error` 事故。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
