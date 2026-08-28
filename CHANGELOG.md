@@ -5,7 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
+### 新增（js.sinks：JavaScript 动态执行/DOM 注入 sink 的三查扫描）
+
+- 新工具 `js.sinks(path)`：纯 Python（不经 webcrack），对 JS 文件扫出 eval 类与
+  HTML 注入类的危险调用形态——`eval()`、`Function` 构造器、以字符串为首参的
+  `setTimeout`/`setInterval`（会被当作代码求值）、`document.write(ln)`、
+  `innerHTML`/`outerHTML` 赋值、`insertAdjacentHTML()` 与 `execScript()`。返回
+  `items`（各带 `kind`、`line`、`column`、`offset`、`match` 与去空白的 `snippet`），
+  加 `count`、`by_kind`（对所有命中的直方图）与 `bytes`。它是对原始文本的启发式
+  扫描，不解析 JS，故注释/字符串里的关键字也可能命中；运行时才拼出 eval 的加壳
+  代码静态看不到，先跑 `js.deobfuscate`。`by_kind` 计全部命中而 `items` 上限
+  2000，两者不一致时给 `items_truncated`/`items_total`/`items_limit`。与其他
+  agent 在做的 URL/密钥提取不重叠，补齐 JS 线三查的第三块（动态执行）。工具
+  总数 265→266（只读 148→149）。
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
   `_ProxyInstance.start()/_run()` 的串行化 bring-up 改造（`_STARTUP_LOCK` +

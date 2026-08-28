@@ -7,7 +7,9 @@ needs Node.js 22 or 24; wabt provides ``wasm2wat`` and ``wasm-objdump``.
 
 from __future__ import annotations
 
+import bisect
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -99,6 +101,83 @@ def _looks_like_wasm(path: Path) -> bool:
             return handle.read(4) == _WASM_MAGIC
     except OSError:
         return False
+
+
+# Dynamic-code and DOM-injection sinks worth flagging in a triage pass. The
+# patterns are deliberately anchored to the call/assignment form that is the
+# risky one -- setTimeout with a *string* first argument evals it, with a
+# function does not -- so a hit means the eval-like shape, not merely the name.
+# This is a heuristic over the raw text (like every string/URL scanner on this
+# line): it does not parse JS, so a keyword inside a comment or string literal
+# can still match. Run js.deobfuscate first on packed code, where the eval is
+# assembled at runtime and no static scan can see it.
+_SINK_SPECS: tuple[tuple[str, str], ...] = (
+    ("eval", r"\beval\s*\("),
+    ("function_constructor", r"\b(?:new\s+)?Function\s*\("),
+    ("settimeout_string", r"\bset(?:Timeout|Interval)\s*\(\s*['\"`]"),
+    ("document_write", r"\bdocument\s*\.\s*write(?:ln)?\s*\("),
+    ("inner_html_assignment", r"\.\s*(?:inner|outer)HTML\s*=(?!=)"),
+    ("insert_adjacent_html", r"\.\s*insertAdjacentHTML\s*\("),
+    ("exec_script", r"\bexecScript\s*\("),
+)
+# One pass in document order: named groups let a single finditer report which
+# sink matched while keeping hits sorted by position for the cap below.
+_SINK_COMBINED = re.compile("|".join(f"(?P<{name}>{pattern})" for name, pattern in _SINK_SPECS))
+_MAX_SINKS = 2000
+_SINK_TEXT_CAP = 200
+
+
+def scan_sinks(path: Path) -> JsonObject:
+    """Flag dynamic-code / DOM-injection sinks in a JavaScript file.
+
+    Pure Python, no webcrack: reads the file (subject to the same size cap as
+    the CLI tools) and scans it for the eval-like and HTML-injection call
+    shapes in ``_SINK_SPECS``. ``by_kind`` counts every match; ``items`` is
+    capped, so read items_truncated when they disagree.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    raw = resolved.read_bytes()
+    text = raw.decode("utf-8", errors="replace")
+    line_starts = [0]
+    for index, char in enumerate(text):
+        if char == "\n":
+            line_starts.append(index + 1)
+    items: list[JsonObject] = []
+    by_kind: dict[str, int] = {}
+    total = 0
+    for match in _SINK_COMBINED.finditer(text):
+        kind = match.lastgroup or "sink"
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+        total += 1
+        if len(items) >= _MAX_SINKS:
+            continue
+        offset = match.start()
+        line_index = bisect.bisect_right(line_starts, offset) - 1
+        line_end = text.find("\n", offset)
+        if line_end == -1:
+            line_end = len(text)
+        items.append(
+            {
+                "kind": kind,
+                "line": line_index + 1,
+                "column": offset - line_starts[line_index] + 1,
+                "offset": offset,
+                "match": match.group(0)[:_SINK_TEXT_CAP],
+                "snippet": text[line_starts[line_index] : line_end].strip()[:_SINK_TEXT_CAP],
+            }
+        )
+    result: JsonObject = {
+        "path": str(resolved),
+        "items": items,
+        "count": len(items),
+        "by_kind": by_kind,
+        "bytes": len(raw),
+    }
+    if total > len(items):
+        result["items_truncated"] = True
+        result["items_total"] = total
+        result["items_limit"] = _MAX_SINKS
+    return result
 
 
 def _run(

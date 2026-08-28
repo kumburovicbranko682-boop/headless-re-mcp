@@ -4,6 +4,7 @@ from headless_re_mcp.backends.jsre.client import (
     JsClient,
     JsReError,
     WasmClient,
+    scan_sinks,
 )
 
-__all__ = ["JsClient", "WasmClient", "JsReError"]
+__all__ = ["JsClient", "WasmClient", "JsReError", "scan_sinks"]

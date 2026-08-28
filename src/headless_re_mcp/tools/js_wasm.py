@@ -69,6 +69,27 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="js.sinks")
+    def js_sinks(path: str) -> dict[str, Any]:
+        """Flag dynamic-code and DOM-injection sinks in a JavaScript file.
+
+        A triage pass, pure Python (no webcrack): scans the file for the
+        eval-like and HTML-injection shapes -- eval(), the Function
+        constructor, setTimeout/setInterval called with a string (which evals
+        it), document.write(ln), innerHTML/outerHTML assignment,
+        insertAdjacentHTML() and execScript(). Answers with items, each
+        carrying kind, line, column, offset, match (the matched text) and
+        snippet (the trimmed source line), plus count, by_kind (a histogram
+        over every match) and bytes. It is a heuristic over the raw text: it
+        does not parse JS, so a keyword inside a comment or string can still
+        match, and packed code that assembles its eval at runtime shows
+        nothing -- run js.deobfuscate first. by_kind counts all matches while
+        items is capped at 2000, so read items_truncated, items_total and
+        items_limit when the two disagree. There is no sinks, findings or
+        has_more field.
+        """
+        return _dump(analysis.js_sinks(path))
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
