@@ -243,7 +243,9 @@ def remap_dump_to_file(
     sections = list(headers["sections"])
     if not sections:
         raise PeRebuildError("dump has no sections to remap")
-    if len(sections) > MAX_SECTION_COUNT:
+    # parse_runtime_headers already rejects a NumberOfSections above the cap, so
+    # a parsed dump never reaches here with more sections; this restates it.
+    if len(sections) > MAX_SECTION_COUNT:  # pragma: no cover
         raise PeRebuildError(
             f"NumberOfSections {len(sections)} exceeds the {MAX_SECTION_COUNT} "
             "the loader accepts; the dump's headers are not usable for a rebuild"
@@ -273,7 +275,9 @@ def remap_dump_to_file(
         )
     out = bytearray(dump[: min(len(dump), size_of_headers)].ljust(size_of_headers, b"\0"))
     # Ensure DOS/PE headers present even if SizeOfHeaders was truncated in dump.
-    if len(dump) >= pe_offset + 4:
+    # parse_runtime_headers already required len(dump) >= pe_offset + 24, so the
+    # False arm is unreachable; the guard only documents the copy's precondition.
+    if len(dump) >= pe_offset + 4:  # pragma: no branch
         out[:pe_offset] = dump[:pe_offset]
         out[pe_offset : pe_offset + 4] = dump[pe_offset : pe_offset + 4]
 
@@ -464,7 +468,9 @@ def rebuild_imports(
     dll_offsets: dict[str, int] = {}
     for module_name, apis in modules:
         key = module_name.lower()
-        if key not in dll_offsets:
+        # `modules` is deduplicated by lowercase key upstream, so each key is
+        # first-seen here and the already-present arm never runs.
+        if key not in dll_offsets:  # pragma: no branch
             dll_offsets[key] = len(name_blob)
             name_blob.extend(module_name.encode("ascii", "replace") + b"\0")
         for api in apis:
