@@ -34,6 +34,7 @@ _ALLOWED = frozenset(
         "pdj",
         "axtj",
         "aa",
+        "aac",
     }
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
@@ -115,7 +116,12 @@ class R2Client:
         # failure (parsed False) even though the query succeeded. axtj is both
         # address-scoped and stable across r2 versions.
         cmd = f"axtj @ {address}"
-        data = self.run(binary, ["aa", cmd], timeout=timeout)
+        # aac (analyze function calls) after aa is what discovers the call graph:
+        # for a reference *to* this address to exist, r2 must have analysed the
+        # calling function's code. Plain aa analyses only entry0 and symbols --
+        # measured 0 callers for main on a stripped PE where aac finds them -- so
+        # xrefs was systematically blind to callers in undiscovered functions.
+        data = self.run(binary, ["aa", "aac", cmd], timeout=timeout)
         data = dict(data)
         data["address"] = address
         return enrich_r2_payload(data, binary=binary)

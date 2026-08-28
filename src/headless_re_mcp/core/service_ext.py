@@ -334,7 +334,13 @@ class ExtAnalysisMixin(UiDriveMixin):
         return _r2_request(self, session_id, ["i"], timeout=timeout)
 
     def r2_functions(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
-        return _r2_request(self, session_id, ["aa", "aflj"], timeout=timeout)
+        # aa alone analyses only entry0 and symbols, so on a stripped or packed
+        # PE -- the common RE target -- it lists a handful of functions and
+        # misses the rest (measured 2 of 68 on the gate fixture). aac walks the
+        # call graph to recover them at effectively the same cost (aac is far
+        # lighter than the full aaa), so r2.functions returns the real function
+        # set instead of a near-empty one.
+        return _r2_request(self, session_id, ["aa", "aac", "aflj"], timeout=timeout)
 
     def r2_strings(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         return _r2_request(self, session_id, ["izj"], timeout=timeout)
