@@ -251,7 +251,7 @@ class ExeinfopeScanResult(BaseModel):
 
     def to_dict(self) -> JsonObject:
         value = self.model_dump(mode="json")
-        if not isinstance(value, dict):
+        if not isinstance(value, dict):  # pragma: no cover - model_dump always returns a dict
             raise TypeError("Exeinfo PE result did not serialize to an object")
         return value
 
