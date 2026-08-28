@@ -27,6 +27,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 ### 测试（钉住 `frida.spawn` 双写观测的“时间线那一半”——审计半边测得很全,时间线半边一条没测)
 
 - `frida.spawn` 刻意同时写两处:跨会话存活的durable审计行(设备变更轨迹),以及随会话裁剪的会话级时间线条目——`_audit_frida` 的文档正强调这份双写(“不同于 device.*,它们跑在会话内,所以还各自拥有一条时间线条目”)。`test_frida_audit.py` 把审计半边测得很全(参数/结果、失败带 code、纯枚举不审计、会话过滤可见、审计写失败不拖垮 spawn),却没有一条断言时间线半边:一旦重构删掉 `_timeline_append`,所有审计测试仍全绿,而会话自己的 spawn 记录会悄悄消失。新增 `test_frida_spawn_writes_a_session_timeline_entry`,断言 spawn 恰好写一条 `frida.spawn` 时间线条目、且 details 里带 package 与结果 pid。带外验证:临时删掉 `frida_spawn` 里的 `_timeline_append` → 唯独这条新测试失败(`0 == 1`),六条审计测试仍绿——精确点名被删的正是时间线那一半,证明双写不可再悄悄退化成单写。
+- `frida.server.ensure` 是这对双写里的另一半:与 spawn 一样同时写审计与时间线,但同样只有审计半边(`test_frida_server_ensure_audits_the_push_and_start`)被钉住,时间线半边裸奔。补 `test_frida_server_ensure_writes_a_session_timeline_entry`,断言 ensure 恰好写一条 `frida.server.ensure` 时间线条目、且 details 里带 serial。带外验证:临时删掉 `frida_server_ensure` 里的 `_timeline_append` → 唯独这条新测试失败(`0 == 1`),含审计半边在内的其余七条仍绿——至此这对会话内变更的双写两半都各有守卫。
 
 ### 测试（补齐 Agent 工作台 `PersonaStore` 三条已实现却没被钉住的失败闭合/校验契约——覆盖率 83%,缺口都在错误分支)
 

@@ -168,6 +168,39 @@ def test_frida_spawn_writes_a_session_timeline_entry(
         service.close_all()
 
 
+def test_frida_server_ensure_writes_a_session_timeline_entry(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """server.ensure is the other half of the dual-write pair, same as spawn.
+
+    Like spawn it records to both the cross-session audit and the session's own
+    timeline; the audit half is pinned above, so this pins the timeline half,
+    naming the serial. Dropping its ``_timeline_append`` would sail past every
+    audit assertion while the session lost its record of the frida-server push.
+    """
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_frida.FridaClient",
+        lambda *a, **k: _FakeClient(),
+    )
+    service, session_id = _open_session(tmp_path)
+    try:
+        service._adb_backend = _FakeAdbServer()  # type: ignore[attr-defined]
+        result = service.frida_server_ensure(session_id, "emulator-5554", port=27042)
+        assert result.ok is True, result.error
+
+        timeline = service.timeline_list(session_id)
+        assert timeline.ok and timeline.data is not None
+        ensure_events = [
+            event
+            for event in timeline.data["events"]
+            if event["event"] == "frida.server.ensure"
+        ]
+        assert len(ensure_events) == 1, "ensure must own exactly one timeline entry"
+        assert ensure_events[0]["details"]["serial"] == "emulator-5554"
+    finally:
+        service.close_all()
+
+
 def test_a_failed_frida_mutation_is_audited_with_its_code(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
