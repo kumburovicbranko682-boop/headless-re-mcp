@@ -24,6 +24,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（device.logcat 的 lines 是唯一逃出通用分页守卫的“页大小”参数，补钉 schema 上限 == 后端 clamp 常量 的对等与越界钳制）
+
+- `device.logcat` 的 `lines`(返回多少条尾部日志)本质是页大小,和其它非 PE 读取器的 `limit` 同类,但名字叫 `lines`,\
+  于是只扫 `limit` / `offset` 的通用分页 schema 守卫看不到它。这让它缺了那两条对其它读取器成立的保证:schema 声明上限\
+  (MCP 路径能对荒唐请求 fail-fast、且对外承诺的最大页是诚实的),以及后端钳到同一上限(对跳过 schema 的 agent /\
+  OpenAI 传输的 backstop,使裸 `lines=10**9` 不会把尾读变成无界 `-t`)。新增 `test_device_logcat_bounds.py` 是\
+  `test_apk_page_clamp` schema/cap 对等断言的 logcat 版:钉 `lines` 为整数、下限 1、且 **schema 上限恰等于后端常量\
+  `_MAX_LOGCAT_LINES`**(任一侧漂移都是 bug——schema 承诺了后端不供的页,或后端上限调高却没更新契约),并以记录参数的\
+  假设备证明越界 `lines` 在抵达 `adb` 前确被钳成 `-t _MAX_LOGCAT_LINES`、非正 `lines` 被 `max(1, …)` 落到 `-t 1`\
+  (而非 `-t 0`——adb 会把 0 读成“全部”)。
+
 ### 测试（非 PE offset 读取器新增“文档层诚实分页”守卫：docstring 必须点名 total / offset / has_more，把 apk.xrefs / frida.applications 曾经的“无 offset、首页装作完整”缺陷钉在 agent 实际消费的那一层）
 
 - `test_non_pe_pagination_schema_bounds.py` 原有两条守卫只钉 schema:`limit` 必须有上限、`offset` 必须以 0 为下限。\
