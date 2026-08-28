@@ -161,3 +161,53 @@ def test_pids_for_package_falls_back_to_ps_when_pidof_missing() -> None:
 def test_pids_for_package_shell_error_is_none() -> None:
     dev = _FakeDev({("pidof", "com.example.app"): RuntimeError("boom")})
     assert _pids_for_package(dev, "com.example.app") is None
+
+
+def test_pids_for_package_none_when_pidof_missing_and_ps_errors() -> None:
+    # pidof is unavailable *and* the ps -A fallback itself errors: there is no
+    # answer to report, so the reader returns None rather than an empty list
+    # (which would read as "package present but not running").
+    dev = _FakeDev(
+        {
+            ("pidof", "com.example.app"): "/system/bin/sh: pidof: not found",
+            "ps -A": RuntimeError("device offline"),
+        }
+    )
+    assert _pids_for_package(dev, "com.example.app") is None
+
+
+def test_pids_for_package_ps_scan_takes_the_first_numeric_token_per_line() -> None:
+    # The ps fallback reads the first numeric column in the first three tokens
+    # of a matching line; a non-numeric leading USER column must be skipped.
+    dev = _FakeDev(
+        {
+            ("pidof", "com.example.app"): "pidof: unknown option",
+            "ps -A": (
+                "u0_a1 4321 100 com.example.app\n"
+                "u0_a1 4322 100 com.example.app:remote\n"
+            ),
+        }
+    )
+    assert _pids_for_package(dev, "com.example.app") == [4321, 4322]
+
+
+def test_pids_for_package_ps_scan_stops_at_sixteen_matches() -> None:
+    # Guards against a pathological ps table growing the result without bound.
+    lines = "\n".join(f"u0_a1 {1000 + i} 100 com.example.app" for i in range(40))
+    dev = _FakeDev(
+        {
+            ("pidof", "com.example.app"): "no such tool",
+            "ps -A": lines + "\n",
+        }
+    )
+    pids = _pids_for_package(dev, "com.example.app")
+    assert pids is not None
+    assert len(pids) == 16
+    assert pids[0] == 1000
+
+
+def test_pids_for_package_nonempty_pidof_without_digits_is_none() -> None:
+    # pidof answered, the text is not a "missing tool" message, yet no token
+    # parses as a pid: that is a malformed result, reported as None.
+    dev = _FakeDev({("pidof", "com.example.app"): "???"})
+    assert _pids_for_package(dev, "com.example.app") is None
