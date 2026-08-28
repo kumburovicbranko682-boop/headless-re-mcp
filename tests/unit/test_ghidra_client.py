@@ -129,6 +129,69 @@ def test_ghidra_analyze_deletes_the_project_other_tools_cannot_read(
     assert listed["export_path"]
 
 
+@pytest.mark.parametrize("bad", [0.0, -30.0, float("nan")])
+def test_ghidra_rejects_a_bad_timeout_before_spawning_the_jvm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: float
+) -> None:
+    """A non-positive or NaN timeout must be invalid_params, not a JVM launch.
+
+    The agent transport calls handlers straight from model arguments with no
+    schema enforcement, and Ghidra was the only shell-out adapter (vs r2, jsre,
+    jadx, apktool) that did not re-impose the schema's bound. The stakes are
+    highest here: run_bounded's deadline check is `remaining <= 0`, which a NaN
+    never satisfies, so a NaN deadline runs analyzeHeadless with no bound at
+    all; and a non-positive one pays the JVM spawn only to kill it on the first
+    loop pass and report a misleading "timeout" for a bad parameter. Pin that
+    the clamp fires before anything spawns, on both public entry points.
+    """
+    spawned: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        spawned.append([str(part) for part in cmd])
+        return Completed(0, b"", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+    binary = _binary(tmp_path)
+
+    with pytest.raises(ghidra_client.GhidraError) as via_export:
+        client.functions(binary, tmp_path / "project", timeout=bad)
+    with pytest.raises(ghidra_client.GhidraError) as via_analyze:
+        client.analyze_binary(binary, tmp_path / "project", timeout=bad)
+
+    assert via_export.value.code == "invalid_params"
+    assert via_analyze.value.code == "invalid_params"
+    assert spawned == []
+
+
+def test_ghidra_caps_the_timeout_at_the_schema_maximum(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deadline above the schema's 600s must reach run_bounded capped, not verbatim.
+
+    The MCP schema declares timeout <= 600, but the agent transport skips
+    pydantic, so a huge caller value would otherwise become the literal
+    run_bounded deadline and let a Ghidra run that hangs on hostile input hold
+    a worker for as long as the caller named.
+    """
+    seen: list[float] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        seen.append(float(kwargs["timeout"]))
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(str(arg)).write_text('{"items": []}', encoding="utf-8")
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+
+    client.functions(_binary(tmp_path), tmp_path / "project", timeout=86_400.0)
+    client.functions(_binary(tmp_path), tmp_path / "project", timeout=45.0)
+
+    assert seen == [600.0, 45.0]
+
+
 def test_ghidra_serializes_clients_using_the_same_project(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

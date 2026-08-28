@@ -10,13 +10,20 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 
 JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
 _EXPORT_SCRIPT = "ExportJson.py"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
+# Every ghidra tool schema declares ``0 < timeout <= 600``. See clamp_cli_timeout.
+_MAX_TIMEOUT_S = 600.0
 _PROJECT_LOCKS = tuple(RLock() for _ in range(64))
 
 
@@ -301,6 +308,18 @@ class GhidraClient:
         max_heap: str,
         delete_project: bool,
     ) -> tuple[str, str, int]:
+        # The agent transport calls handlers straight from model arguments with
+        # no schema enforcement, so the schema's 0 < timeout <= 600 must be
+        # re-imposed here like every sibling CLI adapter (r2, jsre, jadx,
+        # apktool) does. Ghidra was the one shell-out that skipped it, and the
+        # cost is worst here: run_bounded's deadline loop never fires on a NaN
+        # (nan <= 0 is false), so a NaN deadline runs the JVM with no bound at
+        # all, and a non-positive one spawns the JVM only to kill it and report
+        # a misleading "timeout" for what is really a bad parameter.
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise GhidraError("invalid_params", str(exc)) from exc
         if self.uses_pyghidra:
             return self._run_pyghidra(
                 project_dir,
