@@ -3025,3 +3025,268 @@ class TestApkCrcIntegrity:
             pytest.skip(f"fixture missing: {_APK_FIXTURE}")
         session = SessionRegistry().create(str(_APK_FIXTURE))
         assert session.metadata["apk"]["crc"]["ok"] is True
+
+
+def _axml_from_events(strings: list[str], events: list[tuple]) -> bytes:
+    """Assemble a compiled AXML resource from a flat event list.
+
+    Each event is one of ``("start", name_idx, [(attr_name_idx, data_type,
+    value), ...])``, ``("cdata", text_idx)`` or ``("end", name_idx)``. Boolean
+    attributes use data_type 0x12 with value True/False; string attributes use
+    0x03 with the value as a string-pool index. The byte layout is the one
+    androguard's AXMLPrinter round-trips (verified in the gate), so a reader
+    whose chunk offsets were wrong would disagree with it.
+    """
+    data = bytearray()
+    offsets: list[int] = []
+    for text in strings:
+        offsets.append(len(data))
+        raw = text.encode("utf-8")
+        data += bytes([len(raw), len(raw)]) + raw + b"\x00"
+    while len(data) % 4:
+        data += b"\x00"
+    strings_start = 28 + len(strings) * 4
+    pool = struct.pack(
+        "<HHIIIIII", 0x0001, 28, strings_start + len(data), len(strings), 0, 1 << 8,
+        strings_start, 0,
+    )
+    pool += b"".join(struct.pack("<I", off) for off in offsets) + bytes(data)
+
+    body = bytearray()
+    for event in events:
+        if event[0] == "start":
+            _, name_idx, attrs = event
+            attr_bytes = bytearray()
+            for name_index, data_type, value in attrs:
+                if data_type == 0x03:
+                    raw = value
+                elif data_type == 0x12:
+                    raw = 0xFFFFFFFF if value else 0
+                else:
+                    raw = value
+                attr_bytes += struct.pack(
+                    "<iiiHBBI", -1, name_index, raw if data_type == 0x03 else -1,
+                    8, 0, data_type, raw,
+                )
+            ext = struct.pack(
+                "<IIiIHHHHHH", 0xFFFFFFFF, 0xFFFFFFFF, -1, name_idx, 20, 20,
+                len(attrs), 0, 0, 0,
+            )
+            chunk = ext + bytes(attr_bytes)
+            body += struct.pack("<HHI", 0x0102, 16, 8 + len(chunk)) + chunk
+        elif event[0] == "cdata":
+            text_idx = event[1]
+            cd = struct.pack("<IiI", 0xFFFFFFFF, -1, text_idx) + struct.pack(
+                "<HBBI", 8, 0, 0x03, text_idx
+            )
+            body += struct.pack("<HHI", 0x0104, 16, 8 + len(cd)) + cd
+        elif event[0] == "end":
+            end = struct.pack("<IIiI", 0xFFFFFFFF, 0xFFFFFFFF, -1, event[1])
+            body += struct.pack("<HHI", 0x0103, 16, 8 + len(end)) + end
+    payload = pool + bytes(body)
+    return struct.pack("<HHI", 0x0003, 8, 8 + len(payload)) + payload
+
+
+class TestApkNetworkSecurity:
+    """_axml_network_security decodes the declared TLS posture off a config.
+
+    Android's network-security-config is the app's declarative TLS policy:
+    which domains permit cleartext, which pin certificates, and whether
+    production traffic trusts user-installed CAs (the interception-proxy
+    fact). The reader answers what the file declares, never what the platform
+    would compute -- absence stays absent -- and only fires on a member whose
+    root element is <network-security-config>.
+    """
+
+    _COMMON = [
+        "network-security-config",  # 0
+        "base-config",  # 1
+        "domain-config",  # 2
+        "domain",  # 3
+        "pin-set",  # 4
+        "pin",  # 5
+        "debug-overrides",  # 6
+        "trust-anchors",  # 7
+        "certificates",  # 8
+        "cleartextTrafficPermitted",  # 9
+        "includeSubdomains",  # 10
+        "digest",  # 11
+        "src",  # 12
+        "user",  # 13
+        "SHA-256",  # 14
+    ]
+
+    def _read(self, events: list[tuple], extra: list[str] | None = None) -> dict[str, Any]:
+        from headless_re_mcp.core.session import _axml_network_security
+
+        axml = _axml_from_events(self._COMMON + (extra or []), events)
+        facts = _axml_network_security(axml)
+        assert facts is not None
+        return facts
+
+    def test_a_base_config_cleartext_flag_reads_through(self) -> None:
+        facts = self._read(
+            [
+                ("start", 0, []),
+                ("start", 1, [(9, 0x12, False)]),
+                ("end", 1),
+                ("end", 0),
+            ]
+        )
+        assert facts["base_cleartext"] is False
+        assert facts["domains"] == []
+
+    def test_a_domain_carries_its_name_subdomains_and_scope_cleartext(self) -> None:
+        base = len(self._COMMON)
+        facts = self._read(
+            [
+                ("start", 0, []),
+                ("start", 2, [(9, 0x12, True)]),  # domain-config cleartext=true
+                ("start", 3, [(10, 0x12, True)]),  # domain includeSubdomains=true
+                ("cdata", base),  # extra[0] = the domain name
+                ("end", 3),
+                ("end", 2),
+                ("end", 0),
+            ],
+            extra=["insecure.example.com"],
+        )
+        assert facts["domains"] == [
+            {
+                "name": "insecure.example.com",
+                "include_subdomains": True,
+                "cleartext": True,
+                "pinned": False,
+            }
+        ]
+
+    def test_a_pin_set_records_digests_and_marks_the_domain_pinned(self) -> None:
+        base = len(self._COMMON)
+        facts = self._read(
+            [
+                ("start", 0, []),
+                ("start", 2, []),
+                ("start", 3, []),
+                ("cdata", base),  # domain name
+                ("end", 3),
+                ("start", 4, []),  # pin-set
+                ("start", 5, [(11, 0x03, 14)]),  # pin digest="SHA-256"
+                ("cdata", base + 1),  # pin value
+                ("end", 5),
+                ("end", 4),
+                ("end", 2),
+                ("end", 0),
+            ],
+            extra=["pinned.example.com", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd0og="],
+        )
+        assert facts["pins"] == [
+            {"digest": "SHA-256", "value": "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd0og="}
+        ]
+        assert facts["pin_count"] == 1
+        assert facts["domains"][0]["pinned"] is True
+
+    def test_a_user_trust_anchor_outside_debug_flags_user_cas(self) -> None:
+        facts = self._read(
+            [
+                ("start", 0, []),
+                ("start", 2, []),
+                ("start", 7, []),  # trust-anchors
+                ("start", 8, [(12, 0x03, 13)]),  # certificates src="user"
+                ("end", 8),
+                ("end", 7),
+                ("end", 2),
+                ("end", 0),
+            ]
+        )
+        assert facts["trusts_user_cas"] is True
+        assert facts["debug_overrides"] is False
+
+    def test_a_user_trust_anchor_inside_debug_overrides_does_not_flag(self) -> None:
+        # debug-overrides only apply to debuggable builds; a user CA there is
+        # a development convenience, not a production interception surface.
+        facts = self._read(
+            [
+                ("start", 0, []),
+                ("start", 6, []),  # debug-overrides
+                ("start", 7, []),
+                ("start", 8, [(12, 0x03, 13)]),  # certificates src="user"
+                ("end", 8),
+                ("end", 7),
+                ("end", 6),
+                ("end", 0),
+            ]
+        )
+        assert facts["trusts_user_cas"] is False
+        assert facts["debug_overrides"] is True
+
+    def test_a_member_that_is_not_a_config_reads_none(self) -> None:
+        from headless_re_mcp.core.session import _axml_network_security
+
+        # A layout resource (root <LinearLayout>) is how the member scan tells
+        # config from the dozens of other res/xml files: the root decides.
+        axml = _axml_from_events(
+            ["LinearLayout"], [("start", 0, []), ("end", 0)]
+        )
+        assert _axml_network_security(axml) is None
+
+    def test_non_axml_bytes_read_none(self) -> None:
+        from headless_re_mcp.core.session import _axml_network_security
+
+        assert _axml_network_security(b"not compiled xml") is None
+        assert _axml_network_security(b"") is None
+
+    def test_a_truncated_domain_scope_still_reports_what_it_declared(self) -> None:
+        # The file ends mid-scope (no </domain-config>): the domain's name and
+        # subdomains survive, and the scope-settled fields default honestly
+        # rather than raising.
+        base = len(self._COMMON)
+        facts = self._read(
+            [
+                ("start", 0, []),
+                ("start", 2, [(9, 0x12, True)]),
+                ("start", 3, []),
+                ("cdata", base),
+                ("end", 3),
+            ],
+            extra=["dangling.example.com"],
+        )
+        assert facts["domains"][0]["name"] == "dangling.example.com"
+        assert facts["domains"][0]["pinned"] is False
+
+    def test_session_over_an_apk_with_a_config_carries_it(self, tmp_path: Path) -> None:
+        from headless_re_mcp.core.session import SessionRegistry
+
+        base = len(self._COMMON)
+        config = _axml_from_events(
+            self._COMMON + ["nsc.example.com"],
+            [
+                ("start", 0, []),
+                ("start", 1, [(9, 0x12, False)]),
+                ("end", 1),
+                ("start", 2, []),
+                ("start", 3, []),
+                ("cdata", base),
+                ("end", 3),
+                ("end", 2),
+                ("end", 0),
+            ],
+        )
+        path = tmp_path / "with_nsc.apk"
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("AndroidManifest.xml", _axml_utf8_manifest())
+            archive.writestr("res/xml/network_security_config.xml", config)
+        session = SessionRegistry().create(str(path))
+        nsc = session.metadata["apk"]["network_security"]
+        assert nsc["member"] == "res/xml/network_security_config.xml"
+        assert nsc["base_cleartext"] is False
+        assert nsc["domains"][0]["name"] == "nsc.example.com"
+
+    def test_session_over_an_apk_without_a_config_omits_the_fact(self, tmp_path: Path) -> None:
+        from headless_re_mcp.core.session import SessionRegistry
+
+        path = tmp_path / "no_nsc.apk"
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("AndroidManifest.xml", _axml_utf8_manifest())
+            archive.writestr("res/xml/prefs.xml", _axml_from_events(["PreferenceScreen"],
+                [("start", 0, []), ("end", 0)]))
+        session = SessionRegistry().create(str(path))
+        assert "network_security" not in session.metadata["apk"]

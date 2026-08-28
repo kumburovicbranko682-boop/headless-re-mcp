@@ -14,6 +14,7 @@ pass: it skips only when androguard is not installed, and says so.
 from __future__ import annotations
 
 import shutil
+import struct
 import subprocess
 import xml.etree.ElementTree as ET
 import zipfile
@@ -503,3 +504,155 @@ def test_apk_member_crc_verdict_agrees_with_unzip(tmp_path: Path) -> None:
         assert victim.filename in verify.stdout
     finally:
         service.close_all()
+
+
+def _nsc_axml() -> bytes:
+    """A compiled network-security-config, laid out as aapt2 emits AXML.
+
+    Built here so the gate owns the ground truth end to end: a base-config
+    that forbids cleartext, one domain-config that permits it and pins a
+    certificate, and a production trust-anchor accepting user CAs. androguard's
+    AXMLPrinter decodes these very bytes back to text XML (a wholly separate
+    binary-XML implementation), and the assertions read the tree it produced,
+    so agreement proves the session's chunk-walk matches androguard's.
+    """
+    strings = [
+        "network-security-config",  # 0
+        "base-config",  # 1
+        "domain-config",  # 2
+        "domain",  # 3
+        "pin-set",  # 4
+        "pin",  # 5
+        "trust-anchors",  # 6
+        "certificates",  # 7
+        "cleartextTrafficPermitted",  # 8
+        "includeSubdomains",  # 9
+        "digest",  # 10
+        "src",  # 11
+        "user",  # 12
+        "SHA-256",  # 13
+        "insecure.example.com",  # 14 (domain text)
+        "d6qzRu9zOECb90Uez27xWltNsj0e1Md7GkYYkVoZWmM=",  # 15 (pin text)
+    ]
+    data = bytearray()
+    offsets: list[int] = []
+    for text in strings:
+        offsets.append(len(data))
+        raw = text.encode("utf-8")
+        data += bytes([len(raw), len(raw)]) + raw + b"\x00"
+    while len(data) % 4:
+        data += b"\x00"
+    strings_start = 28 + len(strings) * 4
+    pool = struct.pack(
+        "<HHIIIIII", 0x0001, 28, strings_start + len(data), len(strings), 0, 1 << 8,
+        strings_start, 0,
+    )
+    pool += b"".join(struct.pack("<I", off) for off in offsets) + bytes(data)
+
+    def start(name_idx: int, attrs: list[tuple[int, int, object]]) -> bytes:
+        attr_bytes = bytearray()
+        for name_index, data_type, value in attrs:
+            if data_type == 0x03:
+                raw = int(value)  # a string-pool index
+            elif data_type == 0x12:
+                raw = 0xFFFFFFFF if value else 0
+            else:
+                raw = int(value)
+            attr_bytes += struct.pack(
+                "<iiiHBBI", -1, name_index, raw if data_type == 0x03 else -1,
+                8, 0, data_type, raw,
+            )
+        ext = struct.pack(
+            "<IIiIHHHHHH", 0xFFFFFFFF, 0xFFFFFFFF, -1, name_idx, 20, 20,
+            len(attrs), 0, 0, 0,
+        )
+        chunk = ext + bytes(attr_bytes)
+        return struct.pack("<HHI", 0x0102, 16, 8 + len(chunk)) + chunk
+
+    def cdata(text_idx: int) -> bytes:
+        cd = struct.pack("<IiI", 0xFFFFFFFF, -1, text_idx) + struct.pack(
+            "<HBBI", 8, 0, 0x03, text_idx
+        )
+        return struct.pack("<HHI", 0x0104, 16, 8 + len(cd)) + cd
+
+    def end(name_idx: int) -> bytes:
+        e = struct.pack("<IIiI", 0xFFFFFFFF, 0xFFFFFFFF, -1, name_idx)
+        return struct.pack("<HHI", 0x0103, 16, 8 + len(e)) + e
+
+    body = bytearray()
+    body += start(0, [])
+    body += start(1, [(8, 0x12, False)])  # base-config cleartext=false
+    body += end(1)
+    body += start(2, [(8, 0x12, True)])  # domain-config cleartext=true
+    body += start(3, [(9, 0x12, True)]) + cdata(14) + end(3)  # <domain>insecure...</domain>
+    body += start(4, [])  # pin-set
+    body += start(5, [(10, 0x03, 13)]) + cdata(15) + end(5)  # <pin digest=SHA-256>...</pin>
+    body += end(4)
+    body += start(6, [])  # trust-anchors
+    body += start(7, [(11, 0x03, 12)]) + end(7)  # <certificates src="user"/>
+    body += end(6)
+    body += end(2)
+    body += end(0)
+    payload = pool + bytes(body)
+    return struct.pack("<HHI", 0x0003, 8, 8 + len(payload)) + payload
+
+
+def test_network_security_config_agrees_with_androguard(tmp_path: Path) -> None:
+    """The declared TLS posture, refereed by androguard's own AXML decode.
+
+    The session reads the network-security-config straight off the compiled
+    res/xml member -- which domains permit cleartext, which pin certificates,
+    whether production trust trusts user CAs. androguard's AXMLPrinter is a
+    separate implementation of the same binary-XML format; it renders the very
+    bytes the session parsed back to text XML, and the domain names, the pin
+    digest and value, and the user-CA anchor read off that tree must match the
+    session's facts field for field. skip != pass when androguard is absent.
+    """
+    if not _androguard_available():
+        pytest.skip("androguard not installed — NSC gate not run (skip != pass)")
+    from androguard.core.axml import AXMLPrinter
+
+    config = _nsc_axml()
+
+    # The referee: androguard decodes the same bytes to a text-XML tree,
+    # wholly independently of the session's chunk-walk.
+    printer = AXMLPrinter(config)
+    assert printer.is_valid(), "androguard could not parse the compiled config"
+    tree = printer.get_xml_obj()
+    ref_domains = {el.text for el in tree.iter("domain") if el.text}
+    ref_pins = {el.text for el in tree.iter("pin") if el.text}
+    ref_pin_digests = {el.get("digest") for el in tree.iter("pin")}
+    ref_user_ca = any(
+        el.get("src") == "user"
+        for anchors in tree.iter("trust-anchors")
+        for el in anchors.iter("certificates")
+    )
+    assert ref_domains == {"insecure.example.com"}  # the referee really saw it
+    assert ref_user_ca is True
+
+    path = tmp_path / "pinned.apk"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        # A manifest androguard accepts, plus the config under its usual home.
+        with zipfile.ZipFile(_FIXTURE) as fixture:
+            archive.writestr("AndroidManifest.xml", fixture.read("AndroidManifest.xml"))
+        archive.writestr("res/xml/network_security_config.xml", config)
+
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(path))
+        assert created.ok, created.error
+        nsc = created.data["session"]["metadata"]["apk"]["network_security"]
+    finally:
+        service.close_all()
+
+    assert nsc["member"] == "res/xml/network_security_config.xml"
+    assert nsc["base_cleartext"] is False
+    assert {row["name"] for row in nsc["domains"]} == ref_domains
+    assert {pin["value"] for pin in nsc["pins"]} == ref_pins
+    assert {pin["digest"] for pin in nsc["pins"]} == ref_pin_digests
+    assert nsc["trusts_user_cas"] == ref_user_ca
+    # The domain that sat in the cleartext-permitting, pinning scope carries
+    # both settled flags -- the inheritance the session resolves at scope end.
+    insecure = next(row for row in nsc["domains"] if row["name"] == "insecure.example.com")
+    assert insecure["cleartext"] is True
+    assert insecure["pinned"] is True

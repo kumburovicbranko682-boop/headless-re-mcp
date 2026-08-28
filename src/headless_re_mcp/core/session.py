@@ -1150,6 +1150,16 @@ _ANDROID_ACTION_VIEW = "android.intent.action.VIEW"
 _AXML_DEEP_LINK_TAGS = frozenset({"activity", "activity-alias"})
 _AXML_MAX_DEEP_LINKS = 4096
 _AXML_MAX_FILTER_DATAS = 256
+# The CDATA chunk: element text, which is where a network-security-config
+# keeps its domain names and pin values (attributes carry everything the
+# manifest reader needs, so only this reader decodes text nodes).
+_AXML_CDATA_TYPE = 0x0104
+# Network-security-config bounds: how many res/ xml members are inspected for
+# the <network-security-config> root, and how many domain rules and pins are
+# listed (counts stay exact within the member; the lists are the sample).
+_APK_NSC_MAX_MEMBERS = 256
+_APK_NSC_MAX_DOMAINS = 64
+_APK_NSC_MAX_PINS = 32
 
 # A DEX file opens with a fixed 0x70-byte header whose counts (classes, methods,
 # strings) and format version are at known offsets, so how much code an APK
@@ -1342,6 +1352,7 @@ def describe_apk(path: Path) -> dict[str, Any]:
     signed_v2, signed_v3, signers = _apk_signature_schemes(path)
     payloads, payload_count = _apk_embedded_payloads(path)
     entropy_flags, entropy_count = _apk_high_entropy_members(path)
+    network_security = _apk_network_security(path)
     return {
         "apk": {
             "format": "apk",
@@ -1388,6 +1399,12 @@ def describe_apk(path: Path) -> dict[str, Any]:
             # member's decompressed bytes -- the URL census, deduplicated
             # package-wide; sample bounded, count exact within budget.
             **_apk_url_facts(path),
+            # The declared TLS posture (res/xml network-security-config):
+            # cleartext rules, certificate pins and whether production
+            # traffic trusts user-installed CAs -- reported only when the
+            # package ships such a config, because its absence means
+            # platform defaults, not a policy of "no".
+            **({"network_security": network_security} if network_security is not None else {}),
         }
     }
 
@@ -1915,6 +1932,188 @@ def _apk_crc_integrity(path: Path) -> dict[str, Any] | None:
     except (OSError, zipfile.BadZipFile):
         return None
     return {"ok": not bad, "bad_members": bad, "members_checked": checked}
+
+
+def _apk_network_security(path: Path) -> dict[str, Any] | None:
+    """The compiled network-security-config's declared TLS posture, or None.
+
+    Android's declarative TLS policy lives in a res/ xml file the manifest
+    references by resource id; rather than resolving that id through
+    resources.arsc, this scans the res/ xml members for the one whose root
+    element is <network-security-config> -- the root name is decisive. The
+    facts are what the file declares, not what the platform would compute:
+    the base-config's explicit cleartextTrafficPermitted, each domain rule
+    (name, includeSubdomains, its enclosing config's explicit cleartext value
+    and whether that config pins certificates), the declared pin digests,
+    whether any production trust-anchor accepts user-installed CAs (the "can
+    an interception proxy see this traffic" fact), and whether
+    debug-overrides exist. Inheritance and version-dependent defaults are
+    never guessed at. None means no such member parsed -- an APK without a
+    config, not one that allows everything.
+    """
+    try:
+        with zipfile.ZipFile(path) as archive:
+            candidates = [
+                info
+                for info in archive.infolist()
+                if info.filename.startswith("res/")
+                and info.filename.endswith(".xml")
+                and info.file_size <= _AXML_MAX_BYTES
+            ][:_APK_NSC_MAX_MEMBERS]
+            for info in candidates:
+                with archive.open(info.filename) as handle:
+                    data = handle.read(_AXML_MAX_BYTES)
+                facts = _axml_network_security(data)
+                if facts is not None:
+                    return {"member": info.filename, **facts}
+    except (OSError, zipfile.BadZipFile, KeyError):
+        return None
+    return None
+
+
+def _axml_network_security(data: bytes) -> dict[str, Any] | None:
+    """Decode one compiled xml as a network-security-config, or None.
+
+    A single pass over the AXML chunks with a small element context: domain
+    names and pin values are element text (CDATA chunks), everything else is
+    attributes. A file whose root element is anything else returns None
+    immediately -- that is how the member scan tells config from layout.
+    """
+    if len(data) < 8 or int.from_bytes(data[0:2], "little") != _AXML_RES_XML_TYPE:
+        return None
+    limit = min(len(data), int.from_bytes(data[4:8], "little"))
+    strings: list[str] = []
+    res_map: list[int] = []
+    root_seen = False
+    base_cleartext: bool | None = None
+    domains: list[dict[str, Any]] = []
+    pins: list[dict[str, str]] = []
+    pin_count = 0
+    trusts_user_cas = False
+    debug_overrides = False
+    # The enclosing <domain-config> scopes: each records its declared
+    # cleartext value, whether it carries a pin-set, and which domain rows it
+    # owns, so the END of the scope can settle its rows' pinned flag.
+    config_stack: list[dict[str, Any]] = []
+    overrides_depth = 0  # inside <debug-overrides>: user CAs there are normal
+    pending_text: str | None = None  # "domain" or "pin": whom the next CDATA feeds
+    pending_domain: dict[str, Any] | None = None
+    pending_pin: dict[str, str] | None = None
+
+    pos = 8
+    chunks = 0
+    while pos + 8 <= limit and chunks < _AXML_MAX_CHUNKS:
+        chunks += 1
+        ctype = int.from_bytes(data[pos + 0 : pos + 2], "little")
+        csize = int.from_bytes(data[pos + 4 : pos + 8], "little")
+        if csize < 8 or pos + csize > limit:
+            break
+        chunk = data[pos : pos + csize]
+        if ctype == _AXML_STRING_POOL_TYPE:
+            strings = _axml_string_pool(chunk)
+        elif ctype == _AXML_RESOURCE_MAP_TYPE:
+            res_map = _axml_resource_map(chunk)
+        elif ctype == _AXML_START_ELEMENT_TYPE:
+            name, attrs = _axml_start_element(chunk, strings, res_map)
+            pending_text = None
+            if not root_seen:
+                if name != "network-security-config":
+                    return None
+                root_seen = True
+            elif name == "base-config":
+                base_cleartext = _axml_bool(attrs, "cleartextTrafficPermitted")
+            elif name == "domain-config":
+                config_stack.append(
+                    {
+                        "cleartext": _axml_bool(attrs, "cleartextTrafficPermitted"),
+                        "pinned": False,
+                        "rows": [],
+                    }
+                )
+            elif name == "debug-overrides":
+                debug_overrides = True
+                overrides_depth += 1
+            elif name == "domain":
+                pending_domain = {
+                    "include_subdomains": bool(_axml_bool(attrs, "includeSubdomains")),
+                }
+                pending_text = "domain"
+            elif name == "pin-set":
+                if config_stack:
+                    config_stack[-1]["pinned"] = True
+            elif name == "pin":
+                pending_pin = {"digest": _axml_str(attrs, "digest") or ""}
+                pending_text = "pin"
+            elif name == "certificates":
+                # src="user" outside debug-overrides means production traffic
+                # trusts user-installed CAs; a bundled-cert src compiles to a
+                # resource reference, which _axml_str correctly reads as None.
+                if _axml_str(attrs, "src") == "user" and not overrides_depth:
+                    trusts_user_cas = True
+        elif ctype == _AXML_CDATA_TYPE:
+            text = _axml_cdata(chunk, strings)
+            if pending_text == "domain" and pending_domain is not None and text:
+                pending_domain["name"] = text
+            elif pending_text == "pin" and pending_pin is not None and text:
+                pending_pin["value"] = text
+        elif ctype == _AXML_END_ELEMENT_TYPE:
+            name = _axml_end_element(chunk, strings)
+            pending_text = None
+            if name == "domain" and pending_domain is not None:
+                if "name" in pending_domain and len(domains) < _APK_NSC_MAX_DOMAINS:
+                    row = {"name": pending_domain["name"], **pending_domain}
+                    domains.append(row)
+                    if config_stack:
+                        config_stack[-1]["rows"].append(row)
+                pending_domain = None
+            elif name == "pin" and pending_pin is not None:
+                if "value" in pending_pin:
+                    pin_count += 1
+                    if len(pins) < _APK_NSC_MAX_PINS:
+                        pins.append(pending_pin)
+                pending_pin = None
+            elif name == "domain-config" and config_stack:
+                scope = config_stack.pop()
+                for row in scope["rows"]:
+                    row["cleartext"] = scope["cleartext"]
+                    row["pinned"] = scope["pinned"]
+            elif name == "debug-overrides" and overrides_depth:
+                overrides_depth -= 1
+        pos += csize
+    if not root_seen:
+        return None
+    # A domain whose scope never closed (truncated file) still reports what
+    # it declared; the settled fields default honestly.
+    for row in domains:
+        row.setdefault("cleartext", None)
+        row.setdefault("pinned", False)
+    return {
+        "base_cleartext": base_cleartext,
+        "domains": domains,
+        "pins": pins,
+        "pin_count": pin_count,
+        "trusts_user_cas": trusts_user_cas,
+        "debug_overrides": debug_overrides,
+    }
+
+
+def _axml_cdata(chunk: bytes, strings: list[str]) -> str | None:
+    """The text of a CDATA chunk (stripped), or None when it names nothing."""
+    if len(chunk) < 20:
+        return None
+    idx = int.from_bytes(chunk[16:20], "little")
+    if 0 <= idx < len(strings):
+        text = strings[idx].strip()
+        return text or None
+    return None
+
+
+def _axml_end_element(chunk: bytes, strings: list[str]) -> str:
+    """The element name an END_ELEMENT chunk closes ('' when unreadable)."""
+    if len(chunk) < 24:
+        return ""
+    idx = int.from_bytes(chunk[20:24], "little")
+    return strings[idx] if 0 <= idx < len(strings) else ""
 
 
 def _apk_prepended_size(path: Path) -> int | None:
