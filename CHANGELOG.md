@@ -14,10 +14,23 @@ until 1.0 the tool surface may still change between minor versions.
 - `ci.yml` 新增 `linux-integration` 作业：在托管 Ubuntu runner 上装 Playwright Chromium、webcrack、
   wabt、mitmproxy 与 androguard/adbutils/frida，再 `pytest tests/integration -rs`（跑全量而非硬编码
   子集，与 Windows job 同策略）。conftest 照常把 Windows-only 与未配置后端的 Gate 标成带原因的 skip，
-  只有可移植的 Web/Android/proxy Gate 真跑（本地实测 16 passed / 71 skipped，0 error / 0 fail）。
+  只有可移植的 Web/Android/proxy Gate 真跑（叠加本节后续的 num_fds 泄漏检查与 Android 静态 Gate 后，
+  本地实测 19 passed / 71 skipped，0 error / 0 fail）。
 - 浏览器生命周期 Gate 的句柄泄漏检查此前只认 Windows 的 `num_handles`，Linux 上永远 skip。改成
   POSIX 用 `num_fds`（Windows 仍用 `num_handles`），并在 `linux-integration` 里装 psutil——
   「20 次导航句柄/fd 增长 < 100」这条泄漏回归现在在托管 Linux CI 上真的执行。
+- Android 静态线新增真机 Gate `tests/integration/test_android_static_gate.py`：此前唯一的 Android
+  集成 Gate（`test_android_re_gate.py`）只对一个 AndroidManifest.xml 不是合法二进制 AXML 的合成 zip
+  断言「返回结构化信封、不崩」，androguard/apktool 的真实解析层从没被任何集成测试在真字节上跑过。
+  新 Gate 用新增的 `fixtures/android`（AndroidManifest.xml + apktool.yml + MainActivity.smali）现搭一个
+  真·已签名 APK（apktool `b` → keytool → apksigner），再驱动 `apk.*` 断言 androguard/apktool **返回的值**：
+  包名、两个权限、组件与主 Activity、真实 DEX 类 `Lcom/example/fixture/MainActivity;` 与其
+  `secretCheck` 方法、内嵌字符串 `fixture-flag-1337`、签名证书（v1 已签、subject 含 CN），以及
+  apktool 解包→重打包→apksigner 重签验签的一整个往返。构建链（apktool/keytool/apksigner，都要 JRE）
+  缺任一即带原因跳过而非失败；jadx 未打进 apt，配置了才跑 DEX→Java 反编译那一段。
+- `ci.yml` 的 `linux-integration` 现装 `apktool`、`apksigner`、`default-jre-headless` 并尽力拉取固定版
+  jadx（失败不阻断 CI，只让反编译那一段如实跳过），把上面这条 Android 静态 Gate 在托管 Linux 上真跑；
+  本地实测 19 passed / 71 skipped（含 jadx 时反编译段亦真跑），0 error / 0 fail。
 - 修 `tests/integration/test_agent_browser_smoke.py` 三处长期漂移（这条 Gate 从未在 Linux 跑过，也就
   没人发现它已经烂了）：
   - 顶层 `from playwright.sync_api import ...` 会让缺 browser extra 的机器在收集阶段直接 ImportError、

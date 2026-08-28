@@ -191,13 +191,33 @@ jobs:
       - name: Install portable RE tooling
         run: |
           # wabt -> wasm2wat/wasm-objdump; webcrack (Node 24) for JS; Playwright
-          # Chromium for the CDP-driven web gates. Each backend degrades to an
-          # honest skip if it is missing, but installing them is what turns the
-          # non-PE gates from skips into real passes.
+          # Chromium for the CDP-driven web gates. apktool + apksigner + a JRE
+          # (androguard is already installed via the android extra) let the
+          # Android static gate build, parse, rebuild and re-sign a real signed
+          # APK from fixtures/android instead of only checking envelopes on a
+          # synthetic zip. Each backend degrades to an honest skip if it is
+          # missing, but installing them is what turns the non-PE gates from
+          # skips into real passes.
           sudo apt-get update
-          sudo apt-get install -y wabt
+          sudo apt-get install -y wabt apktool apksigner default-jre-headless
           npm install -g webcrack
           python -m playwright install --with-deps chromium
+
+      - name: Install jadx (best effort)
+        # jadx is not packaged for apt, so pull a pinned release onto PATH. It
+        # only backs the Android decompile leg; if the download fails the gate
+        # skips that leg honestly rather than failing the job, so this step must
+        # never break CI (|| true) -- everything else already ran for real.
+        run: |
+          set +e
+          JADX_VERSION=1.5.0
+          curl -fsSL -o /tmp/jadx.zip \
+            "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip" \
+            && unzip -q /tmp/jadx.zip -d "$HOME/jadx" \
+            && chmod +x "$HOME/jadx/bin/jadx" \
+            && echo "$HOME/jadx/bin" >> "$GITHUB_PATH" \
+            && echo "jadx ${JADX_VERSION} installed"
+          true
 
       - name: Integration gates (portable backends)
         # Run every gate rather than a hardcoded subset -- the same policy the
