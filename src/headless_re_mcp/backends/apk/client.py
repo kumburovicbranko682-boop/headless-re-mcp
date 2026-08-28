@@ -26,6 +26,10 @@ _MAX_NATIVE_LIBS = 256
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
+# Bounds the pre-sort gather in _cap_names (permissions/components): the page
+# caps above are the alphabetical prefix returned, this is how far past them the
+# gather looks to make that prefix honest before giving up and flagging has_more.
+_MAX_NAMES_COLLECT = 4096
 _MAX_MANIFEST_CHARS = 200_000
 # Page ceilings, kept equal to the apk.* tool schema maxima so the MCP path
 # (schema-validated) and the agent/OpenAI paths (clamped here) agree on the
@@ -45,15 +49,28 @@ class ApkError(RuntimeError):
 
 
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
-    items: list[str] = []
-    has_more = False
+    """Alphabetically-first ``limit`` names from ``values``, honestly flagged.
+
+    Gather the whole list (bounded by ``_MAX_NAMES_COLLECT``), sort, then cut to
+    ``limit`` -- so a capped page is the alphabetically first names, not
+    whichever order androguard enumerated them. The old form capped first and
+    sorted the survivors, which read as "the sorted names" while actually being
+    an arbitrary subset: a large app's activity or permission list past the cap
+    vanished, and what remained was not even the alphabetically first. This is
+    the same sort-before-cap contract ``apk.classes`` / ``apk.strings`` already
+    keep. ``has_more`` is set when the sorted list exceeds the page, or the
+    gather itself hit its ceiling (so the total is a floor, not the truth).
+    """
+    collected: list[str] = []
+    scan_capped = False
     for item in values or []:
-        if len(items) >= limit:
-            has_more = True
+        if len(collected) >= _MAX_NAMES_COLLECT:
+            scan_capped = True
             break
-        items.append(str(item))
-    items.sort()
-    return items, has_more
+        collected.append(str(item))
+    collected.sort()
+    has_more = scan_capped or len(collected) > limit
+    return collected[:limit], has_more
 
 
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:

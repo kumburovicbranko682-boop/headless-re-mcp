@@ -21,8 +21,11 @@ import pytest
 
 from headless_re_mcp.backends.apk.client import (
     _CACHE_LIMIT,
+    _MAX_COMPONENT_NAMES,
+    _MAX_PERMISSIONS,
     ApkClient,
     ApkError,
+    _cap_names,
     _dotted_to_smali,
 )
 
@@ -257,6 +260,93 @@ def test_permissions_falls_back_when_requested_is_unsupported(
 
     assert payload["requested_permissions"] == payload["permissions"]
     assert payload["count"] == 2
+
+
+def test_cap_names_returns_the_alphabetical_prefix_not_the_enumerated_order() -> None:
+    """A capped name list is the alphabetically first names, not the first seen.
+
+    _cap_names used to keep the first ``limit`` names androguard enumerated and
+    sort only those -- an arbitrary subset that read as "the sorted names". It
+    now gathers the whole list, sorts, then cuts, so the page is a true prefix.
+    Fed four names in reverse order with limit two it returns [a, b]; the
+    sort-after-cap form returned [c, d] (the first two seen, [d, c], then sorted).
+    """
+    names, has_more = _cap_names(["d", "c", "b", "a"], 2)
+    assert names == ["a", "b"]
+    assert has_more is True
+
+
+def test_cap_names_keeps_a_short_list_whole_and_unflagged() -> None:
+    names, has_more = _cap_names(["b", "a"], 5)
+    assert names == ["a", "b"]
+    assert has_more is False
+
+
+def test_components_page_is_the_alphabetical_prefix_past_the_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Activities past the cap are cut to the alphabetically first, honestly flagged.
+
+    Names are zero-padded so lexicographic order matches numeric, and fed in
+    reverse. With the cap at _MAX_COMPONENT_NAMES the page must be the true
+    prefix a0000..a0255 -- the sort-after-cap bug kept the first cap names it
+    enumerated ([a0300..a0045]) and sorted those, so a0000 vanished and a0300
+    wrongly appeared while the result still read as "the sorted activities".
+    """
+    total = _MAX_COMPONENT_NAMES + 45
+    activities = [f"a{index:04d}" for index in range(total)][::-1]
+
+    class FakeApk:
+        def get_activities(self) -> list[str]:
+            return list(activities)
+
+        def get_services(self) -> list[str]:
+            return []
+
+        def get_receivers(self) -> list[str]:
+            return []
+
+        def get_providers(self) -> list[str]:
+            return []
+
+        def get_main_activity(self) -> str:
+            return "a0000"
+
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: FakeApk())
+
+    payload = client.components(tmp_path / "app.apk")
+
+    assert len(payload["activities"]) == _MAX_COMPONENT_NAMES
+    assert payload["has_more"] is True
+    assert payload["activities"] == [f"a{index:04d}" for index in range(_MAX_COMPONENT_NAMES)]
+    # A name past the prefix must not appear just because it was enumerated early.
+    assert f"a{total - 1:04d}" not in payload["activities"]
+
+
+def test_permissions_page_is_the_alphabetical_prefix_past_the_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Declared permissions past the cap are the alphabetically first, flagged."""
+    total = _MAX_PERMISSIONS + 20
+    perms = [f"p{index:04d}" for index in range(total)][::-1]
+
+    class FakeApk:
+        def get_permissions(self) -> list[str]:
+            return list(perms)
+
+        def get_requested_permissions(self) -> list[str]:
+            return list(perms)
+
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: FakeApk())
+
+    payload = client.permissions(tmp_path / "app.apk")
+
+    assert len(payload["permissions"]) == _MAX_PERMISSIONS
+    assert payload["has_more"] is True
+    assert payload["permissions"][0] == "p0000"
+    assert f"p{total - 1:04d}" not in payload["permissions"]
 
 
 def test_certificates_tolerate_missing_signatures_and_odd_certs(

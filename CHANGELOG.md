@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（apk.permissions / apk.components 的 _cap_names 先截断后排序）
+
+- `backends/apk/client.py` 的 `_cap_names`（`permissions` 与 `components` 共用）此前先按
+  androguard 的枚举顺序截到上限、再对幸存者排序：当某一类组件超过 `_MAX_COMPONENT_NAMES`
+  （256，大型 app 的 activity 列表现实可及）或权限超过 `_MAX_PERMISSIONS` 时，返回的这一页
+  是"排过序"的一个任意子集，字母序真正靠前的名字反而消失，读起来却像"排好序的组件/权限"。
+  改为先收集整份（以新常量 `_MAX_NAMES_COLLECT`=4096 兜底），排序，再截到上限——返回诚实的
+  字母序前缀，`has_more` 在总数超页或收集触顶时置真。这与 `apk.classes` / `apk.strings`
+  既有的 sort-before-cap 契约一致（那是先前轮次修过的，`permissions`/`components` 当时漏掉）。
+- 未加 offset（`components` 一次返回四份列表，offset 语义不合适；沿用 jadx 轮次的
+  "诚实前缀 + has_more" 做法）。`certificates` 不动：它是证书对象且数量小（≤32），顺序可能有意义。
+- `tests/unit/test_apk_client_paths.py` 新增：直接对 `_cap_names` 逆序输入断言字母序前缀
+  （[d,c,b,a] limit2 → [a,b]，旧式给 [c,d]）、短列表整份返回且不置 has_more；`components`
+  与 `permissions` 用零填充逆序名字（a0000.. / p0000..）断言这一页正是 a0000..a0255 前缀、
+  且早枚举的越界名字（a0300）不会混入。非空性已核验：还原源码后三个前缀用例分别失败
+  （首元素变成 p0020 而非 p0000）。既有 `test_components_past_the_cap_say_so` 仍过。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
