@@ -515,6 +515,17 @@ def test_probe_python_module_reports_a_missing_module() -> None:
     assert probe.status == ProbeStatus.MISSING
 
 
+def test_probe_python_module_reports_a_present_module_with_its_origin() -> None:
+    # Stands in for an installed optional backend module (frida, androguard,
+    # mitmproxy, ...): json is always importable, so this pins the DETECTED
+    # answer and the origin detail the doctor shows for it.
+    probe = probe_python_module("json", "json")
+    assert probe.status == ProbeStatus.DETECTED
+    spec = importlib.util.find_spec("json")
+    assert spec is not None
+    assert probe.details["origin"] == spec.origin
+
+
 def test_report_to_json_round_trips() -> None:
     import json
 

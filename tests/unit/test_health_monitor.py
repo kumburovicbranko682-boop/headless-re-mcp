@@ -233,6 +233,35 @@ def test_backing_off_never_delays_a_connection_that_can_be_rebuilt() -> None:
     assert monitor.report("s1")[0]["connected"] is True
 
 
+def test_forget_clears_the_backoff_along_with_the_session() -> None:
+    """A forgotten session's backoff must not throttle its successor.
+
+    Sessions close and reopen against the same id all the time. If forget only
+    dropped the health rows but kept the reconnect backoff, a new backend that
+    happens to reuse the id would inherit the previous incarnation's skip
+    window and sit disconnected through checks it should have acted on.
+    """
+    worker = FakeWorker(connected=False)
+    worker.reconnect_error = ConnectionError("pipe is gone")
+    runtimes = FakeRuntimes([("s1", BackendKind.X64DBG, worker)])
+    monitor = BackendHealthMonitor(runtimes, interval_s=0.01)
+
+    # Attempts land on checks 1, 2 and 4; the third failure opens a
+    # three-check skip window, so the very next check would sit out.
+    for _ in range(4):
+        monitor.check_once()
+    assert worker.reconnects == 3
+
+    monitor.forget("s1")
+
+    fresh = FakeWorker(connected=False)
+    runtimes.entries = [("s1", BackendKind.X64DBG, fresh)]
+    monitor.check_once()
+
+    assert fresh.reconnects == 1
+    assert fresh.transport_connected is True
+
+
 def test_a_backend_that_recovers_starts_from_zero_if_it_drops_again() -> None:
     """Backoff describes the current failure, not the backend's history."""
     worker = FakeWorker(connected=False)
