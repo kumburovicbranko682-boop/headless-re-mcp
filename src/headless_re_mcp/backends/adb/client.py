@@ -283,7 +283,9 @@ def _apk_package_name(path: Path) -> str | None:
         for candidate in _PACKAGE_IN_TEXT.findall(blob):
             if candidate.startswith("android.") or candidate.startswith("com.android."):
                 continue
-            if _PACKAGE_RE.match(candidate):
+            # _PACKAGE_IN_TEXT only yields substrings that _PACKAGE_RE also
+            # matches in full, so the non-matching arm is never taken.
+            if _PACKAGE_RE.match(candidate):  # pragma: no branch
                 return str(candidate)
     return None
 
