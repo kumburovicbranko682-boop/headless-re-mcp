@@ -45,6 +45,28 @@ class ApktoolError(RuntimeError):
         self.details = details
 
 
+def _require_apk_zip(apk: Path) -> None:
+    """Refuse a non-zip APK before launching the JVM.
+
+    apktool ``d`` and apksigner both require a zip-format APK; handed anything
+    else -- a truncated download, a path pointing at the wrong file, or a build
+    output that slipped past its own check -- they still start a JVM and only
+    then fail with an opaque Java error, after paying that startup cost and
+    reporting a parameter mistake as a backend failure. ``zipfile.is_zipfile``
+    reads only the archive's tail (it does not decompress, so the check itself
+    has no zip-bomb exposure) and turns that cryptic failure into a precise
+    ``invalid_params`` up front -- the same fail-fast shape as ``build``
+    validating its own output is a real zip and the wasm tools checking the
+    ``\\0asm`` magic before launching wabt.
+    """
+    if not zipfile.is_zipfile(apk):
+        raise ApktoolError(
+            "invalid_params",
+            "input is not a valid APK (not a zip archive)",
+            path=str(apk),
+        )
+
+
 def _run(
     cmd: list[str], *, timeout: float, env: dict[str, str] | None = None
 ) -> tuple[str, str, int]:
@@ -99,6 +121,7 @@ class ApktoolClient:
             raise ApktoolError("capability_unavailable", "apktool is not configured (needs a JRE)")
         if not apk.is_file():
             raise ApktoolError("not_found", "apk not found", path=str(apk))
+        _require_apk_zip(apk)
         out_dir.parent.mkdir(parents=True, exist_ok=True)
         args = [str(self.apktool), "d", str(apk), "-o", str(out_dir), "-f"]
         if no_resources:
@@ -181,6 +204,7 @@ class ApktoolClient:
             )
         if not apk.is_file():
             raise ApktoolError("not_found", "apk not found", path=str(apk))
+        _require_apk_zip(apk)
         store = keystore or _DEBUG_KEYSTORE
         if not store.is_file():
             raise ApktoolError(
