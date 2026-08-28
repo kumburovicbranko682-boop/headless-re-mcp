@@ -3272,6 +3272,294 @@ def _parse_wasm_globals(data: bytes, *, module: str) -> JsonObject:
     return result
 
 
+# wasm.elements materialisation caps. A table can legitimately hold thousands
+# of entries (a C++ vtable-heavy module), so the flattened slot list paginates
+# rather than hard-truncates; the collect cap only bounds a crafted vec count
+# from building an unbounded list, and the segment-map cap bounds the summary.
+_MAX_WASM_ELEM_SEGMENTS = 4096
+_MAX_WASM_ELEMENTS_COLLECT = 200_000
+_MAX_WASM_ELEMENTS_PAGE = 2000
+
+
+def _read_wasm_limits(data: bytes, pos: int) -> tuple[int, int | None, int]:
+    """Read a limits record (flag byte + min + optional max), returning both."""
+    flags = data[pos]
+    pos += 1
+    minimum, pos = _read_uleb128(data, pos)
+    maximum: int | None = None
+    if flags & 1:
+        maximum, pos = _read_uleb128(data, pos)
+    return minimum, maximum, pos
+
+
+def _read_wasm_elemexpr(data: bytes, pos: int, end: int) -> tuple[int | None, int]:
+    """Read one element expression, returning (func_index | None, pos_after_end).
+
+    An element expression is a constant expression terminated by ``end`` (0x0B).
+    ``ref.func idx`` names a concrete function (the indirect-call target),
+    ``ref.null t`` a null slot and ``global.get`` an imported base whose target
+    is not statically known; the last two yield None. Consumed exactly so the
+    following entries stay aligned; anything else raises so the caller stops.
+    """
+    if pos >= end:
+        raise _WasmParseError("element expr truncated")
+    op = data[pos]
+    pos += 1
+    func: int | None = None
+    if op == 0xD2:  # ref.func idx
+        func, pos = _read_uleb128(data, pos)
+    elif op == 0xD0:  # ref.null t
+        if pos >= end:
+            raise _WasmParseError("ref.null truncated")
+        pos += 1  # reftype byte
+    elif op == 0x23:  # global.get: target not statically known
+        _, pos = _read_uleb128(data, pos)
+    else:
+        raise _WasmParseError(f"unsupported element expr opcode 0x{op:02x}")
+    if pos >= end or data[pos] != 0x0B:
+        raise _WasmParseError("element expr missing end")
+    pos += 1
+    return func, pos
+
+
+def _read_element_segment(
+    data: bytes, pos: int, end: int, *, index: int, remaining: int
+) -> tuple[JsonObject, int, int]:
+    """Decode one element segment, returning (record, pos, remaining_budget).
+
+    Handles all eight flag encodings the reference-types/bulk-memory proposals
+    define (active/passive/declarative x func-index/element-expression x
+    implicit/explicit table). Each materialised entry resolves to a table slot
+    (base offset + position for an active segment) and a function index; entries
+    past the collection budget are still parsed to stay aligned but not stored.
+    """
+    flags, pos = _read_uleb128(data, pos)
+    if not (flags & 0x01):
+        mode = "active"
+    elif flags & 0x02:
+        mode = "declarative"
+    else:
+        mode = "passive"
+    table_index = 0
+    offset: int | None = None
+    element_type = "funcref"
+    use_exprs = bool(flags & 0x04)
+    if not (flags & 0x01) and (flags & 0x02):  # active with explicit table index
+        table_index, pos = _read_uleb128(data, pos)
+    if not (flags & 0x01):  # active: an offset const-expr places it in the table
+        offset, pos = _read_wasm_const_offset(data, pos, end)
+    if flags in (1, 2, 3):  # funcidx encodings carry an elemkind byte
+        if pos >= end:
+            raise _WasmParseError("element segment truncated at elemkind")
+        elemkind = data[pos]
+        pos += 1
+        element_type = "funcref" if elemkind == 0 else f"elemkind_{elemkind}"
+    elif flags in (5, 6, 7):  # elemexpr encodings carry a reftype byte
+        if pos >= end:
+            raise _WasmParseError("element segment truncated at reftype")
+        reftype = data[pos]
+        pos += 1
+        element_type = _WASM_VALTYPES.get(reftype, f"0x{reftype:02x}")
+    count, pos = _read_uleb128(data, pos)
+    entries: list[JsonObject] = []
+    truncated = False
+    for i in range(count):
+        if use_exprs:
+            func, pos = _read_wasm_elemexpr(data, pos, end)
+        else:
+            if pos >= end:  # a funcidx read must not cross into the next section
+                raise _WasmParseError("element entries overrun section")
+            func, pos = _read_uleb128(data, pos)
+        if remaining > 0:
+            slot = (offset + i) if (mode == "active" and offset is not None) else None
+            entries.append(
+                {
+                    "index": i,
+                    "table_index": table_index if mode == "active" else None,
+                    "slot": slot,
+                    "func": func,
+                }
+            )
+            remaining -= 1
+        else:
+            truncated = True
+    record: JsonObject = {
+        "index": index,
+        "mode": mode,
+        "element_type": element_type,
+        "count": count,
+        "entries": entries,
+    }
+    if mode == "active":
+        record["table_index"] = table_index
+        record["offset"] = offset
+    if truncated:
+        record["entries_truncated"] = True
+    return record, pos, remaining
+
+
+def _parse_wasm_elements(data: bytes, *, module: str) -> JsonObject:
+    """Resolve a module's table-fill (element) segments straight from the bytes.
+
+    A wasm module reaches a function two ways: a direct ``call`` names a function
+    index, but a ``call_indirect`` (the compiled form of a function pointer,
+    C++ virtual dispatch or a switch's jump table) reads a slot out of a table at
+    runtime. The element section is what fills those tables, so it is the static
+    key that turns an opaque ``call_indirect`` into the concrete set of functions
+    it can reach. wasm.disasm_function shows the indirect call; this shows its
+    targets. It also lists the module's table declarations (imported and defined)
+    for context, and resolves each target function's name from the name section.
+    Reads the bytes directly (no wabt); a malformed module faults cleanly and a
+    bad segment desyncs safely rather than misreading the rest.
+    """
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        raise JsReError("backend_error", "not a WebAssembly module (bad magic)")
+    version = int.from_bytes(data[4:8], "little")
+    pos = 8
+    n = len(data)
+    tables: list[JsonObject] = []
+    next_table_index = 0
+    segments: list[JsonObject] = []
+    func_name_map: dict[int, str] = {}
+    elem_name_map: dict[int, str] = {}
+    remaining = _MAX_WASM_ELEMENTS_COLLECT
+    segments_truncated = False
+    parse_stopped = False
+    scan_capped = False
+    try:
+        while pos < n:
+            sec_id = data[pos]
+            pos += 1
+            sec_size, pos = _read_uleb128(data, pos)
+            sec_end = pos + sec_size
+            if sec_size < 0 or sec_end > n:
+                raise _WasmParseError("section overruns module")
+            if sec_id == 2:  # Import: imported tables take the low table index space
+                count, p = _read_uleb128(data, pos)
+                for _ in range(count):
+                    imp_mod, p = _read_wasm_name(data, p, sec_end)
+                    imp_fld, p = _read_wasm_name(data, p, sec_end)
+                    if p >= sec_end:
+                        raise _WasmParseError("import entry truncated")
+                    kind = data[p]
+                    p += 1
+                    if kind == 0:  # func: type index
+                        _, p = _read_uleb128(data, p)
+                    elif kind == 1:  # table: reftype byte + limits
+                        if p >= sec_end:
+                            raise _WasmParseError("imported table truncated")
+                        reftype = data[p]
+                        p += 1
+                        minimum, maximum, p = _read_wasm_limits(data, p)
+                        tables.append(
+                            {
+                                "index": next_table_index,
+                                "element_type": _WASM_VALTYPES.get(
+                                    reftype, f"0x{reftype:02x}"
+                                ),
+                                "min": minimum,
+                                "max": maximum,
+                                "imported": True,
+                                "module": imp_mod,
+                                "import_name": imp_fld,
+                            }
+                        )
+                        next_table_index += 1
+                    elif kind == 2:  # memory: limits
+                        p = _skip_wasm_limits(data, p)
+                    elif kind == 3:  # global: value type + mutability bytes
+                        p += 2
+                    else:
+                        raise _WasmParseError(f"unknown import kind {kind}")
+            elif sec_id == 4:  # Table: the module's defined tables
+                count, p = _read_uleb128(data, pos)
+                for _ in range(count):
+                    if p >= sec_end:
+                        raise _WasmParseError("table entry truncated")
+                    reftype = data[p]
+                    p += 1
+                    minimum, maximum, p = _read_wasm_limits(data, p)
+                    tables.append(
+                        {
+                            "index": next_table_index,
+                            "element_type": _WASM_VALTYPES.get(reftype, f"0x{reftype:02x}"),
+                            "min": minimum,
+                            "max": maximum,
+                            "imported": False,
+                        }
+                    )
+                    next_table_index += 1
+            elif sec_id == 9:  # Element: the table-fill segments
+                count, p = _read_uleb128(data, pos)
+                try:
+                    for _ in range(count):
+                        if len(segments) >= _MAX_WASM_ELEM_SEGMENTS:
+                            segments_truncated = True
+                            break
+                        seg, p, remaining = _read_element_segment(
+                            data, p, sec_end, index=len(segments), remaining=remaining
+                        )
+                        if seg.get("entries_truncated"):
+                            scan_capped = True
+                        segments.append(seg)
+                except _WasmParseError:
+                    # A malformed segment desyncs the vec; keep what parsed.
+                    parse_stopped = True
+            elif sec_id == 0:  # custom: maybe the name section's func/elem maps
+                cust_name, cpos = _read_wasm_name(data, pos, sec_end)
+                if cust_name == "name":
+                    sp = cpos
+                    while sp < sec_end:
+                        sub_id = data[sp]
+                        sp += 1
+                        sub_size, sp = _read_uleb128(data, sp)
+                        sub_end = sp + sub_size
+                        if sub_size < 0 or sub_end > sec_end:
+                            raise _WasmParseError("name subsection overruns section")
+                        target = func_name_map if sub_id == 1 else elem_name_map
+                        if sub_id in (1, 8):
+                            with suppress(_WasmParseError):
+                                named, _, _ = _read_wasm_namemap(
+                                    data, sp, sub_end, _MAX_WASM_NAME_ENTRIES
+                                )
+                                for item in named:
+                                    target[int(item["index"])] = str(item["name"])
+                        sp = sub_end
+            pos = sec_end
+    except _WasmParseError as exc:
+        raise JsReError("backend_error", f"malformed WebAssembly module: {exc}") from exc
+    except IndexError as exc:  # a read ran off the end despite the guards
+        raise JsReError(
+            "backend_error", "malformed WebAssembly module: unexpected end of data"
+        ) from exc
+    for seg in segments:
+        seg_name = elem_name_map.get(int(seg["index"]))
+        if seg_name:
+            seg["name"] = seg_name
+        for entry in seg["entries"]:
+            func = entry.get("func")
+            if func is not None:
+                fname = func_name_map.get(int(func))
+                if fname:
+                    entry["func_name"] = fname
+    result: JsonObject = {
+        "module": module,
+        "version": version,
+        "tables": tables,
+        "table_count": len(tables),
+        "segments": segments,
+        "segment_count": len(segments),
+        "has_name_section": bool(func_name_map) or bool(elem_name_map),
+    }
+    if segments_truncated:
+        result["segments_truncated"] = True
+    if parse_stopped:
+        result["parse_stopped"] = True
+    if scan_capped:
+        result["scan_capped"] = True
+    return result
+
+
 class WasmClient:
     """wabt-backed WebAssembly inspection (wasm2wat, wasm-objdump)."""
 
@@ -3551,6 +3839,48 @@ class WasmClient:
         parsed["has_more"] = start + len(window) < total
         if contains:
             parsed["contains"] = contains
+        return parsed
+
+    def elements(
+        self,
+        path: Path,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """Resolve the module's table-fill (element) segments to call targets.
+
+        A call_indirect reads a function out of a table at runtime (the compiled
+        form of a function pointer / C++ virtual dispatch); the element section
+        is what fills those tables. This flattens every segment into a resolved
+        slot->function map -- the concrete set an indirect call can reach -- and
+        lists the module's tables for context, with each target's name recovered
+        from the name section. Reads the bytes directly (no wabt); a malformed
+        module faults cleanly. Paginated by offset/limit over the flattened list.
+        """
+        _ = timeout
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        parsed = _parse_wasm_elements(resolved.read_bytes(), module=resolved.name)
+        segments: list[JsonObject] = parsed["segments"]
+        flat: list[JsonObject] = []
+        for seg in segments:
+            for entry in seg["entries"]:
+                flat.append({"segment": seg["index"], **entry})
+        summary = [
+            {k: v for k, v in seg.items() if k != "entries"}
+            for seg in segments[:_MAX_WASM_ELEM_SEGMENTS]
+        ]
+        total = len(flat)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_WASM_ELEMENTS_PAGE))
+        window = flat[start : start + cap]
+        parsed["segments"] = summary
+        parsed["elements"] = window
+        parsed["count"] = len(window)
+        parsed["total"] = total
+        parsed["offset"] = start
+        parsed["has_more"] = start + len(window) < total
         return parsed
 
     def wat(

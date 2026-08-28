@@ -499,4 +499,52 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="wasm.elements")
+    def wasm_elements(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Resolve a .wasm module's function tables to indirect-call targets.
+
+        A wasm module reaches a function two ways: a direct call names a function
+        index (visible in wasm.disasm_function), but a call_indirect reads a slot
+        out of a table at runtime -- the compiled form of a function pointer, a
+        C++ virtual dispatch or a switch jump table. The element section is what
+        fills those tables, so it is the static key that turns an opaque
+        call_indirect into the concrete set of functions it can reach. Where
+        wasm.disasm_function shows the indirect call (its type_index and table),
+        this shows the targets. It reads the bytes directly, so it needs no wabt
+        and cannot drift with a wabt release.
+
+        Answers with elements, the flattened table-fill: each a {segment (its
+        element-segment index), index (position within that segment), table_index
+        (the table it fills, or null for a passive/declarative segment), slot (the
+        resolved table slot = the segment's base offset + index for an active
+        segment, else null), func (the target function index, or null for a
+        ref.null slot or an unresolved global.get)} plus func_name when the name
+        section names that function. Also answers with segments, a lightweight map
+        of every element segment (each {index, mode ("active"/"passive"/
+        "declarative"), element_type, count, and for an active segment table_index
+        and offset, plus name from the name section's elem map}), segment_count,
+        tables (the module's table declarations, each {index, element_type, min,
+        max, imported} and, for an imported table, module/import_name),
+        table_count and has_name_section. Also count, total, offset and has_more
+        page the flattened elements list. The list fields are elements / segments
+        / tables (there is no targets field); a slot's target is elements[i].func
+        and its label elements[i].func_name. All eight element-segment encodings
+        (active/passive/declarative x func-index/element-expression x implicit/
+        explicit table) are handled. A module with no Element section is a clean
+        empty result, not an error. segments_truncated marks more than 4096
+        segments, scan_capped a flattened list past the 200000 collection cap, and
+        parse_stopped a segment whose bytes could not be decoded (the segments
+        before it still read). Reads the bytes directly, so it needs no wabt; a
+        malformed module is a clean backend_error and a missing file is not_found.
+        An input over 16 MiB is refused as too_large.
+        """
+        return _dump(
+            analysis.wasm_elements(path, offset=offset, limit=limit, timeout=timeout)
+        )
+
     return tools.bindings
