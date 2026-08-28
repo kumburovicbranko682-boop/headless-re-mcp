@@ -3,11 +3,11 @@ from __future__ import annotations
 import hashlib
 import zipfile
 from collections import deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 from headless_re_mcp.core.models import (
     Architecture,
@@ -108,7 +108,7 @@ class SessionRegistry:
                     target=kind,
                     binary=path,
                     locator=str(path),
-                    sha256=file_sha256(path),
+                    sha256=_read_target(path, file_sha256),
                 )
             else:
                 session = Session(target=kind, locator=text)
@@ -119,14 +119,14 @@ class SessionRegistry:
             architecture: Architecture | None = None
             metadata: dict[str, Any] = {}
             if kind is TargetKind.PE:
-                architecture = detect_pe_architecture(path)
+                architecture = _read_target(path, detect_pe_architecture)
             elif kind is TargetKind.APK:
-                metadata = describe_apk(path)
+                metadata = _read_target(path, describe_apk)
             session = Session(
                 target=kind,
                 binary=path,
                 locator=str(path),
-                sha256=file_sha256(path),
+                sha256=_read_target(path, file_sha256),
                 architecture=architecture,
                 metadata=metadata,
             )
@@ -365,6 +365,27 @@ _MAGIC_BYTES = 8
 
 def is_http_url(reference: str) -> bool:
     return reference.lower().startswith(("http://", "https://"))
+
+
+_T = TypeVar("_T")
+
+
+def _read_target(path: Path, reader: Callable[[Path], _T]) -> _T:
+    """Run a file-reading identity probe, turning an unreadable target into a
+    structured input error rather than an unexpected-exception incident.
+
+    A probe's own ``ValueError`` (a bad format such as "not a PE file") is a
+    deliberate input verdict and propagates unchanged; only an ``OSError`` --
+    the target cannot be read at all (permission denied, vanished mid-open, a
+    special file) -- is remapped, because a permission-denied on the input is a
+    foreseeable caller condition, not a defect in this process.
+    """
+
+    try:
+        return reader(path)
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        raise ValueError(f"cannot read session target: {path}: {detail}") from exc
 
 
 def classify_target(reference: str | Path) -> TargetKind:
