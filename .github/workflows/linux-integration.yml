@@ -1,0 +1,78 @@
+# Linux non-PE integration gates — free backends only, no proprietary tools.
+#
+# ci.yml is the every-commit quality gate but runs unit tests only; the real
+# end-to-end backends were exercised solely by windows-integration.yml, which is
+# self-hosted, manual, and PE-focused (x64dbg / IDA / WinDbg). That left the
+# non-PE reverse-engineering lines with passing integration gates that nothing
+# ran automatically, so a regression in them reached main uncaught.
+#
+# Every backend these gates need installs freely on a GitHub-hosted Ubuntu
+# runner, so they can run on every change:
+#   - headless Chromium (Playwright) for the web / CDP and browser-agent gates
+#   - mitmproxy (a pip extra) for the proxy capture lifecycle gate
+#   - webcrack (npm) for JS deobfuscation, wabt (wasm2wat) for WASM disassembly
+#   - radare2 plus the aarch64 / arm32 cross-compilers for native ELF, Mach-O
+#     and ARM analysis (the fixtures are built from C during the run)
+#   - androguard (a pip extra) for APK classification
+#
+# Gates whose backend is absent skip with an explicit "skip != pass" message,
+# and -rs prints every reason so a skip can never read as a pass. The Windows /
+# PE debugger gates, the IDA gates, the Ghidra agreement cross-checks (a slow
+# JVM download), and the i386 / mingw PE fixtures are intentionally left to skip
+# here: they belong to windows-integration.yml or need proprietary or heavy
+# toolchains that do not fit an every-commit Linux job.
+name: linux-integration
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,browser,proxy,android]"
+
+      - name: Install native and web backends
+        run: |
+          sudo apt-get update
+          # wabt -> wasm2wat (WASM gate); radare2 (native ELF / Mach-O gates);
+          # the cross-compilers build the aarch64 / arm32 fixtures the r2 gates
+          # compile at runtime.
+          sudo apt-get install -y \
+            wabt \
+            radare2 \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabihf
+          # webcrack (JS deobfuscation gate) is discovered on PATH.
+          npm install -g webcrack
+          # Chromium for the headless web / CDP and browser-agent gates; the
+          # --with-deps flag pulls the system libraries a headless browser needs.
+          python -m playwright install --with-deps chromium
+
+      - name: Non-PE integration gates
+        # Run the whole suite: a gate whose backend is missing skips itself, so
+        # this stays correct as gates are added. A single stuck backend probe
+        # must name itself and fail before the job deadline erases the context.
+        timeout-minutes: 25
+        run: python -m pytest tests/integration -rs --tb=short --timeout=300
