@@ -33,7 +33,8 @@ until 1.0 the tool surface may still change between minor versions.
   `test_agent_mission_failure_bounds`、`test_error_boundary`、`test_observability`、
   `test_probe_models_error_body`、`test_web_console`、`test_web_single_instance`、
   `test_legacy_routes_surface`、`test_web_app_launch_guards`、`test_web_app_run_paths`、
-  `test_web_spa_fallback` 及 `test_cli_command_dispatch`/`test_web_launch` 里三个在函数体内
+  `test_web_spa_fallback`、`test_web_legacy_routes_coverage`（main 在本分支基线后新增，合入
+  origin/main 时一并守护）及 `test_cli_command_dispatch`/`test_web_launch` 里三个在函数体内
   拉 `web.app` 的用例）全部改走 `pytest.importorskip` 赋值式取符号（不留守护后的裸 import，
   避开 E402），缺 fastapi 时**带原因**跳过本模块/本用例；而只用到 fastapi-free 工具子模块
   （`web.deps/monitor/launch_util/commands/setup`）的 6 个模块经上一条的惰性 `__init__` 修复后

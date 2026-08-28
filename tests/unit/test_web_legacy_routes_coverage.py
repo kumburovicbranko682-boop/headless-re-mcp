@@ -16,12 +16,18 @@ from pathlib import Path
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import Result, RpcError
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.web.app import create_app
+
+# fastapi and the web app it powers are the optional ``web`` extra. Skip this
+# module (rather than erroring out the whole tests/unit collection) when it is
+# absent, matching the skip-!=-pass contract the backend gates follow.
+TestClient = pytest.importorskip(
+    "fastapi.testclient", reason="fastapi (web extra) not installed (skip != pass)"
+).TestClient
+create_app = pytest.importorskip("headless_re_mcp.web.app").create_app
 
 TOKEN = "test-token-value-0123456789abcdef"
 HEADERS = {"Authorization": f"Bearer {TOKEN}"}
