@@ -293,6 +293,8 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 多个待合分支同时在 Unreleased 顶部添加条目时,每支落地都让其余全部
   冲突,只能手工排解。CHANGELOG 条目天然只增不改,`.gitattributes` 里
   声明 `merge=union` 后 git 直接保留双方条目,该类冲突不再需要人工处理。
+  已知小代价:两支恰好在同一行前插时,合并结果可能在相邻条目间少一个
+  空行(union 不复制共享上下文),属排版而非内容损失。
 
 ### 修复（ghidra.decompile 区分“该地址没有函数”与“反编译为空”）
 
