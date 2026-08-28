@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（.NET 元数据表行宽：ENC 表缺失与泛型两表布局互换）
+
+- `_table_start` 要把目标表前面每张有行的表的行宽加起来，因此一条缺失或算错的行宽会让
+  后面所有表整体错位或直接中止。`_table_row_size` 缺 ENCLog（0x1E，Token+FuncCode，8 字节）
+  与 ENCMap（0x1F，Token，4 字节）两张 edit-and-continue 表——而 `_load_metadata_context`
+  明确接受承载它们的 `#-`（未压缩）元数据流。带 ENC 表的镜像做 `dotnet.enumerate
+  kind=resources` 时，`_table_start(0x28)` 走到 0x1E 就抛 `unsupported_metadata`，
+  资源表明明完整可读却整个中止。现补上两条固定行宽。
+- MethodSpec（0x2B）与 GenericParamConstraint（0x2C）的列布局互换了：0x2B 应为
+  MethodDefOrRef 编码索引 + Instantiation blob 索引，0x2C 应为 GenericParam 简单索引 +
+  TypeDefOrRef 编码索引。小堆小表时两者恰好同宽（4 字节）所以一直没暴露；blob 堆超
+  64 KiB 或 TypeDef 过 2^14 行后即分道（6 对 4）。现按 ECMA-335 II.22 归位，并配套
+  白盒行宽回归（含发散场景）与一条“ENC 表挡在 ManifestResource 前仍能枚举资源”的
+  端到端合成镜像用例。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

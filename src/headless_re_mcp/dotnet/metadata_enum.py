@@ -494,6 +494,12 @@ def _table_row_size(meta: _MetaCtx, table: int) -> int:
         0x1B: b,  # TypeSpec
         0x1C: 2 + member_forwarded + s + _simple_index_size(rc, 0x1A),
         0x1D: 4 + _simple_index_size(rc, 0x04),  # FieldRVA
+        # ENCLog/ENCMap only appear in #- ("uncompressed") metadata, which
+        # _load_metadata_context accepts; without these two entries any
+        # edit-and-continue image lost every table behind them to an
+        # unsupported_metadata abort.
+        0x1E: 4 + 4,  # ENCLog: Token + FuncCode
+        0x1F: 4,  # ENCMap: Token
         0x20: 4 + 2 + 2 + 2 + 2 + 4 + b + s + s,  # Assembly
         0x21: 4,  # AssemblyProcessor
         0x22: 12,  # AssemblyOS
@@ -505,8 +511,12 @@ def _table_row_size(meta: _MetaCtx, table: int) -> int:
         0x28: 4 + 4 + s + implementation,  # ManifestResource
         0x29: _simple_index_size(rc, 0x02) + implementation,  # NestedClass
         0x2A: 0,  # GenericParam; fixed below
-        0x2B: _simple_index_size(rc, 0x2A) + type_def_or_ref,
-        0x2C: method_def_or_ref + b,  # MethodSpec
+        # These two had each other's layouts. 0x2B is MethodSpec
+        # (Method: MethodDefOrRef coded + Instantiation: blob); 0x2C is
+        # GenericParamConstraint (Owner: GenericParam index + Constraint:
+        # TypeDefOrRef coded).
+        0x2B: method_def_or_ref + b,  # MethodSpec
+        0x2C: _simple_index_size(rc, 0x2A) + type_def_or_ref,  # GenericParamConstraint
     }
     # Fix ClassLayout: PackingSize(2)+ClassSize(4)+Parent TypeDef
     sizes[0x0F] = 2 + 4 + _simple_index_size(rc, 0x02)
