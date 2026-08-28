@@ -30,7 +30,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Start an HTTP(S) interception proxy bound to this session.
 
         Answers with running, host, port and endpoint. There is no ok,
-        started or url field.
+        started or url field. host must be a loopback address (127.0.0.1, ::1
+        or localhost); a non-loopback bind is refused as invalid_params so the
+        proxy never becomes an open relay. Mobile devices reach a loopback
+        proxy over adb reverse or the emulator host alias.
         """
         return _dump(analysis.proxy_start(session_id, host=host, port=port))
 

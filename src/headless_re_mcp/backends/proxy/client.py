@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import ipaddress
 import logging
 import os
 import socket
@@ -55,6 +56,30 @@ class ProxyError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True only when ``host`` binds a loopback interface.
+
+    The proxy listens on the analysis host. Binding anything but loopback turns
+    it into an open HTTP(S) relay -- any machine that can reach the port can push
+    arbitrary traffic through it, attribute that traffic to this host, and reach
+    services the host can but the caller cannot. Only the port was validated, so
+    ``host="0.0.0.0"`` (or a LAN address) sailed through to mitmproxy's
+    ``listen_host``. Refuse it the same way the web console refuses a non-loopback
+    bind. ``localhost`` is accepted as the conventional loopback name; a mobile
+    device still reaches a loopback proxy the standard way -- ``adb reverse`` or
+    the emulator host alias -- so this does not cost the Android workflow anything.
+    """
+    if not isinstance(host, str):
+        return False
+    candidate = host.strip()
+    if candidate.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
 
 
 def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
@@ -566,6 +591,12 @@ class ProxyBackend:
         self._check_available()
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise ProxyError("invalid_params", "port must be 1..65535", port=port)
+        if not _is_loopback_host(host):
+            raise ProxyError(
+                "invalid_params",
+                "proxy host must be a loopback address",
+                host=host,
+            )
         with self._lock:
             if session_id in self._instances:
                 raise ProxyError("invalid_state", "proxy already running for this session")
