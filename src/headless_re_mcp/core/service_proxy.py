@@ -138,7 +138,22 @@ class ProxyAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def proxy_replay(self, session_id: str, flow_id: str) -> Result[JsonObject]:
-        return self._proxy_wrap(session_id, "replay", session_id, flow_id)
+        try:
+            data = self._proxy.replay(session_id, flow_id)
+            # Record the replay like proxy.start/stop/export_har/ca.install do.
+            # Replay re-sends a captured request to the target -- an active
+            # network intervention that generates real, observable traffic, the
+            # opposite of the passive flows/flow.get reads (even export_har, a
+            # read-to-artifact, records) -- so it belongs in the audit trail, yet
+            # it was the one active proxy op that left no row.
+            _timeline_append(
+                self, session_id, "proxy.replay", "proxy flow replayed", flow_id=flow_id
+            )
+            return _success(data, session_id=session_id, backend="proxy")
+        except ProxyError as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
 
     def proxy_export_har(self, session_id: str) -> Result[JsonObject]:
         try:

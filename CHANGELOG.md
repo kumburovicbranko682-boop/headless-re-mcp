@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（proxy.replay 不写时间线，唯一一个主动向目标重放请求却不留审计痕迹的代理操作）
+
+- 与 web.navigate / frida.memory.read 同一类缺陷，收尾会话级服务（frida/web/proxy）的时间线审计一致性：
+  `proxy.replay` 走的是通用 `_proxy_wrap`，什么都不写，而 `proxy.start`/`proxy.stop`/`proxy.export_har`（连
+  read-to-artifact 都写）/`proxy.ca.install_android` 都写。replay 会把一条抓到的请求重新发往目标服务器——这是
+  一次主动的网络介入、会产生真实且可观测的流量，和 flows/flow.get 这种被动读取正相反——恰恰最该留审计痕迹，
+  却偏偏是唯一不留的主动操作。现在 `proxy_replay` 改为独立方法（与 start/stop/export_har 同构），追加一行
+  `proxy.replay`（"proxy flow replayed"）记录 `flow_id`；错误映射与包裹保持不变。新增回归测试：spy 掉
+  `_timeline_append` 断言恰好有一行 `proxy.replay` 带 `flow_id`（旧实现无此行即失败），另加 ProxyError 与
+  意外异常两条错误臂的映射测试，覆盖新方法的两个 except 分支。
+  （补充：ADB 设备服务 `service_device` 结构上是无会话的——方法不带 session_id、`_success(data, backend="adb")`
+  ——因此按会话记录的时间线本就不适用于它，这是设计使然而非遗漏，故不改。）
+
 ### 修复（web.navigate 不写时间线，会话访问过哪些 URL 这一最关键的审计事实没有留痕）
 
 - 紧接上一条 frida.memory.read 的同类缺陷：`web.navigate` 走的是通用 `_web_wrap`，什么时间线行都不写，而

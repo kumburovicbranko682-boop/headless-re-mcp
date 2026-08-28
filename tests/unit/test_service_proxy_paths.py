@@ -325,6 +325,70 @@ def test_proxy_export_har_maps_an_unexpected_error(service: Any, monkeypatch: An
     assert result.error.code == "invalid_request"
 
 
+def test_proxy_replay_records_the_flow_id_in_the_timeline(
+    service: Any, monkeypatch: Any
+) -> None:
+    """Replay re-sends a request to the target, so it must leave a timeline row.
+
+    Replay is an active network intervention -- it hits the target server again
+    -- not a passive read, yet it went through the generic _proxy_wrap and
+    recorded nothing while proxy.start/stop/export_har (even a read-to-artifact)
+    all did. The row names the flow_id so the audit trail shows what was re-sent.
+    """
+    from headless_re_mcp.core import service_proxy
+
+    session_id = _web_session(service)
+    monkeypatch.setattr(
+        service._proxy_backend,
+        "replay",
+        lambda sid, flow_id: {"replayed": True, "flow_id": flow_id},
+    )
+    rows: list[tuple[str, dict[str, object]]] = []
+    real_append = service_proxy._timeline_append
+
+    def _capture(svc: object, sid: str, event: str, message: str, **d: object) -> None:
+        rows.append((event, d))
+        real_append(svc, sid, event, message, **d)
+
+    monkeypatch.setattr(service_proxy, "_timeline_append", _capture)
+
+    result = service.proxy_replay(session_id, "flow-7")
+
+    assert result.ok, result.error
+    assert result.data == {"replayed": True, "flow_id": "flow-7"}
+    assert ("proxy.replay", {"flow_id": "flow-7"}) in rows
+
+
+def test_proxy_replay_maps_a_proxy_error(service: Any, monkeypatch: Any) -> None:
+    session_id = _web_session(service)
+
+    def boom(sid: str, flow_id: str) -> dict[str, Any]:
+        raise ProxyError("not_found", "unknown flow id", flow_id=flow_id)
+
+    monkeypatch.setattr(service._proxy_backend, "replay", boom)
+
+    result = service.proxy_replay(session_id, "missing")
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "not_found"
+
+
+def test_proxy_replay_maps_an_unexpected_error(service: Any, monkeypatch: Any) -> None:
+    session_id = _web_session(service)
+
+    def boom(sid: str, flow_id: str) -> dict[str, Any]:
+        raise ValueError("wat")
+
+    monkeypatch.setattr(service._proxy_backend, "replay", boom)
+
+    result = service.proxy_replay(session_id, "flow-1")
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+
+
 def test_proxy_ca_install_refuses_a_closed_session(service: Any) -> None:
     session_id = _web_session(service)
     service.registry.transition(session_id, SessionState.FAILED)
