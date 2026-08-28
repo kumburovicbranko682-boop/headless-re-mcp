@@ -27,6 +27,12 @@ until 1.0 the tool surface may still change between minor versions.
   与「脚本缺失」文案、以及 `TestGhidraExportDisclosesTruncation` 读取脚本源验证截断标记的用例，都改为
   针对 `ExportJson.java`。全部 79 个 Ghidra 单测在本机通过，`ruff`/`mypy --strict` 干净。本项从
   `cursor/mature-nonpe-lines-4586` 聚合分支中拆出为独立、可直接合入当前 main 的最小分支。
+- 补上 Ghidra 的实机 gate（`tests/integration/test_ghidra_live_gate.py`）：单测把 analyzeHeadless
+  全程 mock 掉，没有任何东西证明后端真能驱动一个真实 Ghidra——而上面两个 bug 恰恰说明它此前不能。
+  gate 用可移植的 ELF 夹具（`fixtures/native/elf_fixture.c`，由 `conftest.py` 的 `elf_fixture`
+  会话夹具用 cc/gcc/clang 现编，无编译器时如实 skip）跑真实的 functions/symbols/decompile，并断言
+  导出形状与命名函数（`elf_fixture_transform`/`main`）确实回来。skip != pass：仅在 Ghidra 与 JDK
+  确实缺席时跳过并点名缺什么。本机实测夹具可编译、符号齐全，gate 在无 Ghidra 时干净 skip。
 
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
