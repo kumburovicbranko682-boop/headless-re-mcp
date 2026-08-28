@@ -5,6 +5,26 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（浏览器 workbench gate 顶层 import 可选依赖，缺一个就炸掉整棵 tests/integration 收集）
+
+- `tests/integration/test_agent_browser_smoke.py` 在模块顶层直接
+  `import uvicorn`、`from playwright.sync_api import ...`、
+  `from headless_re_mcp.web.app import create_app`（后者会拉 fastapi）。这三样都属于可选
+  extra（playwright 在 `browser`，uvicorn/fastapi 在 `web`），任一缺失都会让本模块在
+  collection 阶段抛 ImportError；而 pytest 把**单个** collection error 视为致命，直接
+  `Interrupted` 整个 `tests/integration` 目录的收集、一个用例都不跑——这正是其余每个 backend
+  gate 都遵守的 "skip != pass" 契约的反面（连 skip 都不是，是整场中断）。真实影响不止裸机：
+  `.github/workflows/windows-integration.yml` 装的是 `.[test,dev,web]`（有 web、无
+  browser），却 `python -m pytest tests/integration` 全量跑；main 上该 job 的
+  "Integration gates" 步会在 collection 就炸，x64dbg/IDA 等真机 gate 一个都执行不到。只
+  guard playwright 不够——`web` extra 缺失时，eager 的 `import uvicorn` 或
+  `from ...web.app import create_app` 仍会炸。改法：三个可选依赖**全部**走
+  `pytest.importorskip`（用赋值形式取符号，既不触发 E402 也不影响 mypy——mypy 只查
+  `src/`），缺哪个就只跳这一个模块。已验证：裸机（web/browser 均缺）下
+  `pytest tests/integration --collect-only` 从 "Interrupted: 1 error / 0 跑" 变为
+  该模块干净 skip、其余全部收齐、exit 0；依赖齐全时该模块照常收到
+  `test_browser_agent_workbench_smoke`。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言

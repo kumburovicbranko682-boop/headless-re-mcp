@@ -11,13 +11,38 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import uvicorn
-from playwright.sync_api import Response, expect, sync_playwright
 
 from headless_re_mcp.agent.providers.base import ProviderEvent, ProviderToolCall
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.web.app import create_app
+
+# This gate exercises the web workbench end to end, so it needs the full optional
+# web stack: playwright (the ``browser`` extra) plus uvicorn and
+# ``headless_re_mcp.web.app`` (the ``web`` extra, which imports fastapi). A bare
+# top-level import of any of them turns a partial install into a collection
+# *error*, and pytest treats a single collection error as fatal: it aborts
+# collection of the whole tests/integration tree and runs nothing, so a machine
+# missing one extra loses every other backend gate too. Guarding only playwright
+# is not enough -- an eager ``import uvicorn`` or ``from ...web.app import
+# create_app`` still errors when the web extra is absent. Route every optional
+# dependency through importorskip so a missing extra skips just this module
+# ("skip != pass"), matching every other backend gate.
+_playwright_sync = pytest.importorskip(
+    "playwright.sync_api",
+    reason="playwright not installed — browser workbench Gate not run (skip != pass)",
+)
+Response = _playwright_sync.Response
+expect = _playwright_sync.expect
+sync_playwright = _playwright_sync.sync_playwright
+
+uvicorn = pytest.importorskip(
+    "uvicorn",
+    reason="uvicorn not installed — browser workbench Gate needs the web extra (skip != pass)",
+)
+create_app = pytest.importorskip(
+    "headless_re_mcp.web.app",
+    reason="web extra not installed — browser workbench Gate not run (skip != pass)",
+).create_app
 
 JsonObject = dict[str, Any]
 
