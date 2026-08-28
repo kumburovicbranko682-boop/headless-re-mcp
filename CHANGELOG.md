@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（`r2.function_refs`：函数对外引用，交叉引用故事的另一半）
+
+- `r2.xrefs_to` 回答"谁引用了这个地址"（入边）后，还缺"这个函数引用/调用了
+  什么"（出边）。新工具 `r2.function_refs` 跑 `aa; afxj @ addr`，解析该地址
+  所在函数（函数体内任意地址皆可）并列出它发起的全部引用：每条含 type
+  （call/code/data）、from（函数内的发起点）与 to（目标），from 与 to 都映射为
+  from_address/to_address（va/rva/module），from 亦作为该条的 address，
+  address_va 回显所问地址。与 `r2.xrefs_to` 配对即可走调用图：call/code 目标
+  是被调用函数与跳转，data 目标是它访问的字符串与全局量。`afxj @ <hex|dec>`
+  进白名单（正则全匹配，拒绝符号名与命令注入）。真实 ELF 上从 main 函数体内
+  查询得到 5 条出边（跳转、调用 add、两处数据读、调用 printf@plt），与裸
+  `r2 -c 'afxj @ main'` 逐条一致；非函数地址返回 parsed=True 的空 items。
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

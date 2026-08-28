@@ -38,6 +38,7 @@ _ALLOWED = frozenset(
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 _AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+_AFXJ_COMMAND = re.compile(r"afxj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 
 
 class R2Error(RuntimeError):
@@ -55,6 +56,8 @@ def _require_allowed_command(command: str) -> None:
     if pdj is not None and int(pdj.group(1)) <= 512:
         return
     if _AXJ_COMMAND.fullmatch(command) is not None:
+        return
+    if _AFXJ_COMMAND.fullmatch(command) is not None:
         return
     raise R2Error("invalid_params", "r2 command not whitelisted", command=command)
 
@@ -108,6 +111,28 @@ class R2Client:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
         cmd = f"axj @ {address}"
+        data = self.run(binary, ["aa", cmd], timeout=timeout)
+        data = dict(data)
+        data["address"] = address
+        return enrich_r2_payload(data, binary=binary)
+
+    def function_refs(
+        self,
+        binary: Path,
+        address: int,
+        *,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """List every reference the function containing ``address`` makes (afxj).
+
+        The outgoing complement to ``xrefs`` incoming edges: afxj resolves the
+        function at the address and reports its calls, jumps and data reads as
+        (type, from, to) rows. enrich maps both endpoints, so a caller can walk
+        the callees and data dependencies without a second pass.
+        """
+        if type(address) is not int or address < 0:
+            raise R2Error("invalid_params", "address must be a non-negative int")
+        cmd = f"afxj @ {address}"
         data = self.run(binary, ["aa", cmd], timeout=timeout)
         data = dict(data)
         data["address"] = address

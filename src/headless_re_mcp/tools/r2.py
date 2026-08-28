@@ -130,4 +130,30 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         xrefs, truncated or has_more field.
         """
         return _dump(analysis.r2_xrefs(session_id, address, timeout=timeout))
+
+    @tools.tool(name="r2.function_refs")
+    def r2_function_refs(
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Every reference the function at address makes -- its outgoing edges.
+
+        Runs analysis, then afxj @ address: resolves the function containing
+        address (any address inside the body works) and lists what it points
+        at. Answers with items, each carrying type (call/code/data), from (the
+        site inside the function) and to (the target), plus from_address and
+        to_address (va/rva/module) and address (mapped from the from site).
+        This is the complement of r2.xrefs_to: xrefs_to gives who points AT an
+        address (incoming edges), function_refs gives what a function calls and
+        reads (outgoing edges) -- together they walk a call graph. call/code
+        targets are callees and jumps; data targets are the strings and globals
+        it touches. Empty items means no function at address (or one that
+        references nothing); run r2.functions first. Read items_truncated,
+        items_total and items_limit when the list filled the cap (4096);
+        address_va echoes the integer asked. There is no integer address, refs,
+        truncated or has_more field.
+        """
+        return _dump(analysis.r2_function_refs(session_id, address, timeout=timeout))
+
     return tools.bindings
