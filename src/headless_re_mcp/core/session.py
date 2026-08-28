@@ -310,6 +310,13 @@ class SessionRegistry:
                     if surface is not None:
                         metadata["dotnet"]["public_types"] = surface[0]
                         metadata["dotnet"]["public_type_count"] = surface[1]
+                    # The managed analysis surface: TypeDef/MethodDef/FieldDef
+                    # row counts -- the .NET member of the code-census family
+                    # (DEX class/method counts, WASM function_count, ELF
+                    # eh_frame_functions, PE exception_functions).
+                    counts = _dotnet_definition_counts(path)
+                    if counts is not None:
+                        metadata["dotnet"].update(counts)
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             elif kind is TargetKind.NATIVE:
@@ -5276,6 +5283,7 @@ _DOTNET_MAX_PINVOKE_ROWS = 256
 # is a TypeDefOrRef coded index (over TypeDef/TypeRef/TypeSpec); FieldList is
 # a simple index into Field (0x04). A static method carries flag 0x0010.
 _DOTNET_TYPE_DEF = 0x02
+_DOTNET_FIELD_DEF = 0x04
 _DOTNET_METHOD_DEF = 0x06
 _DOTNET_FIELD = 0x04
 _DOTNET_TYPEDEF_OR_REF = (0x02, 0x01, 0x1B)
@@ -6474,6 +6482,84 @@ def _dotnet_public_types(path: Path) -> tuple[list[str], int] | None:
             return names, count
         table_offset += row_size * row_counts[bit]
     return None
+
+
+def _dotnet_definition_counts(path: Path) -> dict[str, int] | None:
+    """TypeDef/MethodDef/FieldDef row counts -- the managed analysis surface.
+
+    How much code a decompiler will actually face, straight off the ``#~``
+    header's row-count array: the .NET member of the code-census family (a
+    DEX class/method count, a WASM function count, ELF .eh_frame_hdr FDEs,
+    PE .pdata entries, Mach-O LC_FUNCTION_STARTS). TypeDef row 1 is the
+    ``<Module>`` pseudo-type, so a one-class assembly reads ``type_count``
+    2 -- ``monodis --typedef`` prints those same rows, so the gate compares
+    them exactly. A table the assembly never allocated counts zero (real:
+    a fieldless or interface-only module). ``None`` -- fact absent -- when
+    the file is not a managed PE or the declared row counts do not fit the
+    tables stream: a lying header yields no fact, never an inflated census.
+    """
+    from headless_re_mcp.dotnet.tables import table_row_size
+
+    try:
+        if path.stat().st_size > _DOTNET_MAX_FILE:
+            return None
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    view = _pe_header_view(raw)
+    if view is None:
+        return None
+    _magic, dir_count, dir_off, sections, _base = view
+    entry = dir_off + _PE_COM_DESCRIPTOR_DIR * 8
+    if dir_count <= _PE_COM_DESCRIPTOR_DIR or entry + 8 > len(raw):
+        return None
+    clr_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    if clr_rva == 0:
+        return None
+    clr_off = _pe_rva_to_offset(sections, clr_rva)
+    if clr_off is None or clr_off + 16 > len(raw):
+        return None
+    meta_rva = int.from_bytes(raw[clr_off + 8 : clr_off + 12], "little")
+    meta_off = _pe_rva_to_offset(sections, meta_rva)
+    if meta_off is None:
+        return None
+    stream_map = _clr_stream_map(raw, meta_off)
+    tables_span = stream_map.get("#~") or stream_map.get("#-")
+    if tables_span is None:
+        return None
+    tables = raw[meta_off + tables_span[0] : meta_off + tables_span[0] + tables_span[1]]
+    if len(tables) < 24:
+        return None
+    heap_sizes = tables[6]
+    string_index_size = 4 if (heap_sizes & 0x01) else 2
+    guid_index_size = 4 if (heap_sizes & 0x02) else 2
+    blob_index_size = 4 if (heap_sizes & 0x04) else 2
+    valid = int.from_bytes(tables[8:16], "little")
+    cursor = 24
+    row_counts: dict[int, int] = {}
+    for bit in range(64):
+        if valid & (1 << bit):
+            if cursor + 4 > len(tables):
+                return None
+            row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
+            cursor += 4
+    # The counts themselves are the fact here, so a clamp would misreport;
+    # instead demand that every declared table actually fits the stream.
+    total = cursor
+    for bit in sorted(row_counts):
+        row_size = table_row_size(
+            row_counts, string_index_size, blob_index_size, guid_index_size, bit
+        )
+        if row_size is None:
+            return None
+        total += row_size * row_counts[bit]
+        if total > len(tables):
+            return None
+    return {
+        "type_count": row_counts.get(_DOTNET_TYPE_DEF, 0),
+        "method_count": row_counts.get(_DOTNET_METHOD_DEF, 0),
+        "field_count": row_counts.get(_DOTNET_FIELD_DEF, 0),
+    }
 
 
 def _dotnet_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:

@@ -26,6 +26,7 @@ from headless_re_mcp.core.session import (
     _dotnet_assembly_identity,
     _dotnet_assembly_refs,
     _dotnet_debuggable,
+    _dotnet_definition_counts,
     _dotnet_high_entropy_resources,
     _dotnet_module_initializer,
     _dotnet_pinvokes,
@@ -3227,6 +3228,99 @@ class TestDotnetPublicTypes:
         session = SessionRegistry().create(str(_DOTNET_FIXTURE))
         assert session.metadata["dotnet"]["public_types"] == ["Sample"]
         assert session.metadata["dotnet"]["public_type_count"] == 1
+
+
+def _with_lying_row_count(raw: bytes, table_bit: int, count: int) -> bytes:
+    """The fixture bytes with one #~ row count overwritten in place.
+
+    Walks the CLR metadata root (BSJB) to the #~ stream and the row-count
+    array behind the Valid bitmask -- the same layout the reader parses -- to
+    plant a hostile count without disturbing anything else.
+    """
+    meta = raw.find(b"BSJB")
+    assert meta >= 0
+    version_len = int.from_bytes(raw[meta + 12 : meta + 16], "little")
+    stream_count_at = meta + 16 + version_len + 2  # +2 skips the Flags field
+    streams = int.from_bytes(raw[stream_count_at : stream_count_at + 2], "little")
+    at = stream_count_at + 2
+    tables_off = None
+    for _ in range(streams):
+        offset = int.from_bytes(raw[at : at + 4], "little")
+        name_start = at + 8
+        name_end = raw.index(b"\0", name_start)
+        if raw[name_start:name_end] in (b"#~", b"#-"):
+            tables_off = meta + offset
+        # The name plus its NUL pads to a 4-byte boundary.
+        at = name_start + (((name_end - name_start) + 1 + 3) & ~3)
+    assert tables_off is not None
+    valid = int.from_bytes(raw[tables_off + 8 : tables_off + 16], "little")
+    assert valid & (1 << table_bit), "fixture lacks the table under test"
+    cursor = tables_off + 24
+    for bit in range(64):
+        if valid & (1 << bit):
+            if bit == table_bit:
+                return raw[:cursor] + count.to_bytes(4, "little") + raw[cursor + 4 :]
+            cursor += 4
+    raise AssertionError("unreachable")
+
+
+class TestDotnetDefinitionCounts:
+    """_dotnet_definition_counts reads the managed analysis surface.
+
+    The .NET member of the code-census family -- the pair to a DEX
+    class/method count, a WASM function count, ELF .eh_frame_hdr FDEs, PE
+    .pdata entries and Mach-O LC_FUNCTION_STARTS: the TypeDef, MethodDef and
+    FieldDef row counts straight off the #~ header, the same rows monodis
+    --typedef/--method/--fields prints. None for anything that is not a
+    managed PE, or whose declared counts do not fit the tables stream.
+    """
+
+    def test_the_committed_fixture_counts_its_rows(self) -> None:
+        # <Module> plus Sample; .cctor, Add, Run and NativeBeep; one field.
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        assert _dotnet_definition_counts(_DOTNET_FIXTURE) == {
+            "type_count": 2,
+            "method_count": 4,
+            "field_count": 1,
+        }
+
+    def test_an_assembly_with_resources_counts_the_same_rows(self, tmp_path: Path) -> None:
+        path = tmp_path / "resourced.exe"
+        path.write_bytes(_dotnet_with_resources([("payload.bin", b"\x00" * 64)]))
+        counts = _dotnet_definition_counts(path)
+        assert counts is not None
+        assert counts["type_count"] == 2
+
+    def test_a_native_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "native.exe"
+        path.write_bytes(_native_pe())
+        assert _dotnet_definition_counts(path) is None
+
+    def test_a_non_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _dotnet_definition_counts(path) is None
+
+    def test_a_lying_method_count_yields_no_fact(self, tmp_path: Path) -> None:
+        # The counts are the fact, so clamping would misreport: a MethodDef
+        # count far beyond what the tables stream holds must kill the fact
+        # entirely rather than surface an inflated census.
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        path = tmp_path / "liar.exe"
+        path.write_bytes(
+            _with_lying_row_count(_DOTNET_FIXTURE.read_bytes(), 0x06, 0x00FF_FFFF)
+        )
+        assert _dotnet_definition_counts(path) is None
+
+    def test_session_over_the_fixture_carries_the_census(self) -> None:
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        dotnet = SessionRegistry().create(str(_DOTNET_FIXTURE)).metadata["dotnet"]
+        assert dotnet["type_count"] == 2
+        assert dotnet["method_count"] == 4
+        assert dotnet["field_count"] == 1
 
 
 def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path: Path) -> None:

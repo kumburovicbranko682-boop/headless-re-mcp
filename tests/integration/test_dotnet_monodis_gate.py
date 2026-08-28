@@ -985,3 +985,85 @@ def test_session_type_forwards_agree_with_monodis(tmp_path: Path) -> None:
         assert created.data["session"]["metadata"]["dotnet"]["type_forwards"] == []
     finally:
         service.close_all()
+
+
+# monodis renders each row-numbered table dump with a "(1..N)" range in its
+# header (Method Table (1..4), Field Table (1..1)); N is Mono's own row
+# count. An empty table prints "(1..0)" or no rows at all.
+_TABLE_RANGE_RE = re.compile(r"Table \(1\.\.(\d+)\)")
+
+
+def _mono_definition_counts(binary: Path) -> dict[str, int]:
+    """The TypeDef/MethodDef/FieldDef row counts as Mono walks them."""
+    typedef_rows = len(_TYPEDEF_RE.findall(_monodis_file(binary, "--typedef")))
+    method_range = _TABLE_RANGE_RE.search(_monodis_file(binary, "--method"))
+    field_range = _TABLE_RANGE_RE.search(_monodis_file(binary, "--fields"))
+    return {
+        "type_count": typedef_rows,
+        "method_count": int(method_range.group(1)) if method_range else 0,
+        "field_count": int(field_range.group(1)) if field_range else 0,
+    }
+
+
+@pytest.mark.integration
+def test_session_definition_counts_agree_with_monodis(tmp_path: Path) -> None:
+    """The managed code census against Mono's own table walk.
+
+    ``type_count``/``method_count``/``field_count`` are now tool-free session
+    facts -- the .NET member of the code-census family (DEX class/method
+    counts, WASM function_count, ELF .eh_frame_hdr FDEs, PE .pdata entries):
+    how much code a decompiler will face, off the #~ header's row-count
+    array. monodis walks the same tables row by row and numbers what it
+    prints, so its row totals referee the reader's header-declared counts --
+    a header lying about its rows could not fool a walker. The mcs leg
+    compiles a known shape (three types counting <Module>, no fields at all)
+    so at least one gated assembly comes from a real compiler, and the empty
+    Field table proves zero is read as a real answer, not invented.
+    """
+    if not _FIXTURE.is_file():
+        pytest.skip(
+            "minimal .NET fixture missing; run fixtures/dotnet/build_minimal_dotnet.py"
+            " (skip != pass)"
+        )
+    if shutil.which("monodis") is None:
+        pytest.skip("monodis (mono-utils) not installed — .NET cross-check not run (skip != pass)")
+
+    expected = _mono_definition_counts(_FIXTURE)
+    # Referee sanity: Mono really saw the fixture's shape (<Module> plus
+    # Sample; .cctor, Add, Run, NativeBeep; the one Secret field).
+    assert expected == {"type_count": 2, "method_count": 4, "field_count": 1}
+
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(_FIXTURE))
+        assert created.ok, created.error
+        facts = created.data["session"]["metadata"]["dotnet"]
+        assert {key: facts[key] for key in expected} == expected
+    finally:
+        service.close_all()
+
+    mcs = shutil.which("mcs")
+    if mcs is None:
+        return  # the fixture leg already ran; this leg needs a compiler
+    source = tmp_path / "shape.cs"
+    source.write_text(
+        "public class Alpha { public void One() { } public void Two() { } }\n"
+        'internal class Beta { static void Main() { System.Console.WriteLine("hi"); } }\n'
+    )
+    binary = tmp_path / "shape.exe"
+    subprocess.run(
+        [mcs, f"-out:{binary}", str(source)], check=True, capture_output=True, timeout=120
+    )
+    compiled_expected = _mono_definition_counts(binary)
+    # Referee sanity: <Module>, Alpha, Beta; One, Two, Main plus the two
+    # compiler-supplied instance constructors; and not a single field.
+    assert compiled_expected == {"type_count": 3, "method_count": 5, "field_count": 0}
+
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok, created.error
+        facts = created.data["session"]["metadata"]["dotnet"]
+        assert {key: facts[key] for key in compiled_expected} == compiled_expected
+    finally:
+        service.close_all()
