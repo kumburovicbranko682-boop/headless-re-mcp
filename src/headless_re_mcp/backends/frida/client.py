@@ -428,7 +428,11 @@ class FridaClient:
     def hook_template(self, pid: int, template: str, *, allowed_pid: int,
                       timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:
         self._require(pid, allowed_pid)
-        source = _HOOK_TEMPLATES.get(template)
+        # isinstance guards the lookup: dict.get() raises TypeError on an
+        # unhashable template (a list or dict slipping past the schema on the
+        # agent transport), which would escape as an internal_error incident
+        # instead of the unknown-template invalid_params a bad name already gets.
+        source = _HOOK_TEMPLATES.get(template) if isinstance(template, str) else None
         if source is None:
             raise FridaError(
                 "invalid_params",
@@ -744,7 +748,8 @@ class FridaClient:
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
         self._authorize(pid, allowed_pids)
-        source = _HOOK_TEMPLATES.get(template)
+        # See hook_template: an unhashable template must not reach dict.get().
+        source = _HOOK_TEMPLATES.get(template) if isinstance(template, str) else None
         if source is None:
             raise FridaError(
                 "invalid_params",

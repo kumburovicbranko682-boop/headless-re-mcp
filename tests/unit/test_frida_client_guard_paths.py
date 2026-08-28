@@ -374,6 +374,18 @@ def test_hook_template_rejects_an_unknown_template() -> None:
     assert caught.value.code == "invalid_params"
 
 
+def test_hook_template_rejects_a_non_string_template() -> None:
+    # A list is unhashable, so dict.get() would raise TypeError -- an
+    # internal_error incident -- rather than the invalid_params an unknown
+    # string template already earns. The guard must fold both into one code.
+    client = _local_client(_LocalFrida(session=_Session()))
+
+    with pytest.raises(FridaError) as caught:
+        client.hook_template(1, ["noop"], allowed_pid=1)  # type: ignore[arg-type]
+
+    assert caught.value.code == "invalid_params"
+
+
 def test_hook_template_passes_through_a_backend_error_from_load() -> None:
     session = _Session(load_exc=FridaError("backend_error", "script would not load"))
     client = _local_client(_LocalFrida(session=session))
@@ -700,6 +712,16 @@ def test_hook_template_device_rejects_an_unknown_template() -> None:
 
     with pytest.raises(FridaError) as caught:
         client.hook_template_device(None, 1, "nope", allowed_pids={1})
+
+    assert caught.value.code == "invalid_params"
+
+
+def test_hook_template_device_rejects_a_non_string_template() -> None:
+    # Same unhashable-template hazard as the local path, guarded the same way.
+    client = _device_client(_Device())
+
+    with pytest.raises(FridaError) as caught:
+        client.hook_template_device(None, 1, ["noop"], allowed_pids={1})  # type: ignore[arg-type]
 
     assert caught.value.code == "invalid_params"
 
