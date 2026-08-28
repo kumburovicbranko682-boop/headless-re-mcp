@@ -64,8 +64,15 @@ def assess_pause_quality(
         rebuild_allowed is True
         and recoverability == "iat_recoverable"
         and not code_not_ready
+        and iat_ready
     ):
-        iat_ready = True
+        # The authoritative rebuild gate resolves the "UI visible is not enough"
+        # caveat, but this is a fail-closed second opinion: it must not overturn
+        # its own independent hard vetoes (stub calls dominating the API call
+        # sites, a too-low resolved ratio, a junk/empty/fragmented layout), which
+        # measure things the IAT gate does not. Only relabel the soft caveat when
+        # nothing else here already refused, so iat_ready never disagrees with the
+        # reasons list.
         reasons = [r for r in reasons if r != "ui_visible_only_not_sufficient"]
         if ui_visible is True:
             reasons.append("ui_visible_and_iat_gate_ok")

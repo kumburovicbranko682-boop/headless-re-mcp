@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（暂停质量门被 IAT 门确认反转掉自己的硬否决）
+
+- `unpack.pause_quality.assess_pause_quality` 是“UI 可见 != IAT 可重建”的失败保守二次判定：
+  它除了看权威 IAT 重建门（`gate_iat_rebuild`）给的 `recoverability`，还独立测量 stub 调用是否
+  压过真实 API 调用点、`resolved_ratio` 是否过低、layout 是否为 junk/empty/fragmented 等——这些
+  是 IAT 门看不到的量。关键在于 `gate_iat_rebuild` 用 IAT 的 `api_count` 作分母衡量 stub 耦合，
+  而暂停门用 `stub_calls` 报的 `api_call_site_count`（FF15/FF25 调用点）作分母，两者是不同测量，
+  因此完全可能出现：IAT 门如实报 `iat_recoverable`，同一转储上暂停门又独立测出 stub 调用压过调用点。
+  旧逻辑在“门确认可重建”分支里无条件把 `iat_ready` 置回 `True`，却只从 `reasons` 里删掉软提示
+  `ui_visible_only_not_sufficient`，于是输出自相矛盾——`iat_ready=True`、`quality="iat_ready"`，但
+  `reasons` 仍留着 `stub_calls_dominate_api_sites` 之类硬否决理由，把一次仍与 VM 耦合的转储谎报成
+  可重建。现该分支只在没有任何硬否决时才放行（只负责把软提示改标成 `ui_visible_and_iat_gate_ok`），
+  硬否决一律保留 `iat_ready=False`，`iat_ready` 与 `reasons` 不再打架。新增针对 stub 压制、
+  `resolved_ratio` 过低、junk layout 在门确认下仍被否决的直测，以及“凡 ready 则不含任何硬否决理由”
+  的不变量测试。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
