@@ -12,6 +12,10 @@ from time import monotonic
 from typing import Any, cast
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.finding_aggregate import (
+    aggregate_endpoints,
+    aggregate_secrets,
+)
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.backends.ghidra.client import GhidraClient, GhidraError
 from headless_re_mcp.backends.r2.client import R2Client, R2Error
@@ -516,6 +520,52 @@ class ExtAnalysisMixin(UiDriveMixin):
         self, session_id: str, address: str | int, timeout: float = 180.0
     ) -> Result[JsonObject]:
         return _ghidra_export(self, session_id, "decompile", address=address, timeout=timeout)
+
+    def ghidra_endpoints(
+        self,
+        session_id: str,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        include_paths: bool = True,
+        scan_limit: int = 1024,
+        timeout: float = 180.0,
+    ) -> Result[JsonObject]:
+        result = _ghidra_export(self, session_id, "strings", limit=scan_limit, timeout=timeout)
+        if not result.ok or result.data is None:
+            return result
+        payload = aggregate_endpoints(
+            _ghidra_scan_pairs(result.data),
+            include_paths=include_paths,
+            name_filter=name_filter,
+            offset=offset,
+            limit=limit,
+            scan_capped=bool(result.data.get("has_more")),
+        )
+        return _success(payload, session_id=session_id, backend="ghidra")
+
+    def ghidra_secrets(
+        self,
+        session_id: str,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        include_generic: bool = False,
+        scan_limit: int = 1024,
+        timeout: float = 180.0,
+    ) -> Result[JsonObject]:
+        result = _ghidra_export(self, session_id, "strings", limit=scan_limit, timeout=timeout)
+        if not result.ok or result.data is None:
+            return result
+        payload = aggregate_secrets(
+            _ghidra_scan_pairs(result.data),
+            include_generic=include_generic,
+            name_filter=name_filter,
+            offset=offset,
+            limit=limit,
+            scan_capped=bool(result.data.get("has_more")),
+        )
+        return _success(payload, session_id=session_id, backend="ghidra")
 
     def frida_attach(self, session_id: str) -> Result[JsonObject]:
         try:
@@ -1343,6 +1393,24 @@ def _r2_request(service: Any, session_id: str, commands: list[str], *, timeout: 
         return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
     except BaseException as exc:
         return _failure(exc, session_id=session_id)
+
+
+def _ghidra_scan_pairs(data: JsonObject) -> list[tuple[str, JsonObject]]:
+    """(string, {address}) pairs from a ghidra strings export.
+
+    The reference carries Ghidra's address string -- the form ghidra.xrefs
+    expects -- so a finding can be pivoted to the code that references it.
+    """
+    items = data.get("items")
+    rows = [it for it in items if isinstance(it, dict)] if isinstance(items, list) else []
+    pairs: list[tuple[str, JsonObject]] = []
+    for item in rows:
+        ref: JsonObject = {}
+        address = item.get("address")
+        if isinstance(address, str) and address:
+            ref["address"] = address
+        pairs.append((str(item.get("value") or ""), ref))
+    return pairs
 
 
 def _ghidra_export(

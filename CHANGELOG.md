@@ -294,6 +294,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **Ghidra 线补齐 strings→endpoints→secrets 三件套（与 r2/dotnet 对齐），并把原生线的聚合抽成共享层**：`ghidra.strings`
+  之上新增两个只读工具，跑在 Ghidra 已定义的字符串数据上、复用共享的 `endpoint_scan.py` / `secret_scan.py`。`ghidra.endpoints`
+  抽取 URL/host/请求路径，返回 endpoints（每项 {value、kind(url|path)、scheme、host、source（所在字符串）、address（Ghidra
+  地址串，正是 ghidra.xrefs 需要的形式，可直接回溯到引用它的代码再 ghidra.decompile）、count}）加 hosts 去重集/hosts_truncated、
+  offset/limit/total/has_more、scan_capped（已定义字符串多于 scan_limit）；include_paths 可关掉相对路径只留 URL。`ghidra.secrets`
+  用同一套高精度检测器（外加 include_generic 高熵兜底）找硬编码凭据，返回 secrets（每项 {detector、value、source、address、
+  count}）加 detectors、scan_capped。两者都支持 name_filter（分页前子串过滤、total 即命中数）与分页，scan_limit 界定扫描的已
+  定义字符串数（Ghidra 自身上限 1024）；都一次性重导入二进制、需要 HEADLESS_RE_GHIDRA_HOME。同时把 r2/Ghidra 两条原生线
+  重复的“去重/计数/挂引用/host 汇总/过滤/分页/封顶”聚合逻辑抽成 `backends/common/finding_aggregate.py`（`aggregate_endpoints`
+  / `aggregate_secrets`，输入 `(text, ref)` 对，ref 按行合并进每条命中），r2 的适配器改为委托它、输出逐字段不变。都只读，
+  工具总数 312→314（194 只读 / 120 写）。
 - **原生二进制线（radare2）只有裸 strings，缺 endpoints/secrets**：js/apk/wasm/dotnet/web/proxy 都已有端点/凭据
   三件套，唯独原生线（ELF/Mach-O/PE）还要人肉 grep `r2.strings`。新增两个只读工具，都在 r2 恢复出的同一批字符串
   （radare2 `izj`，即 r2.strings 列出的那批）上复用共享的 `endpoint_scan.py` / `secret_scan.py`。`r2.endpoints`
