@@ -344,6 +344,18 @@ class ExtAnalysisMixin(UiDriveMixin):
     def r2_exports(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         return _r2_request(self, session_id, ["iEj"], timeout=timeout)
 
+    def r2_sections(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
+        return _r2_request(self, session_id, ["iSj"], timeout=timeout)
+
+    def r2_symbols(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
+        return _r2_request(self, session_id, ["isj"], timeout=timeout)
+
+    def r2_entrypoints(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
+        return _r2_request(self, session_id, ["iej"], timeout=timeout)
+
+    def r2_relocations(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
+        return _r2_request(self, session_id, ["irj"], timeout=timeout)
+
     def r2_disasm(
         self, session_id: str, address: int, count: int = 32, timeout: float = 30.0
     ) -> Result[JsonObject]:

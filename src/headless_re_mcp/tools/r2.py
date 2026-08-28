@@ -100,6 +100,66 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_exports(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.sections")
+    def r2_sections(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Binary sections/segments as radare2 lays them out.
+
+        Runs ``iSj``. Answers with items, each carrying name, size, vsize,
+        paddr, perm, flags and address (va/rva/module derived from vaddr),
+        plus count. This is the static counterpart to ghidra.memory_map: use
+        it to see the RWX map and where code, data and resources live. There
+        is no integer address, sections, truncated or has_more field. Read
+        items_truncated, items_total and items_limit when the list filled the
+        cap (4096).
+        """
+        return _dump(analysis.r2_sections(session_id, timeout=timeout))
+
+    @tools.tool(name="r2.symbols")
+    def r2_symbols(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Every symbol radare2 recovered (functions, objects, imports alike).
+
+        Runs ``isj``. Answers with items, each carrying name, realname, type,
+        bind, size, vaddr, paddr, is_imported and address (va/rva/module),
+        plus count. This is the r2 counterpart to ghidra.symbols and a
+        superset of r2.imports/r2.exports. There is no integer address,
+        symbols, truncated or has_more field. Read items_truncated,
+        items_total and items_limit when the list filled the cap (4096).
+        """
+        return _dump(analysis.r2_symbols(session_id, timeout=timeout))
+
+    @tools.tool(name="r2.entrypoints")
+    def r2_entrypoints(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Program entry points and TLS callbacks, as radare2 resolved them.
+
+        Runs ``iej``. Answers with items, each carrying vaddr, paddr, type
+        (program/tls/init/...) and address (va/rva/module), plus count. This
+        is where execution begins; start disassembly here when triaging an
+        unknown binary. There is no integer address, entrypoints, truncated
+        or has_more field. Read items_truncated when the list filled the cap.
+        """
+        return _dump(analysis.r2_entrypoints(session_id, timeout=timeout))
+
+    @tools.tool(name="r2.relocations")
+    def r2_relocations(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Relocation entries the loader patches, as radare2 lists them.
+
+        Runs ``irj``. Answers with items, each carrying vaddr, paddr, type,
+        name (the target symbol when bound) and address (va/rva/module), plus
+        count. Relocations reveal the true import bindings and load-time
+        fixups behind indirect calls. There is no integer address,
+        relocations, truncated or has_more field. Read items_truncated,
+        items_total and items_limit when the list filled the cap (4096).
+        """
+        return _dump(analysis.r2_relocations(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,

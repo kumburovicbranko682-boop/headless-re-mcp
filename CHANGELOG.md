@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **321（203 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **325（207 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -368,6 +368,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
   `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
   `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
+
+### 新增（radare2 静态分析对齐）
+
+- 新增 `r2.sections`:列出 radare2 眼里的节/段(`iSj`)——静态的 RWX 版图,是 `ghidra.memory_map`
+  的静态对应物。回 `items`(每条带 `name`、`size`、`vsize`、`paddr`、`perm`、`flags` 与由 vaddr
+  推出的 `address` va/rva/module)、`count`。看代码/数据/资源落在哪、哪段可写可执行,是布局分诊的第一步。
+  没有整数 address、sections、truncated 或 has_more 字段;列表填满 4096 上限时读 items_truncated /
+  items_total / items_limit。
+- 新增 `r2.symbols`:radare2 恢复出的全部符号(`isj`)——函数、对象、导入一并收进来,是 r2 版的
+  `ghidra.symbols`,也是 `r2.imports`/`r2.exports` 的超集。回 `items`(每条带 `name`、`realname`、
+  `type`、`bind`、`size`、`vaddr`、`paddr`、`is_imported` 与 `address`)、`count`。同样无整数 address
+  与 symbols/truncated/has_more;超上限读 items_truncated / items_total / items_limit。
+- 新增 `r2.entrypoints`:程序入口与 TLS 回调(`iej`)——执行从这里开始,分诊未知二进制时先来反汇编。
+  回 `items`(每条带 `vaddr`、`paddr`、`type`——program/tls/init… 与 `address`)、`count`。无整数
+  address 与 entrypoints/truncated/has_more。
+- 新增 `r2.relocations`:加载器要打的重定位项(`irj`)——重定位揭示间接调用背后真正的导入绑定与
+  载入期修补。回 `items`(每条带 `vaddr`、`paddr`、`type`、`name`——绑定到的目标符号 与 `address`)、
+  `count`。无整数 address 与 relocations/truncated/has_more;超上限读 items_truncated /
+  items_total / items_limit。四个命令都走既有 `*j` 白名单请求路径,复用 `enrich_r2_payload` 的
+  vaddr→Address 映射;`iSj`/`isj`/`iej`/`irj` 均已加入 `_ALLOWED`,组合形式仍在启动前被拒。
 
 ### 新增（Ghidra headless 非 PE 目标）
 
