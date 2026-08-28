@@ -28,6 +28,7 @@ from headless_re_mcp.core.service import AnalysisService
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _JS_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "obfuscated_sample.js"
 _WASM_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "add_module.wasm"
+_WASM_GLOBALS_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "globals_module.wasm"
 
 _DATA_URL = (
     "data:text/html,"
@@ -1633,6 +1634,53 @@ def test_wasm_functions_lists_the_whole_table_without_wabt() -> None:
         assert fn["export_names"] == ["add"]
         assert isinstance(fn["size"], int) and fn["size"] > 0
         assert fn["locals"] == 0
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_globals_reads_the_global_table_without_wabt() -> None:
+    """The global-variable table must come straight from the bytes too.
+
+    The fixture is a real wabt artifact (globals_module.wat compiled with
+    --debug-names): three defined i32 globals modelling the memory-layout
+    anchors a compiler emits -- a mutable __stack_pointer and immutable
+    __data_end / __heap_base -- with __stack_pointer also exported as "sp".
+    wasm.globals parses the module binary itself, so it must recover each
+    global's type, mutability, i32.const init value, its name from the name
+    section's global namemap and its export name, with no wabt in the loop.
+    """
+    assert _WASM_GLOBALS_FIXTURE.is_file(), f"fixture missing: {_WASM_GLOBALS_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.wasm_globals(str(_WASM_GLOBALS_FIXTURE))
+        assert result.ok and result.data is not None, result.error
+        data = result.data
+        assert data["imported_count"] == 0
+        assert data["defined_count"] == 3
+        assert data["global_count"] == 3
+        assert data["total"] == 3
+        assert data["has_more"] is False
+        assert data["has_name_section"] is True
+        by_name = {g["name"]: g for g in data["globals"]}
+        sp = by_name["__stack_pointer"]
+        assert sp["index"] == 0
+        assert sp["type"] == "i32"
+        assert sp["mutable"] is True
+        assert sp["imported"] is False
+        assert sp["init"] == "i32.const 66560"
+        assert sp["init_value"] == 66560
+        assert sp["exported_as"] == ["sp"]
+        assert by_name["__data_end"]["mutable"] is False
+        assert by_name["__data_end"]["init_value"] == 1024
+        assert by_name["__heap_base"]["init_value"] == 67584
+        # The contains filter narrows to the stack pointer alone.
+        narrowed = service.wasm_globals(str(_WASM_GLOBALS_FIXTURE), contains="stack")
+        assert narrowed.ok and narrowed.data is not None, narrowed.error
+        assert narrowed.data["total"] == 1
+        assert narrowed.data["globals"][0]["name"] == "__stack_pointer"
+        # global_count still reports the whole module under a filter.
+        assert narrowed.data["global_count"] == 3
     finally:
         service.close_all()
 
