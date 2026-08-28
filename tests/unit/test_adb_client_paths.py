@@ -986,3 +986,201 @@ def test_forward_records_a_successful_slot() -> None:
     payload = backend.forward("emulator-5554", "tcp:5000", "tcp:6000")
     assert payload == {"local": "tcp:5000", "remote": "tcp:6000"}
     assert backend._forwards == [("emulator-5554", "tcp:5000")]
+
+
+def test_forward_refuses_a_new_slot_once_the_cap_is_reached() -> None:
+    """A new forward past the cap is refused before any bind is attempted.
+
+    The tracked-forward list is bounded (``_MAX_FORWARDS``): adb keeps forwards
+    on its server until they are removed, so a debugger/frida workflow that
+    forwards a port every run would otherwise pin listeners until the process
+    could bind no more. With the list already at the cap, a *new* (serial,
+    local) is rejected as invalid_state without touching the device or growing
+    the list -- the ceiling holds the line before the reservation, not after.
+    """
+    dev = _ForwardDev()
+    backend = _backend_with_dev(dev)
+    backend._forwards = [
+        ("emulator-5554", f"tcp:{5000 + index}") for index in range(adb._MAX_FORWARDS)
+    ]
+
+    with pytest.raises(AdbError) as exc:
+        backend.forward("emulator-5554", "tcp:9999", "tcp:6000")
+
+    assert exc.value.code == "invalid_state"
+    assert exc.value.details["cap"] == adb._MAX_FORWARDS
+    # Nothing bound, nothing added: the cap fired before the device was called.
+    assert dev.calls == []
+    assert len(backend._forwards) == adb._MAX_FORWARDS
+
+
+def test_forward_re_points_a_tracked_key_even_at_the_cap() -> None:
+    """Re-forwarding an already-tracked (serial, local) is allowed at the cap.
+
+    The cap gates only *new* keys. A caller that forwards the same local again
+    (adb re-points it to the new remote) must not be refused just because the
+    list is full, and the key must stay recorded exactly once rather than be
+    double-counted toward the cap.
+    """
+    dev = _ForwardDev()
+    backend = _backend_with_dev(dev)
+    key = ("emulator-5554", "tcp:5000")
+    backend._forwards = [key] + [
+        ("emulator-5554", f"tcp:{6000 + index}") for index in range(adb._MAX_FORWARDS - 1)
+    ]
+
+    payload = backend.forward("emulator-5554", "tcp:5000", "tcp:7000")
+
+    assert payload == {"local": "tcp:5000", "remote": "tcp:7000"}
+    assert dev.calls == [("tcp:5000", "tcp:7000")]
+    # Exactly one record for the key -- no duplicate, cap not exceeded.
+    assert backend._forwards.count(key) == 1
+    assert len(backend._forwards) == adb._MAX_FORWARDS
+
+
+def test_forward_repoint_failure_keeps_the_live_slot_on_adberror() -> None:
+    """A failed re-point must not drop a forward already live on adb.
+
+    Re-forwarding a tracked (serial, local) reserves nothing new (``reserved``
+    is False), so the rollback deliberately leaves the registry alone: the
+    original forward is still registered on the adb server, and forgetting it
+    here would leak that listener. The error still propagates to the caller.
+    """
+    dev = _ForwardDev(error=AdbError("backend_error", "re-point refused"))
+    backend = _backend_with_dev(dev)
+    key = ("emulator-5554", "tcp:5000")
+    backend._forwards = [key]
+
+    with pytest.raises(AdbError):
+        backend.forward("emulator-5554", "tcp:5000", "tcp:7000")
+
+    assert backend._forwards == [key]
+
+
+def test_forward_repoint_failure_keeps_the_live_slot_on_generic_error() -> None:
+    """Same invariant as above when the re-point raises a non-adb error."""
+    dev = _ForwardDev(error=RuntimeError("adb re-point broke"))
+    backend = _backend_with_dev(dev)
+    key = ("emulator-5554", "tcp:5000")
+    backend._forwards = [key]
+
+    with pytest.raises(AdbError) as exc:
+        backend.forward("emulator-5554", "tcp:5000", "tcp:7000")
+
+    assert exc.value.code == "backend_error"
+    assert backend._forwards == [key]
+
+
+class _RemoverDev:
+    """A device that records forward-removals through one of the two adb APIs.
+
+    adbutils has shipped the removal under both ``forward_remove`` and
+    ``remove_forward`` across versions; ``release_forwards`` probes for either.
+    ``api="none"`` exposes neither, standing in for a shim too old to remove.
+    """
+
+    def __init__(self, *, api: str = "forward_remove", error: Exception | None = None) -> None:
+        self.removed: list[str] = []
+        self._error = error
+        if api == "forward_remove":
+            self.forward_remove = self._remove
+        elif api == "remove_forward":
+            self.remove_forward = self._remove
+
+    def _remove(self, local: str, timeout: float | None = None) -> None:
+        del timeout
+        if self._error is not None:
+            raise self._error
+        self.removed.append(local)
+
+
+def test_release_forwards_removes_each_and_empties_the_registry() -> None:
+    dev = _RemoverDev()
+    backend = _backend_with_dev(dev)
+    backend._forwards = [("emulator-5554", "tcp:5000"), ("emulator-5554", "tcp:5001")]
+
+    result = backend.release_forwards()
+
+    assert dev.removed == ["tcp:5000", "tcp:5001"]
+    assert {entry["local"] for entry in result["removed"]} == {"tcp:5000", "tcp:5001"}
+    assert result["failed"] == []
+    assert result["count"] == 2
+    # Every tracked forward was actually dropped, so none is left to retry.
+    assert backend._forwards == []
+
+
+def test_release_forwards_accepts_the_remove_forward_alias() -> None:
+    """The older adbutils spelling of the removal API is used when present."""
+    dev = _RemoverDev(api="remove_forward")
+    backend = _backend_with_dev(dev)
+    backend._forwards = [("emulator-5554", "tcp:5000")]
+
+    result = backend.release_forwards()
+
+    assert dev.removed == ["tcp:5000"]
+    assert result["count"] == 1
+    assert backend._forwards == []
+
+
+def test_release_forwards_requeues_a_forward_with_no_remove_api() -> None:
+    """A device exposing no removal API keeps its forward for the next attempt.
+
+    adb still holds the forward, so forgetting it here would leak an adb-server
+    listener and one tracked slot forever. It is reported failed and left in the
+    registry, so the next ``release_forwards`` retries it.
+    """
+    dev = _RemoverDev(api="none")
+    backend = _backend_with_dev(dev)
+    backend._forwards = [("emulator-5554", "tcp:5000")]
+
+    result = backend.release_forwards()
+
+    assert result["removed"] == []
+    assert result["count"] == 0
+    assert result["failed"][0]["local"] == "tcp:5000"
+    assert "forward-remove API" in result["failed"][0]["error"]
+    # Not forgotten: adb still has it, so it stays queued for the retry.
+    assert backend._forwards == [("emulator-5554", "tcp:5000")]
+
+
+def test_release_forwards_requeues_a_forward_whose_removal_raises() -> None:
+    dev = _RemoverDev(error=RuntimeError("device offline"))
+    backend = _backend_with_dev(dev)
+    backend._forwards = [("emulator-5554", "tcp:5000")]
+
+    result = backend.release_forwards()
+
+    assert result["removed"] == []
+    assert "device offline" in result["failed"][0]["error"]
+    assert backend._forwards == [("emulator-5554", "tcp:5000")]
+
+
+def test_release_forwards_keeps_only_the_forwards_it_could_not_drop() -> None:
+    """A clean removal and an unreachable device leave only the survivor queued.
+
+    ``count`` reports removals only, ``failed`` lists what stayed, and the
+    registry afterwards holds exactly the forwards that were not dropped -- so a
+    single dead device at shutdown neither strands the healthy cleanups nor
+    forgets its own forward. A device lookup that raises is handled the same as
+    a removal that raises: reported failed and requeued.
+    """
+    good = _RemoverDev()
+
+    def resolve(serial: str) -> Any:
+        if serial == "good":
+            return good
+        raise AdbError("not_found", f"device unavailable: {serial}")
+
+    backend = AdbBackend()
+    backend._available = True
+    backend._device = resolve  # type: ignore[method-assign, assignment]
+    backend._forwards = [("good", "tcp:5000"), ("dead", "tcp:5001")]
+
+    result = backend.release_forwards()
+
+    assert good.removed == ["tcp:5000"]
+    assert result["count"] == 1
+    assert result["removed"] == [{"serial": "good", "local": "tcp:5000"}]
+    assert [entry["local"] for entry in result["failed"]] == ["tcp:5001"]
+    # Only the forward we could not drop remains queued for the next attempt.
+    assert backend._forwards == [("dead", "tcp:5001")]

@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（adb forward 生命周期：槽位上限与 release_forwards 的失败重排队）
+
+- `backends/adb/client.py` 的 forward 资源生命周期此前大片未覆盖：`_MAX_FORWARDS`
+  上限分支、`release_forwards` 整段（第 919-953 行）、以及重指(re-point)失败时的回滚分支
+  （`reserved` 为假的路径）。这些都是防泄漏不变量——adb forward 活在 adb server 上、
+  关闭会话不会移除它们，所以关不掉的 forward 必须留在登记表里等下次重试，且已在册的 forward
+  不能因为一次重指失败而被误删（它在 adb 上仍然存活）。
+- 只加测试、不改源码。在 `tests/unit/test_adb_client_paths.py` 新增：达到上限后拒绝“新”
+  (serial, local) 且不触碰设备/不增长列表；在满员时仍允许重指“已在册”的 key 且不重复计数；
+  `release_forwards` 逐个移除并清空登记表、兼容 `remove_forward` 旧拼写、对无移除 API 或移除
+  抛错的 forward 报 failed 并重新入队、混合场景下 `count` 只计成功且登记表只留没能移除的那条；
+  重指失败（AdbError 与普通异常两路）保留仍存活的槽位。
+- 非空性已核验：把 `release_forwards` 的重排队块短接为 no-op 后，三个重排队用例分别失败
+  （登记表变空而非保留待重试）；覆盖率确认第 919-953 行与上限/回滚分支由未覆盖转为覆盖。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
