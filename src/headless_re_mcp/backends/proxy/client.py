@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from headless_re_mcp.backends.common.har import har_entry, serialize_har
+from headless_re_mcp.backends.common.secrets import iter_secret_matches, redact_secret
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
 
 JsonObject = dict[str, Any]
@@ -372,6 +373,12 @@ def summarize_flows(
 _MAX_SEARCH_RESULTS = 1000
 _SEARCH_SNIPPET_CHARS = 80
 _SEARCH_SNIPPET_MAX = 400
+# proxy.secrets caps: distinct findings collected across the capture, and sample
+# locations kept per finding (the credential is deduped, but knowing the first
+# few flows/fields it leaked in is the point).
+_MAX_SECRET_FINDINGS = 1000
+_MAX_SECRET_LOCATIONS = 10
+_SECRET_SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
 # proxy.endpoints result cap: distinct endpoints are bounded by the flow ring,
 # but the returned page is still capped like every other list.
 _MAX_ENDPOINTS_PAGE = 1000
@@ -1109,6 +1116,107 @@ def search_flows(
     }
 
 
+def scan_flow_secrets(
+    rows: list[JsonObject],
+    raw_lookup: Any,
+    *,
+    limit: int = 100,
+) -> JsonObject:
+    """Classify the whole capture against the credential table, by leak site.
+
+    The traffic counterpart to js.secrets/apk.secrets: those find keys baked into
+    code, this finds them leaking over the wire -- a token in an Authorization
+    header, an API key in a query string, a secret echoed back in a JSON body.
+    Pure over the recorder's two views (summary rows plus a flow_id -> raw-flow
+    lookup) like search_flows, and shares the credential table and redaction with
+    the static scanners via backends.common.secrets, so precision and masking are
+    identical. url comes from the summary row and is always scanned; headers and
+    bodies come from the retained raw flow, so a flow whose body was evicted
+    (body_omitted) contributes only its url and is counted in body_unavailable.
+
+    Identical secrets are folded into one finding carrying a redacted preview, the
+    occurrence count, the distinct fields it appeared in, a flow_count, and up to
+    ten sample locations (flow id/method/url/host/status plus the field). Returns
+    findings (sorted high severity first then kind), count, total, a kinds tally,
+    total_findings, scanned, body_unavailable and truncated.
+    """
+    cap = max(1, min(int(limit), _MAX_SECRET_FINDINGS))
+    found: OrderedDict[tuple[str, str], JsonObject] = OrderedDict()
+    kinds: Counter[str] = Counter()
+    scanned = 0
+    body_unavailable = 0
+    collect_capped = False
+    for row in rows:
+        scanned += 1
+        flow_id = str(row.get("id") or "")
+        texts: dict[str, str] = {}
+        url = str(row.get("url") or "")
+        if url:
+            texts["url"] = url
+        raw = raw_lookup(flow_id) if flow_id else None
+        if raw is _OMITTED_BODY:
+            body_unavailable += 1
+        elif raw is not None:
+            texts.update(_flow_search_fields(raw))
+        for field, text in texts.items():
+            for kind, severity, secret in iter_secret_matches(text):
+                key = (kind, secret)
+                finding = found.get(key)
+                if finding is None:
+                    if len(found) >= _MAX_SECRET_FINDINGS:
+                        collect_capped = True
+                        continue
+                    finding = {
+                        "kind": kind,
+                        "severity": severity,
+                        "preview": redact_secret(secret),
+                        "length": len(secret),
+                        "count": 0,
+                        "_fields": set(),
+                        "_flows": set(),
+                        "locations": [],
+                    }
+                    found[key] = finding
+                    kinds[kind] += 1
+                finding["count"] = int(finding["count"]) + 1
+                fields_seen: set[str] = finding["_fields"]
+                fields_seen.add(field)
+                flows_seen: set[str] = finding["_flows"]
+                flows_seen.add(flow_id)
+                locations: list[JsonObject] = finding["locations"]
+                if len(locations) < _MAX_SECRET_LOCATIONS:
+                    location: JsonObject = {
+                        key_name: row.get(key_name)
+                        for key_name in ("id", "method", "url", "host", "status")
+                        if key_name in row
+                    }
+                    location["field"] = field
+                    locations.append(location)
+
+    rows_out = sorted(
+        found.values(),
+        key=lambda f: (
+            _SECRET_SEVERITY_RANK.get(str(f["severity"]), 3),
+            str(f["kind"]),
+            str(f["preview"]),
+        ),
+    )
+    for finding in rows_out:
+        finding["fields"] = sorted(finding.pop("_fields"))
+        finding["flow_count"] = len(finding.pop("_flows"))
+    window = rows_out[:cap]
+    return {
+        "findings": window,
+        "count": len(window),
+        "total": len(rows_out),
+        "kinds": dict(kinds),
+        "total_findings": sum(int(f["count"]) for f in rows_out),
+        "scanned": scanned,
+        "body_unavailable": body_unavailable,
+        "truncated": collect_capped or len(rows_out) > cap,
+    }
+
+
 class _FlowRecorder:
     """A mitmproxy addon that snapshots finished flows into a ring buffer.
 
@@ -1545,6 +1653,11 @@ class ProxyBackend:
             limit=limit,
             case_sensitive=case_sensitive,
         )
+
+    def secrets(self, session_id: str, *, limit: int = 100) -> JsonObject:
+        inst = self._get(session_id)
+        rows = inst.recorder.snapshot()
+        return scan_flow_secrets(rows, inst.recorder.raw, limit=limit)
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
         inst = self._get(session_id)

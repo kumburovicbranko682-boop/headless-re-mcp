@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **331（213 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **332（214 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -368,6 +368,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
   `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
   `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
+
+### 新增（凭据扫描扩展到流量）
+
+- 新增 `proxy.secrets`:把硬编码凭据扫描带到抓包侧——`js.secrets`/`apk.secrets` 找烤进代码里的密钥,这个找
+  在网络上泄露的密钥:Authorization 头里的 token、查询串里的 API key、被响应体原样回显的 secret。像
+  `proxy.search` 一样纯函数化(吃采集器的两个视图:摘要行 + flow_id->原始流查表),对每条流的 url、
+  请求/响应头、请求/响应体逐一分类,凭据表与脱敏逻辑经 `backends/common/secrets.py` 与静态扫描器共用,
+  精度与打码一致。相同密钥折叠成一条 finding,带脱敏 preview、出现次数、命中过的字段集合、flow_count 与
+  至多十条采样 location(每条含 flow 的 id/method/url/host/status 与 field)。url 恒可扫;头与体来自保留的
+  原始流,被淘汰(body_omitted)的流只能扫 url,计入 body_unavailable。回 findings(severity 高优先再按 kind
+  排序)、count、total、kinds 计数、total_findings、scanned、body_unavailable 与 truncated(命中发现上限)。
+  词法扫描:跨帧拆分或只存在于无法解码的体里的密钥不在射程内,示例密钥照样命中。为此把凭据表的单次匹配
+  循环抽成共享的 `iter_secret_matches`,三条 secrets 线(JS/APK/流量)都走它。
 
 ### 新增（凭据扫描扩展到 Android）
 

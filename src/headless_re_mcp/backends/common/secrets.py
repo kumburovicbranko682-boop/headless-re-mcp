@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter, OrderedDict
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 JsonObject = dict[str, Any]
@@ -63,6 +63,18 @@ _SECRET_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
 _SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
 
 
+def iter_secret_matches(value: str) -> Iterator[tuple[str, str, str]]:
+    """Yield ``(kind, severity, secret)`` for every credential pattern that hits.
+
+    The single match loop over the shared table, so a new consumer (a script's
+    string literals, a DEX constant pool, an HTTP flow's headers/bodies) only has
+    to decide how to aggregate and where the value came from.
+    """
+    for kind, severity, pattern in _SECRET_PATTERNS:
+        for match in pattern.finditer(value):
+            yield kind, severity, match.group(0)
+
+
 def redact_secret(secret: str) -> str:
     """Mask the middle of a matched credential, keeping enough to identify it.
 
@@ -103,33 +115,31 @@ def classify_secrets(
     found: OrderedDict[tuple[str, str], JsonObject] = OrderedDict()
     kinds: Counter[str] = Counter()
     for value, location in items:
-        for kind, severity, pattern in _SECRET_PATTERNS:
-            for match in pattern.finditer(value):
-                secret = match.group(0)
-                key = (kind, secret)
-                row = found.get(key)
-                if row is None:
-                    if len(found) >= _MAX_SECRETS_COLLECT:
-                        scan_capped = True
-                        continue
-                    row = {
-                        "kind": kind,
-                        "severity": severity,
-                        "preview": redact_secret(secret),
-                        "length": len(secret),
-                        "count": 0,
-                        "lines": [],
-                    }
-                    found[key] = row
-                    kinds[kind] += 1
-                row["count"] = int(row["count"]) + 1
-                lines_list: list[int] = row["lines"]
-                if (
-                    location is not None
-                    and location not in lines_list
-                    and len(lines_list) < _MAX_SECRET_SAMPLE_LINES
-                ):
-                    lines_list.append(location)
+        for kind, severity, secret in iter_secret_matches(value):
+            key = (kind, secret)
+            row = found.get(key)
+            if row is None:
+                if len(found) >= _MAX_SECRETS_COLLECT:
+                    scan_capped = True
+                    continue
+                row = {
+                    "kind": kind,
+                    "severity": severity,
+                    "preview": redact_secret(secret),
+                    "length": len(secret),
+                    "count": 0,
+                    "lines": [],
+                }
+                found[key] = row
+                kinds[kind] += 1
+            row["count"] = int(row["count"]) + 1
+            lines_list: list[int] = row["lines"]
+            if (
+                location is not None
+                and location not in lines_list
+                and len(lines_list) < _MAX_SECRET_SAMPLE_LINES
+            ):
+                lines_list.append(location)
 
     rows = sorted(
         found.values(),

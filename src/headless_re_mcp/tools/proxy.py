@@ -282,6 +282,38 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="proxy.secrets")
+    def proxy_secrets(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Scan the whole capture for hard-coded credentials, by leak site.
+
+        The traffic counterpart to js.secrets and apk.secrets: those find keys
+        baked into code, this finds them leaking over the wire -- a token in an
+        Authorization header, an API key in a query string, a secret echoed back
+        in a JSON body. It classifies each flow's url, request/response headers
+        and request/response bodies against the same high-precision credential
+        table (AWS/Google/GitHub/Slack/Stripe keys, Firebase URLs, JWTs, PEM
+        private keys, ...) and redacts every match the same way, so a transcript
+        never carries the live value.
+
+        Answers with findings (sorted high severity first then kind), count,
+        total, a kinds tally, total_findings (occurrences), scanned (flows
+        examined), body_unavailable (flows whose body was evicted from the retain
+        ring, so only their url could be scanned) and truncated (the finding cap
+        was hit). Each finding carries kind, severity (high for a live/private
+        credential, medium for a publishable/test/JWT one), preview (the redacted
+        value), length (of the real secret), count (occurrences), fields (the
+        distinct places it appeared: url, request_headers, response_headers,
+        request_body, response_body), flow_count (distinct flows) and locations
+        (up to ten samples, each with the flow id, method, url, host, status and
+        field). A clean capture returns an empty findings list, not an error.
+        This is a lexical scan: it will not catch a secret split across frames or
+        one only inside an undecodable body, and an example key still matches.
+        """
+        return _dump(analysis.proxy_secrets(session_id, limit=limit))
+
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
         """Fetch one flow's headers and bodies (large or binary bodies spill).

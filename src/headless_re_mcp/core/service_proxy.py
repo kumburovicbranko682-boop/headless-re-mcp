@@ -155,6 +155,9 @@ class ProxyAnalysisMixin:
             case_sensitive=case_sensitive,
         )
 
+    def proxy_secrets(self, session_id: str, limit: int = 100) -> Result[JsonObject]:
+        return self._proxy_wrap(session_id, "secrets", session_id, limit=limit)
+
     def proxy_flow_get(self, session_id: str, flow_id: str) -> Result[JsonObject]:
         try:
             data = self._proxy.flow_get(session_id, flow_id, self._proxy_artifact_dir(session_id))
