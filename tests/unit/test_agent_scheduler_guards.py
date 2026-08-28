@@ -399,6 +399,48 @@ async def test_await_run_returns_terminal_status_reached_at_the_timeout(
     assert _run(store, run.id).status is RunStatus.CANCELLED
 
 
+@pytest.mark.asyncio
+async def test_wait_timeout_writes_the_terminal_event_before_the_status(tmp_path: Path) -> None:
+    """The status must be the store's last write on this terminal path too.
+
+    The SSE stream drains and closes once it observes a terminal status; the
+    orchestrator's four terminal paths write event-then-status for that
+    reason. The scheduler's wait-timeout path is the fifth terminal writer
+    and wrote transition-then-event, reopening the same hole: a stream whose
+    empty poll preceded these writes and whose status read followed the
+    transition closed without the run.failed that says why the run ended.
+    """
+    store = AgentStore(tmp_path / "timeout-order.db")
+    sched = MissionScheduler(store, _noop_start)
+    sched.run_wait_timeout_s = 0.05
+    sched.run_poll_interval_s = 0.01
+    thread = store.create_thread()
+    run = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+    store.transition(run.id, RunStatus.STREAMING)
+
+    calls: list[tuple[str, str]] = []
+    real_transition = store.transition
+    real_append = store.append_event
+
+    def spy_transition(run_id: str, target: RunStatus, *, error: str | None = None) -> Any:
+        calls.append(("status", target.value))
+        return real_transition(run_id, target, error=error)
+
+    def spy_append(run_id: str, event_type: str, data: JsonObject) -> Any:
+        calls.append(("event", event_type))
+        return real_append(run_id, event_type, data)
+
+    store.transition = spy_transition  # type: ignore[method-assign]
+    store.append_event = spy_append  # type: ignore[method-assign]
+
+    status = await sched._await_run(run.id, "mission-x")
+
+    assert status is RunStatus.INTERRUPTED
+    assert ("event", "run.failed") in calls, calls
+    assert ("status", "interrupted") in calls, calls
+    assert calls.index(("event", "run.failed")) < calls.index(("status", "interrupted")), calls
+
+
 def test_run_spent_its_budget_is_false_for_a_missing_run(tmp_path: Path) -> None:
     store = AgentStore(tmp_path / "spent.db")
     sched = MissionScheduler(store, _noop_start)

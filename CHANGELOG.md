@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（scheduler 超时收尾是第五处"先状态后事件"的终态写点）
+
+- 全库清扫 `transition(` 调用点发现 orchestrator 之外还有一处终态写者:
+  `MissionScheduler._await_run` 的等待超时路径把失联的 run 收为 INTERRUPTED
+  时,同样是**先 `transition(INTERRUPTED)` 后 `append_event("run.failed")`**。
+  这打破了 SSE 排干修复的前提("终态状态是 store 的最后一笔写"):流在读到终
+  态后排干、断开,而说明超时原因的 `run.failed` 事件还没落库,同一竞速窗原样
+  重开。修复:与 orchestrator 四条终态路径一致,改为先落事件、后切状态。
+  (store 的 `recover_after_restart` 在单事务内原子提交两笔写,读者观察不到
+  中间态,无需改动;core/service 的 registry.transition 是会话注册表、另一套
+  机制。)回归:在 scheduler guard 测试里用记录器驱动真实超时路径,钉
+  "事件先于状态"——修前红、修后绿;scheduler/orchestrator/routes/store 六个
+  测试文件 131 项全过,ruff / mypy 干净。
+
 ### 修复（重载恢复只回放第一页 run 历史，长回答留下永久空洞）
 
 - Web UI 重载后恢复活动 run 时，只拉一次

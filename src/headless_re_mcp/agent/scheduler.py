@@ -390,13 +390,16 @@ class MissionScheduler:
                 )
                 # The bound has to end the run, not merely this wait. Leaving
                 # it streaming strands an active row forever and gives run
-                # event consumers no terminal explanation.
-                self.store.transition(run_id, RunStatus.INTERRUPTED, error=error)
+                # event consumers no terminal explanation. Event before
+                # status, as on every orchestrator terminal path: the SSE
+                # stream drains and closes once it observes a terminal status,
+                # so the status must be the store's last write.
                 self.store.append_event(
                     run_id,
                     "run.failed",
                     {"status": RunStatus.INTERRUPTED.value, "error": error},
                 )
+                self.store.transition(run_id, RunStatus.INTERRUPTED, error=error)
                 return RunStatus.INTERRUPTED
             await asyncio.sleep(self.run_poll_interval_s)
 
