@@ -150,6 +150,13 @@ class SessionRegistry:
                 res_payloads, res_count = _pe_resource_payloads(path)
                 metadata.setdefault("pe", {})["resource_payloads"] = res_payloads
                 metadata["pe"]["resource_payload_count"] = res_count
+                # Managed resources are a separate store from the PE resource
+                # tree: the ManifestResource census covers the Assembly.Load
+                # packer pattern.
+                if metadata.get("dotnet"):
+                    mres_payloads, mres_count = _dotnet_resource_payloads(path)
+                    metadata["dotnet"]["resource_payloads"] = mres_payloads
+                    metadata["dotnet"]["resource_payload_count"] = mres_count
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             elif kind is TargetKind.NATIVE:
@@ -3629,6 +3636,205 @@ def _pe_overlay(path: Path) -> dict[str, Any] | None:
         "certificate_size": certificate_size,
         "extra_size": total - certificate_size,
     }
+
+
+_DOTNET_MAX_FILE = 128 * 1024 * 1024
+_DOTNET_MANIFEST_RESOURCE = 0x28
+_DOTNET_IMPLEMENTATION_TABLES = (0x26, 0x23, 0x27)
+_DOTNET_MAX_RESOURCE_ROWS = 4096
+_DOTNET_MAX_RESOURCE_PAYLOADS = 64
+
+
+def _dotnet_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
+    """Embedded managed resources whose bytes open with executable magic.
+
+    The .NET analogue of the PE resource, APK ``assets/`` and WASM data-segment
+    censuses -- and the one .NET packers lean on hardest: a protector stores the
+    real, encrypted or compressed, stage-two assembly as an embedded
+    ManifestResource, then loads it with ``Assembly.Load`` at runtime. This
+    walks the ManifestResource table (0x28) for rows with a null Implementation
+    (embedded in this module, not forwarded to another file), reads each one's
+    length-prefixed blob from the CLI header's Resources directory, and sniffs
+    its head. Each flagged entry names the resource, the sniffed kind and the
+    byte size. A census, not a verdict: a legitimate embedded assembly or
+    zipped asset lists here too, for triage.
+
+    Bounded and fail-closed: the whole read is capped, the table walk and the
+    reported list are bounded, only the first 0x40 bytes of each resource are
+    sniffed, and any structural surprise yields what parsed cleanly rather than
+    raising.
+    """
+    from headless_re_mcp.dotnet.tables import coded_index_size, table_row_size
+
+    try:
+        size = path.stat().st_size
+        if size > _DOTNET_MAX_FILE:
+            return [], 0
+        with path.open("rb") as stream:
+            raw = stream.read(_DOTNET_MAX_FILE)
+    except OSError:
+        return [], 0
+    if len(raw) < 0x40 or raw[:2] != b"MZ":
+        return [], 0
+    e_lfanew = int.from_bytes(raw[0x3C:0x40], "little")
+    if e_lfanew + 24 > len(raw) or raw[e_lfanew : e_lfanew + 4] != b"PE\x00\x00":
+        return [], 0
+    coff = raw[e_lfanew : e_lfanew + 24]
+    num_sections = min(int.from_bytes(coff[6:8], "little"), _PE_MAX_SECTIONS)
+    opt_size = int.from_bytes(coff[20:22], "little")
+    opt_start = e_lfanew + 24
+    optional = raw[opt_start : opt_start + opt_size]
+    magic = int.from_bytes(optional[0:2], "little") if len(optional) >= 2 else 0
+    if magic == 0x10B:
+        dir_count_off = 92
+    elif magic == 0x20B:
+        dir_count_off = 108
+    else:
+        return [], 0
+    if dir_count_off + 4 > len(optional):
+        return [], 0
+    dir_count = int.from_bytes(optional[dir_count_off : dir_count_off + 4], "little")
+    if dir_count <= _PE_COM_DESCRIPTOR_DIR:
+        return [], 0
+    com_entry = dir_count_off + 4 + _PE_COM_DESCRIPTOR_DIR * 8
+    if com_entry + 8 > len(optional):
+        return [], 0
+    clr_rva = int.from_bytes(optional[com_entry : com_entry + 4], "little")
+    if clr_rva == 0:
+        return [], 0
+    sect_start = opt_start + opt_size
+    sections = _pe_sections(raw[sect_start : sect_start + num_sections * 40])
+    clr_off = _pe_rva_to_offset(sections, clr_rva)
+    if clr_off is None or clr_off + 32 > len(raw):
+        return [], 0
+    cor20 = raw[clr_off : clr_off + 32]
+    meta_rva = int.from_bytes(cor20[8:12], "little")
+    res_rva = int.from_bytes(cor20[24:28], "little")
+    res_size = int.from_bytes(cor20[28:32], "little")
+    if res_rva == 0 or res_size == 0:
+        return [], 0  # no managed Resources directory: nothing embedded
+    meta_off = _pe_rva_to_offset(sections, meta_rva)
+    res_base = _pe_rva_to_offset(sections, res_rva)
+    if meta_off is None or res_base is None:
+        return [], 0
+    stream_map = _clr_stream_map(raw, meta_off)
+    tables_span = stream_map.get("#~") or stream_map.get("#-")
+    strings_span = stream_map.get("#Strings")
+    if tables_span is None:
+        return [], 0
+    tables = raw[meta_off + tables_span[0] : meta_off + tables_span[0] + tables_span[1]]
+    strings = b""
+    if strings_span is not None:
+        strings = raw[meta_off + strings_span[0] : meta_off + strings_span[0] + strings_span[1]]
+    if len(tables) < 24:
+        return [], 0
+    heap_sizes = tables[6]
+    string_index_size = 4 if (heap_sizes & 0x01) else 2
+    guid_index_size = 4 if (heap_sizes & 0x02) else 2
+    blob_index_size = 4 if (heap_sizes & 0x04) else 2
+    valid = int.from_bytes(tables[8:16], "little")
+    cursor = 24
+    row_counts: dict[int, int] = {}
+    for bit in range(64):
+        if valid & (1 << bit):
+            if cursor + 4 > len(tables):
+                return [], 0
+            row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
+            cursor += 4
+    # Clamp each count to what the stream could hold (same rule as the metadata
+    # enumerator): an absurd count would re-size coded indexes and desync the
+    # walk of every table behind it.
+    max_rows = max((len(tables) - cursor) // 2, 0)
+    row_counts = {bit: min(count, max_rows) for bit, count in row_counts.items()}
+    if _DOTNET_MANIFEST_RESOURCE not in row_counts:
+        return [], 0
+    # Sum row sizes of every present table below ManifestResource to land on it.
+    table_offset = cursor
+    for bit in sorted(row_counts):
+        row_size = table_row_size(
+            row_counts, string_index_size, blob_index_size, guid_index_size, bit
+        )
+        if row_size is None:
+            return [], 0
+        if bit >= _DOTNET_MANIFEST_RESOURCE:
+            break
+        table_offset += row_size * row_counts[bit]
+    row_size_28 = table_row_size(
+        row_counts, string_index_size, blob_index_size, guid_index_size, _DOTNET_MANIFEST_RESOURCE
+    )
+    if row_size_28 is None:
+        return [], 0
+    implementation_size = coded_index_size(row_counts, _DOTNET_IMPLEMENTATION_TABLES, 2)
+
+    def string_at(index: int) -> str:
+        if index <= 0 or index >= len(strings):
+            return ""
+        end = strings.find(b"\0", index)
+        return strings[index : (end if end >= 0 else len(strings))].decode(
+            "utf-8", errors="replace"
+        )
+
+    payloads: list[dict[str, Any]] = []
+    found = 0
+    rows = min(row_counts[_DOTNET_MANIFEST_RESOURCE], _DOTNET_MAX_RESOURCE_ROWS)
+    for i in range(rows):
+        row = table_offset + i * row_size_28
+        if row + row_size_28 > len(tables):
+            break
+        blob_offset = int.from_bytes(tables[row : row + 4], "little")
+        name_index = int.from_bytes(tables[row + 8 : row + 8 + string_index_size], "little")
+        impl_at = row + 8 + string_index_size
+        implementation = int.from_bytes(tables[impl_at : impl_at + implementation_size], "little")
+        if implementation != 0:
+            continue  # forwarded to another file/assembly: not embedded here
+        entry = res_base + blob_offset
+        if entry + 4 > len(raw):
+            continue
+        blob_len = int.from_bytes(raw[entry : entry + 4], "little")
+        head = raw[entry + 4 : entry + 4 + min(blob_len, 0x40)]
+        kind = next((k for m, k in _PE_RESOURCE_KINDS if head.startswith(m)), None)
+        if kind == "pe" and len(head) < 0x40:
+            kind = None
+        if kind is None:
+            continue
+        found += 1
+        if len(payloads) < _DOTNET_MAX_RESOURCE_PAYLOADS:
+            payloads.append({"name": string_at(name_index), "kind": kind, "size": blob_len})
+    return payloads, found
+
+
+def _clr_stream_map(raw: bytes, meta_off: int) -> dict[str, tuple[int, int]]:
+    """Parse the metadata root's stream headers into ``{name: (offset, size)}``.
+
+    Offsets are relative to the metadata root (``meta_off``). Bounded and
+    fail-closed: a truncated or lying root yields whatever parsed cleanly.
+    """
+    root = raw[meta_off : meta_off + 20]
+    if len(root) < 20 or root[:4] != _CLR_METADATA_MAGIC:
+        return {}
+    version_len = int.from_bytes(root[12:16], "little")
+    if not 0 <= version_len <= _CLR_MAX_VERSION_LEN:
+        return {}
+    pos = meta_off + 16 + version_len  # skip version string
+    if pos + 4 > len(raw):
+        return {}
+    stream_count = int.from_bytes(raw[pos + 2 : pos + 4], "little")
+    pos += 4
+    out: dict[str, tuple[int, int]] = {}
+    for _ in range(min(stream_count, 32)):
+        if pos + 8 > len(raw):
+            break
+        offset = int.from_bytes(raw[pos : pos + 4], "little")
+        length = int.from_bytes(raw[pos + 4 : pos + 8], "little")
+        pos += 8
+        end = raw.find(b"\0", pos)
+        if end < 0:
+            break
+        name = raw[pos:end].decode("ascii", errors="replace")
+        pos = end + 1
+        pos = (pos + 3) & ~3  # names are padded to a 4-byte boundary
+        out[name] = (offset, length)
+    return out
 
 
 def _pe_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:

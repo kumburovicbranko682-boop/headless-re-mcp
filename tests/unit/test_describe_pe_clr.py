@@ -19,6 +19,7 @@ import pytest
 from headless_re_mcp.core.models import Architecture, TargetKind
 from headless_re_mcp.core.session import (
     SessionRegistry,
+    _dotnet_resource_payloads,
     _pe_authenticode,
     _pe_overlay,
     _pe_resource_payloads,
@@ -28,6 +29,38 @@ from headless_re_mcp.core.session import (
 _DOTNET_FIXTURE = (
     Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
 )
+_DOTNET_BUILDER = (
+    Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "build_minimal_dotnet.py"
+)
+
+
+def _dotnet_with_resources(resources: list[tuple[str, bytes]]) -> bytes:
+    """A real minimal assembly whose embedded ManifestResources are ``resources``.
+
+    Reuses the committed fixture's builder so the metadata around the resources
+    -- every table the ManifestResource read must step over -- is exactly what
+    ships, not a hand-rolled shape the parser might tolerate but the runtime
+    would not.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_dotnet_builder", _DOTNET_BUILDER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.build(resources=resources)  # type: ignore[no-any-return]
+
+
+_NESTED_ASSEMBLY = (
+    Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_clr_hint.exe"
+)
+
+
+def _nested_assembly_bytes() -> bytes:
+    """A genuine managed PE to embed, or a PE-shaped stand-in if it is missing."""
+    if _NESTED_ASSEMBLY.is_file():
+        return _NESTED_ASSEMBLY.read_bytes()
+    return b"MZ" + bytes(0x50)
 
 
 def _native_pe() -> bytes:
@@ -414,6 +447,76 @@ class TestPeResourcePayloads:
         path = tmp_path / "nope.bin"
         path.write_bytes(b"not a pe, just bytes")
         assert _pe_resource_payloads(path) == ([], 0)
+
+
+class TestDotnetResourcePayloads:
+    """_dotnet_resource_payloads lists executable magic in managed resources.
+
+    The .NET packer's store: the real, often encrypted, stage-two assembly kept
+    as an embedded ManifestResource and loaded with Assembly.Load at runtime.
+    Each flagged entry names the resource, the sniffed kind and the byte size;
+    the committed fixture's benign config.json never lists, and a resource
+    forwarded to another file (a non-null Implementation) is not embedded here.
+    """
+
+    def test_the_committed_fixture_carries_no_executable_resource(self) -> None:
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        # config.json is benign JSON: a real embedded resource, correctly not
+        # flagged -- the census is a magic sniff, not a "has resources" bit.
+        assert _dotnet_resource_payloads(_DOTNET_FIXTURE) == ([], 0)
+
+    def test_each_planted_kind_reads_under_its_resource_name(self, tmp_path: Path) -> None:
+        nested = _nested_assembly_bytes()
+        path = tmp_path / "packed.exe"
+        path.write_bytes(
+            _dotnet_with_resources(
+                [
+                    ("stage2.dll", nested),  # a nested PE (the packed assembly)
+                    ("loader.elf", b"\x7fELF" + b"\x00" * 0x40),
+                    ("assets.zip", b"PK\x03\x04" + b"\x00" * 0x40),
+                    ("config.json", b'{"mode": "real"}'),  # benign: not flagged
+                ]
+            )
+        )
+        payloads, count = _dotnet_resource_payloads(path)
+        assert count == 3
+        listed = {p["name"]: p["kind"] for p in payloads}
+        assert listed == {"stage2.dll": "pe", "loader.elf": "elf", "assets.zip": "zip"}
+        stage2 = next(p for p in payloads if p["name"] == "stage2.dll")
+        assert stage2["size"] == len(nested)
+
+    def test_prose_opening_with_mz_is_not_an_executable(self, tmp_path: Path) -> None:
+        path = tmp_path / "prose.exe"
+        path.write_bytes(_dotnet_with_resources([("notes.txt", b"MZ is a person's initials")]))
+        assert _dotnet_resource_payloads(path) == ([], 0)
+
+    def test_the_list_is_bounded_but_the_count_exact(self, tmp_path: Path) -> None:
+        resources = [(f"blob{i:03d}.bin", b"\x7fELF" + b"\x00" * 0x20) for i in range(80)]
+        path = tmp_path / "many.exe"
+        path.write_bytes(_dotnet_with_resources(resources))
+        payloads, count = _dotnet_resource_payloads(path)
+        assert count == 80
+        assert len(payloads) == 64
+
+    def test_a_native_pe_has_no_managed_resources(self, tmp_path: Path) -> None:
+        # No CLI header at all: the .NET census must bail cleanly, not read the
+        # PE resource tree by mistake.
+        path = tmp_path / "native.exe"
+        path.write_bytes(_native_pe())
+        assert _dotnet_resource_payloads(path) == ([], 0)
+
+    def test_session_over_a_packed_assembly_carries_the_census(self, tmp_path: Path) -> None:
+        nested = _nested_assembly_bytes()
+        path = tmp_path / "packed.exe"
+        path.write_bytes(_dotnet_with_resources([("stage2.dll", nested)]))
+        session = SessionRegistry().create(str(path))
+        dotnet = session.metadata["dotnet"]
+        assert dotnet["is_dotnet"] is True
+        assert dotnet["resource_payload_count"] == 1
+        assert dotnet["resource_payloads"] == [
+            {"name": "stage2.dll", "kind": "pe", "size": len(nested)}
+        ]
 
 
 def test_native_pe_has_no_dotnet_block(tmp_path: Path) -> None:

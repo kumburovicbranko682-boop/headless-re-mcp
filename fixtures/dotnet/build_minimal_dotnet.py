@@ -78,6 +78,12 @@ PINVOKE_IMPORT = "Beep"
 PINVOKE_FLAGS = 0x0100  # CallConvWinapi
 RESOURCE_NAME = "config.json"
 RESOURCE_FLAGS = 0x0001  # Public
+# The embedded resource's actual bytes, laid down in the CLI header's Resources
+# directory as a 4-byte-length-prefixed blob the ManifestResource row's Offset
+# lands on -- the store Assembly.Load packers hide their stage two in. The
+# default is benign JSON so the payload census reads clean on this fixture;
+# tests pass their own (name, bytes) list to plant executables.
+RESOURCE_CONTENT = b'{"mode": "minimal"}\n'
 # The AssemblyRef every real compiler emits: the runtime library the assembly
 # links against. Its row sits between Assembly (0x20) and ManifestResource
 # (0x28) in the table walk, so mis-sizing it (an easy bug: the AssemblyRef row
@@ -135,8 +141,17 @@ def _pad4(b: bytes) -> bytes:
     return b + b"\x00" * ((-len(b)) % 4)
 
 
-def build() -> bytes:
-    """Return the bytes of the minimal .NET assembly."""
+def build(resources: list[tuple[str, bytes]] | None = None) -> bytes:
+    """Return the bytes of the minimal .NET assembly.
+
+    ``resources`` is the list of embedded ManifestResources as (name, bytes);
+    the default is the single benign ``config.json`` the committed fixture
+    carries. Each entry becomes a table row with a null Implementation and a
+    length-prefixed blob in the Resources directory, 8-aligned the way the CLR
+    lays them out.
+    """
+    if resources is None:
+        resources = [(RESOURCE_NAME, RESOURCE_CONTENT)]
     # ---- #Strings heap (index 0 is the empty string) ----
     strings = bytearray(b"\x00")
     index: dict[str, int] = {}
@@ -158,7 +173,7 @@ def build() -> bytes:
     i_field = add_string(FIELD_NAME)
     i_memberref = add_string(MEMBERREF_NAME)
     i_mod_ref = add_string(MODULE_REF_NAME)
-    i_resource = add_string(RESOURCE_NAME)
+    i_resources = [add_string(name) for name, _ in resources]
     i_asm_ref = add_string(ASSEMBLY_REF_NAME)
     i_tfa = add_string(TFA_TYPE_NAME)
     i_tfa_ns = add_string(TFA_NAMESPACE)
@@ -217,6 +232,14 @@ def build() -> bytes:
         + b"\x00"
     )
 
+    # ---- Resources directory: length-prefixed blobs, entries 8-aligned ----
+    resources_blob = bytearray()
+    resource_offsets: list[int] = []
+    for _name, content in resources:
+        resources_blob += b"\x00" * ((-len(resources_blob)) % 8)
+        resource_offsets.append(len(resources_blob))
+        resources_blob += _u32(len(content)) + content
+
     # ---- section layout: CLR header, method bodies (4-aligned), metadata ----
     cursor = 72  # after the 72-byte COR20 header
     cursor = (cursor + 3) & ~3
@@ -234,6 +257,9 @@ def build() -> bytes:
     cursor = (cursor + 3) & ~3
     rva_rsds = _SECTION_RVA + cursor
     cursor += len(rsds)
+    cursor = (cursor + 7) & ~7
+    rva_resources = _SECTION_RVA + cursor
+    cursor += len(resources_blob)
     cursor = (cursor + 3) & ~3
     rva_meta = _SECTION_RVA + cursor
 
@@ -254,8 +280,11 @@ def build() -> bytes:
     )
     row_counts = {
         0x00: 1, 0x01: 2, 0x02: 2, 0x04: 1, 0x06: 4, 0x0A: 2, 0x0C: 1,
-        0x1A: 1, 0x1C: 1, 0x20: 1, 0x23: 1, 0x28: 1,
+        0x1A: 1, 0x1C: 1, 0x20: 1, 0x23: 1, 0x28: len(resources),
     }
+    if not resources:
+        valid &= ~(1 << 0x28)
+        del row_counts[0x28]
 
     tables = bytearray()
     tables += _u32(0)  # Reserved
@@ -324,8 +353,11 @@ def build() -> bytes:
         + _u32(0)
         + _u16(0) + _u16(i_asm_ref) + _u16(0) + _u16(0)
     )
-    # ManifestResource: Offset Flags Name Implementation (null => embedded here)
-    tables += _u32(0) + _u32(RESOURCE_FLAGS) + _u16(i_resource) + _u16(0)
+    # ManifestResource: Offset Flags Name Implementation (null => embedded
+    # here). Offset is relative to the Resources directory the COR20 header
+    # points at, where each entry's 4-byte length prefix sits.
+    for i_name, offset in zip(i_resources, resource_offsets, strict=True):
+        tables += _u32(offset) + _u32(RESOURCE_FLAGS) + _u16(i_name) + _u16(0)
     tables_stream = _pad4(bytes(tables))
 
     # ---- metadata root (BSJB) ----
@@ -370,9 +402,14 @@ def build() -> bytes:
     clr += _u32(rva_meta) + _u32(meta_size)  # MetaData directory
     clr += _u32(0x00000001)  # Flags: COMIMAGE_FLAGS_ILONLY
     clr += _u32(ENTRY_POINT_TOKEN)
-    # Resources, StrongNameSignature, CodeManagerTable, VTableFixups,
+    # Resources directory: where the ManifestResource rows' Offsets resolve.
+    if resources_blob:
+        clr += _u32(rva_resources) + _u32(len(resources_blob))
+    else:
+        clr += _u32(0) + _u32(0)
+    # StrongNameSignature, CodeManagerTable, VTableFixups,
     # ExportAddressTableJumps, ManagedNativeHeader -- all (rva, size) = (0, 0).
-    for _ in range(6):
+    for _ in range(5):
         clr += _u32(0) + _u32(0)
     assert len(clr) == 72, len(clr)
 
@@ -400,6 +437,8 @@ def build() -> bytes:
     section += debug_dir
     section += b"\x00" * ((rva_rsds - _SECTION_RVA) - len(section))
     section += rsds
+    section += b"\x00" * ((rva_resources - _SECTION_RVA) - len(section))
+    section += resources_blob
     section += b"\x00" * ((rva_meta - _SECTION_RVA) - len(section))
     section += metadata
 
