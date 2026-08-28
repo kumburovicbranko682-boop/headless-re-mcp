@@ -115,18 +115,23 @@ def test_capability_unavailable_when_androguard_absent(tmp_path: Path) -> None:
     assert caught.value.code == "capability_unavailable"
 
 
-def test_release_drops_only_the_matching_path() -> None:
-    ApkClient._light_cache[("/tmp/a.apk", 1)] = object()
-    ApkClient._full_cache[("/tmp/a.apk", 1)] = _ParsedApk("a", "a", "a")
-    ApkClient._light_cache[("/tmp/b.apk", 1)] = object()
+def test_release_drops_only_the_matching_path(tmp_path: Path) -> None:
+    # release() matches keys against str(path.expanduser().resolve()), so the
+    # seeded keys must be the resolved form of a real platform path: a literal
+    # "/tmp/a.apk" resolves to C:\tmp\a.apk on Windows and never matches.
+    a = str((tmp_path / "a.apk").resolve())
+    b = str((tmp_path / "b.apk").resolve())
+    ApkClient._light_cache[(a, 1)] = object()
+    ApkClient._full_cache[(a, 1)] = _ParsedApk("a", "a", "a")
+    ApkClient._light_cache[(b, 1)] = object()
 
-    assert ApkClient.release(Path("/tmp/a.apk")) is True
-    assert ("/tmp/a.apk", 1) not in ApkClient._light_cache
-    assert ("/tmp/a.apk", 1) not in ApkClient._full_cache
-    assert ("/tmp/b.apk", 1) in ApkClient._light_cache
+    assert ApkClient.release(tmp_path / "a.apk") is True
+    assert (a, 1) not in ApkClient._light_cache
+    assert (a, 1) not in ApkClient._full_cache
+    assert (b, 1) in ApkClient._light_cache
 
     # nothing left for this path -> False
-    assert ApkClient.release(Path("/tmp/a.apk")) is False
+    assert ApkClient.release(tmp_path / "a.apk") is False
 
 
 def test_release_returns_false_when_resolve_raises() -> None:
