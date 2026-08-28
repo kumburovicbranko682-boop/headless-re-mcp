@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（.NET deobfuscate/unpack 把后端已标好的 retryable 丢弃,超时到调用方变不可重试)
+
+- de4dot 与 NETReactorSlayer 的错误类都自带 `retryable` 字段,并在超时(及进程失败)时显式置 `retryable=True`——与其余每个有界
+  后端一致。但 `service_dotnet` 的 `dotnet.deobfuscate` 和 `dotnet.reactor.unpack` 两个处理器把这些错误转成 `RpcError` 时只带了
+  `code/message/details`、没传 `retryable`,而 `RpcError.retryable` 默认 `False`,于是后端精心标注的"这次超时可重试"在服务层被
+  直接丢掉:一次 .NET 反混淆/脱壳超时到达调用方(以及读取 `exc.retryable` 的工作流失败记录)时变成不可重试,无人值守的调用方
+  因此对一次本该重试的瞬时超时放弃——正是我在 windbg/frida 等线上统一过的同一类契约漏洞,只是这里后端已经把 `retryable` 算对、
+  纯粹被转换环节抹掉。两处转换现在都以 `retryable=bool(getattr(exc, "retryable", False))` 透传该标志;`DotnetInspectError`
+  本就没有该字段、保持默认 `False`(检查类错误如 invalid_pe/not_dotnet 是确定性的,不该重试)。新增测试:de4dot、NETReactorSlayer
+  的超时经服务转换后 `retryable=True`,而 de4dot 的确定性 `process_failed` 仍为 `False`。纯错误契约对齐,不改任何成功路径。
+
 ### 修复（windbg/cdb 适配器把调用方 timeout 直接喂给 run_bounded,绕过 schema 边界不设防)
 
 - apktool/jadx/webcrack/wabt/radare2 各 CLI 适配器都在把 `timeout` 交给 `run_bounded` 前经 `clamp_cli_timeout` 收口——因为

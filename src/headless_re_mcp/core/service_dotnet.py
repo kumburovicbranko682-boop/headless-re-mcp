@@ -195,7 +195,20 @@ class DotnetAnalysisMixin:
             details = getattr(exc, "details", {}) or {}
             return Result[JsonObject](
                 ok=False,
-                error=RpcError(code=str(code), message=str(exc), details=dict(details)),
+                error=RpcError(
+                    code=str(code),
+                    message=str(exc),
+                    details=dict(details),
+                    # De4dotError / NetReactorSlayerError set retryable=True on a
+                    # timeout (and a process failure) exactly as the other bounded
+                    # backends do; this conversion dropped it, so RpcError's false
+                    # default made a .NET deobfuscate/unpack timeout reach the
+                    # caller (and the workflow failure record, which reads
+                    # exc.retryable) as non-retryable. DotnetInspectError has no
+                    # such flag and keeps the false default. Preserve it here so
+                    # the one contract holds on this line too.
+                    retryable=bool(getattr(exc, "retryable", False)),
+                ),
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="dotnet")
@@ -307,7 +320,20 @@ class DotnetAnalysisMixin:
             details = getattr(exc, "details", {}) or {}
             return Result[JsonObject](
                 ok=False,
-                error=RpcError(code=str(code), message=str(exc), details=dict(details)),
+                error=RpcError(
+                    code=str(code),
+                    message=str(exc),
+                    details=dict(details),
+                    # De4dotError / NetReactorSlayerError set retryable=True on a
+                    # timeout (and a process failure) exactly as the other bounded
+                    # backends do; this conversion dropped it, so RpcError's false
+                    # default made a .NET deobfuscate/unpack timeout reach the
+                    # caller (and the workflow failure record, which reads
+                    # exc.retryable) as non-retryable. DotnetInspectError has no
+                    # such flag and keeps the false default. Preserve it here so
+                    # the one contract holds on this line too.
+                    retryable=bool(getattr(exc, "retryable", False)),
+                ),
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="dotnet")
