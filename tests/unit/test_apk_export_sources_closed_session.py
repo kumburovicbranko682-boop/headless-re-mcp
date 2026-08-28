@@ -98,9 +98,7 @@ def test_apk_export_sources_does_not_report_success_if_the_session_closes_during
             no_imports: bool = False,
         ) -> dict[str, Any]:
             service.close_session(session_id)
-            return super().export_sources(
-                apk, out_dir, timeout=timeout, no_imports=no_imports
-            )
+            return super().export_sources(apk, out_dir, timeout=timeout, no_imports=no_imports)
 
     tracker = _CloseThenExport()
     monkeypatch.setattr(
@@ -116,6 +114,60 @@ def test_apk_export_sources_does_not_report_success_if_the_session_closes_during
         assert result.error is not None
         assert result.error.code == "invalid_request"
         assert "closed" in result.error.message
+        tree = settings.artifact_root.expanduser().resolve() / "jadx" / session_id
+        assert not tree.exists()
+    finally:
+        service.close_all()
+
+
+def test_apk_export_sources_closed_mid_run_with_no_tree_still_fails_closed(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The mid-run guard re-raises even when jadx left nothing to clean up.
+
+    The sibling above covers the branch where a tree exists and is removed. This
+    is the other side of the same cleanup: the session closes during an export
+    that produced no output directory, so ``out_dir.is_dir()`` is False, the
+    rmtree is skipped, and the guard still re-raises rather than reporting the
+    dead session as exported.
+    """
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    apk = _write_minimal_apk(tmp_path / "app.apk")
+
+    class _CloseThenExportNoTree(_TrackingJadx):
+        def export_sources(  # type: ignore[override]
+            self,
+            apk: Path,
+            out_dir: Path,
+            *,
+            timeout: float = 300.0,
+            no_imports: bool = False,
+        ) -> dict[str, Any]:
+            service.close_session(session_id)
+            # Deliberately write no out_dir, so the cleanup meets a missing tree.
+            return {
+                "output_dir": str(out_dir),
+                "sources_dir": str(out_dir / "sources"),
+                "java_file_count": 0,
+                "java_files": [],
+            }
+
+    tracker = _CloseThenExportNoTree()
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_apk.JadxClient",
+        lambda *args, **kwargs: tracker,
+    )
+    try:
+        created = service.create_session(str(apk), target="apk")
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        result = service.apk_export_sources(session_id)
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+        assert "closed" in result.error.message
+        assert tracker.exports == []  # our override wrote no marker
         tree = settings.artifact_root.expanduser().resolve() / "jadx" / session_id
         assert not tree.exists()
     finally:

@@ -98,9 +98,7 @@ def test_apk_decompile_does_not_report_success_if_the_session_closes_during_run(
             **kwargs: object,
         ) -> dict[str, Any]:
             service.close_session(session_id)
-            return super().decompile(
-                binary, out_dir, class_name, timeout=timeout, **kwargs
-            )
+            return super().decompile(binary, out_dir, class_name, timeout=timeout, **kwargs)
 
     tracker = _CloseThenDecompile()
     monkeypatch.setattr(
@@ -116,6 +114,56 @@ def test_apk_decompile_does_not_report_success_if_the_session_closes_during_run(
         assert result.error is not None
         assert result.error.code == "invalid_request"
         assert "closed" in result.error.message
+        project = settings.artifact_root.expanduser().resolve() / "jadx" / session_id
+        assert not project.exists()
+    finally:
+        service.close_all()
+
+
+def test_apk_decompile_closed_mid_run_with_no_tree_still_fails_closed(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The mid-run guard re-raises even when jadx left nothing to clean up.
+
+    The sibling above covers the branch where a tree exists and is removed. This
+    is the other side of the same cleanup: the session closes during a decompile
+    that produced no output directory (jadx bailed before writing anything), so
+    ``out_dir.is_dir()`` is False, the rmtree is skipped, and the guard still
+    re-raises rather than reporting the dead session as decompiled.
+    """
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    apk = _write_minimal_apk(tmp_path / "app.apk")
+
+    class _CloseThenDecompileNoTree(_TrackingJadx):
+        def decompile(  # type: ignore[override]
+            self,
+            binary: Path,
+            out_dir: Path,
+            class_name: str,
+            *,
+            timeout: float = 300.0,
+            **kwargs: object,
+        ) -> dict[str, Any]:
+            service.close_session(session_id)
+            # Deliberately write no out_dir, so the cleanup meets a missing tree.
+            return {"class_name": class_name, "path": "", "source": ""}
+
+    tracker = _CloseThenDecompileNoTree()
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_apk.JadxClient",
+        lambda *args, **kwargs: tracker,
+    )
+    try:
+        created = service.create_session(str(apk), target="apk")
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        result = service.apk_decompile(session_id, "com.example.Main")
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+        assert "closed" in result.error.message
+        assert tracker.decompile_calls == []  # our override wrote no marker
         project = settings.artifact_root.expanduser().resolve() / "jadx" / session_id
         assert not project.exists()
     finally:
