@@ -388,6 +388,28 @@ class WorkflowAnalysisMixin:
         validated = _workflow_timeout(timeout)
         if isinstance(validated, ValueError):
             return _failure(validated, session_id=session_id)
+        # intent_id/module_key/rva are handler kwargs the workflow.breakpoint.put
+        # tool schema types as two strings and an integer, but the agent and
+        # OpenAI-bridge transports call the handler straight from model arguments
+        # with no pydantic coercion. BreakpointIntent.__post_init__ validates the
+        # *values* (blank ids, negative rva) as WorkflowInvariantError -> ValueError
+        # -> invalid_request, yet its ``id.strip()``/``module_key.strip()`` reach a
+        # raw AttributeError on a non-string, and ``rva < 0`` a raw TypeError on a
+        # non-int -- both of which _failure files as a logged internal_error incident
+        # rather than the invalid_request a bad intent already earns. Reject the wrong
+        # types here, before the dataclass, so a malformed argument stays a caller
+        # fault. bool is excluded from rva: it satisfies isinstance(int) but a True
+        # RVA is never what the caller meant.
+        if not isinstance(intent_id, str) or not isinstance(module_key, str):
+            return _failure(
+                ValueError("breakpoint intent_id and module_key must be strings"),
+                session_id=session_id,
+            )
+        if isinstance(rva, bool) or not isinstance(rva, int):
+            return _failure(
+                ValueError("breakpoint rva must be an integer"),
+                session_id=session_id,
+            )
         try:
             intent = BreakpointIntent(
                 id=intent_id,

@@ -269,6 +269,39 @@ def test_breakpoint_put_refuses_a_malformed_intent_as_invalid_request(
     assert not host.calls
 
 
+@pytest.mark.parametrize(
+    ("intent_id", "module_key", "rva"),
+    [
+        (123, "mod", 0),  # non-string intent id -> id.strip() AttributeError
+        (None, "mod", 0),  # None intent id
+        (["i"], "mod", 0),  # unhashable, non-string intent id
+        ("i", 456, 0),  # non-string module key -> module_key.strip()
+        ("i", None, 0),  # None module key
+        ("i", "mod", "0x40"),  # string rva -> rva < 0 TypeError
+        ("i", "mod", None),  # None rva
+        ("i", "mod", 1.5),  # float rva
+        ("i", "mod", True),  # bool masquerading as an int rva
+        ("i", "mod", [0]),  # list rva
+    ],
+)
+def test_breakpoint_put_refuses_wrong_argument_types_as_invalid_request(
+    intent_id: Any, module_key: Any, rva: Any
+) -> None:
+    # The tool schema types intent_id/module_key as strings and rva as an integer,
+    # but the agent transport binds handler kwargs straight from model output with
+    # no coercion. A wrong type reaching BreakpointIntent raised a raw
+    # AttributeError (id/module_key .strip()) or TypeError (rva < 0), which _failure
+    # would file as a logged internal_error incident. It must instead read as the
+    # caller fault it is.
+    host = _Double()
+    result = host.workflow_breakpoint_put("sess", intent_id, module_key, rva)
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+    # A rejected argument must never have reached the runtime lock or the engine.
+    assert not host.calls
+
+
 # --- navigation guards -------------------------------------------------------
 
 
