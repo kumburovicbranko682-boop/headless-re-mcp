@@ -32,6 +32,23 @@ from headless_re_mcp.detection import (
 from headless_re_mcp.detection import die as die_adapter
 
 
+class _OsProxy:
+    """A stand-in ``os`` module with a pinned ``name``.
+
+    Patching the global ``os.name`` would poison ``pathlib.Path`` on Python
+    3.11, where ``Path()`` picks WindowsPath (uninstantiable on POSIX) from
+    ``os.name``; a failing test would then crash pytest's own failure
+    reporting. The proxy pins what ``die_adapter`` reads and forwards the
+    rest to the real module.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __getattr__(self, attr: str) -> object:
+        return getattr(os, attr)
+
+
 def _capture(stdout: str) -> Any:
     def fake(argv: list[str], *, timeout: float, max_output_size: int) -> Any:
         return die_adapter._ProcessCapture(stdout, "", 0, False, False)
@@ -383,7 +400,7 @@ def test_creation_options_hide_the_windows_console(
             self.dwFlags = 0
             self.wShowWindow = 99
 
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(die_adapter, "os", _OsProxy("nt"))
     monkeypatch.setattr(subprocess, "STARTUPINFO", _FakeStartupInfo, raising=False)
     monkeypatch.setattr(subprocess, "STARTF_USESHOWWINDOW", 1, raising=False)
     options = die_adapter._creation_options()
@@ -396,7 +413,7 @@ def test_creation_options_hide_the_windows_console(
 def test_creation_options_skip_startupinfo_when_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(die_adapter, "os", _OsProxy("nt"))
     monkeypatch.delattr(subprocess, "STARTUPINFO", raising=False)
     options = die_adapter._creation_options()
     assert "startupinfo" not in options

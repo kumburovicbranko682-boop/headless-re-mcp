@@ -37,6 +37,24 @@ from headless_re_mcp.web.setup import (
     run_setup_step,
 )
 
+
+class _OsProxy:
+    """A stand-in ``os`` module with a pinned ``name``.
+
+    Patching the global ``os.name`` would poison ``pathlib.Path`` on Python
+    3.11, where ``Path()`` picks WindowsPath (uninstantiable on POSIX) from
+    ``os.name``; a failing test would then crash pytest's own failure
+    reporting. The proxy pins what ``setup_mod`` reads and forwards the
+    rest to the real module.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __getattr__(self, attr: str) -> object:
+        return getattr(os, attr)
+
+
 JsonObject = dict[str, Any]
 
 
@@ -45,9 +63,9 @@ def _settings(tmp_path: Path) -> Settings:
 
 
 def test_no_window_flags_by_platform(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(setup_mod, "os", _OsProxy("posix"))
     assert _no_window_flags() == 0
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(setup_mod, "os", _OsProxy("nt"))
     expected = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     assert _no_window_flags() == expected
 

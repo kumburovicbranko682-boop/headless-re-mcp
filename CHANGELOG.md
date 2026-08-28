@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（清除剩余 15 处进程级 os.name 伪造,消灭 3.11 会话炸弹）
+
+- `test_service_ui_paths.py` 的事故("cannot instantiate 'WindowsPath'" 使
+  pytest INTERNALERROR 中止整个 3.11 Linux 会话)暴露的机制适用于所有全局
+  `monkeypatch.setattr(os, "name", ...)`:补丁生效期间任何 `Path(...)` 在
+  3.11/Linux 上都会炸,且一旦该测试失败,报告器自身的 `Path(os.getcwd())`
+  会把会话整个拖崩、掩盖其后所有结果。全仓库清点出剩余 15 处,分布在
+  `test_dotnet_de4dot_run_paths.py`(4)、`test_doctor_probe_edges.py`(4)、
+  `test_process_group_windows_job_paths.py`(2)、`test_die_adapter_paths.py`(2)、
+  `test_web_setup_steps.py`(2)、`test_web_app_launch_guards.py`(1)。全部改为
+  已两度落地的 `_OsProxy` 惯例:只把消费模块(de4dot、doctor、process_group、
+  die、web.setup、web.app)视野内的 `os` 换成钉住 `name` 的转发代理。六文件
+  132 例在 3.11 与 3.12 下均过,全库不再有进程级 os.name 补丁。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

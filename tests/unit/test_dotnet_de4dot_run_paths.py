@@ -30,6 +30,23 @@ from headless_re_mcp.dotnet.de4dot import (
 )
 
 
+class _OsProxy:
+    """A stand-in ``os`` module with a pinned ``name``.
+
+    Patching the global ``os.name`` would poison ``pathlib.Path`` on Python
+    3.11, where ``Path()`` picks WindowsPath (uninstantiable on POSIX) from
+    ``os.name``; a failing test would then crash pytest's own failure
+    reporting. The proxy pins what ``de4dot`` reads and forwards the
+    rest to the real module.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __getattr__(self, attr: str) -> object:
+        return getattr(os, attr)
+
+
 def _capture(**overrides: Any) -> de4dot._ProcessCapture:
     kwargs: dict[str, Any] = {
         "stdout": "",
@@ -306,7 +323,7 @@ def test_creation_options_on_windows_hide_the_console_window(
             self.dwFlags = 0
             self.wShowWindow = 99
 
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(de4dot, "os", _OsProxy("nt"))
     monkeypatch.setattr(subprocess, "STARTUPINFO", _FakeStartupInfo, raising=False)
 
     options = de4dot._creation_options()
@@ -321,7 +338,7 @@ def test_creation_options_on_windows_hide_the_console_window(
 def test_creation_options_on_windows_without_a_startupinfo_type(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(de4dot, "os", _OsProxy("nt"))
     monkeypatch.delattr(subprocess, "STARTUPINFO", raising=False)
 
     options = de4dot._creation_options()
@@ -379,7 +396,7 @@ def test_the_windows_exit_path_checks_descendants(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With os.name faked to nt, a clean exit walks collect_descendants."""
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(de4dot, "os", _OsProxy("nt"))
     monkeypatch.setattr(process_group_module, "assign_to_process_group", lambda pid: False)
     walked: list[int] = []
 
@@ -401,7 +418,7 @@ def test_the_windows_exit_path_terminates_leftover_descendants(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """On nt a survivor triggers the tree kill but never the POSIX group kill."""
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(de4dot, "os", _OsProxy("nt"))
     monkeypatch.setattr(process_group_module, "assign_to_process_group", lambda pid: False)
     monkeypatch.setattr(process_tree_module, "collect_descendants", lambda pid: [999_999])
     killed: list[object] = []

@@ -30,6 +30,24 @@ import pytest
 
 from headless_re_mcp import process_group
 
+
+class _OsProxy:
+    """A stand-in ``os`` module with a pinned ``name``.
+
+    Patching the global ``os.name`` would poison ``pathlib.Path`` on Python
+    3.11, where ``Path()`` picks WindowsPath (uninstantiable on POSIX) from
+    ``os.name``; a failing test would then crash pytest's own failure
+    reporting. The proxy pins what ``process_group`` reads and forwards the
+    rest to the real module.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __getattr__(self, attr: str) -> object:
+        return getattr(os, attr)
+
+
 _JOB_HANDLE = 0x40
 _PROC_HANDLE = 0x90
 
@@ -106,7 +124,7 @@ def alerts(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
 
 
 def _pretend_windows(monkeypatch: pytest.MonkeyPatch, fake: _FakeKernel32 | None) -> None:
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(process_group, "os", _OsProxy("nt"))
     if fake is not None:
         monkeypatch.setattr(process_group, "_kernel32", lambda: fake)
 
@@ -145,7 +163,7 @@ def test_the_job_is_created_once_and_cached_across_assignments(
 def test_nonpositive_pids_are_refused_before_any_kernel32_call(
     monkeypatch: pytest.MonkeyPatch, pid: int
 ) -> None:
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(process_group, "os", _OsProxy("nt"))
 
     def _boom() -> object:
         raise AssertionError("kernel32 must not be touched for a bogus pid")
@@ -171,9 +189,7 @@ def test_job_creation_failure_latches_and_alerts_exactly_once(
     kind, fields = alerts[0]
     assert kind == "process_group_unavailable"
     assert fields["detail"] == "the process job could not be created"
-    assert fields["consequence"] == (
-        "spawned processes will survive if this one is killed"
-    )
+    assert fields["consequence"] == ("spawned processes will survive if this one is killed")
 
 
 def test_set_information_failure_closes_the_job_handle_and_latches(

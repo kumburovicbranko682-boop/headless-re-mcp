@@ -53,6 +53,23 @@ from headless_re_mcp.doctor import (
 )
 
 
+class _OsProxy:
+    """A stand-in ``os`` module with a pinned ``name``.
+
+    Patching the global ``os.name`` would poison ``pathlib.Path`` on Python
+    3.11, where ``Path()`` picks WindowsPath (uninstantiable on POSIX) from
+    ``os.name``; a failing test would then crash pytest's own failure
+    reporting. The proxy pins what ``doctor_module`` reads and forwards the
+    rest to the real module.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __getattr__(self, attr: str) -> object:
+        return getattr(os, attr)
+
+
 def _settings(tmp_path: Path, **overrides: Any) -> Settings:
     base = Settings(
         ida_home=None,
@@ -106,7 +123,7 @@ def test_probe_windows_feature_is_ready_on_windows(
 def test_is_elevated_reads_the_windows_shell_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(doctor_module, "os", _OsProxy("nt"))
     monkeypatch.setattr(
         ctypes,
         "windll",
@@ -119,7 +136,7 @@ def test_is_elevated_reads_the_windows_shell_answer(
 def test_is_elevated_returns_none_when_the_shell_api_is_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(doctor_module, "os", _OsProxy("nt"))
     monkeypatch.setattr(ctypes, "windll", SimpleNamespace(), raising=False)
     assert doctor_module._is_elevated() is None
 
@@ -542,9 +559,9 @@ def test_format_report_lists_blocking_probes_without_remediation() -> None:
 
 
 def test_no_window_flags_on_both_platforms(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(doctor_module, "os", _OsProxy("posix"))
     assert doctor_module._no_window_flags() == 0
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(doctor_module, "os", _OsProxy("nt"))
     monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
     assert doctor_module._no_window_flags() == 0x08000000
 

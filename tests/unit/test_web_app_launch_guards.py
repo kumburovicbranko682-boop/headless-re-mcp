@@ -19,6 +19,24 @@ import pytest
 from headless_re_mcp.config import Settings
 from headless_re_mcp.web import app as web_app
 
+
+class _OsProxy:
+    """A stand-in ``os`` module with a pinned ``name``.
+
+    Patching the global ``os.name`` would poison ``pathlib.Path`` on Python
+    3.11, where ``Path()`` picks WindowsPath (uninstantiable on POSIX) from
+    ``os.name``; a failing test would then crash pytest's own failure
+    reporting. The proxy pins what ``web_app`` reads and forwards the
+    rest to the real module.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __getattr__(self, attr: str) -> object:
+        return getattr(os, attr)
+
+
 _CHOOSE = "headless_re_mcp.web.launch_util.choose_bind_port"
 
 
@@ -149,7 +167,7 @@ def test_claim_artifact_root_takes_the_windows_lock(
     fake_msvcrt.LK_NBLCK = 3  # type: ignore[attr-defined]
     fake_msvcrt.locking = _locking  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(web_app, "os", _OsProxy("nt"))
 
     handle = web_app._claim_artifact_root(tmp_path)
     try:
