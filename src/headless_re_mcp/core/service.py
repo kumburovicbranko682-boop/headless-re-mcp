@@ -2035,7 +2035,9 @@ class AnalysisService(
         address_space: str,
     ) -> int:
         """Translate a caller coordinate into the live runtime VA."""
-        normalized = (address_space or "runtime").strip().casefold()
+        normalized = _normalize_coordinate_space(
+            address_space, field="address_space", default="runtime"
+        )
         if normalized == "runtime":
             return address
         if normalized not in {"static", "rva"}:
@@ -2086,7 +2088,7 @@ class AnalysisService(
         try:
             if isinstance(address, bool) or type(address) is not int or address < 0:
                 raise ValueError("address must be a non-negative integer")
-            normalized = (source or "static").strip().casefold()
+            normalized = _normalize_coordinate_space(source, field="source", default="static")
             if normalized not in {"static", "rva", "runtime"}:
                 raise ValueError("source must be one of: static, rva, runtime")
             mapping = self._main_module_mapping(session_id)
@@ -3070,6 +3072,28 @@ def _recover_backend_kinds(backends: list[str]) -> tuple[BackendKind, ...]:
         if kind not in kinds:
             kinds.append(kind)
     return tuple(kinds)
+
+
+def _normalize_coordinate_space(value: object, *, field: str, default: str) -> str:
+    """Casefold a caller coordinate-space selector, rejecting a non-string.
+
+    ``address_space`` (dynamic.breakpoint.set) and ``source``
+    (resolve_runtime_address) are typed ``str`` at the tool boundary, but the
+    agent and OpenAI-bridge transports bind them from model output with no
+    pydantic coercion. The old ``(value or default).strip().casefold()`` handed
+    the raw value to ``.strip()`` for a *truthy* non-string (an int, list or
+    dict), so the AttributeError was filed as a logged internal_error incident
+    instead of the invalid_request caller fault it is -- and a *falsy*
+    non-string (0, [], {}, False) was silently coerced to the default. Reject
+    any non-string here; ``None`` still falls back to the default the way an
+    unset argument does, and an empty or unknown string is validated by the
+    caller against its own allowed set exactly as before.
+    """
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    return (value or default).strip().casefold()
 
 
 def _workflow_timeout(value: float) -> float | ValueError:

@@ -1886,6 +1886,40 @@ def test_resolve_runtime_address_rejects_unknown_source(tmp_path: Path) -> None:
     assert rejected.error.code == "invalid_request"
 
 
+@pytest.mark.parametrize("source", [5, [1], {"a": 1}, b"static", True, 0, [], {}, False])
+def test_resolve_runtime_address_refuses_a_non_string_source(
+    tmp_path: Path, source: object
+) -> None:
+    """A non-string source used to crash ``.strip()`` into an internal_error.
+
+    source is typed str at the tool boundary, but the agent and OpenAI-bridge
+    transports bind it from model output with no pydantic coercion. The old
+    ``(source or "static").strip()`` filed the AttributeError as an
+    internal_error incident for a truthy non-string, and silently coerced a
+    falsy one (0, [], {}, False) to the static default. Both are the
+    invalid_request caller fault the unknown-source case already is.
+    """
+    service, session_id, _ = _rebased_service(tmp_path, 0x7FF700000000)
+
+    rejected = service.resolve_runtime_address(session_id, 0x1000, source=source)  # type: ignore[arg-type]
+    assert not rejected.ok and rejected.error is not None
+    assert rejected.error.code == "invalid_request"
+    assert "source must be a string" in rejected.error.message
+
+
+def test_resolve_runtime_address_treats_none_source_as_the_static_default(
+    tmp_path: Path,
+) -> None:
+    """An explicit null (the transport's ``unset``) still means the static default."""
+    runtime_base = 0x7FF700000000
+    service, session_id, _ = _rebased_service(tmp_path, runtime_base)
+
+    resolved = service.resolve_runtime_address(session_id, 0x140001234, source=None)  # type: ignore[arg-type]
+    assert resolved.ok and resolved.data is not None
+    assert resolved.data["runtime_address"] == runtime_base + 0x1234
+    assert resolved.data["requested"]["source"] == "static"
+
+
 def test_breakpoint_set_rebases_static_and_rva_coordinates(tmp_path: Path) -> None:
     runtime_base = 0x7FF700000000
     service, session_id, dynamic = _rebased_service(tmp_path, runtime_base)
@@ -1912,6 +1946,26 @@ def test_breakpoint_set_rebases_static_and_rva_coordinates(tmp_path: Path) -> No
     rejected = service.dynamic_breakpoint_set(session_id, 0x1000, address_space="bogus")
     assert not rejected.ok and rejected.error is not None
     assert rejected.error.code == "invalid_request"
+
+
+@pytest.mark.parametrize("space", [5, [1], {"a": 1}, b"rva", True, 0, [], {}, False])
+def test_breakpoint_set_refuses_a_non_string_address_space(tmp_path: Path, space: object) -> None:
+    """A non-string address_space crashed ``.strip()`` before the fix.
+
+    Same transport gap as resolve_runtime_address: a truthy non-string filed an
+    internal_error incident and a falsy one was silently coerced to the runtime
+    default, which -- because runtime returns the address untouched -- set a
+    breakpoint at the raw caller value. No breakpoints.set request is issued for
+    a refused address_space.
+    """
+    runtime_base = 0x7FF700000000
+    service, session_id, dynamic = _rebased_service(tmp_path, runtime_base)
+
+    rejected = service.dynamic_breakpoint_set(session_id, 0x1000, address_space=space)  # type: ignore[arg-type]
+    assert not rejected.ok and rejected.error is not None
+    assert rejected.error.code == "invalid_request"
+    assert "address_space must be a string" in rejected.error.message
+    assert not [command for command, _ in dynamic.requests if command == "breakpoints.set"]
 
 
 def test_analyze_function_dynamic_reports_stop_on_its_breakpoint(tmp_path: Path) -> None:
