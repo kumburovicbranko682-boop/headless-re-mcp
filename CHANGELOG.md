@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（apk.open 标注 debuggable / allow_backup 两个安全关键清单标志）
+
+- `apk.open` 现返回 `debuggable` 与 `allow_backup` 两个布尔：Android 逆向/安全评估里最先要
+  确认的两项——`android:debuggable` 为真意味着任何调试器都能附加（发布版若误开是典型高危），
+  `android:allowBackup` 为真意味着 `adb backup` 能把应用私有数据整包拉走。取值走 androguard 的
+  `get_attribute_value("application", …)`，并按平台默认折算成**有效值**：清单未写时
+  `debuggable` 视为 `false`（不显式开就不可调试）、`allowBackup` 视为 `true`（不显式关就允许备份），
+  因此「缺省」反映的是平台真实行为而非未知；任何非 `"true"` 的显式值读作 false。此前该信息只能
+  从 `apk.manifest` 的原始 XML 里自己抠，没有结构化字段。已用 aapt 现打的两个 APK 在真
+  androguard 上核验：显式 `debuggable="true"`/`allowBackup="false"` 如实呈现，未声明的清单
+  回落到 `false`/`true` 默认。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

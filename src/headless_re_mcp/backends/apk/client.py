@@ -56,6 +56,25 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     return items, has_more
 
 
+def _manifest_bool(apk: Any, attribute: str, *, default: bool) -> bool:
+    """Effective boolean of an ``<application>`` attribute, with Android's default.
+
+    androguard returns the attribute string (``"true"``/``"false"``) or ``None``
+    when the manifest omits it. The absent case is the platform default, not
+    unknown: ``debuggable`` defaults ``false`` (an app is not debuggable unless
+    it says so) and ``allowBackup`` defaults ``true`` (its data is backed up
+    unless the app opts out), so reporting the effective value is what an
+    analyst reasons about. Any non-``"true"`` explicit value reads as false.
+    """
+    try:
+        value = apk.get_attribute_value("application", attribute)
+    except Exception:  # noqa: BLE001 - manifest shapes vary; treat as unset
+        value = None
+    if value is None or str(value) == "":
+        return default
+    return str(value).strip().lower() == "true"
+
+
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     """Clamp a page window at the source, not only at the tool schema.
 
@@ -211,6 +230,11 @@ class ApkClient:
             "target_sdk": apk.get_target_sdk_version(),
             "main_activity": apk.get_main_activity(),
             "permission_count": len(apk.get_permissions()),
+            # Two security-load-bearing manifest flags an analyst checks first:
+            # a debuggable release build lets any debugger attach, and an
+            # backup-allowed app lets `adb backup` pull its private data.
+            "debuggable": _manifest_bool(apk, "debuggable", default=False),
+            "allow_backup": _manifest_bool(apk, "allowBackup", default=True),
             "native_abis": sorted(
                 {
                     name.split("/")[1]
