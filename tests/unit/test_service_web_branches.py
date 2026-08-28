@@ -74,6 +74,9 @@ class _FakeWeb:
     def dom_snapshot(self, session_id: str) -> dict[str, Any]:
         return {"nodes": 0}
 
+    def read_har(self, path: str, *, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+        return {"path": path, "entries": [], "count": 0, "offset": offset, "limit": limit}
+
 
 @pytest.fixture
 def service(tmp_path: Path) -> Iterator[AnalysisService]:
@@ -341,3 +344,37 @@ class TestCapturesAndWrap:
             _ for _ in ()
         ).throw(RuntimeError("boom"))
         assert service.web_dom_snapshot(sid).ok is False
+
+
+class TestHarRead:
+    """web_har_read reads a HAR off disk without a session, so unlike its
+
+    siblings it takes a path rather than a session_id. It still owes the same
+    three-branch contract: a success carries the reader payload through, a
+    backend WebError becomes a structured failure, and any other exception is
+    captured as a failure Result rather than escaping the service boundary.
+    """
+
+    def test_har_read_success_passes_the_payload_through(
+        self, service: AnalysisService
+    ) -> None:
+        result = service.web_har_read("/tmp/capture.har", offset=5, limit=10)
+        assert result.ok is True and result.data is not None
+        assert result.data["path"] == "/tmp/capture.har"
+        assert result.data["offset"] == 5 and result.data["limit"] == 10
+        assert result.error is None
+
+    def test_har_read_maps_web_error(self, service: AnalysisService) -> None:
+        service._web_backend.read_har = lambda *a, **k: (  # type: ignore[attr-defined]
+            _ for _ in ()
+        ).throw(WebError("backend_error", "har unreadable"))
+        result = service.web_har_read("/tmp/missing.har")
+        assert result.ok is False and result.error is not None
+        assert result.error.code == "backend_error"
+
+    def test_har_read_captures_unexpected(self, service: AnalysisService) -> None:
+        service._web_backend.read_har = lambda *a, **k: (  # type: ignore[attr-defined]
+            _ for _ in ()
+        ).throw(RuntimeError("boom"))
+        result = service.web_har_read("/tmp/broken.har")
+        assert result.ok is False

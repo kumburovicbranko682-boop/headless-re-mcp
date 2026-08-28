@@ -54,6 +54,8 @@ Android 线的包名校验现在跨 adb 与 frida 两后端锁定一致。`devic
 
 钉住 adb 两个底层 helper `_call` 与 `_device_shell` 有意分叉的错误归一契约——整条 adb 后端的错误卫生正建立在这条分叉上。`_device_shell` 把*任何*失败都归一成 `AdbError`（超时→`timeout`、其余→`backend_error`），所以 `properties`/`packages`/`logcat` 可以不带自己的 `except Exception` 直接调它；而 `_call` 只归一超时、其余原样重抛，留给调用方用各自的上下文（path/package/remote）包装——正因如此，install/uninstall/pull/push/forward 等每个 `_call` 点都必须自带 `except Exception` 兜底。把这两者搞混，正是上一轮 launch/force_stop 那段 `except Exception` 变成死代码的根因：它们错把「已全归一」的 `_device_shell` 当成「会漏非超时异常」的 `_call` 来兜。此前 `_call` 无任何直接测试、`_device_shell` 也缺「非超时→backend_error」这一腿。现补：`_device_shell` 侧加 `test_device_shell_wraps_any_other_error_as_backend_error`；`_call` 侧加三条——`test_call_reraises_adb_error_unchanged`、`test_call_labels_a_timeout_as_adb_error`、`test_call_reraises_a_non_timeout_error_unchanged`（后者是关键分叉：一个普通 `ValueError` 必须原样重抛、而非被包成 `backend_error`）。四者均非空洞——一旦让任一 helper 向对方靠拢（`_call` 开始包非超时，或 `_device_shell` 改成重抛），`pytest.raises` 期望的异常类型即改变而转红，从而挡住「让两个 helper 一致化」这类会悄悄复活死分支/制造异常泄漏的改动。
 
+`service_web.web_har_read` 的服务边界兜底分支补齐测试，把这个上一轮新增的读取器抬到与它所有兄弟方法同一条测试基线上。`test_service_web_branches.py` 里每个 `web_*` 服务方法都owed三腿契约——成功把后端载荷原样穿过、后端 `WebError` 收敛成结构化失败、其余任何异常被 `except BaseException` 捕获成失败信封而非逃出服务边界（各以 `*_success` / `*_maps_web_error` / `*_captures_unexpected` 钉住）——唯独 `web_har_read` 因不吃 `session_id`（它按 path 读磁盘 HAR、是会话无关的读取器）而整个漏在这个文件之外，其 `except BaseException`（`service_web.py` 279-280）在全套覆盖率里是唯一的漏测行。现给 `_FakeWeb` 补上 `read_har` 并新增 `TestHarRead` 三条测试对齐兄弟范式：成功穿过 `path`/`offset`/`limit`、`WebError("backend_error")` 映射为同码失败、`RuntimeError` 被兜成 `ok is False`。已验证 `test_har_read_captures_unexpected` 非空洞——把该兜底改成裸 `raise` 后 `RuntimeError` 逃出服务层令测试转红。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
