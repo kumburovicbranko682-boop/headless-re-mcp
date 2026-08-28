@@ -1309,6 +1309,47 @@ class TestPeHighEntropySections:
         assert flags == [{"section": "UPX1", "entropy": 8.0, "size": 1024}]
 
 
+class TestPeUrlCensus:
+    """A PE session reports the endpoint literals baked into the image.
+
+    Both encodings a Windows binary stores literals in are read: raw ASCII in
+    the native sections and UTF-16LE -- what L"..." wide strings and a managed
+    assembly's #US string heap actually hold. XML namespace identifiers (every
+    side-by-side manifest carries schemas.microsoft.com) are format names, not
+    endpoints, and stay out of the census.
+    """
+
+    def test_narrow_and_wide_literals_are_both_read(self, tmp_path: Path) -> None:
+        path = tmp_path / "urls.exe"
+        path.write_bytes(
+            _pe_with_section_data(
+                [
+                    (b".rdata", b"\x00https://api.example.com/v1\x00" + b"\x00" * 100),
+                    (b".data", "http://plain.example/beacon".encode("utf-16-le") + b"\x00\x00"),
+                ]
+            )
+        )
+        session = SessionRegistry().create(str(path))
+        assert session.metadata["pe"]["urls"] == [
+            "https://api.example.com/v1",
+            "http://plain.example/beacon",
+        ]
+        assert session.metadata["pe"]["url_count"] == 2
+        assert session.metadata["pe"]["cleartext_url_count"] == 1
+
+    def test_a_manifest_namespace_is_not_an_endpoint(self, tmp_path: Path) -> None:
+        manifest = (
+            b'<assembly xmlns="urn:schemas-microsoft-com:asm.v1">'
+            b'<asmv3:windowsSettings xmlns="http://schemas.microsoft.com/SMI/2005/'
+            b'WindowsSettings"/></assembly>'
+        )
+        path = tmp_path / "manifested.exe"
+        path.write_bytes(_pe_with_section_data([(b".rsrc", manifest + b"\x00" * 64)]))
+        session = SessionRegistry().create(str(path))
+        assert session.metadata["pe"]["urls"] == []
+        assert session.metadata["pe"]["cleartext_url_count"] == 0
+
+
 class TestPeWxSections:
     """_pe_wx_sections names sections mapped writable and executable at once.
 
@@ -1677,8 +1718,8 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
     # Authenticode verdict -- unsigned here, a real answer rather than empty --
     # an (empty) resource-payload census, an (empty) import/export surface, the
     # optional-header posture (all-zero fields: unknown subsystem, no
-    # mitigations, no declared entry), the (absent) TLS-callback surface and
-    # an (empty) W^X section census.
+    # mitigations, no declared entry), the (absent) TLS-callback surface, an
+    # (empty) W^X section census and an (empty) URL census.
     assert session.metadata == {
         "pe": {
             "authenticode": {"signed": False},
@@ -1699,6 +1740,9 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
             "tls": {"present": False, "callbacks": 0},
             "wx_sections": [],
             "high_entropy_sections": [],
+            "urls": [],
+            "url_count": 0,
+            "cleartext_url_count": 0,
         }
     }
 

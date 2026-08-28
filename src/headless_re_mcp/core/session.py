@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from threading import RLock
-from typing import Any, BinaryIO, Protocol
+from typing import IO, Any, BinaryIO, Protocol
 from urllib.parse import unquote_to_bytes, urlsplit
 
 from headless_re_mcp.core.models import (
@@ -183,6 +183,10 @@ class SessionRegistry:
                 # Near-random sections -- the packed-payload flags the magic
                 # censuses cannot raise; empty is a real answer.
                 metadata["pe"].update(_pe_high_entropy_sections(path))
+                # The URL census over the whole image: ASCII literals in the
+                # native sections plus UTF-16LE ones (a managed assembly's #US
+                # string heap stores its C# literals wide).
+                metadata["pe"].update(_file_url_facts(path))
                 # Managed resources are a separate store from the PE resource
                 # tree: the ManifestResource census covers the Assembly.Load
                 # packer pattern.
@@ -542,6 +546,48 @@ _ENTROPY_SELF_DECLARING = (
     b"wOF2",  # WOFF2 font
     b"\x28\xb5\x2f\xfd",  # zstd
     b"\xce\xca\xef\xbe",  # .NET ResourceManager .resources blob
+)
+# Plaintext network endpoints baked into the target -- the first triage
+# question of any binary ("who does it talk to?"), the static pair to a HAR's
+# observed requests. Only scheme-prefixed URLs count: bare hostnames drown in
+# false positives, while ``https://c2.example`` is self-announcing. The charset
+# is RFC 3986's (unreserved + gen-delims + sub-delims + percent), and the scan
+# reads both encodings a compiled binary stores literals in: raw ASCII (C
+# strings in ELF/Mach-O/PE .rodata, DEX MUTF-8, WASM data segments) and
+# UTF-16LE (the .NET #US string heap, Windows wide strings). GNU ``strings``
+# (and ``strings -e l``) surfaces the same literals, so the gates cross-check
+# against it. Bounded: match length, listed sample and total bytes scanned are
+# all capped; the count of distinct URLs stays exact within the scan budget.
+_URL_MAX_LEN = 2048
+_URL_MAX_LISTED = 32
+_URL_SCAN_CHUNK = 1 << 20
+_URL_SCAN_BUDGET = 64 * 1024 * 1024
+# A deferred boundary match must fit in the carried tail whole: the longest
+# possible match is a wide one, 2 bytes per character of scheme + "://" + body.
+_URL_SCAN_KEEP = 2 * (_URL_MAX_LEN + 16)
+_URL_BODY = rb"[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]"
+_URL_ASCII_RE = re.compile(
+    rb"(?:https?|wss?|ftp)://" + _URL_BODY + rb"{1,%d}" % _URL_MAX_LEN,
+    re.IGNORECASE,
+)
+_URL_WIDE_RE = re.compile(
+    rb"(?:h\x00t\x00t\x00p\x00(?:s\x00)?|w\x00s\x00(?:s\x00)?|f\x00t\x00p\x00)"
+    rb":\x00/\x00/\x00(?:" + _URL_BODY + rb"\x00){1,%d}" % _URL_MAX_LEN,
+    re.IGNORECASE,
+)
+# XML namespace / schema identifiers name a *format*, not an endpoint --
+# nothing ever connects to them. Every AXML manifest carries
+# schemas.android.com, every PE side-by-side manifest schemas.microsoft.com,
+# every XMP-tagged image ns.adobe.com/purl.org, so leaving them in would put a
+# constant, meaningless cleartext "endpoint" on virtually every target. The
+# gates apply the same skip list to the referee's output.
+_URL_NAMESPACE_PREFIXES = (
+    "http://schemas.android.com/",
+    "http://schemas.microsoft.com/",
+    "http://schemas.openxmlformats.org/",
+    "http://www.w3.org/",
+    "http://ns.adobe.com/",
+    "http://purl.org/",
 )
 _NATIVE_MAX_MACHO_SECTIONS = 4096
 _SHT_NULL = 0
@@ -1139,6 +1185,10 @@ def describe_apk(path: Path) -> dict[str, Any]:
             # cannot see. The count is exact; the listed sample is bounded.
             "high_entropy_members": entropy_flags,
             "high_entropy_member_count": entropy_count,
+            # The network endpoints baked into the package, read from every
+            # member's decompressed bytes -- the URL census, deduplicated
+            # package-wide; sample bounded, count exact within budget.
+            **_apk_url_facts(path),
         }
     }
 
@@ -1824,6 +1874,37 @@ def _apk_high_entropy_members(path: Path) -> tuple[list[dict[str, Any]], int]:
     except (OSError, zipfile.BadZipFile):
         return [], 0
     return flagged, count
+
+
+def _apk_url_facts(path: Path) -> dict[str, Any]:
+    """The URL census over every member's *decompressed* bytes.
+
+    An APK stores its members deflated, so the raw archive bytes hide the
+    string literals a flat binary would show -- the endpoints in a
+    classes.dex string pool or an assets/ config only exist after inflation.
+    Every member is walked (a URL is a finding wherever it sits, including a
+    signing certificate's OCSP/CRL endpoints under META-INF/), deduplicated
+    across the whole package. Bounded and fail-closed like the entropy walk:
+    a capped member scan, one aggregate read budget, and an unreadable member
+    contributes nothing.
+    """
+    found: dict[str, None] = {}
+    budget = _URL_SCAN_BUDGET
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for info in archive.infolist()[:_APK_MAX_PAYLOAD_MEMBERS]:
+                if budget <= 0:
+                    break
+                if info.is_dir():
+                    continue
+                try:
+                    with archive.open(info) as member:
+                        budget -= _scan_urls(member, found, budget)
+                except (OSError, RuntimeError, NotImplementedError, zipfile.BadZipFile):
+                    continue
+    except (OSError, zipfile.BadZipFile):
+        return _url_facts({})
+    return _url_facts(found)
 
 
 def _apk_signature_schemes(path: Path) -> tuple[bool, bool, list[dict[str, Any]]]:
@@ -2539,6 +2620,11 @@ def describe_wasm(path: Path) -> dict[str, Any]:
     # ELF e_entry or a .NET entry-point token. Reported by index (the only
     # identity the binary format guarantees; the space counts imported
     # functions first) plus the debug name when the name section carries one.
+    # The URL census over the module bytes already in hand: literals sit
+    # uncompressed in data segments (and import/export names), so one pass
+    # over ``data`` is the whole answer.
+    url_found: dict[str, None] = {}
+    _collect_urls(data, len(data) + 1, url_found)
     start_function: dict[str, Any] | None = None
     if start_index is not None:
         start_function = {"index": start_index}
@@ -2589,6 +2675,9 @@ def describe_wasm(path: Path) -> dict[str, Any]:
             # magic census cannot see. Count exact; the list is bounded.
             "high_entropy_segments": entropy_flags,
             "high_entropy_segment_count": entropy_count,
+            # The network endpoints baked into the module -- the URL census,
+            # sample bounded, count exact over the parsed bytes.
+            **_url_facts(url_found),
             # Data past the last well-formed section: None for a clean module,
             # else {offset, size} of the residue (appended payload or a broken
             # tail -- well_formed says which module the engine would accept).
@@ -5188,20 +5277,26 @@ def describe_native(path: Path) -> dict[str, Any]:
     binary knows what it is opened before any external tool runs. Fail-closed:
     an unreadable or unrecognised header yields ``{}``.
     """
+    facts: dict[str, Any] = {}
     try:
         with path.open("rb") as stream:
             head = stream.read(_NATIVE_HEADER_BYTES)
             if head.startswith(b"\x7fELF"):
-                return {"native": _elf_facts(head, stream)}
-            magic = head[:4]
-            if magic in _MACHO_THIN_MAGICS:
-                return {"native": _macho_thin_facts(head, magic, stream)}
-            if magic == _MACHO_FAT_MAGIC:
-                facts = _macho_fat_facts(head)
-                return {"native": facts} if facts else {}
+                facts = _elf_facts(head, stream)
+            else:
+                magic = head[:4]
+                if magic in _MACHO_THIN_MAGICS:
+                    facts = _macho_thin_facts(head, magic, stream)
+                elif magic == _MACHO_FAT_MAGIC:
+                    facts = _macho_fat_facts(head)
     except OSError:
         return {}
-    return {}
+    if not facts:
+        return {}
+    # The URL census over the whole image -- string literals live in .rodata /
+    # __cstring, uncompressed, so the raw bytes are the right place to look.
+    facts.update(_file_url_facts(path))
+    return {"native": facts}
 
 
 def _elf_facts(head: bytes, stream: BinaryIO) -> dict[str, Any]:
@@ -6113,6 +6208,88 @@ def _entropy_flags(
             if len(flagged) >= _ENTROPY_MAX_FLAGGED:
                 break
     return flagged
+
+
+def _collect_urls(buf: bytes, limit: int, found: dict[str, None]) -> None:
+    """Record every URL match in ``buf`` that ends before ``limit``.
+
+    ``found`` is an insertion-ordered set (a dict of URL -> None), so a match
+    seen twice -- including one re-found in the carried tail of the previous
+    chunk -- records once. A match ending at or past ``limit`` is left for the
+    next round: its run may continue in bytes not read yet, and recording the
+    truncated prefix now would invent a URL the file does not contain. (The
+    wide pattern needs the one-byte slack in the caller's limit: a chunk can
+    split a character/NUL pair.) A wide match stores every character followed
+    by NUL, so its even bytes are the ASCII text. XML namespace identifiers
+    are not endpoints and are skipped.
+    """
+    for regex, wide in ((_URL_ASCII_RE, False), (_URL_WIDE_RE, True)):
+        for match in regex.finditer(buf):
+            if match.end() >= limit:
+                continue
+            raw = match.group(0)
+            url = (raw[::2] if wide else raw).decode("ascii")
+            if url.lower().startswith(_URL_NAMESPACE_PREFIXES):
+                continue
+            found.setdefault(url, None)
+
+
+def _scan_urls(stream: IO[bytes], found: dict[str, None], budget: int) -> int:
+    """Stream ``stream`` through the URL patterns, recording into ``found``.
+
+    Reads in chunks and carries the last _URL_SCAN_KEEP bytes across each
+    boundary so a URL split between reads is matched whole exactly once:
+    within a chunk, only matches that end short of the final byte are
+    recorded (a match touching the end may continue in the next read); the
+    final flush records everything left in the carry. Returns how many bytes
+    were consumed so an archive walk can share one aggregate budget across
+    members. Fail-closed: a read error ends the scan with what was found.
+    """
+    consumed = 0
+    carry = b""
+    while consumed < budget:
+        try:
+            chunk = stream.read(min(_URL_SCAN_CHUNK, budget - consumed))
+        except (OSError, RuntimeError, NotImplementedError, zipfile.BadZipFile):
+            break
+        if not chunk:
+            break
+        consumed += len(chunk)
+        buf = carry + chunk
+        _collect_urls(buf, len(buf) - 1, found)
+        carry = buf[-_URL_SCAN_KEEP:]
+    _collect_urls(carry, len(carry) + 1, found)
+    return consumed
+
+
+def _url_facts(found: dict[str, None]) -> dict[str, Any]:
+    """The URL census facts: a bounded sample, an exact count, the cleartext share.
+
+    ``cleartext_url_count`` counts endpoints whose scheme carries no transport
+    security (http/ws/ftp) -- the binary's own uses-cleartext-traffic answer,
+    the pair to the Android manifest flag of that name.
+    """
+    urls = list(found)
+    return {
+        "urls": urls[:_URL_MAX_LISTED],
+        "url_count": len(urls),
+        "cleartext_url_count": sum(
+            1 for url in urls if not url.lower().startswith(("https://", "wss://"))
+        ),
+    }
+
+
+def _file_url_facts(path: Path) -> dict[str, Any]:
+    """The URL census over a file's raw bytes -- the flat-format wiring.
+
+    Right for the formats whose string literals sit uncompressed in the image
+    (ELF/Mach-O/PE/WASM); an APK stores its members deflated, so it gets the
+    member-wise walk in _apk_url_facts instead.
+    """
+    found: dict[str, None] = {}
+    with contextlib.suppress(OSError), path.open("rb") as stream:
+        _scan_urls(stream, found, _URL_SCAN_BUDGET)
+    return _url_facts(found)
 
 
 def _dwarf_normalize(name: str) -> str:

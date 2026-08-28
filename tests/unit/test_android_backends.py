@@ -1878,6 +1878,55 @@ class TestApkHighEntropyMembers:
         assert len(facts["high_entropy_members"]) == 32
 
 
+class TestApkUrlCensus:
+    """describe_apk reads endpoint literals from every member's inflated bytes.
+
+    An APK stores its members deflated, so the endpoints in a classes.dex
+    string pool or an assets/ config exist only after inflation -- the raw
+    archive bytes hide them. Deduplicated package-wide, and the AXML
+    namespace URI every manifest carries names a format, not an endpoint.
+    """
+
+    def test_urls_in_deflated_members_are_read_after_inflation(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        path = tmp_path / "planted.apk"
+        path.write_bytes(_APK_FIXTURE.read_bytes())
+        config = b"endpoint=https://api.example.com/v1\nfallback=http://plain.example/b\n"
+        with zipfile.ZipFile(path, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("assets/config.txt", config + b"# padding " * 40)
+        # Deflate hid the literals from the raw bytes; inflation restores them.
+        assert b"https://api.example.com/v1" not in path.read_bytes()
+        facts = describe_apk(path)["apk"]
+        assert facts["urls"] == [
+            "https://api.example.com/v1",
+            "http://plain.example/b",
+        ]
+        assert facts["url_count"] == 2
+        assert facts["cleartext_url_count"] == 1
+
+    def test_duplicates_across_members_record_once(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        planted = {
+            "assets/a.txt": b"see https://one.example/shared",
+            "assets/b.txt": b"also https://one.example/shared",
+        }
+        facts = describe_apk(_apk_with_members(tmp_path, planted))["apk"]
+        assert facts["urls"] == ["https://one.example/shared"]
+        assert facts["url_count"] == 1
+
+    def test_the_committed_fixture_reports_an_empty_census(self) -> None:
+        # The fixture's AXML manifest carries the schemas.android.com
+        # namespace URI -- a format name, not an endpoint, so it stays out.
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        facts = describe_apk(_APK_FIXTURE)["apk"]
+        assert facts["urls"] == []
+        assert facts["url_count"] == 0
+        assert facts["cleartext_url_count"] == 0
+
+
 class TestApkNativeLibFacts:
     """describe_apk parses each bundled lib/<abi>/*.so with the ELF reader.
 

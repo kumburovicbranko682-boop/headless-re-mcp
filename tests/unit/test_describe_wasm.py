@@ -682,6 +682,45 @@ class TestWasmHighEntropySegments:
         assert len(info["high_entropy_segments"]) == 32
 
 
+class TestWasmUrlCensus:
+    """describe_wasm reports the endpoint literals staged in the module.
+
+    A fetch()-bound URL lives as plain text in a data segment, copied into
+    linear memory at instantiation -- the WASM home of the "who does it talk
+    to?" answer. Duplicates record once, the cleartext count is the module's
+    own uses-cleartext-traffic answer, and a clean module reports an empty
+    census rather than nothing.
+    """
+
+    def test_urls_in_data_segments_are_read_with_counts(self, tmp_path: Path) -> None:
+        # Space-delimited: ';' and '=' are legal URL characters (RFC 3986
+        # sub-delims), so an unspaced 'url;retry=3' would read as one URL.
+        section = _data_section(
+            [
+                _active_data(b"endpoint https://api.example.com/v1 retry 3"),
+                _active_data(b"fallback http://plain.example/beacon end"),
+                _active_data(b"again https://api.example.com/v1"),  # duplicate: once
+            ]
+        )
+        path = tmp_path / "urls.wasm"
+        path.write_bytes(_module([section]))
+        info = describe_wasm(path)["wasm"]
+        assert info["urls"] == [
+            "https://api.example.com/v1",
+            "http://plain.example/beacon",
+        ]
+        assert info["url_count"] == 2
+        assert info["cleartext_url_count"] == 1
+
+    def test_a_clean_module_reports_an_empty_census(self, tmp_path: Path) -> None:
+        path = tmp_path / "add.wasm"
+        path.write_bytes(_ADD_WASM)
+        info = describe_wasm(path)["wasm"]
+        assert info["urls"] == []
+        assert info["url_count"] == 0
+        assert info["cleartext_url_count"] == 0
+
+
 def test_describe_wasm_ignores_a_non_wasm_file(tmp_path: Path) -> None:
     path = tmp_path / "app.js"
     path.write_bytes(b"export const x = 1;\n")

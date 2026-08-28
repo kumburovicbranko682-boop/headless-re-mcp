@@ -737,6 +737,9 @@ def test_elf64_little_endian_facts(tmp_path: Path) -> None:
         "endianness": "little",
         "type": "exec",
         "arch": "x86-64",
+        "urls": [],
+        "url_count": 0,
+        "cleartext_url_count": 0,
     }
 
 
@@ -1366,6 +1369,9 @@ def test_macho_thin_facts(tmp_path: Path) -> None:
         "endianness": "little",
         "arch": "x86-64",
         "type": "execute",
+        "urls": [],
+        "url_count": 0,
+        "cleartext_url_count": 0,
     }
 
 
@@ -2517,6 +2523,83 @@ class TestDebugInfo:
         data = _macho64_with_section_payloads([("__text", b"\x90" * 64)])
         facts = describe_native(_write(tmp_path, "rel.macho", data))["native"]
         assert facts["debug_info"] == {"present": False, "sections": [], "size": 0}
+
+
+class TestUrlCensus:
+    """describe_native reports the endpoint literals baked into the image.
+
+    "Who does it talk to?" is the first triage question, and a C string in
+    .rodata answers it before any tool runs. Only scheme-prefixed URLs count
+    (bare hostnames drown in false positives), duplicates record once, and
+    the cleartext count is the binary's own uses-cleartext-traffic answer.
+    GNU ``strings`` surfaces the same literals, so the gate cross-checks it.
+    """
+
+    def test_ascii_literals_are_read_with_exact_counts(self, tmp_path: Path) -> None:
+        data = (
+            _elf64_le()
+            + b"\x00connect to https://api.example.com/v1\x00"
+            + b"fallback http://plain.example/beacon\x00"
+            + b"again https://api.example.com/v1\x00"  # a duplicate records once
+        )
+        facts = describe_native(_write(tmp_path, "urls.elf", data))["native"]
+        assert facts["urls"] == [
+            "https://api.example.com/v1",
+            "http://plain.example/beacon",
+        ]
+        assert facts["url_count"] == 2
+        assert facts["cleartext_url_count"] == 1
+
+    def test_wide_literals_read_the_same_as_narrow_ones(self, tmp_path: Path) -> None:
+        # UTF-16LE is how Windows wide strings and the .NET #US heap store
+        # literals; the same endpoint must not hide behind the encoding.
+        wide = "https://wide.example/path".encode("utf-16-le")
+        data = _elf64_le() + b"\x00\x00" + wide + b"\x00\x00"
+        facts = describe_native(_write(tmp_path, "wide.elf", data))["native"]
+        assert facts["urls"] == ["https://wide.example/path"]
+
+    def test_a_url_split_across_scan_chunks_reads_once_and_whole(self, tmp_path: Path) -> None:
+        # The scanner reads in 1 MiB chunks; a literal straddling the boundary
+        # must come back whole and once -- never as a truncated ghost too.
+        url = b"http://boundary.example/" + b"a" * 64
+        data = _elf64_le()
+        data += b"\x00" * ((1 << 20) - len(data) - 10) + url + b"\x00" * 32
+        facts = describe_native(_write(tmp_path, "split.elf", data))["native"]
+        assert facts["urls"] == [url.decode("ascii")]
+        assert facts["url_count"] == 1
+
+    def test_xml_namespace_identifiers_are_not_endpoints(self, tmp_path: Path) -> None:
+        # A namespace URI names a format, not a listener; leaving them in
+        # would put a constant cleartext "endpoint" on virtually every image.
+        data = (
+            _elf64_le()
+            + b"\x00http://schemas.android.com/apk/res/android\x00"
+            + b"http://www.w3.org/2000/xmlns/\x00"
+            + b"http://real.example/c2\x00"
+        )
+        facts = describe_native(_write(tmp_path, "ns.elf", data))["native"]
+        assert facts["urls"] == ["http://real.example/c2"]
+        assert facts["cleartext_url_count"] == 1
+
+    def test_an_image_without_urls_reports_an_empty_census(self, tmp_path: Path) -> None:
+        facts = describe_native(_write(tmp_path, "plain.elf", _elf64_le()))["native"]
+        assert facts["urls"] == []
+        assert facts["url_count"] == 0
+        assert facts["cleartext_url_count"] == 0
+
+    def test_the_listed_sample_is_bounded_but_the_count_exact(self, tmp_path: Path) -> None:
+        blob = b"\x00".join(b"https://host%d.example/x" % i for i in range(40))
+        facts = describe_native(_write(tmp_path, "many.elf", _elf64_le() + b"\x00" + blob))[
+            "native"
+        ]
+        assert facts["url_count"] == 40
+        assert len(facts["urls"]) == 32
+
+    def test_a_macho_image_gets_the_same_census(self, tmp_path: Path) -> None:
+        data = _macho64_le() + b"\x00" * 24 + b"ws://sock.example/live\x00"
+        facts = describe_native(_write(tmp_path, "urls.macho", data))["native"]
+        assert facts["urls"] == ["ws://sock.example/live"]
+        assert facts["cleartext_url_count"] == 1
 
 
 class TestElfToolchain:
