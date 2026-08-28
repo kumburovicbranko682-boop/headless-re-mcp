@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（UI 驱动步骤派发的路由合同）
+
+- `core/ui_drive.py` 的 `run_drive_step` 派发器此前只有 Windows-gated 的 M10 集成测试
+  覆盖（Linux CI 上整段 skip），核心的路由逻辑——bare action 继承 `handles["last"]`、
+  `resolve`/`wait` 的 `parent_from` 解析（root/last，显式 `parent_hwnd` 优先）、首个
+  `resolve` 自动成为 root 而后续仅在 `as_root` 时改写、`wait` 不把 parent 默认到 root
+  也不自封 root、`click_at` 的整型坐标校验（含拒绝 bool，因其虽是 int 子类但不是合法坐标）、
+  `text.set` 的字符串校验、`close`/`invoke` 的默认值，以及"无 hwnd 且无先前 resolve"
+  与未知 action 的 fail-closed 守卫在碰任何窗口原语前就拒绝——在 Linux 上从未被执行。
+  新增 `tests/unit/test_ui_drive_step_routing.py`，把八个 Win32 窗口原语打桩后钉住上述
+  纯逻辑决策，并覆盖 `normalize_drive_steps` 的 None/非序列/超上限（32）/非对象元素/
+  未知 action 各分支与 `drive_deadline`。`core/ui_drive.py` 行覆盖 26% → 100%。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
