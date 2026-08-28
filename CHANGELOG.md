@@ -5,6 +5,26 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（监控台下载在 click 同一 tick 撤销 blob URL，且下载链接从未入 DOM）
+
+- 前端有两处"生成 blob → 造 `<a download>` → `click()` → 收尾"的下载实现：
+  产物面板（`Inspector.tsx` 的 ArtifactsPanel，下载报告/dump/重建文件）与
+  MCP 配置导出（`McpExportModal.tsx` 的下载 JSON）。两处都在 `link.click()`
+  的**同一同步 tick** 里 `URL.revokeObjectURL(url)`——而浏览器对 blob: URL 的
+  读取是 click 之后异步调度的，同 tick 撤销可把还没开始的读取掐掉，落盘成
+  空文件或直接失败（MDN 对此明确要求下载启动后再撤销）。且两处的 `<a>` 都
+  没有 append 进 document：Chrome 容忍游离链接的 click()，Firefox 则直接
+  no-op——冒烟浏览器是 Chromium，把这条 Firefox 下"点了没反应"的路径完全遮住
+  了。对照库内另一族 blob URL 用法（WebMonitor / VirtualDesktopMonitor 的
+  `<img>` 预览帧是先换新再撤旧、卸载时兜底撤销）本就正确，坏的只有下载这
+  一族。修法：抽出 `lib/downloadBlob.ts` 单一实现——链接隐藏后入 DOM 再
+  click、click 后移除元素、`setTimeout(0)` 延迟撤销 URL——两个调用点各收敛
+  成一行。契约钉在 `downloadBlob.test.ts`：click 时刻链接必须在 document 内
+  且 URL 尚未被撤销（旧实现两条都违反），撤销必须晚于 click 的同步 tick 并
+  最终发生（假定时器推进后恰好一次、参数为该 URL）。vitest 18 文件 65 例
+  全绿，`tsc --noEmit` 干净；SPA 已用 CI 同版 node 24 重建提交（CSS 哈希
+  不变，JS 随本次改动更新）。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

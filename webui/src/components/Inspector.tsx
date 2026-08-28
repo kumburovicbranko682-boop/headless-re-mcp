@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { RunEvent } from "../agent/state";
 import { api, apiBlob } from "../api/client";
+import { downloadBlob } from "../lib/downloadBlob";
 import type { WorkspaceProfile } from "../lib/inspectorSurface";
 import { inspectorSurface, isSessionLive, peLiveMonitors, SURFACE_LABEL } from "../lib/inspectorSurface";
 import { dormantHint, inspectorDisconnectedHint, isSessionGone } from "../lib/sessionGone";
@@ -205,12 +206,7 @@ function ArtifactsPanel({ sessionId }: { sessionId: string }) {
   const download = async (item: Artifact) => {
     try {
       const blob = await apiBlob(`/api/artifacts/${encodeURIComponent(item.id)}/file`);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = item.path?.split(/[\\/]/).pop() || item.id;
-      link.click();
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, item.path?.split(/[\\/]/).pop() || item.id);
     } catch (reason) {
       setError(String(reason));
     }

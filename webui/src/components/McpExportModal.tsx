@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { api } from "../api/client";
+import { downloadBlob } from "../lib/downloadBlob";
 
 type ClientKind = "cursor" | "vscode" | "claude_desktop" | "stdio";
 
@@ -76,13 +77,7 @@ export function McpExportModal({ onClose }: { onClose: () => void }) {
 
   const download = useCallback(() => {
     if (!text) return;
-    const blob = new Blob([text], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `headless-re-mcp-${client}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(new Blob([text], { type: "application/json" }), `headless-re-mcp-${client}.json`);
   }, [client, text]);
 
   return <div className="modal-backdrop" role="presentation" onClick={onClose}>
