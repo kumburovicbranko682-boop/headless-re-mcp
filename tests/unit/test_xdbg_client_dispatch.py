@@ -179,14 +179,20 @@ def _valid_trace(path: Path) -> JsonObject:
 def test_trace_start_validates_bounds_before_dispatching() -> None:
     client, calls = _dispatch_client()
 
+    # The bound checks run only after the absolute-path guard, so the paths
+    # below must be absolute on the running platform (a leading "/" is not
+    # absolute on Windows, which has no drive letter) or the absolute guard
+    # fires first and the bound assertions never see their own error.
+    absolute = str(Path.cwd() / "t.bin")
+
     with pytest.raises(ValueError, match="absolute"):
         client.trace_start("relative/trace.bin")
     with pytest.raises(ValueError, match="max_events"):
-        client.trace_start("/tmp/t.bin", max_events=0)
+        client.trace_start(absolute, max_events=0)
     with pytest.raises(ValueError, match="timeout_ms"):
-        client.trace_start("/tmp/t.bin", timeout_ms=0)
+        client.trace_start(absolute, timeout_ms=0)
     with pytest.raises(ValueError, match="max_file_bytes"):
-        client.trace_start("/tmp/t.bin", max_file_bytes=0)
+        client.trace_start(absolute, max_file_bytes=0)
 
     assert calls == []
 
