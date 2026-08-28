@@ -922,6 +922,22 @@ class ExtAnalysisMixin(UiDriveMixin):
         appending duplicates every time an agent revisits a function.
         """
         try:
+            # kind/key are schema-typed strings and value a JSON object, but the
+            # agent and OpenAI-bridge transports bind them straight from model
+            # output with no pydantic coercion. A non-string kind/key hit
+            # (kind or "").strip() with an AttributeError that _failure filed as
+            # a logged internal_error incident; a list value crashed dict(value)
+            # the same way; a falsy non-mapping ([], 0, "") was silently recorded
+            # as {} through ``value or {}``; and a list of pairs was silently
+            # coerced into a mapping by dict(). Require the declared shapes so a
+            # wrong one is the invalid_request caller fault it is (None still
+            # means "no value").
+            if kind is not None and not isinstance(kind, str):
+                raise ValueError("kind must be a string")
+            if key is not None and not isinstance(key, str):
+                raise ValueError("key must be a string")
+            if value is not None and not isinstance(value, Mapping):
+                raise ValueError("value must be a JSON object")
             normalized_kind = (kind or "").strip()
             normalized_key = (key or "").strip()
             if not normalized_kind or len(normalized_kind) > 64:
@@ -968,6 +984,14 @@ class ExtAnalysisMixin(UiDriveMixin):
     ) -> Result[JsonObject]:
         """Read accumulated analysis facts for a session, optionally by kind."""
         try:
+            # kind is schema-typed as a string, but the agent transport binds it
+            # raw. A list reached sqlite parameter binding and the resulting
+            # InterfaceError was filed as storage_unavailable -- telling the
+            # caller the store is down when their argument was wrong -- and an
+            # int silently matched nothing because kind is a TEXT column. An
+            # empty string still means "no filter" through ``kind or None``.
+            if kind is not None and not isinstance(kind, str):
+                raise ValueError("kind must be a string")
             self.registry.get(session_id)
             return _success(
                 self.services.artifacts.list_knowledge(

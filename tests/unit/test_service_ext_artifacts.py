@@ -579,6 +579,79 @@ def test_knowledge_query_maps_an_unknown_session(tmp_path: Path) -> None:
     assert result.error.code == "session_not_found"
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"kind": 5},  # AttributeError at (kind or "").strip() -> internal_error
+        {"key": 7},
+        {"kind": ["note"]},
+        {"value": [1, 2]},  # dict([1, 2]) raised TypeError -> internal_error
+        {"value": True},
+        {"value": []},  # falsy: silently recorded as {} through ``value or {}``
+        {"value": 0},
+        {"value": [("a", "b")]},  # pairs: dict() silently coerced to a mapping
+        {"value": "text"},
+    ],
+)
+def test_knowledge_record_rejects_a_wrong_shaped_argument(
+    tmp_path: Path, kwargs: dict[str, Any]
+) -> None:
+    """A wrong kind/key/value shape is the caller's mistake, not an incident.
+
+    kind/key/value are schema-typed at the MCP boundary, but the agent
+    transport binds them straight from model output. A non-string kind/key hit
+    .strip() with an AttributeError filed as internal_error; a list value
+    crashed dict(value) the same way; a falsy non-mapping ([], 0) was silently
+    recorded as {}; and a list of pairs was silently coerced into a mapping.
+    All must read as invalid_request, and none may record a finding.
+    """
+    service = _Service(tmp_path)
+    service.pe_session()
+    arguments: dict[str, Any] = {"kind": "note", "key": "k", "value": {"v": 1}}
+    arguments.update(kwargs)
+
+    result = service.knowledge_record(
+        "sid", arguments["kind"], arguments["key"], arguments["value"]
+    )
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_request"
+    listed = service.knowledge_query("sid")
+    assert listed.ok and listed.data is not None
+    assert listed.data["total"] == 0
+
+
+@pytest.mark.parametrize("kind", [5, ["note"], {"note": 1}, True])
+def test_knowledge_query_rejects_a_non_string_kind(tmp_path: Path, kind: Any) -> None:
+    """A wrong kind filter must not read as a store outage or an empty result.
+
+    A list kind reached sqlite parameter binding and the InterfaceError was
+    filed as storage_unavailable -- telling the caller the store is down when
+    their argument was wrong -- and an int silently matched nothing because
+    kind is a TEXT column. Both must read as invalid_request.
+    """
+    service = _Service(tmp_path)
+    service.pe_session()
+    service.knowledge_record("sid", "note", "k", {"v": 1})
+
+    result = service.knowledge_query("sid", kind=kind)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_request"
+
+
+def test_knowledge_query_keeps_an_empty_kind_as_no_filter(tmp_path: Path) -> None:
+    """kind="" still means "no filter" through ``kind or None``."""
+    service = _Service(tmp_path)
+    service.pe_session()
+    service.knowledge_record("sid", "note", "k", {"v": 1})
+
+    result = service.knowledge_query("sid", kind="")
+
+    assert result.ok and result.data is not None
+    assert result.data["total"] == 1
+
+
 # --- report_generate ----------------------------------------------------------
 
 
