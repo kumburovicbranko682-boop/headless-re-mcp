@@ -49,6 +49,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（.NET 元数据 7 个表的行宽算错，大程序集枚举整体错位）
+
+- `dotnet.enumerate` 自带的 ECMA-335 `#~` 表遍历里，`_table_row_size` 有 7 个表的行宽不符合
+  II.22：InterfaceImpl(0x09) 的 `Interface` 列本是 TypeDefOrRef 编码索引却按 MethodDef 简单索引
+  算；MethodSemantics(0x18) 的 `Method` 列本是 MethodDef 简单索引却按 MethodDefOrRef 编码索引算；
+  AssemblyRef(0x23) 直接照抄了 Assembly(0x20) 的布局，多了开头的 HashAlgId(4)、又漏了结尾的
+  HashValue(blob)；File(0x26) 的 `HashValue` 本是 blob 却按 Implementation 编码索引算；
+  NestedClass(0x29) 的 `EnclosingClass` 本是 TypeDef 简单索引却按 Implementation 编码索引算；
+  MethodSpec(0x2B) 与 GenericParamConstraint(0x2C) 两行整个写反了。这些错误在小程序集上恰好与
+  正确值重合（所有索引都是 2 字节），所以平时测不出来；但 `_table_row_size` 喂给 `_table_start`，
+  后者要把目标表之前每张表的字节宽逐个累加，任何一张算错都会静默移偏其后所有表的读取游标——一旦
+  程序集大到让某个编码/简单索引涨到 4 字节（TypeDefOrRef ≥16384、MethodDefOrRef/HasSemantics
+  ≥32768、简单索引 ≥65536 行），MemberRef(0x0A)、ManifestResource(0x28) 等靠后表的枚举就会读出
+  垃圾。现按 ECMA-335 II.22 逐条改正，并在每处标注对应小节。新增
+  `tests/unit/test_dotnet_metadata_row_sizes.py`：为这 7 张表各构造一个把「出错的那个索引」逼到与
+  错误公式不同宽度的 `_MetaCtx`（如给 InterfaceImpl 塞 16384 个 TypeRef 让 TypeDefOrRef 涨到 4
+  字节而 MethodDef 仍是 2 字节），因此这些断言在改前的代码上全数失败、只有按 ECMA 布局才通过（改前
+  13 条全红、改后全绿，已实测两侧）。未加实机闸，因为小程序集触发不了宽度分歧、大到能触发的合成
+  程序集又不便随测试携带，纯逻辑单测才是钉住此类行宽的正确工具。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
