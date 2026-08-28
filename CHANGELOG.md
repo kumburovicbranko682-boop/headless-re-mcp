@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（补齐 r2 服务方法"运行中会话被关"的 post-check：disasm/xrefs/_r2_request）
+
+- r2 的每个服务方法在一次性 r2 进程返回后都会二次核对会话状态：`session.close` 无法回收一个
+  在它返回之后才启动的 r2 进程，所以若不复核，一个刚好在并发 close 之后完成的操作会带着
+  "成功"和记在死会话上的 backend 返回。`test_r2_closed_session.py` 只钉住了 `r2.open` 的这道
+  post-check（`..._closes_during_run`），以及 `r2.open`/`r2.functions` 的 pre-check；
+  `r2.disasm`、`r2.xrefs` 与共享的 `_r2_request`（functions/info/strings/imports/exports 都走它）
+  的 post-check 从没被测过——r2 live gate 直接驱动 `client.disasm`/`client.xrefs`，从不经过服务层
+  这道守卫。
+- 新增三条单测，沿用既有 `r2.open` 那条的套路（假 R2Client 在 disasm/xrefs/run 里把会话 close
+  掉再返回数据）：`r2.disasm`、`r2.xrefs`、`r2.functions` 在运行中会话转终态时必须返回
+  `invalid_request` 且消息含 "closed"，而非把结果当成功。`r2.functions` 那条还额外断言死会话上
+  没有记下 radare2 backend（`_r2_request` 的成功路径比 disasm/xrefs 多一步 `_record_backend`）。
+- 变异验证承重：把这三处 post-check 分别短路成 `if False and ...` 后，三条新测全部失败（结果
+  变 `ok=True`），而三条 pre-check 老测仍绿；改回后全绿。都是纯单测，不需要装 radare2。
+
 ### 测试（补齐 capture→wasm 跨后端交接 gate：network.get 的 body_path 喂给 wasm.wat/info）
 
 - `web.script.source` 的 is_wasm note 与 `service_jsre` 的模块 docstring 都告诉 agent 同一件
