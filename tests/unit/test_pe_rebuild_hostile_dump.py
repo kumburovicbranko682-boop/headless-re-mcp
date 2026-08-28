@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.unpack.pe_rebuild import MAX_SECTIONS, PeRebuildError, remap_dump_to_file
+from headless_re_mcp.unpack.pe_rebuild import (
+    MAX_SECTIONS,
+    PeRebuildError,
+    parse_runtime_headers,
+    remap_dump_to_file,
+)
 
 FIXTURE = Path(__file__).resolve().parents[2] / "artifacts" / "fixtures-x64" / "console_fixture.exe"
 
@@ -179,6 +184,30 @@ def _craft_dump(
         struct.pack_into("<I", data, off + 16, size)
         struct.pack_into("<I", data, off + 20, 0)
     return bytes(data)
+
+
+def test_a_tiny_optional_header_on_a_truncated_dump_is_a_clean_refusal() -> None:
+    """SizeOfOptionalHeader is written by the sample, and the fixed-offset reads
+    that follow (entry point, alignments, data directories) assume a full
+    optional header. A tiny value on a truncated image ran those reads off the
+    end, where struct.unpack_from raises struct.error -- not a ValueError, so it
+    slipped past every PeRebuildError handler and surfaced as an internal_error
+    whose message leaked the raw buffer size. It must be the module's own error.
+    """
+    pe_offset = 0x40
+    data = bytearray(0x40)
+    data[0:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, pe_offset)
+    data += b"PE\0\0"
+    file_header = bytearray(20)
+    struct.pack_into("<H", file_header, 0, 0x8664)  # machine x64
+    struct.pack_into("<H", file_header, 2, 1)  # NumberOfSections
+    struct.pack_into("<H", file_header, 16, 4)  # SizeOfOptionalHeader = 4 (tiny)
+    data += file_header
+    data += b"\x0b\x02\x00\x00"  # 4-byte optional header (magic 0x20b); image ends here
+
+    with pytest.raises(PeRebuildError, match="truncated"):
+        parse_runtime_headers(bytes(data))
 
 
 def test_a_section_count_the_loader_will_not_map_is_refused() -> None:

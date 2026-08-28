@@ -55,16 +55,29 @@ class RebuildReport:
         }
 
 
+def _read_uint(data: bytes | bytearray, offset: int, size: int, fmt: str) -> int:
+    # struct.unpack_from raises struct.error on a short/negative read, and that
+    # is not a ValueError -- so it slipped past every PeRebuildError/ValueError
+    # handler at the call sites and surfaced as an internal_error whose message
+    # leaked the raw buffer size. The dump's own SizeOfOptionalHeader can be
+    # small enough that the fixed-offset optional-header reads run off a
+    # truncated image, so bound the read here and raise the module's own error,
+    # the way detection/pe._slice does for the read-only parser.
+    if offset < 0 or offset + size > len(data):
+        raise PeRebuildError("PE structure is truncated")
+    return int(struct.unpack_from(fmt, data, offset)[0])
+
+
 def _u16(data: bytes | bytearray, offset: int) -> int:
-    return int(struct.unpack_from("<H", data, offset)[0])
+    return _read_uint(data, offset, 2, "<H")
 
 
 def _u32(data: bytes | bytearray, offset: int) -> int:
-    return int(struct.unpack_from("<I", data, offset)[0])
+    return _read_uint(data, offset, 4, "<I")
 
 
 def _u64(data: bytes | bytearray, offset: int) -> int:
-    return int(struct.unpack_from("<Q", data, offset)[0])
+    return _read_uint(data, offset, 8, "<Q")
 
 
 # The PE specification bounds FileAlignment to a power of two between 512 and
