@@ -623,14 +623,13 @@ class AdbBackend:
     def launch(self, serial: str, package: str) -> JsonObject:
         dev = self._device(serial)
         pkg = _check_package(package)
-        try:
-            _device_shell(
-                dev, ["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"]
-            )
-        except AdbError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise AdbError("backend_error", f"launch failed: {exc}", package=pkg) from exc
+        # _device_shell already normalizes every failure to AdbError (a timeout or
+        # a backend_error), so wrapping this lone shell call in its own
+        # except-AdbError/except-Exception pair only added an arm nothing could
+        # reach. The sibling pure-shell readers (_pm_path, properties, logcat) let
+        # that AdbError propagate the same way; the app_current read below keeps
+        # its own guard because that is a broad-raising adbutils call, not a shell.
+        _device_shell(dev, ["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"])
         try:
             current = _call(dev.app_current, timeout=_ADB_PROBE_TIMEOUT_S)
             foreground = getattr(current, "package", None)
@@ -649,12 +648,11 @@ class AdbBackend:
     def force_stop(self, serial: str, package: str) -> JsonObject:
         dev = self._device(serial)
         pkg = _check_package(package)
-        try:
-            _device_shell(dev, ["am", "force-stop", pkg])
-        except AdbError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise AdbError("backend_error", f"force-stop failed: {exc}", package=pkg) from exc
+        # As in launch: _device_shell already maps any failure to AdbError, so the
+        # old except-AdbError/except-Exception wrapper around this lone shell call
+        # was an unreachable arm. Let that AdbError propagate like the sibling
+        # pure-shell readers do.
+        _device_shell(dev, ["am", "force-stop", pkg])
         pids = _pids_for_package(dev, pkg)
         if pids is None:
             return {

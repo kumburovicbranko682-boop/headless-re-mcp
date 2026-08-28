@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 清理（移除 adb.launch / adb.force_stop 里两段不可达的死防御分支）
+
+- `_device_shell` 早已把底层 `dev.shell` 抛出的任何非 AdbError 归一化成 `AdbError`（`timeout` 或
+  `backend_error`），因此 `launch` / `force_stop` 各自把唯一一次 `_device_shell` 调用包在
+  `except AdbError: raise` + `except Exception:` 里,那条通用分支根本没有任何输入能进——它是全文件仅有的两处
+  完全未覆盖语句（覆盖率报告里的 632-633、656-657）。同一文件里真正会走通用分支的方法(install/uninstall/
+  screenshot/pull/push/forward/connect/list_devices 以及 frida-server 的 chmod 块)都另外直接调了会抛宽泛异常
+  的 adbutils 方法;而只调 `_device_shell` 的姊妹读取方法(`_pm_path`/`properties`/`logcat`)本就是让归一化后的
+  AdbError 直接冒泡。现在 `launch`/`force_stop` 与后者对齐:去掉多余的 try/except 包裹,让 `_device_shell` 的
+  AdbError 直接冒泡(`launch` 里读取 app_current 那段仍保留自己的 guard,因为那是会抛宽泛异常的 adbutils 调用,
+  不是 shell)。可观测行为不变——shell 失败照旧以 `backend_error`/`timeout` 冒出(既有的
+  `test_launch_maps_a_monkey_failure_to_backend_error` 与 `test_force_stop_reraises_an_adberror_from_the_shell`
+  依旧通过),只是文件少了 10 行不可测的死代码。
+
 ### 测试（补齐 frida.java.classes 的 scan_capped 分支覆盖）
 
 - 前面给 `frida.java.classes` 加分页时引入的 `scan_capped` 分支（目标侧枚举命中 5 万类上限、`total` 只是下界）
