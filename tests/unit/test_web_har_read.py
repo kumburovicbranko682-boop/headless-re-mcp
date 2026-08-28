@@ -351,3 +351,43 @@ def test_both_har_exporters_point_at_the_reader(tmp_path: Path) -> None:
             assert "web.har.read" in (exporter.handler.__doc__ or "")
     finally:
         service.close_all()
+
+
+def test_the_docstring_names_every_field_read_har_actually_returns(tmp_path: Path) -> None:
+    """The docstring is the agent's only map of a tool's answer shape, and last
+    cycle's bug was exactly that -- the docstring promised a field spelling
+    (mime_type) the backend did not return (mimeType). Tie the two together so
+    they cannot desync again: every top-level key read_har returns, and every
+    entry sub-key, must be named verbatim in the web.har.read docstring. Reading
+    the keys off a live call rather than a hardcoded list keeps this honest if
+    the backend grows or renames a field. Reverting the docstring to snake_case
+    (or dropping a field from either side) turns this red."""
+    from headless_re_mcp.tools.web import build_web_tools
+
+    service = _service(tmp_path)
+    try:
+        doc = next(
+            (b.handler.__doc__ or "" for b in build_web_tools(service) if b.name == "web.har.read"),
+            "",
+        )
+    finally:
+        service.close_all()
+    assert doc, "web.har.read must describe itself"
+
+    path = _write_har(
+        tmp_path,
+        [
+            har_entry(
+                method="GET",
+                url="https://a.test/x",
+                status=200,
+                mime_type="text/html",
+                resource_type="script",
+            )
+        ],
+    )
+    result = WebBackend().read_har(str(path))
+    for key in result:
+        assert key in doc, f"read_har returns {key!r} but the docstring never names it"
+    for key in result["entries"][0]:
+        assert key in doc, f"read_har entries carry {key!r} but the docstring never names it"

@@ -46,6 +46,8 @@ Android 线的包名校验现在跨 adb 与 frida 两后端锁定一致。`devic
 
 补齐两个 web 读取器「源头钳取负 offset / 非正 limit」的回归钉子。agent 与 OpenAI-bridge 两条传输直接调后端、从不跑 MCP schema 上 `offset >= 0` / `limit >= 1` 的 pydantic 校验，所以每个 offset 分页读取器都在源头用 `max(0, int(offset))` 与 `max(1, min(int(limit), cap))` 复核一遍——否则 `offset=-1` 会退化成尾部切片（`values[-1:...]`），返回一个空的或错位的页却仍报 `has_more`，正是当初 `_clamp_page` 为 apk 修掉的那个分页 bug。`network_list` 早有 `test_web_fields.py` 钉住（`offset=-10, limit=0` → offset 归零、count 1、has_more True），apk 三个读取器也有 `test_apk_page_clamp.py` 钉住，但共用同一套防御代码的 `web.scripts`（连带 `web.wasm.list`）与上一轮新增的 `web.har.read` 却没有——防御代码一旦被重构删掉，只有 apk/network_list 会转红，这两个会静默回退。现分别在 `test_web_fields.py` 加 `test_web_scripts_clamps_a_negative_offset_and_zero_limit_at_the_backend`、在 `test_web_har_read.py` 加 `test_backend_clamps_a_negative_offset_and_zero_limit`，均以 `offset=-10, limit=0` 断言 offset 归零、count 恰为 1（limit 被抬到底线 1）、has_more True；两处都已验证非空洞——把源头 `max(0, …)` / `max(1, …)` 去掉后测试即转红。
 
+给 `web.har.read` 补上「docstring 如实点名返回字段」的钉子——这正是上一轮 HAR 键名大小写 bug 的类别：docstring 承诺一个后端并不返回的字段拼写（`mime_type` vs `mimeType`）。工具 docstring 是 agent 唯一的「答案形状」地图，全仓早有近乎每工具一份的 `_fields.py` 测试守着「描述点名真实字段、且不点名会误导的字段」这条纪律，但 `test_repository_hygiene.py` 只强制「每个工具有 docstring」、不强制「有字段测试」，于是上一轮新增的 `web.har.read` 恰好漏在这条纪律之外。新增 `test_the_docstring_names_every_field_read_har_actually_returns`：真实跑一次 `read_har`，把返回的每个顶层键与每个 entry 子键都断言必须逐字出现在 `web.har.read` 的 docstring 里——键从实时调用里读、而非硬编码清单，故后端新增或改名字段时该测试仍如实跟随；把 docstring 改回 snake_case（或任一侧丢字段）即转红（已验证：将 docstring 的 `mimeType` 改回 `mime_type` 后测试报「read_har entries carry 'mimeType' but the docstring never names it」）。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
