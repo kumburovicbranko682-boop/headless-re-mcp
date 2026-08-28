@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from unittest.mock import MagicMock
 
+from headless_re_mcp.tools.binding import input_schema_for
 from headless_re_mcp.tools.dynamic_analysis import build_dynamic_analysis_tools
 
 
@@ -53,3 +55,24 @@ def test_hardware_set_puts_success_in_set_not_ok() -> None:
     doc = _tool_docstring("breakpoints.hardware.set")
     assert "Answers with set" in doc
     assert "no ok" in doc
+
+
+def test_hardware_set_size_is_an_enum_of_1_2_4_8() -> None:
+    """size must be the x86 DR7 lengths only, not any 1..8 integer.
+
+    x86 debug registers encode the watch length as 1/2/4/8 (Intel SDM), and the
+    native ParseHardwareSize rejects everything else. The old Field(ge=1, le=8)
+    bound also accepted 3/5/6/7, which then round-tripped to a paused debuggee
+    only to be refused there, and contradicted the tool's "size enums only"
+    docstring. The generated schema must expose exactly {1, 2, 4, 8}.
+    """
+    tools = build_dynamic_analysis_tools(MagicMock())
+    handler = next(t.handler for t in tools if t.name == "breakpoints.hardware.set")
+
+    schema = input_schema_for(handler)
+    size = schema["properties"]["size"]
+
+    assert size.get("enum") == [1, 2, 4, 8]
+    assert size.get("default") == 1
+    # A range bound would have advertised min/max instead of an enum.
+    assert "maximum" not in size and "minimum" not in size

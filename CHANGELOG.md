@@ -112,6 +112,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `… (+N more keys)` 说明还有多少键在会话里而不在报告里。新增回归:十键值注明 `(+6 more keys)`
   且不泄露第 5 键、恰好四键的值不加任何标记。
 
+### 修复（`breakpoints.hardware.set` 的 size 允许硬件无效值）
+
+- `tools/dynamic_analysis.py` 里 `breakpoints.hardware.set` 的 `size` 用 `Field(ge=1, le=8)`
+  设界,却把 3/5/6/7 也放了进来;而 x86 调试寄存器的 DR7 LEN 只编码 1/2/4/8(Intel SDM),
+  native 端 `ParseHardwareSize` 也只认 1/2/4/8、其余一律拒。于是这些无效 size 会先通过工具
+  校验,再白跑一趟 RPC 打到已暂停的被调试进程那里才被拒,且与本工具文档串宣称的 "structured
+  type/size enums only" 自相矛盾。改为 `Literal[1, 2, 4, 8]`:schema 直接暴露 `enum:[1,2,4,8]`,
+  非法 size 在边界即被拒,契合 native 契约、文档串与 x86 架构(32 位下 8 仍由 native 拒,与此前
+  一致)。新增回归测试断言生成的 schema 是 `{1,2,4,8}` 枚举而非 min/max 区间。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

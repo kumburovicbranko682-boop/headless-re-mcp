@@ -64,11 +64,8 @@ def _summarize_value(value: object) -> str:
         shown = list(value.items())[:4]
 
         summary = ", ".join(f"{key}={_cell(item)}" for key, item in shown)
-
         if len(value) > len(shown):
-
             summary += f", … (+{len(value) - len(shown)} more keys)"
-
         return summary
 
     return _cell(value)

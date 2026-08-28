@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
@@ -308,7 +308,13 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         session_id: str,
         address: Annotated[int, Field(ge=0)],
         bp_type: Annotated[str, Field(pattern="^(r|w|x|rw|access|write|execute)$")] = "x",
-        size: Annotated[int, Field(ge=1, le=8)] = 1,
+        # x86 debug registers encode the watch length in DR7 LEN as 1/2/4/8 only
+        # (Intel SDM); the native ParseHardwareSize rejects anything else. Field(
+        # ge=1, le=8) also let 3/5/6/7 through to a wasted RPC round-trip against a
+        # paused debuggee, and contradicted this tool's own "size enums only"
+        # contract. A Literal makes the schema an enum and refuses the bad sizes at
+        # the boundary. (8 is still rejected natively on 32-bit, as before.)
+        size: Literal[1, 2, 4, 8] = 1,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
         """Set a hardware breakpoint with structured type/size enums only.
