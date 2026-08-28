@@ -859,6 +859,16 @@ class AdbBackend:
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
         if not _BIND_HOST_RE.match(bind_host or ""):
             raise AdbError("invalid_params", "invalid bind_host", bind_host=bind_host)
+        # Validate the port the way connect() does, before it is interpolated
+        # into the su -c launch string. The MCP schema bounds it, but the
+        # agent/OpenAI transports skip pydantic, so a non-int port would reach
+        # int(port) inside the try below that wraps the launch -- its ValueError
+        # then read as "launch attempted; verify manually" for a launch that
+        # never ran, and an out-of-range int would hand frida-server a port it
+        # can only fail to bind. bool is an int subclass, so reject it here too
+        # rather than let True bind port 1.
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise AdbError("invalid_params", "port must be 1..65535", port=port)
         visible = _frida_server_visible(dev)
         if visible:
             return {"running": True, "pushed": False, "port": port}

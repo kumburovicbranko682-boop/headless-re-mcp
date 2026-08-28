@@ -112,6 +112,27 @@ def test_invalid_remote_path_is_refused_before_any_launch(monkeypatch: Any, bad:
     assert commands == []
 
 
+@pytest.mark.parametrize("bad", [0, -1, 70000, 65536, "27042", 27042.0, True, None])
+def test_invalid_port_is_refused_before_any_launch(monkeypatch: Any, bad: Any) -> None:
+    """port lands in the su -c string via int(port), so it is validated too.
+
+    The MCP schema bounds port, but the agent/OpenAI transports skip it. Left
+    unchecked a non-int reached int(port) inside the try wrapping the launch,
+    whose ValueError was then reported as "launch attempted; verify manually"
+    for a launch that never ran, and an out-of-range int handed frida-server a
+    port it could only fail to bind. A bad port must be refused as
+    invalid_params before any device command, exactly as bind_host and
+    remote_path are. bool is an int subclass, so True is rejected rather than
+    read as port 1.
+    """
+    commands = _capture_launch(monkeypatch)
+    backend = _backend(monkeypatch)
+    with pytest.raises(AdbError) as caught:
+        backend.ensure_frida_server("emulator-5554", port=bad)
+    assert caught.value.code == "invalid_params"
+    assert commands == []
+
+
 def test_valid_remote_path_reaches_the_launch_verbatim(monkeypatch: Any) -> None:
     """A well-formed device path is accepted and used as the frida-server path."""
     commands = _capture_launch(monkeypatch)
