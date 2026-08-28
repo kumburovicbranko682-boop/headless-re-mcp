@@ -78,3 +78,28 @@ def test_flow_get_bounds_response_headers_and_flags_truncation(
     assert payload["response"]["body"] == "small"
     # A bounded header map must not spill an artifact of its own.
     assert list(tmp_path.iterdir()) == []
+
+
+def test_flow_get_bounds_request_headers_and_flags_truncation(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The request side flags truncation independently of the response side.
+
+    The mirror of the response case: a request carrying an oversized header map
+    (a hostile client, a huge cookie jar) must have that map capped and the
+    request marked metadata_truncated, while a small response stays unflagged.
+    Without this only the response side's flag was ever exercised, so a
+    regression that dropped the request-side flag would go unnoticed.
+    """
+    flow = _flow(
+        {f"h{index}": "v" for index in range(_MAX_FLOW_HEADERS + 10)},
+        {"content-type": "text/plain"},
+        body=b"small",
+    )
+    backend = _backend_returning(flow, monkeypatch)
+    payload = backend.flow_get("s", "f1", tmp_path)
+    assert len(payload["request"]["headers"]) == _MAX_FLOW_HEADERS
+    assert payload["request"]["metadata_truncated"] is True
+    # The response headers were small, so that side is not flagged.
+    assert "metadata_truncated" not in payload["response"]
+    assert list(tmp_path.iterdir()) == []
