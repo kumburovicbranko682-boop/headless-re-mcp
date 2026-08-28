@@ -310,6 +310,11 @@ def test_frida_applications_puts_the_list_in_applications_and_says_when_it_stopp
     doc = _tool_docstring("frida.applications")
     assert "Answers with applications" in doc
     assert "has_more" in doc
+    # identifier is the spawn join key: the doc must say it is what frida.spawn
+    # takes as package, or an agent cannot tell which of identifier/name to feed
+    # spawn (and name -- a display label -- would be refused).
+    assert "identifier" in doc
+    assert "frida.spawn" in doc
 
 class _JavaApi:
     def classes(self, name_filter: str, count: int) -> list[str]:
@@ -607,6 +612,10 @@ def test_frida_spawn_refuses_a_path_or_bare_name() -> None:
     doc = _tool_docstring("frida.spawn")
     assert "Answers with pid" in doc
     assert "There is no process_id" in doc
+    # The package spawn wants is the identifier frida.applications reports; the
+    # doc must name that source so an agent knows where a valid value comes from
+    # and that a display name or apk path (refused here) is not it.
+    assert "frida.applications" in doc
 
 
 def test_frida_spawn_times_out_and_kills_the_probe_process() -> None:

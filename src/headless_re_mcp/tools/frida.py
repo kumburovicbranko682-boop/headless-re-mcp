@@ -141,6 +141,9 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with applications (identifier, name, pid), count, total, and
         has_more so a page that filled the limit is not read as the whole
         device. The list field is applications, not apps or packages.
+        identifier is the app's package id (e.g. com.example.app) and is the
+        value frida.spawn takes as package; the row's name is a display label,
+        not a spawn target.
         """
         return _dump(analysis.frida_applications(session_id, limit=limit))
 
@@ -148,8 +151,10 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def frida_spawn(session_id: str, package: str) -> dict[str, Any]:
         """Spawn and resume a package on the device, authorizing its pid for this session.
 
-        Answers with pid, package and device. There is no process_id or spawned
-        field.
+        package is an app identifier as frida.applications reports it (an
+        Android package id like com.example.app), not a display name or an apk
+        path; a value that is not a package id is refused. Answers with pid,
+        package and device. There is no process_id or spawned field.
         """
         return _dump(analysis.frida_spawn(session_id, package))
 
