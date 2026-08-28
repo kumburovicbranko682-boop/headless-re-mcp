@@ -8,6 +8,16 @@ import json
 from ghidra.app.decompiler import DecompInterface
 from ghidra.util.task import ConsoleTaskMonitor
 
+# Ghidra's Jython does not inject a bare ``ARGS`` global -- postScript arguments
+# are reached through the flattened GhidraScript method ``getScriptArgs()``,
+# which returns a Java String[]. Wrapping it in ``list`` gives the plain-Python
+# indexing/len/truthiness the code below relies on. Using ``ARGS`` directly
+# raised ``NameError: name 'ARGS' is not defined`` and left the export unwritten,
+# so every ghidra.functions/symbols/xrefs/decompile call failed with "export
+# JSON missing after postScript"; the subprocess-mocked unit tests never caught
+# it because only a live analyzeHeadless runs this file.
+ARGS = list(getScriptArgs())
+
 mode = ARGS[0] if ARGS else "functions"
 out_path = ARGS[1] if len(ARGS) > 1 else None
 limit = 256

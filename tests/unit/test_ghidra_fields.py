@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from headless_re_mcp.backends.ghidra.client import GhidraClient
+from headless_re_mcp.backends.ghidra.client import _SCRIPT_DIR, GhidraClient
 from headless_re_mcp.tools.ghidra import build_ghidra_tools
 
 
@@ -51,3 +51,26 @@ def test_ghidra_analyze_puts_the_log_in_stdout_excerpt_not_functions() -> None:
     assert "project_dir" in described
     assert "no functions field" in described
     assert "no analysis field" in described
+
+
+def test_export_script_reads_args_via_getscriptargs() -> None:
+    """ExportJson reads postScript args through getScriptArgs(), not a bare ARGS.
+
+    Ghidra's Jython injects currentProgram/monitor but never a bare ``ARGS``
+    global, so ``mode = ARGS[0]`` raised NameError and left the export unwritten
+    -- every ghidra.functions/symbols/xrefs/decompile then failed with "export
+    JSON missing after postScript". The subprocess-mocked adapter suite cannot
+    see this because only a live analyzeHeadless runs the file, so pin the real
+    API here: ARGS must be assigned from getScriptArgs() before it is read.
+    """
+    tree = ast.parse((_SCRIPT_DIR / "ExportJson.py").read_text(encoding="utf-8"))
+    calls = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "getScriptArgs" in calls, "ExportJson must read args via getScriptArgs()"
+    references = [n for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == "ARGS"]
+    assert references, "ExportJson should define ARGS from getScriptArgs()"
+    first = min(references, key=lambda n: (n.lineno, n.col_offset))
+    assert isinstance(first.ctx, ast.Store), "ARGS must be assigned before it is read"
