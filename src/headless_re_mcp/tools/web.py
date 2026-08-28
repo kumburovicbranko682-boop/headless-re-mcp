@@ -98,7 +98,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_wait(
         session_id: str,
         selector: str,
-        state: str = "visible",
+        state: Annotated[
+            str, Field(pattern="^(visible|hidden|attached|detached)$")
+        ] = "visible",
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 5.0,
     ) -> dict[str, Any]:
         """Wait for a CSS selector to reach a DOM state before reading on.
