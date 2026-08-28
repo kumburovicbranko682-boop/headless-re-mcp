@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（audit trim 测试假设时钟每次调用严格递增）
+
+- main 新落的 `test_repository_inmemory_close_trim.py::test_audit_log_trims_to_the_newest_rows`
+  连续 6 次 `append_audit` 后断言 `list_audit` 按 `action-5,4,3` 返回。`list_audit`
+  只按 `at` 时间戳降序排（内存仓稳定排序、SQLite `ORDER BY at DESC`，平局序两侧都无契约）；
+  POSIX 上 `datetime.now()` 微秒级分辨率让 6 行时间戳严格递增，断言恰好成立，但 Windows
+  系统时钟 ~15.6 ms 一跳，6 次背靠背写入共享同一时间戳，稳定排序平局退回插入序，返回
+  `action-3,4,5`，双版本同点失败。产品的平局序本就未定义，是测试编码了"时钟严格递增"的
+  POSIX-only 前提。修复已落 main（monkeypatch 仓库模块的 `datetime` 为每次调用递增
+  1 秒的假时钟，平台无关地钉住 newest-first 序，也顺带让测试不再依赖真实时钟）。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
