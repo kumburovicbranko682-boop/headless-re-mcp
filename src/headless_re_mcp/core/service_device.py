@@ -171,6 +171,9 @@ class DeviceAnalysisMixin:
             "packages", serial=serial, third_party_only=third_party_only, limit=limit
         )
 
+    def device_diskstats(self, serial: str, limit: int = 512) -> Result[JsonObject]:
+        return self._adb_wrap("diskstats", serial=serial, limit=limit)
+
     def device_install(
         self, serial: str, apk_path: str, reinstall: bool = True
     ) -> Result[JsonObject]:

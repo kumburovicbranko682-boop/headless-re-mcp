@@ -40,6 +40,7 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_DISKSTATS = 512
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -525,6 +526,70 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def diskstats(self, serial: str, *, limit: int = 512) -> JsonObject:
+        """Report per-block-device I/O activity from ``/proc/diskstats``.
+
+        The activity counterpart to ``device.partitions``, which shows the
+        block-storage layout but not its use. Each device carries its completed
+        read/write counts, the time spent on each, in-flight I/Os, and -- the
+        headline -- total bytes read and written. ``/proc/diskstats`` reports
+        transfer in fixed 512-byte sectors regardless of the device's physical
+        block size, so ``read_bytes`` / ``write_bytes`` are ``sectors * 512``.
+
+        Honesty: a line is accepted only when it has the kernel's full column
+        count and its major/minor and the eleven stat columns all parse as
+        integers, so a header or adb host-error line contributes nothing. A
+        live device always exposes block devices, so parsing zero of them means
+        the read failed (missing file, permission denied, offline device) and
+        is a ``backend_error`` rather than an empty result. The list is capped
+        and flags ``has_more`` when truncated.
+        """
+        dev = self._device(serial)
+        capped = max(1, min(int(limit), _MAX_DISKSTATS))
+        text = str(_device_shell(dev, "cat /proc/diskstats"))
+        devices: list[JsonObject] = []
+        has_more = False
+        for line in text.splitlines():
+            fields = line.split()
+            if len(fields) < 14:
+                continue
+            try:
+                major = int(fields[0])
+                minor = int(fields[1])
+                stats = [int(value) for value in fields[3:14]]
+            except ValueError:
+                continue
+            name = fields[2]
+            if not name:
+                continue
+            if len(devices) >= capped:
+                has_more = True
+                break
+            sectors_read = stats[2]
+            sectors_written = stats[6]
+            devices.append(
+                {
+                    "name": name,
+                    "major": major,
+                    "minor": minor,
+                    "reads_completed": stats[0],
+                    "sectors_read": sectors_read,
+                    "read_ms": stats[3],
+                    "writes_completed": stats[4],
+                    "sectors_written": sectors_written,
+                    "write_ms": stats[7],
+                    "ios_in_progress": stats[8],
+                    "io_ms": stats[9],
+                    "read_bytes": sectors_read * 512,
+                    "write_bytes": sectors_written * 512,
+                }
+            )
+        if not devices:
+            raise AdbError(
+                "backend_error", "reading /proc/diskstats failed", output=text[:800]
+            )
+        return {"devices": devices, "count": len(devices), "has_more": has_more}
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a

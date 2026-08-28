@@ -89,6 +89,27 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="device.diskstats")
+    def device_diskstats(
+        serial: str, limit: Annotated[int, Field(ge=1, le=512)] = 512
+    ) -> dict[str, Any]:
+        """Report per-block-device I/O activity from /proc/diskstats.
+
+        The activity counterpart to device.partitions (layout). Answers with
+        devices (each entry: name, major, minor, reads_completed, sectors_read,
+        read_ms, writes_completed, sectors_written, write_ms, ios_in_progress,
+        io_ms, and the headline read_bytes / write_bytes), count, and has_more.
+        /proc/diskstats counts fixed 512-byte sectors regardless of physical
+        block size, so read_bytes / write_bytes are sectors * 512.
+
+        Honesty: only lines with the kernel's full column count and integer
+        major/minor plus stat columns are accepted, so headers and adb
+        host-error text contribute nothing. A live device always has block
+        devices, so parsing zero is a failure (missing file, permission denied,
+        offline device), not an empty result.
+        """
+        return _dump(analysis.device_diskstats(serial, limit=limit))
+
     @tools.tool(name="device.install")
     def device_install(
         serial: str, apk_path: str, reinstall: bool = True
