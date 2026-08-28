@@ -109,7 +109,9 @@ def run_net_reactor_slayer(
 ) -> NetReactorSlayerResult:
     """Run NETReactorSlayer on a work copy; publish ``*_Slayed`` to output_path."""
     exe = Path(executable).expanduser()
-    source = Path(input_path).expanduser().resolve(strict=True)
+    # resolve() without strict=True so a missing input surfaces as the structured
+    # INPUT_NOT_FOUND error below instead of a raw FileNotFoundError from resolve().
+    source = Path(input_path).expanduser().resolve()
     destination = Path(output_path).expanduser()
     if not exe.is_file():
         raise NetReactorSlayerError(
