@@ -98,9 +98,8 @@ def test_decompile_falls_back_to_a_unique_simple_name_match(tmp_path: Path) -> N
 def test_decompile_not_found_when_no_match(tmp_path: Path) -> None:
     client, apk, out = _jadx(tmp_path)
     fake = _writes(out, {"sources/pkg/Other.java": "class Other {}"})
-    with patch(_RUN, fake):
-        with pytest.raises(JadxError) as caught:
-            client.decompile(apk, out, "com.example.Main")
+    with patch(_RUN, fake), pytest.raises(JadxError) as caught:
+        client.decompile(apk, out, "com.example.Main")
     assert caught.value.code == "not_found"
     assert caught.value.details["class_name"] == "com.example.Main"
 
@@ -114,9 +113,8 @@ def test_decompile_not_found_when_the_simple_name_is_ambiguous(tmp_path: Path) -
             "sources/b/Main.java": "class Main {}",
         },
     )
-    with patch(_RUN, fake):
-        with pytest.raises(JadxError) as caught:
-            client.decompile(apk, out, "com.example.Main")
+    with patch(_RUN, fake), pytest.raises(JadxError) as caught:
+        client.decompile(apk, out, "com.example.Main")
     # Two candidates -- refuse rather than guess which one the caller meant.
     assert caught.value.code == "not_found"
 
@@ -173,9 +171,8 @@ def test_run_maps_timeout_with_killed_pids(tmp_path: Path) -> None:
     def _boom(*_a: Any, **_k: Any) -> Completed:
         raise TimedOut(9.0, [77])
 
-    with patch(_RUN, _boom):
-        with pytest.raises(JadxError) as caught:
-            client.export_sources(apk, out)
+    with patch(_RUN, _boom), pytest.raises(JadxError) as caught:
+        client.export_sources(apk, out)
     assert caught.value.code == "timeout"
     assert caught.value.details["killed_pids"] == [77]
 
@@ -186,7 +183,6 @@ def test_run_maps_oserror_to_backend_error(tmp_path: Path) -> None:
     def _boom(*_a: Any, **_k: Any) -> Completed:
         raise OSError("no such file")
 
-    with patch(_RUN, _boom):
-        with pytest.raises(JadxError) as caught:
-            client.export_sources(apk, out)
+    with patch(_RUN, _boom), pytest.raises(JadxError) as caught:
+        client.export_sources(apk, out)
     assert caught.value.code == "backend_error"
