@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（r2.sections：radare2 从头部读出的节区布局，工具面 265→266）
+
+- 新增只读工具 `r2.sections`（跑 `iSj`）：列出二进制的节区——`name`、`size`、`vsize`、
+  `paddr`、`vaddr`、`perm`（`-rwx` 串）以及映射好的 `address`（va/rva/module），外加 `count`。
+  此前 r2 这条线能列函数、字符串、导入、导出、反汇编、交叉引用，却唯独没法看**节区布局**，
+  而这正是拿到一个 ELF/`.so`（或任何目标）后最基本的一步：`.text`/`.data`/`.rodata` 各自落在
+  哪、哪个节区同时可写又可执行（`rwx`，加壳/自改码的典型信号）。该列表走头部、无需分析 pass，
+  因此比 `r2.functions` 快得多。命令 `iSj` 已加入 r2 命令白名单；读写归类记为只读；沿用既有
+  `enrich_r2_payload`，故 `vaddr` 照常映射成统一 `Address`、超过 4096 条时以 `items_truncated`/
+  `items_total`/`items_limit` 明示截断（不再把在上限处截断的表误读成完整布局）。已在真
+  radare2 5.5.0 上用现编的 x86-64 ELF 核验：31 个节区如实列出，`.text` 为 `-r-x`、`.data`/
+  `.bss` 为 `-rw-`，地址映射正确；单测另钉住 `iSj` 在白名单内、`vaddr→address` 映射、截断语义
+  与 docstring 明确「无 sections 字段」。README 与工具计数同步更新为 266（149 只读 / 117 写）。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言

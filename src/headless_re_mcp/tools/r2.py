@@ -100,6 +100,23 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_exports(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.sections")
+    def r2_sections(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Sections radare2 read from the binary's headers.
+
+        Answers with items, each carrying name, size, vsize, paddr, vaddr,
+        perm (an -rwx string) and address (va/rva/module), plus count. The
+        listing needs no analysis pass, so it is the fast way to see the
+        memory layout: where .text/.data/.rodata sit, and any section that is
+        both writable and executable (rwx), a packing tell. There is no
+        integer address field. Read items_truncated, items_total and
+        items_limit when the list filled the cap (4096). There is no sections,
+        truncated or has_more field.
+        """
+        return _dump(analysis.r2_sections(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,
