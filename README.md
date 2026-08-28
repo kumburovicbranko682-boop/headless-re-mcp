@@ -390,9 +390,15 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 81 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
-  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
+  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄、
+  session.create 入口边界经真实 MCP 端到端(裸机确定性)：每个部署最先调用、也最常收到任意/敌意
+  路径的这个工具，对每种坏输入都回结构化信封、绝不返回 internal_error 事故——不存在→file_not_found、
+  目录/空文件/非识别格式→invalid_request 且指明哪项检查失败、显式 target 覆盖优先于嗅探内容、
+  http URL→web;并修复一处缺陷:一个存在但不可读(权限拒绝)的目标此前会以未捕获 PermissionError
+  逃逸成 internal_error 事故(classify 吞掉读错回退 PE、架构探针再开文件即抛)，现改为干净的
+  invalid_request「cannot read session target」）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
   wabt（1）、以及 2 个有文档说明的故意跳过
 - 264 个工具（全部 265 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
