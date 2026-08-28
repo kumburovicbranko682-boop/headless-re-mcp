@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
+
+- main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
+  `_ProxyInstance.start()/_run()` 的串行化 bring-up 改造（`_STARTUP_LOCK` +
+  `_ReadyMarker` addon，防两个 DumpMaster 抢共享的 mitmproxy 全局 ctx）在合并树上
+  语义冲突：`test_instance_start_returns_once_the_port_accepts` 的假 `_run` 不会像真
+  `_run` 那样经 running() 钩子置位 `_ready`，start() 在新形态下等 `_ready` 而超时；
+  `test_instance_run_drives_a_master_to_completion` 钉死 `added == [recorder]`，而新
+  形态多挂一个 `_ReadyMarker`。两侧各自的树都绿，只有合并树红——与此前 .NET 元数据
+  API 的语义冲突同类。改法（两树兼容）：假 `_run` 若实例有 `_ready` 就置位；addon
+  断言改钉 `added[0] is recorder`（顺序而非全等）。两棵树上该文件 57 例均过。
+
 ### 修复（audit trim 测试假设时钟每次调用严格递增）
 
 - main 新落的 `test_repository_inmemory_close_trim.py::test_audit_log_trims_to_the_newest_rows`
