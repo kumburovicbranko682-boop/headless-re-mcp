@@ -11,6 +11,8 @@ fake frida module; no target process.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from headless_re_mcp.backends.frida.client import (
@@ -119,7 +121,13 @@ def test_memory_read_bounds_the_requested_size() -> None:
 def test_bound_timeout_rejects_nonpositive_and_caps_the_rest() -> None:
     assert _bound_timeout(5.0) == 5.0
     assert _bound_timeout(10**9) == MAX_WORKFLOW_TIMEOUT
-    for bad in (0.0, -1.0):
+    # NaN belongs on this list, not just the negatives: nan <= 0 is False, so the
+    # plain guard let it through and min(nan, ceiling) stayed nan, which reaches
+    # Future.result(nan) -- a non-blocking wait that returns at once and reports
+    # a spurious "did not respond within nans" for a bad parameter. The MCP
+    # schema's gt=0 rejects nan, but the agent transport skips the schema, which
+    # is the whole reason this bound exists.
+    for bad in (0.0, -1.0, math.nan):
         with pytest.raises(FridaError) as info:
             _bound_timeout(bad)
         assert info.value.code == "invalid_params"

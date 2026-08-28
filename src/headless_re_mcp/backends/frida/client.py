@@ -219,7 +219,13 @@ def _accepts_timeout(func: Any) -> bool:
 
 def _bound_timeout(timeout: float) -> float:
     value = float(timeout)
-    if value <= 0:
+    # `value != value` catches NaN, which `value <= 0` does not (every NaN
+    # comparison is False) -- and min(nan, ceiling) stays nan, so a NaN deadline
+    # would reach Future.result(nan), whose wait does a non-blocking acquire and
+    # returns at once, making the frida call report a spurious "did not respond
+    # within nans" for what was really a bad parameter. This is the same NaN
+    # hole clamp_cli_timeout closes for the CLI adapters.
+    if value != value or value <= 0:
         raise FridaError("invalid_params", "timeout must be positive")
     return min(value, MAX_WORKFLOW_TIMEOUT)
 

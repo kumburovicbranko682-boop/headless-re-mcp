@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -338,14 +339,24 @@ class TestWebNavTimeoutIsBounded:
     def test_bound_nav_timeout_rejects_nonpositive_and_caps_the_rest(self) -> None:
         assert _bound_nav_timeout(30.0) == 30.0
         assert _bound_nav_timeout(10**9) == _MAX_NAV_TIMEOUT_S
-        for bad in (0.0, -1.0, -100.0):
+        # NaN is the dangerous one this class was written for: nan <= 0 is False,
+        # so the plain guard passed it through and min(nan, ceiling) stayed nan,
+        # which reaches the Future.result that returns at once and wedges the
+        # session -- the exact bricking this bound exists to prevent. The schema
+        # gt=0 rejects nan, but the agent transport skips the schema.
+        for bad in (0.0, -1.0, -100.0, math.nan):
             with pytest.raises(WebError) as info:
                 _bound_nav_timeout(bad)
             assert info.value.code == "invalid_params"
 
-    def test_a_negative_navigate_timeout_does_not_wedge_a_live_session(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("bad", [-100.0, math.nan])
+    def test_a_bad_navigate_timeout_does_not_wedge_a_live_session(
+        self, monkeypatch: pytest.MonkeyPatch, bad: float
     ) -> None:
+        # Both a negative and a NaN must fail before the runner sees the doomed
+        # wait: a NaN would otherwise flow through as timeout + 10.0 == nan into
+        # runner.call -> Future.result(nan), which returns at once and flips the
+        # runner to wedged, bricking this healthy session until web.close.
         backend = WebBackend()
         runner = _Runner("test-nav-runner")
         try:
@@ -354,7 +365,7 @@ class TestWebNavTimeoutIsBounded:
             monkeypatch.setattr(backend, "_get", lambda session_id: handle)
 
             with pytest.raises(WebError) as info:
-                backend.navigate("s", "https://example/app", timeout=-100.0)
+                backend.navigate("s", "https://example/app", timeout=bad)
             assert info.value.code == "invalid_params"
             # The runner never saw the doomed wait, so the session is still usable.
             assert runner.wedged is False

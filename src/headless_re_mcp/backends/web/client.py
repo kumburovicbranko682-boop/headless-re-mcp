@@ -71,9 +71,15 @@ def _bound_nav_timeout(timeout: float) -> float:
     while a huge one would park the session thread and a pool worker for as long
     as the page took. Reject the first and cap the second before any work is
     queued, so a stray timeout can never wedge a live browser.
+
+    ``value != value`` catches NaN too: it is not ``<= 0`` (every NaN comparison
+    is False) and ``min(nan, ceiling)`` stays nan, so a NaN deadline would sail
+    past the plain guard into exactly the ``Future.result`` that wedges the
+    session -- the very outcome this function exists to prevent. The canonical
+    ``clamp_cli_timeout`` rejects NaN the same way.
     """
     value = float(timeout)
-    if value <= 0:
+    if value != value or value <= 0:
         raise WebError("invalid_params", "timeout must be positive")
     return min(value, _MAX_NAV_TIMEOUT_S)
 
