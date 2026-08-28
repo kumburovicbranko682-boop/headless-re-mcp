@@ -5,7 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
+### 新增（`r2.xrefs_to`：精确回答"谁引用了这个地址"）
+
+- 现有 `r2.xrefs` 跑的 `axj @ addr` 实测不受 `@ addr` 约束——在任意地址上都
+  返回整个程序的引用数据库（示例 ELF 上 24 条 section/plt 噪声），无法回答逆向
+  中最常见的问题"这个函数/字符串被谁调用/引用"。新工具 `r2.xrefs_to` 跑
+  `aa; axtj @ addr`，只返回指向该地址的引用：每条含 from（引用点）、type
+  （CALL/CODE/DATA/STRING）、opcode（发起引用的指令）、fcn_name/fcn_addr
+  （引用所在函数）与 refname，from 同时映射为 from_address 与 address
+  （va/rva/module），请求地址回显为 address_va。`axtj @ <hex|dec>` 进
+  白名单（正则全匹配，拒绝符号名与命令注入形态）。真实 ELF 上与裸
+  `r2 -c 'axtj @ main'` 输出逐条一致（entry0 的 `lea rdi, [main]`），
+  无引用地址返回 parsed=True 的空 items 而非解析失败。
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
   `_ProxyInstance.start()/_run()` 的串行化 bring-up 改造（`_STARTUP_LOCK` +

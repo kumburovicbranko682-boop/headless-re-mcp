@@ -130,4 +130,27 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         xrefs, truncated or has_more field.
         """
         return _dump(analysis.r2_xrefs(session_id, address, timeout=timeout))
+
+    @tools.tool(name="r2.xrefs_to")
+    def r2_xrefs_to(
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Every reference TO address -- the precise "who calls/uses this".
+
+        Runs analysis, then axtj @ address. Answers with items, each carrying
+        from (the referencing site), type (CALL/CODE/DATA/STRING), opcode (the
+        instruction that makes the reference), fcn_name and fcn_addr (the
+        function the reference sits in) and refname, plus from_address and
+        address (va/rva/module for the from site) and address_va (the integer
+        that was asked). Unlike r2.xrefs, which lists the program's whole
+        reference database unscoped, this is scoped to address -- the query to
+        answer "find all callers/uses of this function, string or datum".
+        Empty items means nothing references it. Read items_truncated,
+        items_total and items_limit when the list filled the cap (4096). There
+        is no integer address, xrefs, truncated or has_more field.
+        """
+        return _dump(analysis.r2_xrefs_to(session_id, address, timeout=timeout))
+
     return tools.bindings
