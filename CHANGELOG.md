@@ -5,6 +5,27 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（Web 静态线的 JS/WASM Gate 从「跑没崩」升级为「真的解出了东西」）
+
+`test_web_re_gate.py` 里 webcrack / wabt 两条断言此前弱到近乎无效：JS 侧只校验
+`isinstance(code, str)` 且 `bytes > 0`——工具原样回吐输入也能过；WASM 侧喂的是「magic+版本、
+零段」的空模块，只断言 `"module" in wat`——只证明 wasm2wat 能打开文件，从没证明它真把指令反汇编
+出来。二者都属于「skip ≠ pass」之外的另一种谎报：test 绿了，工具却没干活。改为对真实变换下断言：
+
+- **JS 去混淆**：夹具把明文 `H3adl3ss` 藏在 `"\x48\x33..."` 转义里。测试先断言原文里既没有该明文、
+  又确有 `\x48` 转义（否则断言是空转），再要求 webcrack 输出里出现解码后的明文、转义形式消失、且
+  `["push"]` 这类字符串下标被改写成 `.push` 点号访问——这些都是输入明摆着需要、且只有真去混淆才会
+  发生的变化。
+- **WASM 反汇编**：不再喂空模块，而是在测试时用 wabt 自带的 `wat2wasm`（就在被测 `wasm2wat`
+  旁边，用与客户端一致的 `_resolve_wabt_tool` 定位）现编一个含 `add`/`triple` 两个具名导出、带
+  `i32.add`/`i32.mul`/`local.get` 的真模块，断言 `wasm2wat` 的 WAT 里真出现了这些指令与两个导出
+  名。新增 `test_wasm_info_when_wabt_present` 顺带覆盖 `wasm_info`（wasm-objdump），断言它列出
+  Export/Code/Function 段与两个导出函数符号。
+
+skip ≠ pass 依旧：webcrack（需 Node 22/24）或 wabt 缺失、乃至能定位 `wasm2wat` 却拿不到
+`wat2wasm` 时都干净 skip。已在装有 webcrack + wabt 1.0.36 的 Linux x86_64 上三条全部实跑通过
+（非 skip）。
+
 ### 修复（Ghidra 无头后端在非 Windows 上从来跑不通，且导出工具从未对真机生效）
 
 给 portable 线补真机 Gate 时发现 Ghidra 后端有两处只有跑真 `analyzeHeadless` 才会暴露、
