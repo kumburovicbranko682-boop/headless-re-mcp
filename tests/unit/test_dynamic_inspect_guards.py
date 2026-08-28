@@ -153,6 +153,52 @@ def test_imports_read_rejects_a_non_positive_size(service: Any, session_id: str)
     assert _code(service.imports_read(session_id, 0x140002000, 0)) == "invalid_params"
 
 
+def test_imports_read_rejects_an_oversized_size(service: Any, session_id: str) -> None:
+    # imports.read declares size le=16 MiB in the schema, but the agent
+    # transport skips that Field, so an oversized size would otherwise reach the
+    # worker and drive a 16 MiB+ IAT read before the reply outran the frame.
+    huge = 16 * 1024 * 1024 + 1
+    assert _code(service.imports_read(session_id, 0x140002000, huge)) == "invalid_params"
+
+
+@pytest.mark.parametrize(
+    "bad_size", ["0x40", 12.0, None, True], ids=["str", "float", "none", "bool"]
+)
+def test_imports_read_rejects_a_non_integer_size(
+    service: Any, session_id: str, bad_size: Any
+) -> None:
+    assert _code(service.imports_read(session_id, 0x140002000, bad_size)) == "invalid_params"
+
+
+def test_imports_scan_rejects_an_oversized_search_size(service: Any, session_id: str) -> None:
+    huge = 16 * 1024 * 1024 + 1
+    result = service.imports_scan(session_id, 0x140000000, search_size=huge)
+    assert _code(result) == "invalid_params"
+
+
+def test_imports_scan_rejects_a_negative_search_start(service: Any, session_id: str) -> None:
+    result = service.imports_scan(session_id, 0x140000000, search_start=-1)
+    assert _code(result) == "invalid_params"
+
+
+@pytest.mark.parametrize("bad", [0, -1, 129, "8", 8.0], ids=["zero", "neg", "over", "str", "float"])
+def test_imports_scan_rejects_an_out_of_range_max_candidates(
+    service: Any, session_id: str, bad: Any
+) -> None:
+    result = service.imports_scan(session_id, 0x140000000, max_candidates=bad)
+    assert _code(result) == "invalid_params"
+
+
+def test_imports_scan_allows_the_internal_over_fetch_max_candidates(
+    service: Any, session_id: str
+) -> None:
+    # unpack.iat.scan over-fetches max(max_candidates * 3, 24) -- up to 96 for a
+    # 32-cap user value -- so the guard must let that through to the delegate,
+    # which reports backend_unavailable here rather than rejecting the count.
+    result = service.imports_scan(session_id, 0x140000000, max_candidates=96)
+    assert _code(result) == "backend_unavailable"
+
+
 def test_hardware_breakpoint_rejects_a_negative_address(service: Any, session_id: str) -> None:
     assert _code(service.breakpoints_hardware_set(session_id, -1)) == "invalid_params"
 

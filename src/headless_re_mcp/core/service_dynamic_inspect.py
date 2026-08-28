@@ -37,6 +37,25 @@ if TYPE_CHECKING:
 
 JsonObject = dict[str, Any]
 
+# Mirror the imports.scan / imports.read tool-schema bounds
+# (tools/dynamic_analysis.py: search_size and size le=16 MiB). The MCP path
+# enforces them through pydantic Field, but the agent transport invokes the
+# handler straight from model arguments, so without a service-side check an
+# oversized or non-integer search_size/size sails past every bound and reaches
+# the worker, which walks that much target memory before the reply either times
+# out or outruns the response frame -- after the oversized read already
+# happened. Refuse it here with a clean invalid_params, the way module_base and
+# iat_va already are.
+_MAX_IMPORTS_SCAN_BYTES = 16 * 1024 * 1024
+_MAX_IMPORTS_READ_BYTES = 16 * 1024 * 1024
+# The tool schema caps the user-facing max_candidates at 32, but unpack.iat.scan
+# deliberately over-fetches -- it asks native for max(max_candidates * 3, 24)
+# and ranks/dedupes the wider pool locally -- so the service ceiling has to sit
+# above that 96 to leave that path working. max_candidates only sizes the count
+# of small candidate structs the reply carries, not a memory range, so a
+# generous ceiling still forecloses a nonsensical or negative count.
+_MAX_IMPORTS_CANDIDATES = 128
+
 
 def _module_base_present(modules_payload: object, base: int) -> bool:
     if not isinstance(modules_payload, dict):
@@ -684,6 +703,32 @@ class DynamicInspectMixin:
                     message="mode must be consecutive|sparse|call_site|all",
                 ),
             )
+        if type(max_candidates) is not int or not 1 <= max_candidates <= _MAX_IMPORTS_CANDIDATES:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message=f"max_candidates must be between 1 and {_MAX_IMPORTS_CANDIDATES}",
+                ),
+            )
+        if search_start is not None and (type(search_start) is not int or search_start < 0):
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="search_start must be a non-negative integer",
+                ),
+            )
+        if search_size is not None and (
+            type(search_size) is not int or not 1 <= search_size <= _MAX_IMPORTS_SCAN_BYTES
+        ):
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message=f"search_size must be between 1 and {_MAX_IMPORTS_SCAN_BYTES}",
+                ),
+            )
         params: JsonObject = {
             "module_base": module_base,
             "max_candidates": max_candidates,
@@ -724,10 +769,13 @@ class DynamicInspectMixin:
                 ok=False,
                 error=RpcError(code="invalid_params", message="iat_va must be a positive integer"),
             )
-        if type(size) is not int or size <= 0:
+        if type(size) is not int or not 1 <= size <= _MAX_IMPORTS_READ_BYTES:
             return Result[JsonObject](
                 ok=False,
-                error=RpcError(code="invalid_params", message="size must be a positive integer"),
+                error=RpcError(
+                    code="invalid_params",
+                    message=f"size must be between 1 and {_MAX_IMPORTS_READ_BYTES}",
+                ),
             )
         return self._dynamic_request(
             session_id,
