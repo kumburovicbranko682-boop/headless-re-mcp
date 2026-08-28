@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（IAT 候选合并时 alt_kinds 在三方以上重叠中丢失）
+
+- `unpack/iat_rank.py` 的 `_merge_overlaps` 文档承诺“union kinds”，但重建 `alt_kinds`
+  时只取当前比较的两个候选的 `kind`，未合入 `existing`/`item` 之前合并已累积的
+  `alt_kinds`。当第三个候选重叠到已吸收两个候选的区间时，早先那次合并记录的 kind
+  会被丢弃，导致 `best.alt_kinds` 少报重叠种类，与函数自身契约相矛盾。
+- 修复：合并时把两侧已有的 `alt_kinds` 一并并入 `kinds` 集合，使结果与合并顺序无关、
+  跨任意条数的链式重叠都完整保留所有种类。
+- 新增 `tests/unit/test_iat_rank_merge_kinds_union.py`：覆盖三方/四方重叠的完整并集、
+  与输入顺序无关、重复种类去重、无重叠时不产生 `alt_kinds`，以及 `_merge_overlaps`
+  直接携带前次 `alt_kinds` 的路径。只加测试与最小修复。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
