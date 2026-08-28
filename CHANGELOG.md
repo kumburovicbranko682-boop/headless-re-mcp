@@ -64,9 +64,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   承诺的 `lib` 字段(r2 5.x 对这些导入并不给)。单测新增「`plt: 0` 导入不带伪造地址、真 stub 仍解析、
   原始 `plt` 保留」与「UT64_MAX 偏移不铸地址、真 vaddr 仍映射」两条,并钉死文档串。新增 live gate
   (`test_r2_imports_plt_sentinel_live_gate.py`)配套夹具 `fixtures/elf/imports_sample`(stripped ELF,
-  `imports_sample.c` 附重建说明):先确认真 r2 的 `iij` 确实给出 `plt==0` 与 `plt!=0` 两类导入(守卫
-  这条守卫),再断言无 stub 导入不带 `address`、有 stub 导入的 `address.va` 等于其 `plt`。CI 新增
-  `linux-r2-imports` job 装 radare2 跑该 gate,skip≠pass 守卫在 radare2 已装却仍 skip 时判失败。
+  `imports_sample.c` 附重建说明):先确认真 r2 的 `iij` 确实给出「无 stub」与「有 stub」两类导入(守卫
+  这条守卫),再断言无 stub 导入不带 `address`、有 stub 导入的 `address.va` 等于其 `plt`。live gate 按
+  「`plt` 为假值」判无 stub,兼容两种 radare2 写法——旧版把 `plt` 置 0、6.2+ 直接省掉 `plt` 键(经真机
+  radare2 6.2.0 验证:`__libc_start_main`/`__gmon_start__` 无 `plt` 键、`printf`/`strlen` 带非零 `plt`,
+  映射对两者都不铸造 va 0)。CI 新增 `linux-r2-imports` job 装 radare2 跑该 gate,skip≠pass 守卫在
+  radare2 已装却仍 skip 时判失败。
 
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
