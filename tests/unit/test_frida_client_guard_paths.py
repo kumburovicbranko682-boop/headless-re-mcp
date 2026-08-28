@@ -167,11 +167,20 @@ def test_accepts_timeout_is_false_when_the_signature_cannot_be_read() -> None:
     assert frida_mod._accepts_timeout(3) is False
 
 
-def test_bound_timeout_rejects_a_non_positive_deadline() -> None:
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan")])
+def test_bound_timeout_rejects_a_non_positive_or_nan_deadline(bad: float) -> None:
+    # NaN slips past a bare `<= 0` check and then makes Future.result raise an
+    # immediate spurious timeout, so it must be rejected as a bad parameter.
     with pytest.raises(FridaError) as caught:
-        frida_mod._bound_timeout(0)
+        frida_mod._bound_timeout(bad)
 
     assert caught.value.code == "invalid_params"
+
+
+def test_bound_timeout_caps_an_infinite_deadline() -> None:
+    # +inf is a valid (if extreme) deadline: cap it to the workflow ceiling
+    # rather than reject it, matching clamp_cli_timeout.
+    assert frida_mod._bound_timeout(float("inf")) == frida_mod.MAX_WORKFLOW_TIMEOUT
 
 
 def test_invoke_passes_a_timeout_only_when_the_callable_names_it() -> None:

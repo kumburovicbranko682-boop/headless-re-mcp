@@ -219,7 +219,12 @@ def _accepts_timeout(func: Any) -> bool:
 
 def _bound_timeout(timeout: float) -> float:
     value = float(timeout)
-    if value <= 0:
+    # NaN fails every comparison, so `value <= 0` alone lets it through, and a
+    # NaN deadline then makes Future.result raise at once -- reported as a
+    # misleading "frida did not respond" timeout for what is really a bad
+    # parameter. Reject it as invalid_params, as clamp_cli_timeout does; +inf
+    # stays valid and is capped to MAX_WORKFLOW_TIMEOUT below.
+    if value != value or value <= 0:
         raise FridaError("invalid_params", "timeout must be positive")
     return min(value, MAX_WORKFLOW_TIMEOUT)
 
