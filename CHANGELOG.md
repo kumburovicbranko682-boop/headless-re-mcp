@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（Web 动态线首次真机证明 CDP 确实抓到了一个真实请求及其响应体）
+
+`test_web_re_gate.py` 里的 CDP Gate 只在一个 `data:` URL 上开浏览器，查 DOM/console/脚本列表
+——这几样都不碰网络。于是这条动态线真正为之存在的网络面（`web.network.list` / `web.network.get`
+/ `web.har.export`）从没对着一个真实 HTTP 请求验证过：没有一个字节离开过浏览器，而每个 RE
+流程都想读回的响应体，也只在单测里对着手搓的假 entry 断言过。新增
+`tests/integration/test_web_network_gate.py`：起一个一次性 origin，页面是一份 HTML 文档并拉一个
+`<script src>` 子资源，用真的 headless Chromium 经 CDP 访问它，再用同款 `web.*` API 把抓取读回来：
+
+- **network_list**：文档与子资源都以真实的 method、URL、状态码被记录下来。
+- **network_get**：子资源那条抓下的响应带着 origin 原样发回的字节——证明 CDP 看到的是响应体本身，
+  而不只是请求行。
+- **har_export**：抓取能序列化成多条 HAR entry（≥2）。
+
+刻意用明文 localhost HTTP：不需要 CA 信任，于是这条 Gate 证明的是抓取路径本身。skip ≠ pass：仅当
+Playwright 缺失、或 Chromium 起不来时才干净 skip。已在装有 Playwright 1.62 + Chromium
+headless shell 的 Linux x86_64 上实跑通过（非 skip，往返≈1s）。
+
 ### 测试（Web 静态线的 JS/WASM Gate 从「跑没崩」升级为「真的解出了东西」）
 
 `test_web_re_gate.py` 里 webcrack / wabt 两条断言此前弱到近乎无效：JS 侧只校验
