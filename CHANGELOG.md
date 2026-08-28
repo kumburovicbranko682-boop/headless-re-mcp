@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（非 PE offset 读取器新增“文档层诚实分页”守卫：docstring 必须点名 total / offset / has_more，把 apk.xrefs / frida.applications 曾经的“无 offset、首页装作完整”缺陷钉在 agent 实际消费的那一层）
+
+- `test_non_pe_pagination_schema_bounds.py` 原有两条守卫只钉 schema:`limit` 必须有上限、`offset` 必须以 0 为下限。\
+  但 schema 只管“分页参数有界”,管不到“工具有没有如实告诉 agent 这一页不是全部”。而恰恰是后者出过两次事故——\
+  `apk.xrefs` 与 `frida.applications` 都曾以“只收首页、置 `has_more`、既不排序也无 `offset`”上线,首页看着像完整列表,\
+  agent 据此判断“就这些了”便漏掉其余。新增第三条守卫扫描每个声明 `offset` 的非 PE 工具,要求其 docstring 同时点名\
+  `total`(共有多少)、`offset`(本页起点)与 `has_more`(后续页是否还有行)——这正是 agent 读工具说明时据以决策的那层契约。\
+  一个新 offset 读取器若只描述“一页”却不提 `total` / `has_more`(诱导“这就是全部”)便会在此报错,与既有的 schema 守卫\
+  (offset 有界)和各后端的 envelope 测试(字段确实回包)三层叠合,分别钉住 边界 + 承诺 + 载荷。守卫用 `_NON_PE_BUILDERS` \
+  复用同一套发现逻辑,并断言 web / proxy / apk / frida 的已知 offset 读取器都在扫描内(含触发本守卫的那两个),避免枚举\
+  一旦断裂便“无事可查”地空过。当前 10 个 offset 读取器(`web.network.list` / `web.scripts` / `web.wasm.list`、\
+  `proxy.flows`、`apk.classes` / `methods` / `strings` / `xrefs`、`frida.applications`、`js.unpack_bundle`)均已满足,守卫\
+  即刻转为对未来读取器的强制项。
+
 ### 契约（web.wait 的 state 在 schema 层声明允许值枚举，与 frida.hook.template / workspace.mode.set 的做法对齐）
 
 - `web.wait` 的 `state`（`visible` / `hidden` / `attached` / `detached`）此前是裸 `str`,允许值只在后端\

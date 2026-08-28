@@ -23,6 +23,13 @@ turning a page size into an unbounded fetch -- so a new paginated tool cannot
 ship a bare ``int`` page size without a deliberate ceiling. ``offset`` needs
 only the floor: a huge offset is safe because it slices past the end and returns
 an empty page, so no upper bound is required (and none is asserted).
+
+A third guard here pins the *documented* half of the offset contract: every
+offset reader's docstring must name ``total`` / ``offset`` / ``has_more``, the
+fields that keep a page which filled the limit from being read as the whole
+list. That is the layer the agent actually consumes, and the class of gap this
+catches is exactly the one ``apk.xrefs`` and ``frida.applications`` each shipped
+with before -- an offset-less cap whose first page looked complete.
 """
 
 from __future__ import annotations
@@ -60,6 +67,17 @@ def _non_pe_param_properties(param: str) -> dict[str, dict[str, Any]]:
             prop = schema.get("properties", {}).get(param)
             if prop is not None:
                 found[bound.name] = prop
+    return found
+
+
+def _non_pe_offset_tool_docstrings() -> dict[str, str]:
+    """Map every non-PE tool that declares ``offset`` to its normalized docstring."""
+    found: dict[str, str] = {}
+    for builder in _NON_PE_BUILDERS:
+        for bound in builder(cast(Any, object())):
+            schema = input_schema_for(bound.handler)
+            if "offset" in schema.get("properties", {}):
+                found[bound.name] = " ".join((bound.handler.__doc__ or "").split())
     return found
 
 
@@ -110,3 +128,43 @@ def test_every_non_pe_offset_param_is_floored_at_zero() -> None:
         assert offset.get("minimum") == 0, (
             f"{name}: offset minimum must be 0, got {offset.get('minimum')}"
         )
+
+
+def test_every_non_pe_offset_reader_documents_the_honest_page_fields() -> None:
+    """An offset reader's docstring must name ``total``, ``offset`` and ``has_more``.
+
+    The two guards above pin that ``offset`` is *bounded*; this pins that the tool
+    tells the agent the page is *honest*. Every offset reader returns an envelope
+    with ``total`` (how many exist), ``offset`` (where this page starts) and
+    ``has_more`` (whether a further page still has rows) -- the fields that keep a
+    page which filled the limit from being read as the whole list. This is the
+    contract the agent actually consumes when it decides "these are all of them",
+    so a docstring that describes a page without them is the dishonest-page gap
+    itself: ``apk.xrefs`` and ``frida.applications`` each shipped, earlier, as an
+    offset-less cap whose first page looked complete, and the fix in both was
+    exactly these fields. A new offset reader that documents a page but not its
+    ``total`` / ``has_more`` trips here, at the layer the agent reads -- alongside
+    the schema guard (offset is bounded) and each backend's envelope test (the
+    fields are really returned), the three together pin bound + promise + payload.
+    """
+    docs = _non_pe_offset_tool_docstrings()
+
+    # Non-vacuous: the offset readers span web / proxy / apk / frida, and the two
+    # that motivated this guard must be in the scan -- a broken enumeration would
+    # otherwise make the check pass by finding nothing to check.
+    assert {
+        "web.network.list",
+        "proxy.flows",
+        "apk.classes",
+        "apk.xrefs",
+        "frida.applications",
+    } <= set(docs), f"expected the known offset readers in the scan, saw {sorted(docs)}"
+
+    missing: dict[str, list[str]] = {}
+    for name, doc in docs.items():
+        absent = [field for field in ("total", "offset", "has_more") if field not in doc]
+        if absent:
+            missing[name] = absent
+    assert missing == {}, (
+        f"offset readers whose docstring omits an honest-page field: {missing}"
+    )
