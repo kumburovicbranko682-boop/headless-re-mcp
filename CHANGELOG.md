@@ -5,6 +5,29 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Ghidra 后端在 Ghidra 11.3+ 与 Linux 上其实跑不起来——postScript 仍是 Jython，启动器又挑错平台）
+
+- Ghidra 11.3 移除了内置 Jython 解释器，`ExportJson.py`（`@runtime Jython`）在现代版本上每次都以
+  「Ghidra was not started with PyGhidra」告终，除非改用 PyGhidra 启动器并额外装包——也就是说
+  `ghidra.*` 的导出面在最近的 Ghidra 上是**全线不可用**。改法：把 postScript 换成 Java 的
+  `ExportJson.java`（`GhidraScript`，由 Ghidra 自带的脚本引擎在每个版本、Windows/POSIX 上都能就地
+  编译，无需额外运行时），产出的形状与 `GhidraClient`、工具目录承诺的一致（functions 带
+  name/entry/body_size，symbols 带 name/address/type，xrefs 带 from/to/type，decompile 带
+  function/entry/decompiled/truncated）；客户端 `_EXPORT_SCRIPT` 与「脚本缺失」报错同步改为 `.java`。
+- `ExportJson.java` 显式以 UTF-8 落盘：客户端读回时按 UTF-8 解码，而无参 `FileWriter` 用的是 JVM
+  默认字符集，在非 UTF-8 主机 locale（或 Windows 的 Ghidra 机器）上，含非 ASCII 的符号名或反编译文本
+  会以另一种编码写出、被客户端判成「export JSON invalid」。钉住 UTF-8 让写端与读端一致。
+- `_find_analyze_headless` 现在只解析本机能真正执行的启动器：过去在每个 OS 上都先试
+  `analyzeHeadless.bat`，于是 Linux 上拿到的是不可执行的 Windows 批处理，每次调用都死于
+  「Permission denied」——后端在实践中是「只在 Windows 能用」。按 `os.name` 选 `.bat`（Windows）或
+  无扩展名的 `analyzeHeadless`（POSIX），缺失 POSIX 启动器时如实报 `capability_unavailable`，
+  而不是在错的脚本上炸出启动失败。
+- 配套把 Ghidra 单测对齐到新契约：`_fake_home` 及等价夹具改为像真实发行版那样**两个启动器都造**
+  （否则夹具只造 `.bat`，在 Linux 上按新的按平台解析会读成 capability_unavailable）；断言里的脚本名
+  与「脚本缺失」文案、以及 `TestGhidraExportDisclosesTruncation` 读取脚本源验证截断标记的用例，都改为
+  针对 `ExportJson.java`。全部 79 个 Ghidra 单测在本机通过，`ruff`/`mypy --strict` 干净。本项从
+  `cursor/mature-nonpe-lines-4586` 聚合分支中拆出为独立、可直接合入当前 main 的最小分支。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

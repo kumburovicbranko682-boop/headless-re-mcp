@@ -23,7 +23,12 @@ def _fake_home(tmp_path: Path) -> Path:
     home = tmp_path / "ghidra"
     support = home / "support"
     support.mkdir(parents=True)
+    # A real distribution ships both launchers side by side; discovery resolves
+    # the one this OS can exec (.bat on Windows, the bare script on POSIX), so
+    # the fixture must provide both or the client reads as capability_unavailable
+    # on whichever platform the test happens to run.
     (support / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+    (support / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
     return home
 
 
@@ -160,14 +165,14 @@ def test_export_of_a_missing_binary_is_not_found(
 def test_a_package_missing_its_postscript_is_reported_before_any_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Without ExportJson.py the headless run could only ever produce nothing."""
+    """Without ExportJson.java the headless run could only ever produce nothing."""
     calls = _run(monkeypatch)
     monkeypatch.setattr(ghidra_client, "_SCRIPT_DIR", tmp_path / "no-scripts")
     client = _client(tmp_path)
     with pytest.raises(ghidra_client.GhidraError) as caught:
         client.functions(_binary(tmp_path), tmp_path / "project")
     assert caught.value.code == "backend_error"
-    assert "ExportJson.py" in caught.value.message
+    assert "ExportJson.java" in caught.value.message
     assert calls == []
 
 
@@ -259,7 +264,7 @@ def test_symbols_passes_its_mode_and_capped_limit_to_the_postscript(
     listed = client.symbols(_binary(tmp_path), tmp_path / "project", limit=5000)
 
     (cmd,) = calls
-    script_args = cmd[cmd.index("ExportJson.py") + 1 :]
+    script_args = cmd[cmd.index("ExportJson.java") + 1 :]
     assert script_args[0] == "symbols"
     assert script_args[2] == "1024", "limits are capped at 1024 before reaching the script"
     assert listed["items"] == []
@@ -274,7 +279,7 @@ def test_xrefs_passes_an_integer_address_as_hex(
     client.xrefs(_binary(tmp_path), tmp_path / "project", 0x401000, limit=0)
 
     (cmd,) = calls
-    script_args = cmd[cmd.index("ExportJson.py") + 1 :]
+    script_args = cmd[cmd.index("ExportJson.java") + 1 :]
     assert script_args[0] == "xrefs"
     assert script_args[2] == "1", "a non-positive limit is raised to 1"
     assert script_args[3] == "0x401000"

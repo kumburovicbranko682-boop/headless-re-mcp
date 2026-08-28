@@ -12,7 +12,7 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 
 JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
-_EXPORT_SCRIPT = "ExportJson.py"
+_EXPORT_SCRIPT = "ExportJson.java"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
 _PROJECT_LOCKS = tuple(RLock() for _ in range(64))
@@ -192,7 +192,7 @@ class GhidraClient:
         if not binary.is_file():
             raise GhidraError("not_found", "binary not found", path=str(binary))
         if not (_SCRIPT_DIR / _EXPORT_SCRIPT).is_file():
-            raise GhidraError("backend_error", "ExportJson.py missing from package")
+            raise GhidraError("backend_error", "ExportJson.java missing from package")
         project_dir.mkdir(parents=True, exist_ok=True)
         out_path = project_dir / f"export_{mode}.json"
         if out_path.exists():
@@ -356,12 +356,16 @@ def _which(name: str) -> Path | None:
 def _find_analyze_headless(home: Path | None) -> Path | None:
     if home is None:
         return None
-    for rel in (
-        "support/analyzeHeadless.bat",
-        "support/analyzeHeadless",
-        "analyzeHeadless.bat",
-        "analyzeHeadless",
-    ):
+    # Every Ghidra distribution ships both launchers side by side:
+    # analyzeHeadless.bat for Windows and the extension-less analyzeHeadless
+    # shell script for POSIX. Discovery used to try .bat first on every OS, so
+    # on Linux it returned the non-executable Windows batch and every call died
+    # with "Permission denied" -- the backend was Windows-only in practice
+    # despite the rest of the client handling both. Resolve the launcher this OS
+    # can actually exec, and only that one, so a missing POSIX launcher reads as
+    # capability_unavailable rather than a launch failure on the wrong script.
+    name = "analyzeHeadless.bat" if os.name == "nt" else "analyzeHeadless"
+    for rel in (f"support/{name}", name):
         candidate = home / rel
         if candidate.is_file():
             return candidate

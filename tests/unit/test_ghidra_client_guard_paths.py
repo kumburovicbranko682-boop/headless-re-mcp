@@ -9,7 +9,7 @@ and discovery branches nothing exercised:
   (``backend_error``), and with ``delete_project=False`` (no ``-deleteProject``).
 * the ``symbols`` and ``xrefs`` public methods, which pick their postScript mode.
 * ``_export`` when Ghidra is not configured / the binary is missing / the bundled
-  ExportJson.py is gone, when analyzeHeadless times out, when a non-zero exit
+  ExportJson.java is gone, when analyzeHeadless times out, when a non-zero exit
   wrote no file, when a clean exit wrote no file, when the export is unreadable,
   and when the export JSON is not an object.
 * ``_find_analyze_headless`` with no home, an empty home, and a launcher that is
@@ -36,7 +36,12 @@ def _fake_home(tmp_path: Path) -> Path:
     home = tmp_path / "ghidra"
     support = home / "support"
     support.mkdir(parents=True)
+    # A real distribution ships both launchers side by side; discovery resolves
+    # the one this OS can exec (.bat on Windows, the bare script on POSIX), so
+    # the fixture must provide both or the client reads as capability_unavailable
+    # on whichever platform the test happens to run.
     (support / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+    (support / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
     return home
 
 
@@ -166,13 +171,13 @@ def test_export_reports_a_missing_binary_as_not_found(tmp_path: Path) -> None:
 def test_export_reports_a_missing_bundled_script(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ExportJson.py ships in the package; if it is gone, say so before the JVM."""
+    """ExportJson.java ships in the package; if it is gone, say so before the JVM."""
     monkeypatch.setattr(ghidra_client, "_SCRIPT_DIR", tmp_path / "no-scripts")
     client = _client(tmp_path)
     with pytest.raises(GhidraError) as caught:
         client.functions(_binary(tmp_path), tmp_path / "project")
     assert caught.value.code == "backend_error"
-    assert "ExportJson.py missing" in caught.value.message
+    assert "ExportJson.java missing" in caught.value.message
 
 
 def test_export_reports_a_nonzero_exit_with_no_file_as_backend_error(
@@ -232,7 +237,7 @@ def test_export_reports_an_unreadable_json_as_backend_error(
 def test_export_reports_a_non_object_json_as_backend_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ExportJson.py always writes an object; a bare array is a contract break."""
+    """ExportJson.java always writes an object; a bare array is a contract break."""
     recorded: list[list[str]] = []
     monkeypatch.setattr(ghidra_client, "run_bounded", _run_returning(recorded, write="[]"))
     client = _client(tmp_path)

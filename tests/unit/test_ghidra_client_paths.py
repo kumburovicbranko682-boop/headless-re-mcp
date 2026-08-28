@@ -21,7 +21,12 @@ def _fake_home(tmp_path: Path) -> Path:
     home = tmp_path / "ghidra"
     support = home / "support"
     support.mkdir(parents=True)
+    # A real distribution ships both launchers side by side; discovery resolves
+    # the one this OS can exec (.bat on Windows, the bare script on POSIX), so
+    # the fixture must provide both or the client reads as capability_unavailable
+    # on whichever platform the test happens to run.
     (support / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+    (support / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
     return home
 
 
@@ -152,7 +157,7 @@ def test_export_requires_the_packaged_script(
         _client(tmp_path).functions(_binary(tmp_path), tmp_path / "project")
 
     assert caught.value.code == "backend_error"
-    assert "ExportJson.py" in caught.value.message
+    assert "ExportJson.java" in caught.value.message
 
 
 def test_export_failure_without_a_file_is_a_backend_error(

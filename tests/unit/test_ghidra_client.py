@@ -20,7 +20,12 @@ def _fake_home(tmp_path: Path) -> Path:
     home = tmp_path / "ghidra"
     support = home / "support"
     support.mkdir(parents=True)
+    # A real distribution ships both launchers side by side; discovery resolves
+    # the one this OS can exec (.bat on Windows, the bare script on POSIX), so
+    # the fixture must provide both or the client reads as capability_unavailable
+    # on whichever platform the test happens to run.
     (support / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+    (support / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
     return home
 
 
@@ -230,7 +235,7 @@ def _tool_docstring(name: str) -> str:
 def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     """The catalog said address/size; a 5000-function export had neither.
 
-    Measured against ExportJson.py: 256 of 5000 functions, 0 items had address
+    Measured against ExportJson: 256 of 5000 functions, 0 items had address
     or size, all 256 had entry and body_size. Looking for address after a
     successful list reads as Ghidra finding no addresses. Symbols have type,
     not namespace. Xrefs are getReferencesTo only.

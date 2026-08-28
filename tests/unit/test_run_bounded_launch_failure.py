@@ -62,7 +62,9 @@ def test_ghidra_launch_oserror_becomes_backend_error_not_internal(
 ) -> None:
     home = tmp_path / "ghidra"
     (home / "support").mkdir(parents=True)
+    # POSIX discovery resolves the extension-less launcher, not the Windows .bat.
     (home / "support" / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+    (home / "support" / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
     client = GhidraClient(home=home)
     client.java = _nonexecutable_file(tmp_path / "java")
     binary = tmp_path / "sample.exe"
