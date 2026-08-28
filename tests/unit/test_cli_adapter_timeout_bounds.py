@@ -34,7 +34,9 @@ class _Recorder:
 
     def __call__(self, cmd: list[str], *, timeout: float, creationflags: int = 0, **_: Any) -> Any:
         self.timeouts.append(timeout)
-        return SimpleNamespace(stdout=b"", stderr=b"", returncode=0)
+        return SimpleNamespace(
+            stdout=b"", stderr=b"", returncode=0, stdout_truncated=False, stderr_truncated=False
+        )
 
 
 class TestClampCliTimeout:

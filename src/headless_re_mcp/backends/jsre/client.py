@@ -103,7 +103,7 @@ def _looks_like_wasm(path: Path) -> bool:
 
 def _run(
     cmd: list[str], *, timeout: float, maximum: float = _MAX_TIMEOUT_S
-) -> tuple[str, str, int]:
+) -> tuple[str, str, int, bool]:
     try:
         timeout = clamp_cli_timeout(timeout, maximum=maximum)
     except InvalidTimeout as exc:
@@ -121,21 +121,31 @@ def _run(
         raise JsReError("backend_error", f"failed to launch {cmd[0]}: {exc}") from exc
     stdout = completed.stdout.decode("utf-8", errors="replace")
     stderr = completed.stderr.decode("utf-8", errors="replace")
-    return stdout, stderr, int(completed.returncode)
+    # run_bounded caps each stream at 8 MiB and flags when it discarded more.
+    # The payload builders need that: without it bytes (below) would report the
+    # 8 MiB we kept as the whole output, when the tool actually produced more.
+    return stdout, stderr, int(completed.returncode), bool(completed.stdout_truncated)
 
 
-def _bounded_output(text: str, key: str) -> JsonObject:
+def _bounded_output(text: str, key: str, *, stream_capped: bool = False) -> JsonObject:
     # bytes is the full pre-truncation size, so truncated is actionable: a caller
     # that sees it cut learns how much it is missing. wasm-objdump once omitted
     # it (include_bytes=False), leaving a truncated section dump with no scale at
     # all while wasm2wat/webcrack and r2's raw output all report their size --
     # the same "say how much when you cut" signal, so it is reported uniformly.
     payload = text.encode("utf-8", errors="replace")
-    return {
+    result: JsonObject = {
         key: payload[:_MAX_INLINE].decode("utf-8", errors="ignore"),
-        "truncated": len(payload) > _MAX_INLINE,
+        "truncated": stream_capped or len(payload) > _MAX_INLINE,
         "bytes": len(payload),
     }
+    if stream_capped:
+        # run_bounded hit its 8 MiB stream ceiling and dropped the rest, so bytes
+        # is a floor -- the tool produced more than we captured. Distinct from
+        # truncated (we cut the inline preview at _MAX_INLINE) the way scan_capped
+        # marks a floored total: without it bytes reads as the whole output.
+        result["output_capped"] = True
+    return result
 
 
 def _note_nonzero_exit(result: JsonObject, *, code: int, stderr: str) -> JsonObject:
@@ -177,7 +187,7 @@ class JsClient:
 
     def deobfuscate(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path)
-        stdout, stderr, code = _run(
+        stdout, stderr, code, stream_capped = _run(
             [str(self.executable), str(resolved)], timeout=timeout, maximum=_MAX_TIMEOUT_S
         )
         if code != 0 and not stdout:
@@ -185,7 +195,9 @@ class JsClient:
                 "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
         return _note_nonzero_exit(
-            _bounded_output(stdout, "code"), code=code, stderr=stderr
+            _bounded_output(stdout, "code", stream_capped=stream_capped),
+            code=code,
+            stderr=stderr,
         )
 
     def beautify(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
@@ -203,7 +215,9 @@ class JsClient:
     ) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
-        stdout, stderr, code = _run(
+        # The payload here is the on-disk file listing, not stdout, so a capped
+        # stdout stream does not affect it; webcrack prints little while writing.
+        stdout, stderr, code, _ = _run(
             [str(self.executable), str(resolved), "-o", str(out_dir)],
             timeout=timeout,
             maximum=_MAX_UNPACK_TIMEOUT_S,
@@ -260,19 +274,23 @@ class WasmClient:
     def wat(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path, self._wasm2wat, "wasm2wat")
         assert self._wasm2wat is not None
-        stdout, stderr, code = _run([str(self._wasm2wat), str(resolved)], timeout=timeout)
+        stdout, stderr, code, stream_capped = _run(
+            [str(self._wasm2wat), str(resolved)], timeout=timeout
+        )
         if code != 0 and not stdout:
             raise JsReError(
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
         return _note_nonzero_exit(
-            _bounded_output(stdout, "wat"), code=code, stderr=stderr
+            _bounded_output(stdout, "wat", stream_capped=stream_capped),
+            code=code,
+            stderr=stderr,
         )
 
     def info(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path, self._objdump, "wasm-objdump")
         assert self._objdump is not None
-        stdout, stderr, code = _run(
+        stdout, stderr, code, stream_capped = _run(
             [str(self._objdump), "-h", "-x", str(resolved)], timeout=timeout
         )
         if code != 0 and not stdout:
@@ -280,7 +298,9 @@ class WasmClient:
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
         return _note_nonzero_exit(
-            _bounded_output(stdout, "objdump"), code=code, stderr=stderr
+            _bounded_output(stdout, "objdump", stream_capped=stream_capped),
+            code=code,
+            stderr=stderr,
         )
 
 

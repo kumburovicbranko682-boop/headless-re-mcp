@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（js/wasm 工具的 bytes 在 run_bounded 8 MiB 流上限处会变成低估值却不声明)
+
+- `js.deobfuscate`/`js.beautify`/`wasm.wat`/`wasm.info` 回带的 `bytes` 取自 `completed.stdout`,但 `run_bounded` 会在每条流
+  8 MiB 处封顶、丢弃其余并置 `stdout_truncated`——而这个标志此前全代码库无人读取。于是当工具输出超过 8 MiB 时(大模块的 WAT、
+  大包的反混淆结果都可能),`bytes` 报的是"我们截获的 8 MiB",却按文档承诺的"截断前完整大小"呈现——恰恰在输出最大、被切最多时
+  失真,直接违背我刚给这些工具加 `bytes` 的初衷("让调用方知道被切了多少")。现在 jsre 的 `_run` 把 `stdout_truncated` 透出,
+  `_bounded_output` 据此在命中流上限时把 `truncated` 置真并新增 `output_capped: true`,明确"`bytes` 是下限、工具产出多于我们
+  截获的量"——与 `scan_capped`(total 是下限)同一套"命中上限即为下限"的约定。四个文本工具文档同步写明 `output_capped`。
+  `js.unpack_bundle` 的载荷是磁盘文件清单而非 stdout,故显式忽略该标志。新增测试:命中流上限时三个文本工具都报 `output_capped`
+  为真、`truncated` 为真、`bytes` 等于截获量;未命中时无 `output_capped` 且 `truncated` 为假;四个工具文档点名 `output_capped`。
+  相应更新把 jsre `_run` 桩改成 4 元组、并给共享的 run_bounded 录制桩补上 `stdout_truncated` 字段。纯附加字段,不改成功路径既有含义。
+
 ### 修复（apk.manifest 截断 XML 却不报完整大小,和同族大文本读取不一致)
 
 - `apk.manifest` 在 `_MAX_MANIFEST_CHARS`(200K 字符)处截断 `manifest_xml` 并置 `truncated`,却不回带完整大小——大型应用的

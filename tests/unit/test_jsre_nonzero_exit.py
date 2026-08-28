@@ -249,3 +249,60 @@ def test_objdump_reports_full_bytes_even_when_the_text_is_truncated(
 
 def test_wasm_info_docstring_names_bytes() -> None:
     assert "bytes" in _tool_docstring("wasm.info")
+
+
+def test_stream_capped_output_marks_bytes_as_a_floor(tmp_path: Path) -> None:
+    """When run_bounded caps the 8 MiB stream, bytes is flagged a floor.
+
+    The runner discards output past its ceiling and flags it; without surfacing
+    that, bytes (the size we captured) reads as the whole output when the tool
+    actually produced more. output_capped says bytes is a floor and the text is
+    incomplete, distinct from the inline-preview truncated flag.
+    """
+    webcrack = tmp_path / "webcrack.exe"
+    webcrack.write_bytes(b"")
+    wat_tool = tmp_path / "wasm2wat.exe"
+    wat_tool.write_bytes(b"")
+    objdump_tool = tmp_path / "wasm-objdump.exe"
+    objdump_tool.write_bytes(b"")
+    js_src = tmp_path / "app.js"
+    js_src.write_text("x", encoding="utf-8")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+    body = "S" * 1000
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"", stdout_truncated=True)
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        code = JsClient(webcrack).deobfuscate(js_src)
+        wat = WasmClient(wat_tool).wat(module)
+        objdump = WasmClient(objdump_tool).info(module)
+
+    for payload in (code, wat, objdump):
+        assert payload["output_capped"] is True
+        assert payload["truncated"] is True
+        assert payload["bytes"] == 1000
+
+
+def test_uncapped_output_has_no_output_capped_flag(tmp_path: Path) -> None:
+    """A stream that fit under the ceiling carries no output_capped flag."""
+    wat_tool = tmp_path / "wasm2wat.exe"
+    wat_tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, b"(module)", b"", stdout_truncated=False)
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(wat_tool).wat(module)
+
+    assert "output_capped" not in payload
+    assert payload["truncated"] is False
+
+
+def test_text_tool_docstrings_name_output_capped() -> None:
+    for name in ("js.deobfuscate", "js.beautify", "wasm.wat", "wasm.info"):
+        assert "output_capped" in _tool_docstring(name)
