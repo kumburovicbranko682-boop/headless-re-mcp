@@ -14,6 +14,13 @@ from headless_re_mcp.core.limits import MAX_WORKFLOW_TIMEOUT
 JsonObject = dict[str, Any]
 T = TypeVar("T")
 _ANDROID_PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
+# capability_unavailable must say how to fix it, not just that frida is absent:
+# the CLI entry points (serve-web, native GUI) already name the extra to
+# install, and the tool layer should match.
+_MISSING_FRIDA_MSG = (
+    "frida Python module is not installed; install the android extra: "
+    'pip install "headless-re-mcp[android]"'
+)
 # attach / spawn / Java.perform can block forever on a paused debuggee or a
 # process without a JIT. 30s matches adb shell and windbg attach: enough for a
 # slow USB spawn, short enough that a wedged probe cannot keep a worker.
@@ -305,7 +312,7 @@ class FridaClient:
     def attach(self, pid: int, *, allowed_pid: int,
                timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:
         if not self._available or self._frida is None:
-            raise FridaError("capability_unavailable", "frida Python module is not installed")
+            raise FridaError("capability_unavailable", _MISSING_FRIDA_MSG)
         if type(pid) is not int or pid <= 0:
             raise FridaError("invalid_params", "pid must be a positive integer")
         if pid != allowed_pid:
@@ -491,7 +498,7 @@ class FridaClient:
         if pid != allowed_pid:
             raise FridaError("permission_denied", "pid not allowed", pid=pid)
         if not self._available or self._frida is None:
-            raise FridaError("capability_unavailable", "frida Python module is not installed")
+            raise FridaError("capability_unavailable", _MISSING_FRIDA_MSG)
 
     # ------------------------------------------------------------------
     # Device-aware operations (USB / emulator / remote). The single-pid
@@ -500,7 +507,7 @@ class FridaClient:
     # ------------------------------------------------------------------
     def _need(self) -> Any:
         if not self._available or self._frida is None:
-            raise FridaError("capability_unavailable", "frida Python module is not installed")
+            raise FridaError("capability_unavailable", _MISSING_FRIDA_MSG)
         return self._frida
 
     def _resolve_device(self, device_id: str | None) -> Any:
@@ -792,7 +799,7 @@ class FridaClient:
 
     def _authorize(self, pid: int, allowed_pids: Iterable[int]) -> None:
         if not self._available or self._frida is None:
-            raise FridaError("capability_unavailable", "frida Python module is not installed")
+            raise FridaError("capability_unavailable", _MISSING_FRIDA_MSG)
         if type(pid) is not int or pid <= 0:
             raise FridaError("invalid_params", "pid must be a positive integer")
         allowed = set(int(value) for value in allowed_pids)

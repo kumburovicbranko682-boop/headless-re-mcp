@@ -119,7 +119,11 @@ class R2Client:
         except InvalidTimeout as exc:
             raise R2Error("invalid_params", str(exc)) from exc
         if not self.available or self.executable is None:
-            raise R2Error("capability_unavailable", "radare2/rizin is not installed")
+            raise R2Error(
+                "capability_unavailable",
+                "radare2/rizin is not installed; install radare2 or rizin and "
+                "ensure r2/rizin/radare2 is on PATH",
+            )
         if not binary.is_file():
             raise R2Error("not_found", "binary not found", path=str(binary))
         for cmd in commands:

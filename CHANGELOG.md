@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 改进（工具层缺可选依赖的 capability_unavailable 现在直接给出安装命令）
+
+- 非 PE 各线的工具层缺可选 Python 依赖时只说"缺什么"、不说"怎么装"：`proxy.start` 在
+  裸机上报 `mitmproxy is not installed` 就停了，调用方（通常是拿不到 pyproject.toml 的
+  LLM agent）得自己猜 extra 名字。CLI 入口（serve-web、native GUI）早已在报错里给出
+  `pip install "headless-re-mcp[...]"`，工具层与之不对齐。改法：五个缺 pip 可装模块的
+  报错点补上精确 extra——playwright→`[browser]`、mitmproxy→`[proxy]`、
+  frida/adbutils/androguard→`[android]`（frida 的 4 处同串提取为
+  `_MISSING_FRIDA_MSG` 常量）；r2 是系统二进制不是 pip 包，原消息零补救信息，改为
+  指明"装 radare2/rizin 并确保 r2/rizin/radare2 在 PATH 上"（错误提示 pip 会把
+  用户引进死胡同）。错误码不变（`capability_unavailable`），全仓只有一个测试涉及旧
+  串且只断言 code、不断言消息，零测试翻修。新增
+  `tests/unit/test_capability_unavailable_install_hints.py`（6 例，强制
+  `_available=False`，装没装 extra 都能跑）钉死每条消息含可复制粘贴的修复命令；
+  已在真缺 mitmproxy/playwright/androguard 的裸机上走 import 自然失败路径核对
+  信封文本。全量单测 5079 通过。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言

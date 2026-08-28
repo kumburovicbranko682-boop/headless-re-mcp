@@ -333,7 +333,11 @@ class WebBackend:
             except Exception:
                 self._available = False
         if not self._available:
-            raise WebError("capability_unavailable", "playwright is not installed")
+            raise WebError(
+                "capability_unavailable",
+                "playwright is not installed; install the browser extra: "
+                'pip install "headless-re-mcp[browser]"',
+            )
 
     def status(self, session_id: str) -> JsonObject:
         """Cheap page identity; never launches a browser."""
