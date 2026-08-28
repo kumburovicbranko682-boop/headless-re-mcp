@@ -21,8 +21,8 @@ from headless_re_mcp.doctor import (
     format_report,
     probe_die,
     probe_exeinfope,
-    probe_frida,
     probe_ghidra,
+    probe_import_backend,
     probe_optional_tool,
     probe_playwright,
     probe_upx,
@@ -1111,34 +1111,54 @@ def test_playwright_probe_makes_no_claim_when_the_registry_is_unresolvable(
     assert probe.remediation is None
 
 
-def test_frida_probe_is_missing_when_the_module_is_absent(
-    monkeypatch: pytest.MonkeyPatch,
+_IMPORT_BACKENDS = ("frida", "androguard", "adbutils", "mitmproxy")
+
+
+def _import_backend(name: str) -> Probe:
+    """Call probe_import_backend the way run_doctor does, with representative hints.
+
+    The three-state logic is what these tests pin; the backend-specific wording
+    of the hints is exercised end to end by run_doctor's own tests, so a
+    representative install/blocked pair is enough here.
+    """
+    return probe_import_backend(
+        name,
+        name,
+        install_hint=f"pip install {name}.",
+        blocked_hint=f"Reinstall {name} for this Python/arch/libc.",
+    )
+
+
+@pytest.mark.parametrize("name", _IMPORT_BACKENDS)
+def test_import_backend_probe_is_missing_when_the_module_is_absent(
+    name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(doctor_module.importlib.util, "find_spec", lambda _name: None)
 
-    probe = probe_frida()
+    probe = _import_backend(name)
 
     assert probe.status == ProbeStatus.MISSING
     assert probe.remediation
     assert "pip install" in probe.remediation
 
 
-def test_frida_probe_is_blocked_when_the_native_extension_will_not_load(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("name", _IMPORT_BACKENDS)
+def test_import_backend_probe_is_blocked_when_the_import_raises(
+    name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A findable spec whose import raises must be BLOCKED, not DETECTED.
 
-    frida ships a native _frida extension; a wheel that does not match this
-    Python/arch/libc has a findable spec but raises on import (the musl/Alpine or
-    wrong-Python-version case). The FridaClient decides availability by actually
-    importing, so it would report capability_unavailable -- doctor must not
-    contradict that with a cheerful DETECTED read off find_spec alone. Stand in a
-    broken import and pin the honest BLOCKED read with a reinstall hint.
+    frida ships a native _frida extension and androguard/mitmproxy pull native
+    deps (cryptography, lxml); a wheel that does not match this Python/arch/libc
+    has a findable spec but raises on import. Each backend's client decides
+    availability by actually importing, so it would return capability_unavailable
+    -- doctor must not contradict that with a DETECTED read off find_spec alone.
+    Stand in a broken import and pin the honest BLOCKED read with a reinstall hint.
     """
     monkeypatch.setattr(
         doctor_module.importlib.util,
         "find_spec",
-        lambda _name: SimpleNamespace(origin="/site-packages/frida/__init__.py"),
+        lambda _name: SimpleNamespace(origin=f"/site-packages/{name}/__init__.py"),
     )
     monkeypatch.setattr(
         doctor_module,
@@ -1146,31 +1166,60 @@ def test_frida_probe_is_blocked_when_the_native_extension_will_not_load(
         lambda _name: (None, OSError("libc.so.6: version `GLIBC_2.38' not found")),
     )
 
-    probe = probe_frida()
+    probe = _import_backend(name)
 
     assert probe.status == ProbeStatus.BLOCKED
-    assert "native extension" in probe.summary
+    assert "failed to import" in probe.summary
     assert probe.remediation and "reinstall" in probe.remediation.lower()
     assert "GLIBC" in probe.details["error"]
 
 
-def test_frida_probe_is_detected_when_it_actually_imports(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("name", _IMPORT_BACKENDS)
+def test_import_backend_probe_is_detected_when_it_actually_imports(
+    name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Spec found and import succeeds: DETECTED with the version it loaded."""
     monkeypatch.setattr(
         doctor_module.importlib.util,
         "find_spec",
-        lambda _name: SimpleNamespace(origin="/site-packages/frida/__init__.py"),
+        lambda _name: SimpleNamespace(origin=f"/site-packages/{name}/__init__.py"),
     )
-    fake = SimpleNamespace(__file__="/site-packages/frida/__init__.py", __version__="16.5.9")
+    fake = SimpleNamespace(__file__=f"/site-packages/{name}/__init__.py", __version__="9.9.9")
     monkeypatch.setattr(doctor_module, "_try_import", lambda _name: (fake, None))
 
-    probe = probe_frida()
+    probe = _import_backend(name)
 
     assert probe.status == ProbeStatus.DETECTED
-    assert probe.details["version"] == "16.5.9"
+    assert probe.details["version"] == "9.9.9"
     assert probe.remediation is None
+
+
+def test_run_doctor_reports_frida_blocked_when_its_import_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: a frida whose native extension fails must read BLOCKED in the report.
+
+    Pins that run_doctor actually routes frida through the import probe (not
+    find_spec), so the whole-report frida entry matches what frida.* would do.
+    """
+    # find_spec must see the modules as present so the import is attempted.
+    monkeypatch.setattr(
+        doctor_module.importlib.util,
+        "find_spec",
+        lambda _name: SimpleNamespace(origin="/x/mod.py"),
+    )
+
+    def fake_import(module: str) -> tuple[object | None, Exception | None]:
+        if module == "frida":
+            return None, OSError("_frida.so: cannot open shared object file")
+        return SimpleNamespace(__file__=f"/x/{module}.py", __version__="1.0"), None
+
+    monkeypatch.setattr(doctor_module, "_try_import", fake_import)
+
+    report = run_doctor(_settings(None, tmp_path / "artifacts"))
+    frida = {probe.name: probe for probe in report.probes}["frida"]
+    assert frida.status == ProbeStatus.BLOCKED
+    assert "_frida.so" in frida.details["error"]
 
 
 def test_playwright_browser_detection_reads_the_registry(

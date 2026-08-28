@@ -197,7 +197,16 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             ),
         ),
         probe_ghidra(current),
-        probe_frida(),
+        probe_import_backend(
+            "frida",
+            "frida",
+            install_hint="pip install 'headless-re-mcp[android]' (or pip install frida).",
+            blocked_hint=(
+                "Reinstall a frida wheel matching this Python/arch/libc "
+                "(pip install --force-reinstall frida): the package is present but its "
+                "native _frida extension will not load here, so frida.* stays unavailable."
+            ),
+        ),
         probe_command("java", ("java",)),
         (
             probe_command("windbg", ("cdb", "windbg", "windbgx"))
@@ -205,15 +214,24 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             else windows_only("windbg", "WinDbg/cdb requires Windows")
         ),
         # Android reverse-engineering (all optional; missing only degrades).
-        probe_python_module(
+        probe_import_backend(
             "androguard",
             "androguard",
             install_hint="pip install 'headless-re-mcp[android]' (or pip install androguard).",
+            blocked_hint=(
+                "Reinstall androguard and its native deps (cryptography, lxml) for this "
+                "Python/arch/libc: the package is present but importing it raises, so "
+                "apk.* stays unavailable."
+            ),
         ),
-        probe_python_module(
+        probe_import_backend(
             "adbutils",
             "adbutils",
             install_hint="pip install 'headless-re-mcp[android]' (or pip install adbutils).",
+            blocked_hint=(
+                "Reinstall adbutils for this Python: the package is present but importing "
+                "it raises, so device.* stays unavailable."
+            ),
         ),
         probe_optional_tool(
             "adb",
@@ -258,10 +276,14 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         ),
         # Web reverse-engineering (all optional).
         probe_playwright(),
-        probe_python_module(
+        probe_import_backend(
             "mitmproxy",
             "mitmproxy",
             install_hint="pip install 'headless-re-mcp[proxy]' (or pip install mitmproxy).",
+            blocked_hint=(
+                "Reinstall mitmproxy and its native deps for this Python/arch/libc: the "
+                "package is present but importing it raises, so proxy.* stays unavailable."
+            ),
         ),
         probe_optional_tool(
             "webcrack",
@@ -1210,23 +1232,6 @@ def probe_optional_tool(
     )
 
 
-def probe_python_module(name: str, module: str, *, install_hint: str | None = None) -> Probe:
-    spec = importlib.util.find_spec(module)
-    if spec is None:
-        return Probe(
-            name,
-            ProbeStatus.MISSING,
-            f"Optional Python module {module} is not installed",
-            remediation=install_hint,
-        )
-    return Probe(
-        name,
-        ProbeStatus.DETECTED,
-        f"Optional Python module {module} detected",
-        {"origin": spec.origin},
-    )
-
-
 def _try_import(module: str) -> tuple[Any | None, Exception | None]:
     """Actually import a module, returning it or the exception it raised.
 
@@ -1239,45 +1244,53 @@ def _try_import(module: str) -> tuple[Any | None, Exception | None]:
         return None, exc
 
 
-def probe_frida() -> Probe:
-    """frida carries a native extension, so a findable spec does not mean it runs.
+def probe_import_backend(
+    name: str,
+    module: str,
+    *,
+    install_hint: str,
+    blocked_hint: str,
+) -> Probe:
+    """Probe a Python-module backend by importing it, the way its client does.
 
-    ``probe_python_module`` would call frida DETECTED on ``find_spec`` alone, but
-    the FridaClient decides availability by actually importing frida -- the only
-    way to know this host's native ``_frida`` extension loads. A wheel whose
-    native library does not match the running Python/arch/libc (a routine frida
-    failure: musl/Alpine, or a wheel a minor Python version off) has a findable
-    spec yet raises on import, so doctor would report DETECTED while every
-    ``frida.*`` call returned capability_unavailable -- the exact dishonest
-    readout doctor exists to prevent. Import it the way the client does so the
-    report matches what the tool will actually do.
+    Every module-backed non-PE backend decides availability by actually running
+    ``import <module>`` and degrading to capability_unavailable when it raises:
+    frida (``_frida`` native extension), androguard and mitmproxy (native deps
+    such as cryptography/lxml), adbutils. ``importlib.util.find_spec`` is weaker
+    -- it resolves the package's spec without executing it -- so a wheel whose
+    native extension or a native dependency will not load on this host has a
+    findable spec yet fails the client's import. Probing with find_spec alone
+    therefore reported DETECTED on installs where the tool itself returned
+    capability_unavailable, the exact dishonest readout doctor exists to
+    prevent. Import it here so the report matches what the backend will do:
+    MISSING when the spec is absent, BLOCKED (with a reinstall hint) when the
+    spec is present but the import raises, DETECTED with the loaded version
+    otherwise. This is the module-backend analogue of probe_playwright and
+    probe_ghidra looking past a bare importable spec.
     """
-    install_hint = "pip install 'headless-re-mcp[android]' (or pip install frida)."
-    if importlib.util.find_spec("frida") is None:
+    if importlib.util.find_spec(module) is None:
         return Probe(
-            "frida",
+            name,
             ProbeStatus.MISSING,
-            "Optional Python module frida is not installed",
+            f"Optional Python module {module} is not installed",
             remediation=install_hint,
         )
-    module, error = _try_import("frida")
+    loaded, error = _try_import(module)
     if error is not None:
         return Probe(
-            "frida",
+            name,
             ProbeStatus.BLOCKED,
-            "frida is installed but its native extension failed to import",
+            f"{module} is installed but failed to import",
             {"error": f"{type(error).__name__}: {error}"},
-            "Reinstall a frida wheel matching this Python/arch/libc "
-            "(pip install --force-reinstall frida): the package is present but its "
-            "native _frida extension will not load here, so frida.* stays unavailable.",
+            blocked_hint,
         )
     return Probe(
-        "frida",
+        name,
         ProbeStatus.DETECTED,
-        "Optional Python module frida detected",
+        f"Optional Python module {module} detected",
         {
-            "origin": getattr(module, "__file__", None),
-            "version": getattr(module, "__version__", None),
+            "origin": getattr(loaded, "__file__", None),
+            "version": getattr(loaded, "__version__", None),
         },
     )
 
@@ -1328,12 +1341,12 @@ def _playwright_has_chromium() -> bool | None:
 def probe_playwright() -> Probe:
     """playwright is only usable with a browser build; a bare module cannot open a page.
 
-    ``probe_python_module`` would report DETECTED on import alone, so a caller
-    with the module but no browser -- the state a default ``pip install`` plus a
-    forgotten ``playwright install`` leaves -- got no signal that web.* would
-    fail at first use. Keep DETECTED (the module is genuinely there) but, when no
-    Chromium build is found, carry the remediation the way the Ghidra probe flags
-    a missing JRE.
+    A find_spec (or even a successful import) would report DETECTED on the module
+    alone, so a caller with the module but no browser -- the state a default
+    ``pip install`` plus a forgotten ``playwright install`` leaves -- got no
+    signal that web.* would fail at first use. Keep DETECTED (the module is
+    genuinely there) but, when no Chromium build is found, carry the remediation
+    the way the Ghidra probe flags a missing JRE.
     """
     spec = importlib.util.find_spec("playwright")
     if spec is None:
