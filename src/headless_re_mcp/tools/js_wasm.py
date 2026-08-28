@@ -198,6 +198,42 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.js_api_usage(path))
 
+    @tools.tool(name="js.secrets")
+    def js_secrets(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Find hard-coded credentials in a JavaScript file (pure Python, no webcrack).
+
+        js.strings lists every literal; this classifies each literal's decoded
+        value against a high-precision table of provider credentials -- the
+        leaked-key triage a reviewer runs first. Because it reads decoded string
+        values (not raw code), a key sitting in a comment is not matched, and
+        because every pattern has a distinctive fixed prefix or structure (not
+        just "a long random string"), the false-positive rate stays low. The
+        matched secret is redacted in the output: the provider-naming prefix and
+        length are kept, the middle masked, so a transcript never carries the
+        live value. Kinds detected: AWS access key, Google API key and OAuth
+        token, GitHub token/PAT, GitLab token, Slack token and webhook, Stripe
+        secret/test/publishable keys, Twilio SID/key, SendGrid key, npm token,
+        JWT and PEM private keys.
+
+        Answers with findings (paged, sorted high severity first then kind),
+        count, total, offset, has_more, a kinds tally (distinct findings per
+        kind), total_findings (occurrences) and scan_capped. Each finding
+        carries kind, severity (high for a live/private credential, medium for a
+        publishable/test/JWT one), preview (the redacted value), length (of the
+        real secret), count (occurrences) and lines (up to 5 sample 1-based line
+        numbers). A clean file returns an empty findings list, not an error.
+        This is a lexical scan: it will not catch a secret assembled at runtime
+        from fragments, and a test/example key still matches.
+
+        A file over 16 MiB is refused as too_large and a missing one as
+        not_found.
+        """
+        return _dump(analysis.js_secrets(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0

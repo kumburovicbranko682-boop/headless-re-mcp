@@ -23,6 +23,7 @@ from headless_re_mcp.backends.jsre.js_static import (
     extract_js_api_usage,
     extract_js_imports,
     extract_js_indicators,
+    extract_js_secrets,
     extract_js_strings,
 )
 from headless_re_mcp.backends.jsre.wasm_summary import (
@@ -284,6 +285,11 @@ class JsClient:
         """Scan for sensitive-API sinks, grouped by threat category (no webcrack)."""
         text = self._read_source(path)
         return extract_js_api_usage(text)
+
+    def secrets(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        """Classify string literals against known credential patterns (no webcrack)."""
+        text = self._read_source(path)
+        return extract_js_secrets(text, offset=offset, limit=limit)
 
 
 class WasmClient:

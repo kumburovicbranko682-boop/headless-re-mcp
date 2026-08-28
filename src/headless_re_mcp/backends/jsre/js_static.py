@@ -2,7 +2,7 @@
 
 Where js.deobfuscate / js.beautify shell out to webcrack (and go
 capability_unavailable when Node is absent), these read the file text
-themselves, so they answer on any host. Four reads:
+themselves, so they answer on any host. Five reads:
 
 - ``extract_js_strings`` walks the source with a small state machine that
   understands line/block comments, single/double/template string literals and
@@ -18,11 +18,15 @@ themselves, so they answer on any host. Four reads:
   for sensitive API sinks (eval, DOM injection, network, storage, encoding,
   crypto, ...), grouped by threat category -- the "what can this script do"
   view, the JS counterpart to apk.api_usage.
+- ``extract_js_secrets`` classifies string-literal values against a
+  high-precision table of provider credentials (AWS/GCP/GitHub/Slack/Stripe
+  keys, JWTs, private keys, ...), deduping and redacting each match.
 
-The last two share ``_noise_spans``, which marks the byte ranges that are
-comments, string literals or regex literals so a match inside one is not
-counted as code. All of it is bounded on every axis so a hostile bundle cannot
-blow memory or time.
+extract_js_api_usage and extract_js_imports share ``_noise_spans``, which marks
+the byte ranges that are comments, string literals or regex literals so a match
+inside one is not counted as code; extract_js_strings and extract_js_secrets
+share the ``_scan_string_literals`` tokenizer. All of it is bounded on every
+axis so a hostile bundle cannot blow memory or time.
 """
 
 from __future__ import annotations
@@ -121,6 +125,47 @@ _API_SINKS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     ("node_exec", "child_process", re.compile(r"\bchild_process\b")),
     ("node_exec", "exec", re.compile(r"\.\s*exec(?:Sync)?\s*\(")),
     ("node_exec", "spawn", re.compile(r"\.\s*spawn(?:Sync)?\s*\(")),
+)
+
+# js.secrets caps: bound the distinct-finding set, sample lines per finding and
+# the page. The literal scan itself is bounded by _MAX_JS_STRINGS_COLLECT.
+_MAX_SECRETS_COLLECT = 5000
+_MAX_SECRET_SAMPLE_LINES = 5
+_MAX_SECRETS_PAGE = 2000
+# Shortest literal worth classifying: every pattern below is longer than this.
+_MIN_SECRET_LITERAL_LEN = 8
+
+# High-precision credential patterns, matched against decoded string-literal
+# values (not raw code), so the false-positive rate stays low: each has a
+# distinctive fixed prefix or structure rather than "a long random string".
+# (kind, severity, pattern). Severity is high for a live/private credential,
+# medium for a publishable or test one.
+_SECRET_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
+    ("aws_access_key_id", "high", re.compile(r"\b(?:AKIA|ASIA|AGPA|AROA|AIDA)[0-9A-Z]{16}\b")),
+    ("google_api_key", "high", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
+    ("google_oauth_token", "high", re.compile(r"\bya29\.[0-9A-Za-z_\-]{20,}")),
+    ("github_token", "high", re.compile(r"\bgh[pousr]_[0-9A-Za-z]{36,}\b")),
+    ("github_pat", "high", re.compile(r"\bgithub_pat_[0-9A-Za-z_]{22,}\b")),
+    ("gitlab_token", "high", re.compile(r"\bglpat-[0-9A-Za-z_\-]{20,}\b")),
+    ("slack_token", "high", re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b")),
+    ("slack_webhook", "high", re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9/_-]+")),
+    ("stripe_secret_key", "high", re.compile(r"\b[sr]k_live_[0-9A-Za-z]{16,}\b")),
+    ("stripe_test_key", "medium", re.compile(r"\b[sr]k_test_[0-9A-Za-z]{16,}\b")),
+    ("stripe_publishable_key", "medium", re.compile(r"\bpk_(?:live|test)_[0-9A-Za-z]{16,}\b")),
+    ("twilio_account_sid", "medium", re.compile(r"\bAC[0-9a-fA-F]{32}\b")),
+    ("twilio_api_key", "high", re.compile(r"\bSK[0-9a-fA-F]{32}\b")),
+    ("sendgrid_api_key", "high", re.compile(r"\bSG\.[0-9A-Za-z_\-]{22}\.[0-9A-Za-z_\-]{43}\b")),
+    ("npm_token", "high", re.compile(r"\bnpm_[0-9A-Za-z]{36}\b")),
+    (
+        "jwt",
+        "medium",
+        re.compile(r"\beyJ[0-9A-Za-z_\-]{6,}\.eyJ[0-9A-Za-z_\-]{6,}\.[0-9A-Za-z_\-]{6,}"),
+    ),
+    (
+        "private_key",
+        "high",
+        re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"),
+    ),
 )
 
 # A ``/`` right after one of these keywords begins a regex, not a division.
@@ -259,10 +304,14 @@ def _prev_word(text: str, end: int) -> str:
     return text[j:end]
 
 
-def extract_js_strings(
-    text: str, *, min_length: int = 4, offset: int = 0, limit: int = 200
-) -> JsonObject:
-    """Tokenize the source and return its string-literal inventory (paged)."""
+def _scan_string_literals(
+    text: str, *, min_length: int
+) -> tuple[list[JsonObject], bool]:
+    """Tokenize the source and return (literals, scan_capped).
+
+    The comment/regex-aware scan shared by extract_js_strings (which pages the
+    result) and extract_js_secrets (which classifies each value).
+    """
     literals: list[JsonObject] = []
     n = len(text)
     i = 0
@@ -330,7 +379,14 @@ def extract_js_strings(
         prev_char = c
         prev_index = i
         i += 1
+    return literals, scan_capped
 
+
+def extract_js_strings(
+    text: str, *, min_length: int = 4, offset: int = 0, limit: int = 200
+) -> JsonObject:
+    """Tokenize the source and return its string-literal inventory (paged)."""
+    literals, scan_capped = _scan_string_literals(text, min_length=min_length)
     total = len(literals)
     start, cap = _clamp_page(offset, limit, max_limit=_MAX_JS_STRINGS_PAGE)
     window = literals[start : start + cap]
@@ -655,5 +711,79 @@ def extract_js_api_usage(text: str) -> JsonObject:
         "categories": categories,
         "category_count": len(categories),
         "total_hits": total_hits,
+        "scan_capped": scan_capped,
+    }
+
+
+def _redact_secret(secret: str) -> str:
+    """Mask the middle of a matched credential, keeping enough to identify it.
+
+    Full secrets must never be echoed into a transcript, but the prefix (which
+    is what names the provider) and length are what a triage needs.
+    """
+    length = len(secret)
+    if length <= 8:
+        head = secret[:2]
+        return f"{head}{'*' * max(1, length - 2)} (len {length})"
+    return f"{secret[:4]}{'*' * 4}{secret[-2:]} (len {length})"
+
+
+def extract_js_secrets(
+    text: str, *, offset: int = 0, limit: int = 200
+) -> JsonObject:
+    """Classify string literals against known credential patterns (pure Python).
+
+    Scans the decoded value of every string literal (not raw code, so a name in
+    a comment does not count) against a high-precision table of provider
+    credentials, deduping identical secrets and redacting them in the output.
+    """
+    literals, scan_capped = _scan_string_literals(
+        text, min_length=_MIN_SECRET_LITERAL_LEN
+    )
+    # key (kind, secret) -> {kind, severity, preview, length, count, lines}
+    found: OrderedDict[tuple[str, str], JsonObject] = OrderedDict()
+    kinds: Counter[str] = Counter()
+    for lit in literals:
+        value = str(lit["value"])
+        line = int(lit["line"])
+        for kind, severity, pattern in _SECRET_PATTERNS:
+            for match in pattern.finditer(value):
+                secret = match.group(0)
+                key = (kind, secret)
+                row = found.get(key)
+                if row is None:
+                    if len(found) >= _MAX_SECRETS_COLLECT:
+                        scan_capped = True
+                        continue
+                    row = {
+                        "kind": kind,
+                        "severity": severity,
+                        "preview": _redact_secret(secret),
+                        "length": len(secret),
+                        "count": 0,
+                        "lines": [],
+                    }
+                    found[key] = row
+                    kinds[kind] += 1
+                row["count"] = int(row["count"]) + 1
+                lines_list: list[int] = row["lines"]
+                if line not in lines_list and len(lines_list) < _MAX_SECRET_SAMPLE_LINES:
+                    lines_list.append(line)
+
+    severity_rank = {"high": 0, "medium": 1, "low": 2}
+    rows = sorted(
+        found.values(),
+        key=lambda r: (severity_rank.get(str(r["severity"]), 3), str(r["kind"]), str(r["preview"])),
+    )
+    start, cap = _clamp_page(offset, limit, max_limit=_MAX_SECRETS_PAGE)
+    window = rows[start : start + cap]
+    return {
+        "findings": window,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "kinds": dict(kinds),
+        "total_findings": sum(int(r["count"]) for r in rows),
         "scan_capped": scan_capped,
     }

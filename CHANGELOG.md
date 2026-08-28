@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **329（211 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **330（212 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -371,6 +371,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 新增（JavaScript 静态提取）
 
+- 新增 `js.secrets`:纯 Python 在 JavaScript 字符串字面量里找硬编码凭据——`js.strings` 列出全部字面量,
+  这个把每个字面量的解码值对着一张高精度厂商凭据表逐一分类,是审计首先要跑的"泄露密钥"分诊。因为扫的是
+  解码后的字符串值而非原始代码,注释里的密钥不会误报;因为每条模式都要求独特的固定前缀或结构(而不是
+  "一串长随机字符"),误报率保持低位。命中的密钥在输出里做了脱敏:保留能认出厂商的前缀与长度,中段打码,
+  于是会话记录里永远不带活值。识别的种类:AWS access key、Google API key 与 OAuth token、GitHub
+  token/PAT、GitLab token、Slack token 与 webhook、Stripe secret/test/publishable key、Twilio
+  SID/key、SendGrid key、npm token、JWT 与 PEM 私钥。回 findings(分页,severity 高优先再按 kind 排序)、
+  `count`/`total`/`offset`/`has_more`、kinds 计数(每种的去重条数)、total_findings(出现总次数)与
+  scan_capped。每条 finding 带 kind、severity(活体/私有凭据为 high,publishable/test/JWT 为 medium)、
+  preview(脱敏后的值)、length(真实密钥长度)、count(出现次数)与 lines(至多 5 个 1 起始行号采样)。
+  相同密钥跨行去重;干净文件回空 findings 而非报错。这是词法扫描:运行时拼出来的密钥不在射程内,
+  测试/示例密钥照样命中。超 16 MiB 报 too_large,不存在报 not_found。`extract_js_strings` 的扫描循环
+  同步重构为共享的 `_scan_string_literals`,两个读取路径吃同一个分词器。
 - 新增 `js.imports`:纯 Python 从 JavaScript 源码里抽取模块依赖图——ESM `import`/`export ... from`、
   CommonJS `require()`、动态 `import()` 与 worker `importScripts()` 一并收进来,于是分诊能看清一个 bundle
   拉进了什么(CDN、npm 包、同级 chunk)以及在哪拉。不需要 Node/webcrack。匹配会用注释/字符串/正则映射校验一遍,
