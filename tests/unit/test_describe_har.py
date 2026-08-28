@@ -63,6 +63,14 @@ def test_reads_a_real_capture(tmp_path: Path) -> None:
         "bodies_stripped": 2,
         "bodies_size_mismatch": 0,
     }
+    # None of these entries declares a request body (no bodySize), so the
+    # upload-side verdict is empty rather than absent.
+    assert info["request_body_integrity"] == {
+        "requests_with_body": 0,
+        "bodies_captured": 0,
+        "bodies_stripped": 0,
+        "bodies_size_mismatch": 0,
+    }
 
 
 def test_detects_websocket_traffic(tmp_path: Path) -> None:
@@ -204,6 +212,85 @@ class TestHarBodyIntegrity:
             "bodies_stripped": 0,
             "bodies_size_mismatch": 0,
         }
+
+
+def _post(body_size: int, text: str | None = None, encoding: str | None = None) -> dict:
+    request: dict = {"method": "POST", "url": "https://h.example.com/login", "bodySize": body_size}
+    if text is not None or encoding is not None:
+        post_data: dict = {"mimeType": "application/json"}
+        if text is not None:
+            post_data["text"] = text
+        if encoding is not None:
+            post_data["encoding"] = encoding
+        request["postData"] = post_data
+    return {"request": request, "response": {"status": 200, "content": {"size": 0}}}
+
+
+class TestHarRequestBodyIntegrity:
+    """describe_har says whether uploaded (POST/PUT) bodies survived the capture.
+
+    The mirror of the response-body verdict: a shared capture may keep every
+    response yet scrub the credentials a login POSTed. Per HAR 1.2,
+    request.bodySize is the uploaded body's byte length and postData.text is
+    that body; comparing them tells a whole upload from a scrubbed or
+    truncated one.
+    """
+
+    def test_matching_upload_reads_as_captured(self, tmp_path: Path) -> None:
+        import base64
+
+        har = _write_har(
+            tmp_path / "up.har",
+            [
+                _post(5, "hello"),
+                _post(5, base64.b64encode(b"world").decode(), "base64"),
+            ],
+        )
+        assert describe_har(har)["har"]["request_body_integrity"] == {
+            "requests_with_body": 2,
+            "bodies_captured": 2,
+            "bodies_stripped": 0,
+            "bodies_size_mismatch": 0,
+        }
+
+    def test_a_scrubbed_upload_reads_as_stripped(self, tmp_path: Path) -> None:
+        # The credentials case: bodySize says a body was sent, but postData
+        # (or its text) was removed before the .har was shared.
+        no_postdata = _write_har(tmp_path / "s1.har", [_post(64)])
+        integrity = describe_har(no_postdata)["har"]["request_body_integrity"]
+        assert integrity["requests_with_body"] == 1
+        assert integrity["bodies_stripped"] == 1
+        assert integrity["bodies_captured"] == 0
+        # postData present but its text field emptied reads the same way.
+        empty_text = _write_har(tmp_path / "s2.har", [_post(64, "")])
+        assert (
+            describe_har(empty_text)["har"]["request_body_integrity"]["bodies_stripped"] == 1
+        )
+
+    def test_a_truncated_upload_reads_as_a_size_mismatch(self, tmp_path: Path) -> None:
+        har = _write_har(tmp_path / "cut.har", [_post(500, "half-the-body")])
+        integrity = describe_har(har)["har"]["request_body_integrity"]
+        assert integrity["bodies_captured"] == 1
+        assert integrity["bodies_size_mismatch"] == 1
+
+    def test_a_get_without_a_body_is_not_counted(self, tmp_path: Path) -> None:
+        har = _write_har(
+            tmp_path / "get.har",
+            [{"request": {"method": "GET", "url": "https://h.example.com/", "bodySize": 0},
+              "response": {"status": 200, "content": {"size": 0}}}],
+        )
+        assert describe_har(har)["har"]["request_body_integrity"] == {
+            "requests_with_body": 0,
+            "bodies_captured": 0,
+            "bodies_stripped": 0,
+            "bodies_size_mismatch": 0,
+        }
+
+    def test_an_unknown_body_size_is_not_counted(self, tmp_path: Path) -> None:
+        # bodySize -1 is HAR's "not available" sentinel, not a real body; it
+        # must not be mistaken for an upload nor flagged as stripped.
+        har = _write_har(tmp_path / "unk.har", [_post(-1)])
+        assert describe_har(har)["har"]["request_body_integrity"]["requests_with_body"] == 0
 
 
 def test_session_over_a_local_har_carries_the_facts(tmp_path: Path) -> None:

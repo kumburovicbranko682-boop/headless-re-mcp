@@ -2274,6 +2274,13 @@ def describe_har(path: Path) -> dict[str, Any]:
     bodies_captured = 0
     bodies_stripped = 0
     bodies_size_mismatch = 0
+    # The same completeness question for what the client uploaded: how many
+    # requests carried a body (POST/PUT payloads), and whether the capture
+    # kept it, scrubbed it, or truncated it.
+    requests_with_body = 0
+    request_bodies_captured = 0
+    request_bodies_stripped = 0
+    request_bodies_size_mismatch = 0
     truncated = len(entries) > _HAR_MAX_ENTRIES
     for entry in entries[:_HAR_MAX_ENTRIES]:
         if not isinstance(entry, dict):
@@ -2288,6 +2295,16 @@ def describe_har(path: Path) -> dict[str, Any]:
                 host = urlsplit(url).hostname
                 if host:
                     hosts.add(host)
+            body_size = request.get("bodySize")
+            if isinstance(body_size, int) and body_size > 0:
+                requests_with_body += 1
+                measured = _har_postdata_length(request.get("postData"))
+                if measured is None:
+                    request_bodies_stripped += 1
+                else:
+                    request_bodies_captured += 1
+                    if measured != body_size:
+                        request_bodies_size_mismatch += 1
         response = entry.get("response")
         if isinstance(response, dict):
             status = response.get("status")
@@ -2335,6 +2352,15 @@ def describe_har(path: Path) -> dict[str, Any]:
                 "bodies_stripped": bodies_stripped,
                 "bodies_size_mismatch": bodies_size_mismatch,
             },
+            # The same verdict for uploaded bodies (POST/PUT payloads),
+            # keyed off request.bodySize vs postData.text: a capture may keep
+            # every response yet scrub the credentials a login POSTed.
+            "request_body_integrity": {
+                "requests_with_body": requests_with_body,
+                "bodies_captured": request_bodies_captured,
+                "bodies_stripped": request_bodies_stripped,
+                "bodies_size_mismatch": request_bodies_size_mismatch,
+            },
             "truncated": truncated,
         }
     }
@@ -2355,6 +2381,30 @@ def _har_body_length(content: dict[str, Any]) -> int | None:
     if not isinstance(text, str) or text == "":
         return None
     encoding = content.get("encoding")
+    if isinstance(encoding, str) and encoding.lower() == "base64":
+        try:
+            return len(base64.b64decode(text, validate=True))
+        except ValueError:
+            return -1
+    return len(text.encode("utf-8"))
+
+
+def _har_postdata_length(post_data: Any) -> int | None:
+    """The decoded byte length of a HAR request body, or None when absent.
+
+    The request analogue of :func:`_har_body_length`: ``request.postData.text``
+    is the uploaded body and ``request.bodySize`` its byte length, so a real
+    browser records both for a POST. Returns the measured length (base64 when
+    ``postData.encoding`` says so, else the UTF-8 byte count) to compare with
+    bodySize, None when the size is declared but no text was kept (the scrubbed
+    credential case), and -1 for base64 that does not decode.
+    """
+    if not isinstance(post_data, dict):
+        return None
+    text = post_data.get("text")
+    if not isinstance(text, str) or text == "":
+        return None
+    encoding = post_data.get("encoding")
     if isinstance(encoding, str) and encoding.lower() == "base64":
         try:
             return len(base64.b64decode(text, validate=True))
