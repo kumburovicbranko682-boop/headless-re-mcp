@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（Ghidra 服务层活体门：经 `binary` 会话把 `ghidra.*` 整条链对真 ELF 跑通，含 `xrefs`）
+
+既有 Ghidra 活体门直接 new `GhidraClient`，只覆盖 client 层的 analyze/functions/symbols/decompile，从
+不测 `xrefs`；服务层的 `ghidra.analyze/functions/symbols/decompile/xrefs`（即调用方真正走的
+`session.create` → 服务）也从没有活体覆盖——因为在 `binary` 会话类型出现前，ELF 在建会话时就被以
+“not a PE file” 拒掉，服务层的 Ghidra 路径对 ELF 根本够不着。新增
+`tests/integration/test_ghidra_service_gate.py`：测试期用 cc 现场编一个非 PIE、未 strip 的小 ELF
+（自带 `headless_compute`，被 `main` 调用），经 `session.create` 建 `binary` 会话后断言 **恢复出的
+内容**——`functions` 里有名为 `headless_compute` 的项且都带 entry、`symbols` 非空、`decompile` 出的
+C 体确实是 `return param_1 * param_2 + 7;`（含 `*`/`7`/`return`）、`xrefs(headless_compute)` 里有一条
+指向其 entry 的 CALL 边且 from 是真实调用点。这样 Ghidra 后端、ExportJson postScript 或服务层任一处
+退化都会被逮住。已实测：Ghidra 12.0.4 + JDK 21 下整门 ~32s 通过。
+
+skip ≠ pass：`HEADLESS_RE_GHIDRA_HOME` 未配、无 C 编译器、或所用 Ghidra 跑不了 Jython 版 ExportJson
+postScript（Jython 到 12.0.x 为止随包自带，12.1 起改为可选扩展）时——后者是安装选择而非本代码回归——
+均干净 skip（只对 “export JSON missing” 这一精确信号 skip，其它失败照样报）。
+
 ### 修复（可移植后端只能对 PE 用：新增 `binary` 会话类型，让 ELF/Mach-O 也能进 r2/Ghidra）
 
 radare2 与 Ghidra 是这个仓库里“可移植后端”这条线的主角——它们本就跨平台、能分析 ELF/Mach-O。但通过
