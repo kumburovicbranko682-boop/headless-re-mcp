@@ -13,6 +13,12 @@ opinion) and a clean real-world image where zero must be the shared answer:
 the census must not hallucinate on the gcc probe, the committed Mach-O
 fixture or an mcs-built PE.
 
+The same llvm-objdump also referees the Mach-O RELRO: SG_READ_ONLY on
+__DATA_CONST/__AUTH_CONST, the segments dyld remaps read-only after applying
+fixups (``read_only_segments``) -- the pair to an ELF's PT_GNU_RELRO. It
+prints ``flags SG_READ_ONLY`` against exactly those segments, which the gate
+compares name for name against a planted image and the committed fixture.
+
 readelf/gcc ship with the CI runner; llvm and pefile come from the workflow's
 llvm and ``pe`` extra installs; mcs from mono-mcs. skip != pass: each test
 skips only when its own referee is unavailable.
@@ -201,6 +207,98 @@ def test_the_committed_macho_fixture_counts_zero_like_llvm_objdump() -> None:
     referee = _llvm_wx_segments(objdump, _MACHO_FIXTURE)
     assert referee == 0
     assert _session_facts(_MACHO_FIXTURE, "native")["wx_segments"] == 0
+
+
+def _macho_with_flagged_segments(segments: list[tuple[str, int]]) -> bytes:
+    """A 64-bit Mach-O with one LC_SEGMENT_64 per (name, flags) pair.
+
+    filesize stays zero so llvm-objdump's strict fileoff+filesize bounds check
+    passes; SG_READ_ONLY lives in the segment_command flags field at +68.
+    """
+    body = bytearray()
+    for index, (name, flags) in enumerate(segments):
+        cmd = bytearray(72)
+        struct.pack_into("<II", cmd, 0, 0x19, 72)  # LC_SEGMENT_64
+        cmd[8:24] = name.encode().ljust(16, b"\x00")
+        struct.pack_into("<Q", cmd, 24, 0x1000 * (index + 1))  # vmaddr
+        struct.pack_into("<Q", cmd, 32, 0x1000)  # vmsize
+        struct.pack_into("<II", cmd, 56, 0x7, 0x3)  # maxprot, initprot rw-
+        struct.pack_into("<I", cmd, 68, flags)  # SG_* flags
+        body += cmd
+    header = struct.pack(
+        "<IIIIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, len(segments), len(body), 0, 0
+    )
+    return header + bytes(body)
+
+
+def _llvm_read_only_segments(objdump: str, binary: Path) -> list[str]:
+    """The segment names llvm-objdump prints ``flags SG_READ_ONLY`` against.
+
+    --private-headers prints each segment_command's fields (segname first,
+    then the flags line, before any section headers), so per segment block the
+    first segname/flags pair is the segment-level one.
+    """
+    result = subprocess.run(
+        [objdump, "--macho", "--private-headers", str(binary)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    names: list[str] = []
+    seg: str | None = None
+    captured = False
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("cmd LC_SEGMENT"):
+            seg, captured = None, False
+        elif not captured and stripped.startswith("segname ") and seg is None:
+            seg = stripped.split(None, 1)[1]
+        elif not captured and stripped.startswith("flags ") and seg is not None:
+            if "SG_READ_ONLY" in stripped:
+                names.append(seg)
+            captured = True
+    return names
+
+
+@pytest.mark.integration
+def test_macho_read_only_segments_agree_with_llvm_objdump(tmp_path: Path) -> None:
+    """The Mach-O RELRO: the segments dyld remaps read-only after fixups.
+
+    SG_READ_ONLY on __DATA_CONST is what closes the GOT-overwrite door a plain
+    writable __DATA leaves open -- the pair to an ELF's PT_GNU_RELRO. The flag
+    decode is ours, so llvm-objdump referees it: it prints ``flags
+    SG_READ_ONLY`` against exactly the segments carrying the bit, and the
+    session must name the same ones. A planted __DATA_CONST proves the
+    positive, the plain __DATA proves the reader is not hallucinating.
+    """
+    objdump = shutil.which("llvm-objdump")
+    if objdump is None:
+        pytest.skip("llvm-objdump not installed — Mach-O RELRO gate not run (skip != pass)")
+
+    binary = tmp_path / "relro.macho"
+    binary.write_bytes(
+        _macho_with_flagged_segments(
+            [("__TEXT", 0), ("__DATA_CONST", 0x10), ("__DATA", 0), ("__AUTH_CONST", 0x10)]
+        )
+    )
+    referee = _llvm_read_only_segments(objdump, binary)
+    assert referee == ["__DATA_CONST", "__AUTH_CONST"]  # the referee really saw the flag
+    assert _session_facts(binary, "native")["read_only_segments"] == referee
+
+
+@pytest.mark.integration
+def test_the_committed_macho_fixture_has_no_read_only_segment_like_llvm() -> None:
+    # The hand-built fixture predates __DATA_CONST: both the reader and llvm
+    # must agree its GOT is unprotected (the "none" RELRO answer).
+    objdump = shutil.which("llvm-objdump")
+    if objdump is None:
+        pytest.skip("llvm-objdump not installed — Mach-O RELRO gate not run (skip != pass)")
+    if not _MACHO_FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_MACHO_FIXTURE}")
+
+    assert _llvm_read_only_segments(objdump, _MACHO_FIXTURE) == []
+    assert _session_facts(_MACHO_FIXTURE, "native")["read_only_segments"] == []
 
 
 def _pe_with_wx_section() -> bytes:

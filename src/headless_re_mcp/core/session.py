@@ -944,6 +944,13 @@ _MACHO_TOOLS = {1: "clang", 2: "swift", 3: "ld", 4: "lld"}
 _MACHO_MAX_TOOLS = 16
 _LC_SEGMENT = 0x01
 _LC_SEGMENT_64 = 0x19
+# SG_READ_ONLY marks a segment dyld remaps read-only after applying its
+# fixups -- the Mach-O RELRO: the linker parks the GOT and const-initialized
+# pointers in __DATA_CONST/__AUTH_CONST and flags them so a runtime write
+# faults, closing the GOT-overwrite door a plain writable __DATA leaves open.
+# The presence of such a segment is the pair to an ELF's PT_GNU_RELRO, and
+# llvm-objdump --macho --private-headers prints "flags SG_READ_ONLY" for it.
+_SG_READ_ONLY = 0x10
 # initprot carrying both write and execute is the Mach-O W^X violation, the
 # pair to a RWE PT_LOAD: a mapping the process can write and run, which no
 # stock Apple toolchain emits. llvm-objdump prints the same initprot field.
@@ -9196,6 +9203,11 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         # violation, the pair to the ELF wx_segments count. Always present:
         # zero is a real answer.
         facts["wx_segments"] = lc["wx_segments"]
+        # Segments dyld remaps read-only after applying fixups (SG_READ_ONLY)
+        # -- the Mach-O RELRO, the pair to an ELF's PT_GNU_RELRO. Always
+        # present: an empty list is the writable-GOT "none" answer, a
+        # __DATA_CONST entry the hardened one.
+        facts["read_only_segments"] = lc["read_only_segments"]
         if lc["dylibs"] is not None:
             facts["dylibs"] = lc["dylibs"]
             # The optional-dependency channel, split out of the plain list:
@@ -9901,6 +9913,9 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
         # Segments mapped writable and executable at once (initprot), the
         # Mach-O W^X violation count.
         "wx_segments": 0,
+        # Segment names carrying SG_READ_ONLY -- the read-only-after-fixups
+        # posture, the Mach-O RELRO. Empty means nothing is protected.
+        "read_only_segments": [],
     }
     if ncmds <= 0 or ncmds > _MACHO_MAX_LOAD_CMDS:
         return result
@@ -9908,10 +9923,12 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
     segments: list[tuple[int, int, int]] = []
     rpaths: list[str] = []
     sections: list[tuple[str, int, int]] = []
+    read_only_segments: list[str] = []
     result["dylibs"] = names
     result["segments"] = segments
     result["rpaths"] = rpaths
     result["sections"] = sections
+    result["read_only_segments"] = read_only_segments
     pos = 0
     for _ in range(ncmds):
         if pos + 8 > len(cmds):
@@ -10062,6 +10079,11 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
                 initprot = int.from_bytes(cmds[pos + 60 : pos + 64], order)  # type: ignore[arg-type]
                 if initprot & _VM_PROT_WRITE and initprot & _VM_PROT_EXECUTE:
                     result["wx_segments"] += 1
+            # flags at +68: SG_READ_ONLY is the read-only-after-fixups posture.
+            if cmdsize >= 72 and len(read_only_segments) < _MACHO_MAX_DYLIBS:
+                seg_flags = int.from_bytes(cmds[pos + 68 : pos + 72], order)  # type: ignore[arg-type]
+                if seg_flags & _SG_READ_ONLY:
+                    read_only_segments.append(_macho_sectname(cmds[pos + 8 : pos + 24]))
             # nsects section_64 headers (80 bytes: size u64 at +40, flags u32
             # at +64) follow the 72-byte segment header; the walk is bounded
             # by the command's own size, so a lying nsects reads nothing.
@@ -10093,6 +10115,11 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
                 initprot = int.from_bytes(cmds[pos + 44 : pos + 48], order)  # type: ignore[arg-type]
                 if initprot & _VM_PROT_WRITE and initprot & _VM_PROT_EXECUTE:
                     result["wx_segments"] += 1
+            # flags at +52: SG_READ_ONLY is the read-only-after-fixups posture.
+            if cmdsize >= 56 and len(read_only_segments) < _MACHO_MAX_DYLIBS:
+                seg_flags = int.from_bytes(cmds[pos + 52 : pos + 56], order)  # type: ignore[arg-type]
+                if seg_flags & _SG_READ_ONLY:
+                    read_only_segments.append(_macho_sectname(cmds[pos + 8 : pos + 24]))
             # nsects section headers (68 bytes: size u32 at +36, flags u32 at
             # +56) follow the 56-byte segment header, bounded the same way.
             if cmdsize >= 56:

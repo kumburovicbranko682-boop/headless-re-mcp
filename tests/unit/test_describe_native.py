@@ -265,29 +265,47 @@ def _lc_main(entryoff: int) -> bytes:
     )
 
 
-def _lc_segment64(vmaddr: int, fileoff: int, filesize: int, *, initprot: int = 0) -> bytes:
+def _lc_segment64(
+    vmaddr: int,
+    fileoff: int,
+    filesize: int,
+    *,
+    initprot: int = 0,
+    segname: bytes = b"__TEXT",
+    flags: int = 0,
+) -> bytes:
     cmd = bytearray(72)
     cmd[0:4] = (0x19).to_bytes(4, "little")  # LC_SEGMENT_64
     cmd[4:8] = (72).to_bytes(4, "little")
-    cmd[8:24] = b"__TEXT".ljust(16, b"\x00")
+    cmd[8:24] = segname.ljust(16, b"\x00")
     cmd[24:32] = vmaddr.to_bytes(8, "little")
     cmd[32:40] = (0x1000).to_bytes(8, "little")  # vmsize
     cmd[40:48] = fileoff.to_bytes(8, "little")
     cmd[48:56] = filesize.to_bytes(8, "little")
     cmd[60:64] = initprot.to_bytes(4, "little")
+    cmd[68:72] = flags.to_bytes(4, "little")  # SG_* segment flags
     return bytes(cmd)
 
 
-def _lc_segment32(vmaddr: int, fileoff: int, filesize: int, *, initprot: int = 0) -> bytes:
+def _lc_segment32(
+    vmaddr: int,
+    fileoff: int,
+    filesize: int,
+    *,
+    initprot: int = 0,
+    segname: bytes = b"__TEXT",
+    flags: int = 0,
+) -> bytes:
     cmd = bytearray(56)
     cmd[0:4] = (0x01).to_bytes(4, "little")  # LC_SEGMENT
     cmd[4:8] = (56).to_bytes(4, "little")
-    cmd[8:24] = b"__TEXT".ljust(16, b"\x00")
+    cmd[8:24] = segname.ljust(16, b"\x00")
     cmd[24:28] = vmaddr.to_bytes(4, "little")
     cmd[28:32] = (0x1000).to_bytes(4, "little")  # vmsize
     cmd[32:36] = fileoff.to_bytes(4, "little")
     cmd[36:40] = filesize.to_bytes(4, "little")
     cmd[44:48] = initprot.to_bytes(4, "little")
+    cmd[52:56] = flags.to_bytes(4, "little")  # SG_* segment flags
     return bytes(cmd)
 
 
@@ -2082,6 +2100,51 @@ def test_macho32_wx_reads_initprot_at_its_32bit_offset(tmp_path: Path) -> None:
     data = _macho32_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=1)
     facts = describe_native(_write(tmp_path, "wx32.macho", data))["native"]
     assert facts["wx_segments"] == 1
+
+
+def test_macho_read_only_segments_names_the_sg_read_only_segment(tmp_path: Path) -> None:
+    # SG_READ_ONLY (0x10) is the Mach-O RELRO: dyld remaps the segment
+    # read-only after applying fixups. The reader names each such segment,
+    # skipping the plain writable __DATA that leaves the GOT exposed.
+    cmds = (
+        _lc_segment64(0, 0, 0, initprot=0x5, segname=b"__TEXT")
+        + _lc_segment64(0x1000, 0, 0, initprot=0x3, segname=b"__DATA_CONST", flags=0x10)
+        + _lc_segment64(0x2000, 0, 0, initprot=0x3, segname=b"__DATA")
+    )
+    data = _macho64_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=3)
+    facts = describe_native(_write(tmp_path, "relro.macho", data))["native"]
+    assert facts["read_only_segments"] == ["__DATA_CONST"]
+
+
+def test_macho_no_read_only_segment_reads_the_empty_none_posture(tmp_path: Path) -> None:
+    # No SG_READ_ONLY anywhere: the writable-GOT "none" RELRO answer, always
+    # present as an empty list rather than a missing key.
+    cmds = _lc_segment64(0, 0, 0, initprot=0x5, segname=b"__TEXT") + _lc_segment64(
+        0x1000, 0, 0, initprot=0x3, segname=b"__DATA"
+    )
+    data = _macho64_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=2)
+    facts = describe_native(_write(tmp_path, "nonrelro.macho", data))["native"]
+    assert facts["read_only_segments"] == []
+
+
+def test_macho_read_only_segment_can_be_more_than_one(tmp_path: Path) -> None:
+    # arm64e images flag both __DATA_CONST and __AUTH_CONST; both are named,
+    # in load-command order.
+    cmds = (
+        _lc_segment64(0x1000, 0, 0, initprot=0x3, segname=b"__DATA_CONST", flags=0x10)
+        + _lc_segment64(0x2000, 0, 0, initprot=0x3, segname=b"__AUTH_CONST", flags=0x10)
+    )
+    data = _macho64_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=2)
+    facts = describe_native(_write(tmp_path, "auth.macho", data))["native"]
+    assert facts["read_only_segments"] == ["__DATA_CONST", "__AUTH_CONST"]
+
+
+def test_macho32_read_only_segment_reads_flags_at_its_offset(tmp_path: Path) -> None:
+    # The 32-bit segment_command packs the flags field at +52, not +68.
+    cmds = _lc_segment32(0x1000, 0, 0, initprot=0x3, segname=b"__DATA_CONST", flags=0x10)
+    data = _macho32_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=1)
+    facts = describe_native(_write(tmp_path, "relro32.macho", data))["native"]
+    assert facts["read_only_segments"] == ["__DATA_CONST"]
 
 
 def test_macho_encrypted_from_the_encryption_info_cryptid(tmp_path: Path) -> None:
