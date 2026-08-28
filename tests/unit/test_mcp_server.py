@@ -342,6 +342,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "web.frames",
         "web.scripts",
         "web.script.source",
+        "web.script.sourcemap",
         "web.secrets",
         "web.wasm.list",
         "web.wasm.get",

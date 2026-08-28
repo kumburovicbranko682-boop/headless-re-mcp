@@ -294,6 +294,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **js.sourcemap 需要 `.map` 在磁盘上，但线上 SPA 的 map 通常是「服务出来的」而非落盘**。新增只读工具
+  `web.script.sourcemap`：js.sourcemap 的动态对应物。它经 CDP 取到某个已解析脚本的源码，读末尾的
+  `//# sourceMappingURL=`；内联 data: URI 直接解码，外部引用则在页面自身上下文里 `fetch`（`credentials: 'include'`，
+  故同源或 CORS 放行、甚至带鉴权的 map 也能取到），再用共享的 source-map 解析器还原压缩前的原始源码。
+  从 web.scripts 选 script_id。扁平 map 与索引 map（sections）都支持。两种模式与 js.sourcemap 一致：`extract` 为空
+  时列出原始源（`sources`/`count`/`total`/`offset`/`has_more`/`sources_total`/`with_content`/`map`/`origin`，
+  origin 为 inline|external:<url>），`name_filter` 分页前按名字子串过滤；`extract` 非空时返回该源原文（截断 2 MiB，
+  附 `content_truncated`）。每次答复都带 `script_id`、`script_url`、`has_source_map` 及（若有）`source_map_url`。
+  脚本没有 sourceMappingURL 时返回 `has_source_map: False` 空列表而非报错，方便廉价扫过 web.scripts；页面从未解析过
+  的 script id 为 not_found；相对 map 但脚本无 URL 可解析为 invalid_state；浏览器取不到 map 为 backend_error 并带 url。
+  只读，工具总数 306→307（187 只读 / 120 写）。
 - **JS 这条线有 deobfuscate/beautify（只能把压缩代码重新排版），却没有 source map 支持——而真正的
   「反压缩」是拿回原始源码**。新增只读工具 `js.sourcemap`：一个 bundle 的 `.map` 在 `sourcesContent` 里带着
   压缩前的源码文本（原始标识符、模块结构、注释），把它捞回来远胜过给压缩代码重新排版。依赖无关（不走

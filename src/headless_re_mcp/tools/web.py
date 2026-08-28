@@ -345,6 +345,54 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_script_source(session_id, script_id))
 
+    @tools.tool(name="web.script.sourcemap")
+    def web_script_sourcemap(
+        session_id: str,
+        script_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        name_filter: str = "",
+        extract: str = "",
+    ) -> dict[str, Any]:
+        """Recover a live script's original sources from its source map.
+
+        The dynamic counterpart to js.sourcemap (which needs the .map on disk):
+        on a running page the map is usually served, not saved, so this fetches
+        the script's source over CDP, reads its trailing //# sourceMappingURL=,
+        and -- when the map is an external reference -- fetches it in the page's
+        own context (credentials: 'include', so a same-origin or CORS-permitted
+        map behind auth is reachable), then parses it with the shared source-map
+        parser to hand back the original pre-minification sources. An inline
+        data: URI is decoded directly, no fetch. Pick a script_id from
+        web.scripts. Both flat maps and index maps (sections) are handled. Two
+        modes, mirroring js.sourcemap: with extract empty (the default) it lists
+        the original sources, answering with sources (each {source, has_content,
+        length}), count, total, offset, has_more, sources_total, with_content,
+        map ({version, file, source_root, index_map}) and origin
+        (inline|external:<url>); name_filter keeps only sources whose name
+        contains that substring (case-insensitive), before paging so total is the
+        match count. With extract set it returns that one source's original text:
+        matched (exact source name first, then first substring match), and on a
+        hit source, content (clipped at 2 MiB with content_truncated), length and
+        has_content. Every answer also carries script_id, script_url,
+        has_source_map and (when present) source_map_url. A script with no
+        sourceMappingURL comes back has_source_map False with an empty sources
+        list -- not an error -- so web.scripts can be swept cheaply; a script id
+        the page never parsed is not_found; a relative map on a script with no URL
+        is invalid_state; a map the browser could not fetch is backend_error with
+        the url. The list field is sources. Read-only.
+        """
+        return _dump(
+            analysis.web_script_sourcemap(
+                session_id,
+                script_id,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                extract=extract,
+            )
+        )
+
     @tools.tool(name="web.secrets")
     def web_secrets(
         session_id: str,

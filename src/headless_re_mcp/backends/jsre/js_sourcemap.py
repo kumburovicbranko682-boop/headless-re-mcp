@@ -156,3 +156,100 @@ def flatten_sources(data: JsonObject) -> tuple[list[str], list[str | None], Json
     root = root_value if isinstance(root_value, str) else ""
     sources, contents = _collect(data.get("sources"), data.get("sourcesContent"), root)
     return sources, contents, meta
+
+
+def list_sources(
+    sources: list[str],
+    contents: list[str | None],
+    meta: JsonObject,
+    origin: str,
+    *,
+    offset: int,
+    limit: int,
+    name_filter: str,
+    page_cap: int,
+) -> JsonObject:
+    """Shape a paged listing of a map's original sources.
+
+    Shared by the file-based (js.sourcemap) and live (web.script.sourcemap)
+    callers so both answer with the same fields.
+    """
+    needle = name_filter.strip().lower() if isinstance(name_filter, str) else ""
+    rows: list[JsonObject] = []
+    for name, content in zip(sources, contents, strict=True):
+        if needle and needle not in name.lower():
+            continue
+        rows.append(
+            {
+                "source": name,
+                "has_content": content is not None,
+                "length": len(content) if content is not None else 0,
+            }
+        )
+    with_content = sum(1 for value in contents if value is not None)
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), page_cap))
+    window = rows[start : start + cap]
+    return {
+        "sources": window,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "sources_total": len(sources),
+        "with_content": with_content,
+        "map": meta,
+        "origin": origin,
+    }
+
+
+def extract_source(
+    sources: list[str],
+    contents: list[str | None],
+    meta: JsonObject,
+    origin: str,
+    extract: str,
+    *,
+    content_cap: int,
+) -> JsonObject:
+    """Return one original source's full text, matched exactly then by substring."""
+    with_content = sum(1 for value in contents if value is not None)
+    index = -1
+    for position, name in enumerate(sources):
+        if name == extract:
+            index = position
+            break
+    if index < 0:
+        lowered = extract.lower()
+        for position, name in enumerate(sources):
+            if lowered in name.lower():
+                index = position
+                break
+    if index < 0:
+        return {
+            "extract": extract,
+            "matched": False,
+            "sources_total": len(sources),
+            "with_content": with_content,
+            "map": meta,
+            "origin": origin,
+        }
+    content = contents[index]
+    result: JsonObject = {
+        "extract": extract,
+        "matched": True,
+        "source": sources[index],
+        "map": meta,
+        "origin": origin,
+    }
+    if content is None:
+        result["has_content"] = False
+        result["content"] = ""
+        result["length"] = 0
+        return result
+    clipped = content[:content_cap]
+    result["has_content"] = True
+    result["content"] = clipped
+    result["length"] = len(content)
+    result["content_truncated"] = len(content) > len(clipped)
+    return result

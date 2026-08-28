@@ -282,6 +282,26 @@ class WebAnalysisMixin:
             dynamic_only=dynamic_only,
         )
 
+    def web_script_sourcemap(
+        self,
+        session_id: str,
+        script_id: str,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        extract: str = "",
+    ) -> Result[JsonObject]:
+        return self._web_wrap(
+            session_id,
+            "script_sourcemap",
+            session_id,
+            script_id,
+            offset=offset,
+            limit=limit,
+            name_filter=name_filter,
+            extract=extract,
+        )
+
     def web_frames(
         self,
         session_id: str,

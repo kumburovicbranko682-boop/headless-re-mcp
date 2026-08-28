@@ -19,10 +19,12 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.jsre.js_sourcemap import (
     SourceMapError,
     decode_data_uri,
+    extract_source,
     find_source_mapping_url,
     flatten_sources,
     is_probably_map_json,
     is_remote_url,
+    list_sources,
     parse_source_map,
 )
 from headless_re_mcp.backends.jsre.js_strings import extract_endpoints as extract_js_endpoints
@@ -478,85 +480,25 @@ class JsClient:
             sources, contents, meta = flatten_sources(data)
         except SourceMapError as exc:
             raise JsReError(exc.code, exc.message, path=str(resolved)) from exc
-        with_content = sum(1 for value in contents if value is not None)
         if extract:
-            return self._sourcemap_extract(sources, contents, meta, origin, extract, with_content)
-        needle = name_filter.strip().lower() if isinstance(name_filter, str) else ""
-        rows: list[JsonObject] = []
-        for name, content in zip(sources, contents, strict=True):
-            if needle and needle not in name.lower():
-                continue
-            rows.append(
-                {
-                    "source": name,
-                    "has_content": content is not None,
-                    "length": len(content) if content is not None else 0,
-                }
+            return extract_source(
+                sources,
+                contents,
+                meta,
+                origin,
+                extract,
+                content_cap=_MAX_SOURCEMAP_CONTENT_BYTES,
             )
-        start = max(0, int(offset))
-        capped = max(1, min(int(limit), _MAX_JS_SOURCEMAP_PAGE))
-        window = rows[start : start + capped]
-        return {
-            "sources": window,
-            "count": len(window),
-            "total": len(rows),
-            "offset": start,
-            "has_more": start + len(window) < len(rows),
-            "sources_total": len(sources),
-            "with_content": with_content,
-            "map": meta,
-            "origin": origin,
-        }
-
-    def _sourcemap_extract(
-        self,
-        sources: list[str],
-        contents: list[str | None],
-        meta: JsonObject,
-        origin: str,
-        extract: str,
-        with_content: int,
-    ) -> JsonObject:
-        """Return one original source's full text, matched exactly then by substring."""
-        index = -1
-        for position, name in enumerate(sources):
-            if name == extract:
-                index = position
-                break
-        if index < 0:
-            lowered = extract.lower()
-            for position, name in enumerate(sources):
-                if lowered in name.lower():
-                    index = position
-                    break
-        if index < 0:
-            return {
-                "extract": extract,
-                "matched": False,
-                "sources_total": len(sources),
-                "with_content": with_content,
-                "map": meta,
-                "origin": origin,
-            }
-        content = contents[index]
-        result: JsonObject = {
-            "extract": extract,
-            "matched": True,
-            "source": sources[index],
-            "map": meta,
-            "origin": origin,
-        }
-        if content is None:
-            result["has_content"] = False
-            result["content"] = ""
-            result["length"] = 0
-            return result
-        clipped = content[:_MAX_SOURCEMAP_CONTENT_BYTES]
-        result["has_content"] = True
-        result["content"] = clipped
-        result["length"] = len(content)
-        result["content_truncated"] = len(content) > len(clipped)
-        return result
+        return list_sources(
+            sources,
+            contents,
+            meta,
+            origin,
+            offset=offset,
+            limit=limit,
+            name_filter=name_filter,
+            page_cap=_MAX_JS_SOURCEMAP_PAGE,
+        )
 
 
 class WasmClient:

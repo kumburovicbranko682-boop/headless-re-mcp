@@ -24,8 +24,19 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, TypeVar
+from urllib.parse import urljoin
 from uuid import uuid4
 
+from headless_re_mcp.backends.jsre.js_sourcemap import (
+    SourceMapError,
+    decode_data_uri,
+    extract_source,
+    find_source_mapping_url,
+    flatten_sources,
+    is_remote_url,
+    list_sources,
+    parse_source_map,
+)
 from headless_re_mcp.backends.jsre.js_strings import extract_endpoints as extract_js_endpoints
 from headless_re_mcp.backends.jsre.js_strings import extract_secrets as extract_js_secrets
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
@@ -57,6 +68,30 @@ _MAX_WEB_ENDPOINT_SCAN_BYTES = 64 * 1024 * 1024
 _MAX_WEB_ENDPOINT_FINDINGS = 20000
 _MAX_WEB_ENDPOINT_HOSTS = 512
 _WEB_ENDPOINT_SCAN_TIMEOUT = 120.0
+# web.script.sourcemap recovers a live script's original sources from its source
+# map (the js_sourcemap parser, reused). Unlike file-based js.sourcemap, an
+# external .map is fetched by the browser (page context, so cookies/CORS apply);
+# the fetched text and one extracted source are both bounded, and the whole
+# resolve+fetch+parse runs in one runner call under this timeout.
+_MAX_WEB_SOURCEMAP_FETCH_BYTES = 8 * 1024 * 1024
+_MAX_WEB_SOURCEMAP_PAGE = 2000
+_MAX_WEB_SOURCEMAP_CONTENT = 2 * 1024 * 1024
+_WEB_SOURCEMAP_TIMEOUT = 30.0
+# Fetches the map in the page's own context so a same-origin or CORS-permitted
+# .map behind auth is reachable; the body is sliced in-page so a huge map does
+# not cross the bridge whole.
+_WEB_SOURCEMAP_FETCH_JS = """
+async ({url, max}) => {
+  try {
+    const resp = await fetch(url, {credentials: 'include'});
+    if (!resp.ok) return {ok: false, status: resp.status};
+    const text = await resp.text();
+    return {ok: true, text: text.length > max ? text.slice(0, max) : text, len: text.length};
+  } catch (e) {
+    return {ok: false, error: String((e && e.message) || e)};
+  }
+}
+"""
 # web.frames flattens Page.getFrameTree; a hostile page can insert or deeply
 # nest many iframes, so cap the tree walked (frames_truncated when hit) and page
 # the flattened list the same way the other web reads do.
@@ -1741,6 +1776,139 @@ class WebBackend:
         if spill is not None:
             result["source_path"] = str(spill)
         return result
+
+    def script_sourcemap(
+        self,
+        session_id: str,
+        script_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        extract: str = "",
+    ) -> JsonObject:
+        """Recover a live script's original sources from its source map.
+
+        The dynamic counterpart to js.sourcemap: on a running page the .map is
+        usually served, not on disk, so this fetches the script's source over CDP,
+        reads its trailing sourceMappingURL, and -- for an external map -- fetches
+        it in the page's own context (cookies/CORS apply) before parsing with the
+        shared js_sourcemap parser. An inline data: URI is decoded directly. List
+        mode (extract empty) and extract mode mirror js.sourcemap; a script with no
+        sourceMappingURL comes back has_source_map False rather than as an error,
+        so the caller can sweep web.scripts cheaply.
+        """
+        handle = self._get(session_id)
+        wanted = str(script_id)
+        with handle.lock:
+            script = next(
+                (s for s in handle.scripts.values() if str(s.get("scriptId")) == wanted),
+                None,
+            )
+        script_url = str(script.get("url", "")) if script else ""
+
+        def work() -> JsonObject:
+            try:
+                resp = handle.cdp.send("Debugger.getScriptSource", {"scriptId": wanted})
+            except WebError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise WebError(
+                    "not_found", f"cannot fetch script source: {exc}", script_id=wanted
+                ) from exc
+            source = resp.get("scriptSource", "") if isinstance(resp, dict) else ""
+            if not isinstance(source, str):
+                source = str(source)
+            url_out = _bounded_metadata(script_url, _MAX_URL_BYTES)[0]
+            mapping_url = find_source_mapping_url(source)
+            if mapping_url is None:
+                return {
+                    "script_id": wanted,
+                    "script_url": url_out,
+                    "has_source_map": False,
+                    "sources": [],
+                    "count": 0,
+                    "total": 0,
+                    "offset": max(0, int(offset)),
+                    "has_more": False,
+                    "sources_total": 0,
+                    "with_content": 0,
+                }
+            map_text, origin, resolved_url = self._resolve_map_text(
+                handle, mapping_url, script_url
+            )
+            try:
+                data = parse_source_map(map_text)
+                sources, contents, meta = flatten_sources(data)
+            except SourceMapError as exc:
+                raise WebError(exc.code, exc.message, script_id=wanted) from exc
+            if extract:
+                result = extract_source(
+                    sources, contents, meta, origin, extract,
+                    content_cap=_MAX_WEB_SOURCEMAP_CONTENT,
+                )
+            else:
+                result = list_sources(
+                    sources, contents, meta, origin,
+                    offset=offset, limit=limit, name_filter=name_filter,
+                    page_cap=_MAX_WEB_SOURCEMAP_PAGE,
+                )
+            result["script_id"] = wanted
+            result["script_url"] = url_out
+            result["has_source_map"] = True
+            result["source_map_url"] = resolved_url
+            return result
+
+        return self._runner(handle).call(work, timeout=_WEB_SOURCEMAP_TIMEOUT)
+
+    def _resolve_map_text(
+        self, handle: Any, mapping_url: str, script_url: str
+    ) -> tuple[str, str, str]:
+        """Return (map_json_text, origin, resolved_url) for a sourceMappingURL.
+
+        An inline data: URI is decoded locally; anything else is resolved against
+        the script's URL and fetched in the page context. Runs on the runner
+        thread (the caller's work()), so page.evaluate is legal here.
+        """
+        if mapping_url.startswith("data:"):
+            try:
+                return decode_data_uri(mapping_url, max_bytes=_MAX_WEB_SOURCEMAP_FETCH_BYTES), "inline", "data:"
+            except SourceMapError as exc:
+                raise WebError(exc.code, exc.message) from exc
+        abs_url = mapping_url
+        if not is_remote_url(mapping_url):
+            if not script_url:
+                raise WebError(
+                    "invalid_state",
+                    "source map is a relative reference but the script has no URL to resolve against",
+                    source_mapping_url=mapping_url,
+                )
+            abs_url = urljoin(script_url, mapping_url)
+        elif mapping_url.startswith("//") and script_url:
+            abs_url = urljoin(script_url, mapping_url)
+        try:
+            fetched = handle.page.evaluate(
+                _WEB_SOURCEMAP_FETCH_JS,
+                {"url": abs_url, "max": _MAX_WEB_SOURCEMAP_FETCH_BYTES},
+            )
+        except WebError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise WebError("backend_error", f"cannot fetch source map: {exc}", url=abs_url) from exc
+        if not isinstance(fetched, dict) or not fetched.get("ok"):
+            if isinstance(fetched, dict) and fetched.get("status") is not None:
+                detail = f"HTTP {fetched.get('status')}"
+            elif isinstance(fetched, dict) and fetched.get("error"):
+                detail = str(fetched.get("error"))
+            else:
+                detail = "unknown error"
+            raise WebError(
+                "backend_error", f"source map fetch failed: {detail}", url=abs_url
+            )
+        text = fetched.get("text")
+        if not isinstance(text, str):
+            text = str(text) if text is not None else ""
+        return text, f"external:{abs_url}", abs_url
 
     def secrets(
         self,
