@@ -633,6 +633,18 @@ def test_missing_binary_returns_structured_error(tmp_path: Path) -> None:
     assert result.error.code == "file_not_found"
 
 
+def test_unresolvable_home_binary_returns_invalid_request_not_incident(tmp_path: Path) -> None:
+    """A ~user target whose home cannot be resolved makes Path.expanduser() raise
+    RuntimeError, which create_session's error mapping did not cover -- so it
+    filed an internal_error incident for a target string the caller controls. It
+    now reads as invalid_request, like any other unusable target."""
+    service = _service(tmp_path, FakeWorker())
+    result = service.create_session("~nosuchuser_zzz/sample.exe")
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+
+
 def test_pe_tools_on_apk_and_web_sessions_report_target_mismatch(tmp_path: Path) -> None:
     import zipfile
 

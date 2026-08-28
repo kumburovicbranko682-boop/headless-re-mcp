@@ -9,11 +9,13 @@ from headless_re_mcp.core.models import (
     BackendHandle,
     BackendKind,
     SessionState,
+    TargetKind,
 )
 from headless_re_mcp.core.session import (
     InvalidStateTransition,
     SessionNotFound,
     SessionRegistry,
+    classify_target,
     detect_pe_architecture,
     hydrate_persisted_sessions,
     session_from_store_row,
@@ -37,6 +39,28 @@ def test_detect_pe_architecture(tmp_path: Path, machine: int, expected: Architec
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary, machine)
     assert detect_pe_architecture(binary) == expected
+
+
+def test_classify_target_falls_back_to_pe_for_an_unresolvable_home() -> None:
+    """A ~user whose home cannot be resolved makes Path.expanduser() raise
+    RuntimeError. classify_target used to let it escape; it now falls back to
+    the PE default like its unreadable-file arm, leaving the real error for
+    SessionRegistry.create to raise as a caller error."""
+    assert classify_target("~nosuchuser_zzz/sample.exe") is TargetKind.PE
+
+
+def test_create_rejects_an_unresolvable_home_as_a_value_error() -> None:
+    """Before the guard, expanduser()'s RuntimeError escaped create_session's
+    error mapping as an internal_error incident; it is now the ValueError a
+    non-file target already raises, which the service maps to invalid_request."""
+    with pytest.raises(ValueError, match="could not be resolved"):
+        SessionRegistry().create("~nosuchuser_zzz/sample.exe")
+
+
+def test_create_web_target_rejects_an_unresolvable_home_as_a_value_error() -> None:
+    """The web branch expands the reference too; same guard, explicit target."""
+    with pytest.raises(ValueError, match="could not be resolved"):
+        SessionRegistry().create("~nosuchuser_zzz/app.js", target=TargetKind.WEB)
 
 
 def test_registry_state_machine(tmp_path: Path) -> None:

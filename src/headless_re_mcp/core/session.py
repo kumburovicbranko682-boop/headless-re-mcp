@@ -83,6 +83,25 @@ class SessionNotFound(KeyError):
         return SessionNotFound(f"session not found: {shown}")
 
 
+def _safe_expanduser(text: str) -> Path:
+    """Path(text).expanduser(), but treat an unresolvable ~user as a bad target.
+
+    ``create`` resolves the caller's target reference with
+    ``Path(text).expanduser()...`` inside create_session's
+    ``try/except BaseException`` that hands the exception to ``_failure``. A
+    missing file (FileNotFoundError -> file_not_found) and a non-file
+    (ValueError -> invalid_request) already read as caller errors, but
+    ``expanduser()`` raises RuntimeError for a ``~user`` whose home cannot be
+    resolved, and RuntimeError is not mapped -- so a target string the caller
+    fully controls filed an internal_error incident. Convert it to the same
+    ValueError a non-file target already raises.
+    """
+    try:
+        return Path(text).expanduser()
+    except RuntimeError as exc:
+        raise ValueError(f"session target could not be resolved: {text!r}") from exc
+
+
 class SessionRegistry:
     def __init__(self, *, retained_closed: int = _RETAINED_CLOSED_SESSIONS) -> None:
         self._sessions: dict[str, Session] = {}
@@ -99,7 +118,7 @@ class SessionRegistry:
         text = str(reference).strip()
         kind = target if target is not None else classify_target(text)
         if kind is TargetKind.WEB:
-            candidate = Path(text).expanduser()
+            candidate = _safe_expanduser(text)
             # A web target can be a remote URL (any scheme) or a local asset
             # such as a downloaded .js/.wasm; only the latter has a binary.
             if not is_http_url(text) and candidate.is_file():
@@ -113,7 +132,7 @@ class SessionRegistry:
             else:
                 session = Session(target=kind, locator=text)
         else:
-            path = Path(text).expanduser().resolve(strict=True)
+            path = _safe_expanduser(text).resolve(strict=True)
             if not path.is_file():
                 raise ValueError(f"session target is not a regular file: {path}")
             architecture: Architecture | None = None
@@ -378,7 +397,14 @@ def classify_target(reference: str | Path) -> TargetKind:
     text = str(reference).strip()
     if is_http_url(text):
         return TargetKind.WEB
-    path = Path(text).expanduser()
+    try:
+        path = Path(text).expanduser()
+    except RuntimeError:
+        # A ~user whose home cannot be resolved is not classifiable; fall back to
+        # the default like the unreadable-file arm below, and let
+        # SessionRegistry.create surface the real path error as invalid_request
+        # rather than letting the RuntimeError escape as an internal_error.
+        return TargetKind.PE
     suffix = path.suffix.lower()
     if suffix in _APK_SUFFIXES:
         return TargetKind.APK
