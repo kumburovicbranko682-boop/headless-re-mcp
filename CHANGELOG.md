@@ -91,6 +91,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（监控台工作台三处前端诚实性/正确性）
+
+- 事件流按 run 再按 seq 排序，而非仅按 seq：`seq` 每个 run 从 1 重启，只在单个 run 内定序；旧代码
+  `sort((a,b)=>a.seq-b.seq)` 把新 run 的 1..n 与上一个 run 的交错在一起，既打乱 RunProgress 指标
+  （它按数组顺序配对 llm/tool 跨度），又让 200 条上限保留了一个任意的跨 run 子集。现按每个 run 首次
+  出现的次序、再按 run 内 seq 排。
+- 设置弹窗不再因 `/models` 探测返回不全就把已配置模型换成 `list[0]`：网关常返回部分模型列表（别名、
+  带日期快照、微调），只为改 key 而来的用户一保存就会静默丢掉原模型设置。现探测结果只用于填充下拉，
+  已配置但不在列表里的模型作为额外项保留在下拉中。
+- 工作方向切换如实反映后端失败：`POST /api/workspace/mode` 把服务失败（如用户配置文件不可写）包成
+  HTTP 200 的 `ok:false` 信封，`api()` 会正常 resolve，旧代码于是本地记下选择、而服务端仍是旧方向，
+  造成工具面静默失配并在后续加载里错误地不再显示该落地页。现对 `ok:false` 与网络/鉴权错误一视同仁地抛出。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
