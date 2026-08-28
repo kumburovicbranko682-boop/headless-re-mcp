@@ -6,6 +6,8 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import BackendKind, Result, Session, SessionState
@@ -592,12 +594,26 @@ def test_a_worker_that_cannot_be_terminated_still_ends_the_session(
     assert not service.registry.get(session_id).backends
 
 
+@pytest.mark.timeout(240)
 def test_repeated_session_cycles_leave_nothing_behind(tmp_path: Path) -> None:
     """What a long-lived server actually does: open and close, forever.
 
     Measured over 500 cycles this held its thread count and process handle count
     flat, which is what the sqlite connections being closed buys. The registry
     did not: every session ever opened stayed resident, so this pins the bound.
+
+    This runs 150 real store-backed session lifecycles -- each create/open/close
+    commits several sqlite transactions -- so it is far heavier than a logic
+    unit test. The suite's default 120s per-test budget (--timeout=120, tuned
+    for logic tests) is fine on Linux (~2s) but on a contended Windows CI runner
+    per-transaction fsync latency can push a single run past it: the identical
+    code timed out here on one quality (3.12) shard while passing on 3.11 and
+    every Linux job, and passed 3.12 on the next checkpoint -- a false failure
+    from the budget, not a hang. Give this one test a 240s budget (well under
+    the 300s faulthandler backstop): it still runs in full and asserts every
+    leak bound, so a genuine hang or a real leak still fails it -- only the
+    slow-runner false positive is removed. Trim the cycle count, never this,
+    if the wall time ever becomes a problem: the bound it pins needs the cycles.
     """
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary)
