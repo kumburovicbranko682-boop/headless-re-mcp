@@ -516,7 +516,13 @@ class _ProxyInstance:
                     _shutdown_loop(loop)
             _uninstall_master_logging(self._master, loop)
 
-    def stop(self) -> None:
+    def stop(self) -> bool:
+        """Ask the proxy thread to exit; report whether it actually did.
+
+        A thread still alive after the join deadline is wedged inside mitmproxy
+        and still owns the listening socket. Returning that lets the caller keep
+        tracking it instead of dropping a live proxy and calling the port free.
+        """
         master = self._master
         loop = self._loop
         thread = self._thread
@@ -534,8 +540,12 @@ class _ProxyInstance:
         # never runs its finally, and a stale handler is the one piece of a dead
         # proxy that keeps costing the whole process something.
         _uninstall_master_logging(master)
-        self._master = None
-        self._loop = None
+        stopped = thread is None or not thread.is_alive()
+        if stopped:
+            self._master = None
+            self._loop = None
+            self._thread = None
+        return stopped
 
 
 class ProxyBackend:
@@ -608,7 +618,22 @@ class ProxyBackend:
             inst = self._instances.pop(session_id, None)
         if inst is None:
             return {"stopped": False, "note": "no proxy was running"}
-        inst.stop()
+        if not inst.stop():
+            # The mitmproxy thread did not exit within the join deadline and
+            # still holds the port. Keep tracking it so status stays honest,
+            # close_all retries it, and a start() on the same port is refused
+            # rather than colliding with a zombie listener.
+            with self._lock:
+                self._instances.setdefault(session_id, inst)
+            return {
+                "stopped": False,
+                "note": (
+                    "proxy thread did not exit in time and still holds the port; "
+                    "retry proxy.stop"
+                ),
+                "host": inst.host,
+                "port": inst.port,
+            }
         return {"stopped": True}
 
     def status(self, session_id: str) -> JsonObject:

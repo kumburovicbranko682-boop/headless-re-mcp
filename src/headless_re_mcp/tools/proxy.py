@@ -36,7 +36,13 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="proxy.stop")
     def proxy_stop(session_id: str) -> dict[str, Any]:
-        """Stop the session's interception proxy."""
+        """Stop the session's interception proxy.
+
+        Answers with stopped. stopped is true only once the proxy thread has
+        actually exited and released the port; a thread still wedged in
+        mitmproxy answers stopped false with a note and stays tracked for a
+        retry, and a session with no proxy answers stopped false with a note.
+        """
         return _dump(analysis.proxy_stop(session_id))
 
     @tools.tool(name="proxy.status")

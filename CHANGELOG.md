@@ -24,6 +24,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+++ b/CHANGELOG.md
+### 修复（proxy.stop 不再把仍存活的代理线程谎报为已停止）
+
+- `proxy.stop` 过去在 `join(timeout=10s)` 之后一律回 `{"stopped": True}`,从不检查 mitmproxy 线程是否
+  真的退出。线程若卡死在 mitmproxy 里,它仍占着监听端口,但实例已从 `_instances` 弹出——于是
+  `status` 说没在跑、`stop` 说已停,而端口被一个「僵尸」线程占着,下一次同端口 capture 再也 bind
+  不上。现 `_ProxyInstance.stop()` 返回线程是否真的死亡;`ProxyBackend.stop()` 据此回报:仍存活时
+  回 `stopped=False` 加 `note`/`host`/`port`,并把实例重新登记,让重试、`close_all` 与同端口 start
+  的占用检查都能看到它。干净停止仍回 `{"stopped": True}` 并注销实例。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
