@@ -24,11 +24,13 @@ from headless_re_mcp.tools.catalog import (
 # unattended run. Two mechanisms carry that: a durable "audit" row that survives
 # session-timeline trimming (used for session-less or high-stakes device
 # mutations) and a session "timeline" entry (used for session-scoped changes).
-# The value is (mechanism, emitted event/action name) -- the name equals the
-# tool name everywhere except frida.hook.template, which records a "frida.hook"
-# probe entry. This map is pinned against the live catalog below, so a new non-PE
-# write tool cannot ship without a deliberate decision about how it is observed,
-# and dropping an existing tool's instrumentation trips the wiring check.
+# The value is (mechanism, emitted event/action name); the declared name equals
+# the tool name. Two tools write both mechanisms -- proxy.ca.install_android and
+# frida.hook.template also emit a session timeline entry -- and are declared here
+# by their durable audit, the stronger cross-session guarantee. This map is
+# pinned against the live catalog below, so a new non-PE write tool cannot ship
+# without a deliberate decision about how it is observed, and dropping an
+# existing tool's instrumentation trips the wiring check.
 _NON_PE_WRITE_TRACES: dict[str, tuple[str, str]] = {
     # APK static line -- session timeline.
     "apk.decode": ("timeline", "apk.decode"),
@@ -46,10 +48,12 @@ _NON_PE_WRITE_TRACES: dict[str, tuple[str, str]] = {
     "device.push": ("audit", "device.push"),
     "device.screenshot": ("audit", "device.screenshot"),
     "device.uninstall": ("audit", "device.uninstall"),
-    # Frida line -- timeline for probes, durable audit for device mutations.
+    # Frida line -- timeline for pure probes, durable audit for the code-injecting
+    # and device-mutating ops (hook.template loads a script inside the target,
+    # spawn launches a process, server.ensure pushes and starts frida-server).
     "frida.attach": ("timeline", "frida.attach"),
     "frida.device.connect": ("timeline", "frida.device.connect"),
-    "frida.hook.template": ("timeline", "frida.hook"),
+    "frida.hook.template": ("audit", "frida.hook.template"),
     "frida.server.ensure": ("audit", "frida.server.ensure"),
     "frida.spawn": ("audit", "frida.spawn"),
     # JS line -- durable audit (keyed by file path, no session).

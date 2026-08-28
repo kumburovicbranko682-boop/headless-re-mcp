@@ -24,6 +24,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 可观测性（frida.hook.template 的脚本注入写入持久审计行，与 frida.spawn / frida.server.ensure 对齐）
+
+- `frida.hook.template` 会把模板脚本编译后加载进目标进程——在设备会话上就是把代码跑进设备 App 里，是 frida 面\
+  最高危的动作（哪怕探针随即 detach、`persisted=false`）。它此前只落会话时间线（`frida.hook`），而时间线随会话\
+  裁剪；同为高危的 `frida.spawn` / `frida.server.ensure` 早已在时间线之外再写一条跨会话留存的审计行，注入却没有，\
+  于是一位在无人值守跑完后追问"agent 到底往哪个进程注入了什么"的审计者拿不到持久记录。现在注入在时间线之外\
+  另写一条 `frida.hook.template` 审计行（成功记结构化的 pid / persisted / device，失败记错误码），\
+  与 `proxy.ca.install_android` 同为"时间线 + 审计"双写并在面级守卫里按审计声明。审计写失败仅尽力而为，\
+  绝不把一次已经在目标里跑过的注入翻成失败的工具调用。
+
 ### 诚实（js.* / wasm.* 返回的服务端路径点明"不是已登记制品、artifacts.read 打不开"，与 device.screenshot / device.pull 的口径对齐）
 
 - `js.deobfuscate` / `js.beautify` / `wasm.wat` / `wasm.info` 溢出时回的 `code_path` / `wat_path` / `objdump_path`，\

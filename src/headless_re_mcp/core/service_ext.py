@@ -519,6 +519,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             return _failure(exc, session_id=session_id)
 
     def frida_hook_template(self, session_id: str, template: str = "noop") -> Result[JsonObject]:
+        result: Result[JsonObject]
         try:
             client = FridaClient()
             # A device-connected session (APK/web) hooks its authorised device
@@ -556,11 +557,52 @@ class ExtAnalysisMixin(UiDriveMixin):
                 "frida hook template injected as a probe (not resident)",
                 template=template,
             )
-            return _success(data, session_id=session_id, backend="frida")
+            result = _success(data, session_id=session_id, backend="frida")
         except FridaError as exc:
-            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+            result = _failure(
+                XdbgRpcError(exc.code, exc.message, details=dict(exc.details)),
+                session_id=session_id,
+            )
         except BaseException as exc:
-            return _failure(exc, session_id=session_id)
+            result = _failure(exc, session_id=session_id)
+        self._audit_hook_template(session_id, template, result)
+        return result
+
+    def _audit_hook_template(
+        self, session_id: str, template: str, result: Result[JsonObject]
+    ) -> None:
+        """Record a frida script injection in the durable audit log, best-effort.
+
+        frida.hook.template compiles a template and loads it inside the target
+        process -- on a device session that is code running inside a device app,
+        the most privileged thing the frida surface does, even though the probe
+        detaches straight after (persisted false). It already earns a timeline
+        entry as a state-touching action; for the same reason frida.spawn /
+        frida.server.ensure carry a durable audit on top of theirs, this one
+        should too, because the timeline is trimmed with the session while the
+        audit line survives cross-session -- exactly what an auditor asking
+        "what did the agent inject, and where" needs. Best-effort: the code has
+        already run in the target, so a failed bookkeeping write must not turn a
+        completed injection into a failed tool call. A failed call is recorded
+        with its error code, and only structural fields (pid, whether it
+        persisted, the device) are copied; the store redacts regardless.
+        """
+        if result.ok and isinstance(result.data, dict):
+            summary: JsonObject = {
+                name: result.data.get(name) for name in ("pid", "persisted", "device")
+            }
+        else:
+            summary = {}
+            if result.error is not None:
+                summary["code"] = result.error.code
+        with suppress(Exception):
+            _ensure_repository(self).append_audit(
+                session_id=session_id,
+                action="frida.hook.template",
+                params_summary={"template": template},
+                ok=result.ok,
+                result_summary=summary,
+            )
 
     def windbg_open_dump(
         self,
