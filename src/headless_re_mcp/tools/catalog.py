@@ -237,6 +237,7 @@ _READ_ONLY_NAMES = frozenset((
     'wasm.decompile',
     'wasm.disasm_function',
     'wasm.functions',
+    'wasm.globals',
     'wasm.info',
     'wasm.names',
     'wasm.strings',
@@ -381,7 +382,7 @@ _FILE_WRITE_NAMES = frozenset((
     'web.screenshot',
 ))
 _ALL_TOOL_NAMES = _READ_ONLY_NAMES | _STATE_CHANGE_NAMES | _FILE_WRITE_NAMES
-if len(_ALL_TOOL_NAMES) != 304:
+if len(_ALL_TOOL_NAMES) != 305:
     raise RuntimeError("tool effect policy contains duplicates or omissions")
 
 _WEB_NAMES = frozenset(['artifacts.describe', 'artifacts.gc', 'artifacts.list', 'audit.list', 'dynamic.breakpoints', 'dynamic.modules', 'dynamic.registers.read', 'dynamic.state', 'session.close', 'session.get', 'session.list', 'static.decompile', 'static.functions', 'static.strings', 'timeline.list', 'unpack.artifacts', 'unpack.cancel', 'unpack.status', 'workflow.cancel', 'workflow.status'])

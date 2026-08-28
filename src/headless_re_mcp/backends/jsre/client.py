@@ -3016,6 +3016,262 @@ def _parse_wasm_data(data: bytes, *, module: str) -> JsonObject:
     return {"module": module, "version": version, "segments": segments}
 
 
+# wasm.globals materialisation caps. A real module carries a handful of globals
+# (the memory-layout pointers a compiler emits), but a crafted vec count could
+# claim millions, so collection is bounded and the declared count disclosed.
+_MAX_WASM_GLOBALS_COLLECT = 50_000
+_MAX_WASM_GLOBALS_PAGE = 2000
+# The integer arithmetic the extended-const proposal allows inside a global's
+# init expression. The four numeric consts, global.get and the reference-type
+# consts are handled inline; anything outside this whole set is not a constant
+# expression, so the parser stops rather than misreading the following globals.
+_WASM_GLOBAL_ARITH_OPS = {
+    0x6A: "i32.add",
+    0x6B: "i32.sub",
+    0x6C: "i32.mul",
+    0x7C: "i64.add",
+    0x7D: "i64.sub",
+    0x7E: "i64.mul",
+}
+
+
+def _read_wasm_global_init(
+    data: bytes, pos: int, end: int
+) -> tuple[str, int | float | None, int]:
+    """Parse a global's init const-expr, returning (rendered, value, pos_after_end).
+
+    A defined global is initialised by a constant expression terminated by
+    ``end`` (0x0B). The overwhelmingly common form is a single numeric const
+    (``i32.const 1024``) or ``global.get`` of an imported base; the
+    reference-types proposal adds ``ref.null``/``ref.func`` and the extended-const
+    proposal adds integer add/sub/mul. ``value`` is the plain numeric value only
+    when the expression is exactly one numeric const (so a caller can read a
+    stack-pointer or data-end address directly), else None. The whole expression
+    is consumed exactly -- not scanned for 0x0B, whose byte can appear inside an
+    SLEB immediate -- so the following global entries stay aligned; an opcode
+    outside the constant-expression set raises so the caller stops rather than
+    misreading them.
+    """
+    tokens: list[str] = []
+    value: int | float | None = None
+    while True:
+        if pos >= end:
+            raise _WasmParseError("global init const-expr overruns section")
+        op = data[pos]
+        pos += 1
+        if op == 0x0B:  # end
+            break
+        if op == 0x41:  # i32.const
+            num, pos = _read_sleb128(data, pos)
+            tokens.append(f"i32.const {num}")
+            value = num
+        elif op == 0x42:  # i64.const
+            num, pos = _read_sleb128(data, pos)
+            tokens.append(f"i64.const {num}")
+            value = num
+        elif op == 0x43:  # f32.const (4 little-endian bytes)
+            if pos + 4 > end:
+                raise _WasmParseError("f32.const overruns section")
+            (fval,) = struct.unpack_from("<f", data, pos)
+            pos += 4
+            tokens.append(f"f32.const {fval}")
+            value = fval
+        elif op == 0x44:  # f64.const (8 little-endian bytes)
+            if pos + 8 > end:
+                raise _WasmParseError("f64.const overruns section")
+            (dval,) = struct.unpack_from("<d", data, pos)
+            pos += 8
+            tokens.append(f"f64.const {dval}")
+            value = dval
+        elif op == 0x23:  # global.get: an imported base, no plain value
+            gidx, pos = _read_uleb128(data, pos)
+            tokens.append(f"global.get {gidx}")
+            value = None
+        elif op == 0xD0:  # ref.null t
+            if pos >= end:
+                raise _WasmParseError("ref.null overruns section")
+            reftype = data[pos]
+            pos += 1
+            tokens.append(f"ref.null {_WASM_VALTYPES.get(reftype, f'0x{reftype:02x}')}")
+            value = None
+        elif op == 0xD2:  # ref.func idx
+            fidx, pos = _read_uleb128(data, pos)
+            tokens.append(f"ref.func {fidx}")
+            value = None
+        elif op in _WASM_GLOBAL_ARITH_OPS:  # extended-const arithmetic
+            tokens.append(_WASM_GLOBAL_ARITH_OPS[op])
+            value = None
+        else:
+            raise _WasmParseError(f"unsupported global init opcode 0x{op:02x}")
+    if len(tokens) != 1:
+        # A multi-instruction (extended-const) expression has no single value.
+        value = None
+    return " ".join(tokens), value, pos
+
+
+def _parse_wasm_globals(data: bytes, *, module: str) -> JsonObject:
+    """Build the module's global-variable table straight from the bytes.
+
+    A wasm module's globals are its module-level variables: the stack pointer,
+    heap base and data end a compiler emits (``__stack_pointer``, ``__heap_base``,
+    ``__data_end``) plus any mutable state a program keeps outside linear memory.
+    wasm.summary only counts them; this is the full inventory -- imported and
+    defined alike -- keyed by index in the global index space, each with its
+    value type, mutability, initial value (for a defined global) and the name a
+    name section or export gives it. It is the wasm analogue of a data/.bss
+    symbol table, and the memory-layout anchors it surfaces are what let a caller
+    make sense of wasm.data / wasm.strings offsets. A structural fault becomes a
+    clean backend_error, matching the other in-process wasm readers.
+    """
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        raise JsReError("backend_error", "not a WebAssembly module (bad magic)")
+    version = int.from_bytes(data[4:8], "little")
+    pos = 8
+    n = len(data)
+    globals_list: list[JsonObject] = []
+    next_index = 0
+    imported_count = 0
+    defined_declared = 0
+    globals_truncated = False
+    parse_stopped = False
+    export_names: dict[int, list[str]] = {}
+    name_map: dict[int, str] = {}
+    try:
+        while pos < n:
+            sec_id = data[pos]
+            pos += 1
+            sec_size, pos = _read_uleb128(data, pos)
+            sec_end = pos + sec_size
+            if sec_size < 0 or sec_end > n:
+                raise _WasmParseError("section overruns module")
+            if sec_id == 2:  # Import: imported globals take the low index space
+                count, p = _read_uleb128(data, pos)
+                for _ in range(count):
+                    _mod, p = _read_wasm_name(data, p, sec_end)
+                    _fld, p = _read_wasm_name(data, p, sec_end)
+                    if p >= sec_end:
+                        raise _WasmParseError("import entry truncated")
+                    kind = data[p]
+                    p += 1
+                    if kind == 0:  # func: type index
+                        _, p = _read_uleb128(data, p)
+                    elif kind == 1:  # table: elem type byte + limits
+                        p = _skip_wasm_limits(data, p + 1)
+                    elif kind == 2:  # memory: limits
+                        p = _skip_wasm_limits(data, p)
+                    elif kind == 3:  # global: value type byte + mutability byte
+                        if p + 2 > sec_end:
+                            raise _WasmParseError("imported global truncated")
+                        vt = data[p]
+                        mut = data[p + 1]
+                        p += 2
+                        if len(globals_list) < _MAX_WASM_GLOBALS_COLLECT:
+                            globals_list.append(
+                                {
+                                    "index": next_index,
+                                    "type": _WASM_VALTYPES.get(vt, f"0x{vt:02x}"),
+                                    "mutable": bool(mut & 1),
+                                    "imported": True,
+                                    "module": _mod,
+                                    "import_name": _fld,
+                                }
+                            )
+                            imported_count += 1
+                        else:
+                            globals_truncated = True
+                        next_index += 1
+                    else:
+                        raise _WasmParseError(f"unknown import kind {kind}")
+            elif sec_id == 6:  # Global: the module's defined globals
+                count, p = _read_uleb128(data, pos)
+                defined_declared = count
+                try:
+                    for _ in range(count):
+                        if len(globals_list) >= _MAX_WASM_GLOBALS_COLLECT:
+                            globals_truncated = True
+                            break
+                        if p + 2 > sec_end:
+                            raise _WasmParseError("global entry truncated")
+                        vt = data[p]
+                        mut = data[p + 1]
+                        p += 2
+                        init_text, init_value, p = _read_wasm_global_init(data, p, sec_end)
+                        entry: JsonObject = {
+                            "index": next_index,
+                            "type": _WASM_VALTYPES.get(vt, f"0x{vt:02x}"),
+                            "mutable": bool(mut & 1),
+                            "imported": False,
+                            "init": init_text,
+                        }
+                        if init_value is not None:
+                            entry["init_value"] = init_value
+                        globals_list.append(entry)
+                        next_index += 1
+                except _WasmParseError:
+                    # A malformed init desyncs the vec, so the remaining globals
+                    # cannot be trusted; keep what parsed and disclose the stop.
+                    parse_stopped = True
+            elif sec_id == 7:  # Export: a global export names one global index
+                count, p = _read_uleb128(data, pos)
+                for _ in range(count):
+                    exp_name, p = _read_wasm_name(data, p, sec_end)
+                    if p >= sec_end:
+                        raise _WasmParseError("export entry truncated")
+                    kind = data[p]
+                    p += 1
+                    idx, p = _read_uleb128(data, p)
+                    if kind == 3:  # global
+                        export_names.setdefault(idx, []).append(exp_name)
+            elif sec_id == 0:  # custom: maybe the name section's global namemap
+                cust_name, cpos = _read_wasm_name(data, pos, sec_end)
+                if cust_name == "name":
+                    sp = cpos
+                    while sp < sec_end:
+                        sub_id = data[sp]
+                        sp += 1
+                        sub_size, sp = _read_uleb128(data, sp)
+                        sub_end = sp + sub_size
+                        if sub_size < 0 or sub_end > sec_end:
+                            raise _WasmParseError("name subsection overruns section")
+                        if sub_id == 7:  # global namemap
+                            with suppress(_WasmParseError):
+                                entries, _, _ = _read_wasm_namemap(
+                                    data, sp, sub_end, _MAX_WASM_NAME_ENTRIES
+                                )
+                                for named in entries:
+                                    name_map[int(named["index"])] = str(named["name"])
+                        sp = sub_end
+            pos = sec_end
+    except _WasmParseError as exc:
+        raise JsReError("backend_error", f"malformed WebAssembly module: {exc}") from exc
+    except IndexError as exc:  # a read ran off the end despite the guards
+        raise JsReError(
+            "backend_error", "malformed WebAssembly module: unexpected end of data"
+        ) from exc
+    for entry in globals_list:
+        gi = int(entry["index"])
+        resolved_name = name_map.get(gi)
+        if resolved_name:
+            entry["name"] = resolved_name
+        exported = export_names.get(gi)
+        if exported:
+            entry["exported_as"] = exported
+    result: JsonObject = {
+        "module": module,
+        "version": version,
+        "globals": globals_list,
+        "imported_count": imported_count,
+        "defined_count": defined_declared,
+        "global_count": imported_count + defined_declared,
+        "has_name_section": bool(name_map),
+    }
+    if globals_truncated:
+        result["globals_truncated"] = True
+    if parse_stopped:
+        result["parse_stopped"] = True
+    return result
+
+
 class WasmClient:
     """wabt-backed WebAssembly inspection (wasm2wat, wasm-objdump)."""
 
@@ -3246,6 +3502,56 @@ class WasmClient:
         result["count"] = len(window)
         result["has_more"] = start + len(window) < chosen["size"]
         return result
+
+    def globals(
+        self,
+        path: Path,
+        *,
+        contains: str = "",
+        offset: int = 0,
+        limit: int = 200,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """List the module's global variables (the wasm data/.bss symbol table).
+
+        Where wasm.summary only counts globals, this is the full inventory --
+        imported and defined alike -- keyed by index, each with its value type,
+        mutability, initial value (for a defined global) and any name a name
+        section or export gives it. The memory-layout anchors it surfaces
+        (__stack_pointer, __heap_base, __data_end) are what make wasm.data /
+        wasm.strings offsets meaningful. Reads the bytes directly (no wabt); a
+        malformed module faults cleanly. Optional contains filters by
+        name/type/import; paginated by offset/limit.
+        """
+        _ = timeout
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        parsed = _parse_wasm_globals(resolved.read_bytes(), module=resolved.name)
+        collected: list[JsonObject] = parsed["globals"]
+        needle = contains.lower()
+        if needle:
+            def _match(g: JsonObject) -> bool:
+                hay = [
+                    str(g.get("name", "")),
+                    str(g.get("import_name", "")),
+                    str(g.get("module", "")),
+                    str(g.get("type", "")),
+                ]
+                hay.extend(str(x) for x in g.get("exported_as", []))
+                return any(needle in h.lower() for h in hay)
+
+            collected = [g for g in collected if _match(g)]
+        total = len(collected)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_WASM_GLOBALS_PAGE))
+        window = collected[start : start + cap]
+        parsed["globals"] = window
+        parsed["count"] = len(window)
+        parsed["total"] = total
+        parsed["offset"] = start
+        parsed["has_more"] = start + len(window) < total
+        if contains:
+            parsed["contains"] = contains
+        return parsed
 
     def wat(
         self, path: Path, *, timeout: float = 120.0, spill_dir: Path | None = None

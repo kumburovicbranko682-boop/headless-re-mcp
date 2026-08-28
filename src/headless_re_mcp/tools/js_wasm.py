@@ -454,4 +454,49 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="wasm.globals")
+    def wasm_globals(
+        path: str,
+        contains: str = "",
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """List a .wasm module's global variables (its data/.bss symbol table).
+
+        Where wasm.summary only counts globals, this is the full inventory --
+        imported and defined alike -- keyed by index in the global index space.
+        A module's globals are its module-level variables: the memory-layout
+        anchors a compiler emits (__stack_pointer, __heap_base, __data_end) plus
+        any mutable state a program keeps outside linear memory. Those anchors
+        are what make a wasm.data / wasm.strings offset meaningful, so this is the
+        map that ties the byte views together. It reads the bytes directly, so it
+        needs no wabt and cannot drift with a wabt release.
+
+        Answers with globals (a page, sorted by index), each a {index, type (i32/
+        i64/f32/f64/v128/funcref/externref), mutable (bool), imported (bool)}. A
+        defined global also carries init (the rendered init const-expr, e.g.
+        "i32.const 66560" or "global.get 0") and, when that expression is a single
+        numeric const, init_value (the plain number, so a stack-pointer or
+        data-end address is readable directly). An imported global also carries
+        module and import_name (its env.<name> origin). Any global carries name
+        (from the name section's global namemap) and exported_as (the export
+        names it is reachable by) when present. Also answers with count, total
+        (matched after any filter), offset and has_more for paging, imported_count,
+        defined_count, global_count (imported + defined, the module total) and
+        has_name_section. Optional contains filters case-insensitively over a
+        global's name/type/import module/import name/export names. The list field
+        is globals and each entry's readable label is globals[i].name. globals_truncated
+        marks a module with more than 50000 globals; parse_stopped marks a global
+        section whose init expression could not be decoded (the globals before it
+        still read). Reads the bytes directly, so it needs no wabt; a malformed
+        module is a clean backend_error and a missing file is not_found. An input
+        over 16 MiB is refused as too_large.
+        """
+        return _dump(
+            analysis.wasm_globals(
+                path, contains=contains, offset=offset, limit=limit, timeout=timeout
+            )
+        )
+
     return tools.bindings

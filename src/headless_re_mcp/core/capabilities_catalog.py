@@ -163,7 +163,7 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "wasm.wabt",
         "backend": "web",
         "status_probe": "wabt",
-        "tools": ["wasm.decompile", "wasm.info", "wasm.wat", "wasm.summary", "wasm.functions", "wasm.disasm_function", "wasm.names", "wasm.strings", "wasm.data"],
+        "tools": ["wasm.decompile", "wasm.info", "wasm.wat", "wasm.summary", "wasm.functions", "wasm.disasm_function", "wasm.names", "wasm.strings", "wasm.data", "wasm.globals"],
         "summary": "WebAssembly inspection via wabt (wasm2wat, wasm-objdump, wasm-decompile)",
         "optional": True,
     },
