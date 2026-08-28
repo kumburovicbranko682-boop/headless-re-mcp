@@ -358,6 +358,28 @@ def _capture_process(
     return capture
 
 
+def _require_positive_number(value: float, name: str) -> float:
+    """A strictly positive timeout, or an invalid_argument refusal naming it."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise UpxScanError(
+            UpxErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive number",
+            details={name: value},
+        )
+    return float(value)
+
+
+def _require_positive_int(value: int, name: str) -> int:
+    """A strictly positive byte bound, or an invalid_argument refusal naming it."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise UpxScanError(
+            UpxErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive integer",
+            details={name: value},
+        )
+    return value
+
+
 def _validate_paths(
     executable: Path,
     input_path: Path,
@@ -382,6 +404,8 @@ def probe_upx_version(
     timeout: float = 5.0,
     max_output_size: int = DEFAULT_MAX_OUTPUT_SIZE,
 ) -> str | None:
+    _require_positive_number(timeout, "timeout")
+    _require_positive_int(max_output_size, "max_output_size")
     exe = executable.expanduser().resolve()
     if not exe.is_file():
         raise UpxExecutableNotFoundError(exe)
@@ -407,6 +431,9 @@ def test_upx(
 
     from headless_re_mcp.core.session import file_sha256
 
+    _require_positive_number(timeout, "timeout")
+    _require_positive_int(max_file_size, "max_file_size")
+    _require_positive_int(max_output_size, "max_output_size")
     exe, path, size = _validate_paths(executable, input_path, max_file_size=max_file_size)
     actual_sha = file_sha256(path)
     if actual_sha != input_sha256:
@@ -480,6 +507,9 @@ def unpack_upx(
 
     from headless_re_mcp.core.session import file_sha256
 
+    _require_positive_number(timeout, "timeout")
+    _require_positive_int(max_file_size, "max_file_size")
+    _require_positive_int(max_output_size, "max_output_size")
     exe, path, size = _validate_paths(executable, input_path, max_file_size=max_file_size)
     actual_sha = file_sha256(path)
     if actual_sha != input_sha256:
