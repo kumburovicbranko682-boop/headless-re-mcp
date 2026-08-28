@@ -1458,6 +1458,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   使判定落在认证而非 schema 上;同时钉死三个刻意的未认证例外(`/healthz` 活性、
   `/readyz`/`/metrics` 监督探针,设计上免 token 以免把控制台 token 交给 supervisor),
   并断言三者的响应体都不含 token。
+- **ADB 客户端路径测试的自述与实际机制对齐（防止把"钉死状态"误读成"依赖漂移"）**：
+  `test_adb_client_paths.py` 的模块 docstring 与
+  `test_client_is_unavailable_without_adbutils` 的行内注释都自称"adbutils 本机没装、真实
+  import 失败"，但用例其实是显式 `backend._available = False`（可用分支则注入 fake 模块并置
+  `_available = True`）把状态钉死的——与 apk/proxy 那批真·依赖漂移用例正相反。装了 `[android]`
+  extra 时 `AdbBackend()` 会报可用，旧注释在这种环境里直接是错的，容易让审计"缺依赖降级用例"
+  这一反模式的人把这条已经正确钉死的用例误判为坏、白白去"修"。只更正 docstring 与注释使其如实
+  描述"钉死状态、不随安装环境漂移"，并顺带把它立成该模式的正例参考；不改任何测试逻辑或生产代码
+  （`test_adb_client_paths.py` 74 passed，ruff / mypy 干净）。
 
 ### 变更（Android 后端清理）
 

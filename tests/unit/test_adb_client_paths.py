@@ -1,13 +1,16 @@
 """Error and edge arms of the ADB backend, driven by injected fakes.
 
-adbutils is optional and not installed here, so the existing suite exercises
-the read-out parsing with a scripted device but leaves most of the backend's
-failure translation unrun: the signature-probing helpers, ``_device_shell``
-and ``_call`` error mapping, the ``open_transport`` timeout shim, the
-``_client`` / ``_device`` construction arms, and the except/verify branches
-of every device operation. These drive those arms directly with fake
-adbutils modules and fake devices -- no emulator, no adb server -- exactly
-where the real error handling lives.
+adbutils is optional. Rather than depend on whether the ``[android]`` extra
+happens to be installed, these tests pin the state they need: the "available"
+arms inject a fake ``adbutils`` module and set ``backend._available = True``
+(see ``_backend_with_adbutils``), and the "unavailable" arm sets
+``backend._available = False`` outright. So the suite exercises the backend's
+failure translation -- the signature-probing helpers, ``_device_shell`` and
+``_call`` error mapping, the ``open_transport`` timeout shim, the ``_client`` /
+``_device`` construction arms, and the except/verify branches of every device
+operation -- against fake devices with no emulator and no adb server, and the
+result does not drift with ambient install state the way a bare ``AdbBackend()``
+availability assertion would.
 """
 
 from __future__ import annotations
@@ -308,7 +311,11 @@ def _backend_with_adbutils(client_cls: type, *, adb_path: Path | None = None) ->
 
 
 def test_client_is_unavailable_without_adbutils() -> None:
-    backend = AdbBackend()  # real import failed: not installed
+    # Pin the unavailable state instead of assuming adbutils is absent here: a
+    # bare AdbBackend() reports available whenever the [android] extra is
+    # installed, so forcing _available = False keeps this guard test measuring
+    # the capability_unavailable arm regardless of ambient install state.
+    backend = AdbBackend()
     backend._available = False
     with pytest.raises(AdbError) as exc:
         backend._client()
