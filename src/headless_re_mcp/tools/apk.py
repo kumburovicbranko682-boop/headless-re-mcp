@@ -211,7 +211,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Sign a rebuilt APK with apksigner (defaults to the Android debug keystore).
 
-        Answers with apk, size, signed, keystore, and debug_keystore.
+        apk_path defaults to the APK apk.repack wrote for this session
+        (repacked.apk), so apk.decode then apk.repack then apk.sign chains
+        with no paths passed; run apk.repack first or that default input is
+        missing. Answers with apk, size, signed, keystore, and debug_keystore.
         signed is true only after apksigner verify succeeds. There is no
         output, path or signed_apk field.
         """

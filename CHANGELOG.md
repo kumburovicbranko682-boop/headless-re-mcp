@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 文档+测试（apk.sign 的 apk_path 默认值：钉死 decode→repack→sign 链的隐式交接）
+
+- `apk.repack` 的 docstring 早就点明 `decoded_dir` 默认指向"本会话的 decode 产物"，但 `apk.sign`
+  的 docstring 只在括号里讲了 keystore 默认，`apk_path` 的默认却只字未提。服务层里 `apk_path=""`
+  实际解析成 `<会话 apktool 目录>/repacked.apk`——正是 `apk.repack` 写出的那个文件。agent 只看到
+  `apk_path: str = ""`，根本无从判断空值合不合法、指向哪个文件，于是 decode→repack→sign 这条
+  "全默认、不传路径"的链子从 catalog 上读不出来。
+- 给 `apk.sign` 的 docstring 补上这条默认：`apk_path` 空时用 `apk.repack` 刚写出的 `repacked.apk`，
+  所以三步可零路径串联（需先跑 `apk.repack`，否则默认输入不存在）。与 `apk.repack` 的
+  "defaults to this session's decode" 对称，整条链现在从工具描述即可读通。
+- 补两条单测钉死这条契约：一条在服务层用捕获型假 apktool 抓 `sign` 收到的 `source`，断言
+  `apk_sign(sid)`（不传 apk_path）确实指向本会话的 `repacked.apk`——此前的 happy-path 测试虽也不传
+  apk_path，但假 apktool 无视 source 照写不误，默认指错也测不出来；另一条断言 `apk.sign` 的
+  docstring 里写明了这条默认（`apk_path defaults to the APK apk.repack wrote`、`repacked.apk`）。
+- 变异验证承重：把服务默认从 `repacked.apk` 改成 `MUTANT.apk`，行为测立即失败（source 变
+  `.../MUTANT.apk`）；删掉 docstring 那句，文档测立即失败。改回后两条复绿。都是纯单测，不需要 apktool。
+
 ### 测试（补齐 r2 服务方法"运行中会话被关"的 post-check：disasm/xrefs/_r2_request）
 
 - r2 的每个服务方法在一次性 r2 进程返回后都会二次核对会话状态：`session.close` 无法回收一个

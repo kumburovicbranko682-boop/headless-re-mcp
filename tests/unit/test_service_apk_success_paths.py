@@ -14,6 +14,7 @@ backends and the size cap shrunk so a tiny tree trips it.
 
 from __future__ import annotations
 
+import ast
 import zipfile
 from dataclasses import replace
 from pathlib import Path
@@ -317,6 +318,94 @@ def test_sign_signs_the_repacked_apk(apk_service: tuple[AnalysisService, str]) -
         assert result.data["signed"] is True
     finally:
         service.close_all()
+
+
+def test_sign_with_no_apk_path_targets_the_repack_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """apk.sign's empty apk_path is the repack output, closing the decode->repack->sign chain.
+
+    apk.sign takes ``apk_path: str = ""`` and the tool docstring now tells an
+    agent that empty means "the APK apk.repack just built" -- the join that lets
+    decode -> repack -> sign run with no paths threaded through. Nothing pinned
+    which file that default resolves to: the existing happy-path test signs with
+    no apk_path but the fake apktool writes its output regardless of the source
+    handed in, so a regression that pointed the default at, say, the original
+    APK or a stale name would still pass it. This captures the exact source path
+    apktool.sign receives and asserts it is the session's repacked.apk, so the
+    documented default is the tested default.
+    """
+    captured: dict[str, Path] = {}
+
+    class _CapturingApktool(_FakeApktool):
+        def sign(
+            self,
+            source: Path,
+            out_apk: Path,
+            *,
+            keystore: Path | None = None,
+            keystore_password: str = "",
+            key_alias: str = "",
+            timeout: float = 300.0,
+        ) -> JsonObject:
+            captured["source"] = source
+            return super().sign(
+                source,
+                out_apk,
+                keystore=keystore,
+                keystore_password=keystore_password,
+                key_alias=key_alias,
+                timeout=timeout,
+            )
+
+    monkeypatch.setattr(service_apk, "ApkClient", _FakeApkClient)
+    monkeypatch.setattr(service_apk, "JadxClient", _FakeJadx)
+    monkeypatch.setattr(service_apk, "ApktoolClient", _CapturingApktool)
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    created = service.create_session(str(_apk(tmp_path / "app.apk")), target="apk")
+    sid = str(created.data["session"]["id"])  # type: ignore[index]
+    try:
+        result = service.apk_sign(sid)
+        assert result.ok and result.data is not None, result.error
+        expected = (
+            service.settings.artifact_root.expanduser().resolve()
+            / "apktool"
+            / sid
+            / "repacked.apk"
+        )
+        assert captured["source"] == expected
+    finally:
+        service.close_all()
+
+
+def test_apk_sign_docstring_documents_the_repack_default() -> None:
+    """The apk_path default is only discoverable if the tool docstring names it.
+
+    An agent reading ``apk_path: str = ""`` cannot tell whether empty is legal
+    or what it targets; the answer (this session's repacked.apk) lives only in
+    the service default. Peer to apk.repack, whose docstring already says it
+    defaults to this session's decode, apk.sign must state its own default so
+    the decode->repack->sign chain reads end to end from the catalog alone.
+    """
+    from headless_re_mcp.tools.apk import build_apk_tools
+
+    source = Path(build_apk_tools.__code__.co_filename).read_text(encoding="utf-8")
+    doc = ""
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            for keyword in getattr(decorator, "keywords", []):
+                if (
+                    keyword.arg == "name"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value == "apk.sign"
+                ):
+                    doc = ast.get_docstring(node) or ""
+    collapsed = " ".join(doc.split())
+    assert "apk_path defaults to the APK apk.repack wrote" in collapsed
+    assert "repacked.apk" in collapsed
 
 
 @pytest.mark.parametrize(
