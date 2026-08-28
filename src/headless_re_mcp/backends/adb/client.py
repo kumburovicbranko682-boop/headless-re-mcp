@@ -42,6 +42,7 @@ _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
 _MAX_IPV6_ADDRS = 256
+_MAX_IPV6_ROUTES = 512
 _MAX_DEVICES = 64
 # /proc/net/if_inet6 scope column: the kernel's address-scope constants.
 _IF_INET6_SCOPES = {
@@ -201,14 +202,14 @@ def _is_host_error_output(text: str) -> bool:
     )
 
 
-def _if_inet6_addr(hexip: str) -> str | None:
-    """Decode a ``/proc/net/if_inet6`` 32-char hex column into an IPv6 string.
+def _hex_ipv6_plain(hexip: str) -> str | None:
+    """Decode a network-order 32-char hex IPv6 column into an address string.
 
-    Unlike ``/proc/net/tcp6`` and ``/proc/net/udp6`` -- which store the address
-    as little-endian 32-bit words -- ``if_inet6`` prints the 16 bytes in network
-    order, so it decodes straight with no reversal. ``None`` for anything that
-    is not exactly 16 hex-encoded bytes so a header or truncated cell is
-    skipped rather than turned into a bogus address.
+    ``/proc/net/if_inet6`` and ``/proc/net/ipv6_route`` both print the raw 16
+    bytes in network order -- unlike the little-endian 32-bit words of
+    ``/proc/net/tcp6``/``udp6`` -- so they decode straight with no reversal.
+    ``None`` for anything that is not exactly 16 hex-encoded bytes so a header
+    or truncated cell is skipped rather than turned into a bogus address.
     """
     if len(hexip) != 32:
         return None
@@ -582,7 +583,7 @@ class AdbBackend:
             fields = line.split()
             if len(fields) < 6:
                 continue
-            address = _if_inet6_addr(fields[0])
+            address = _hex_ipv6_plain(fields[0])
             if address is None:
                 continue
             try:
@@ -619,6 +620,76 @@ class AdbBackend:
             return {"addresses": [], "count": 0, "has_more": False, "available": False}
         raise AdbError(
             "backend_error", "unrecognized /proc/net/if_inet6 output", output=text[:800]
+        )
+
+    def ipv6_routes(self, serial: str, *, limit: int = 512) -> JsonObject:
+        """List the IPv6 routing table from ``/proc/net/ipv6_route``.
+
+        The IPv6 companion to the IPv4 routing view: that tool reads
+        ``/proc/net/route`` and cannot see IPv6 routes, which live in a separate
+        file with a different layout. Each row gives the destination network and
+        its prefix length, the next hop (``::`` for an on-link route), the raw
+        route flags, and the outgoing interface -- enough to read off the IPv6
+        default route and on-link prefixes. Addresses are network-order hex, so
+        they decode straight (no word reversal).
+
+        Honesty mirrors ``device.ipv6_addrs``: three outcomes stay distinct. A
+        dead or offline device (an adb host-error reply) is a ``backend_error``.
+        A kernel with IPv6 disabled (or the file locked down) answers with a
+        "No such file" / "Permission denied" line and no routes -- reported as a
+        real ``available: false`` state, not a failure and not an empty success.
+        A readable file yields the routes with ``available: true``. Unrecognized
+        non-error output is a ``backend_error`` rather than a guessed-empty
+        result. The list is capped and flags ``has_more`` when truncated.
+        """
+        dev = self._device(serial)
+        capped = max(1, min(int(limit), _MAX_IPV6_ROUTES))
+        text = str(_device_shell(dev, "cat /proc/net/ipv6_route"))
+        routes: list[JsonObject] = []
+        has_more = False
+        for line in text.splitlines():
+            fields = line.split()
+            if len(fields) < 10:
+                continue
+            destination = _hex_ipv6_plain(fields[0])
+            next_hop = _hex_ipv6_plain(fields[4])
+            if destination is None or next_hop is None:
+                continue
+            try:
+                prefix_len = int(fields[1], 16)
+                flags = int(fields[8], 16)
+            except ValueError:
+                continue
+            if len(routes) >= capped:
+                has_more = True
+                break
+            routes.append(
+                {
+                    "destination": destination,
+                    "prefix_len": prefix_len,
+                    "next_hop": next_hop,
+                    "flags": flags,
+                    "device": fields[9],
+                }
+            )
+        if routes:
+            return {
+                "routes": routes,
+                "count": len(routes),
+                "has_more": has_more,
+                "available": True,
+            }
+        if _is_host_error_output(text):
+            raise AdbError(
+                "backend_error", "reading /proc/net/ipv6_route failed", output=text[:800]
+            )
+        lowered = text.lower()
+        if not text.strip():
+            return {"routes": [], "count": 0, "has_more": False, "available": True}
+        if any(marker in lowered for marker in ("no such file", "permission denied", "not found")):
+            return {"routes": [], "count": 0, "has_more": False, "available": False}
+        raise AdbError(
+            "backend_error", "unrecognized /proc/net/ipv6_route output", output=text[:800]
         )
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:

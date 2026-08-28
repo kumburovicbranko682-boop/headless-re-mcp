@@ -108,6 +108,25 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_ipv6_addrs(serial, limit=limit))
 
+    @tools.tool(name="device.ipv6_routes")
+    def device_ipv6_routes(
+        serial: str, limit: Annotated[int, Field(ge=1, le=512)] = 512
+    ) -> dict[str, Any]:
+        """List the IPv6 routing table from /proc/net/ipv6_route.
+
+        The IPv6 companion to device.routes (which reads /proc/net/route and
+        cannot see IPv6 routes). Answers with routes (each entry: destination,
+        prefix_len, next_hop -- :: for on-link, flags, device), count, has_more,
+        and available -- enough to read off the IPv6 default route and on-link
+        prefixes.
+
+        Honesty mirrors device.ipv6_addrs: a dead/offline device is an error; a
+        kernel with IPv6 disabled (or the file locked down) is available=false
+        with no routes -- not a failure and not an empty success; a readable
+        file is available=true with the routes.
+        """
+        return _dump(analysis.device_ipv6_routes(serial, limit=limit))
+
     @tools.tool(name="device.install")
     def device_install(
         serial: str, apk_path: str, reinstall: bool = True

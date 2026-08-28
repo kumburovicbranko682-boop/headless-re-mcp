@@ -195,6 +195,7 @@ _READ_ONLY_NAMES = frozenset((
     'device.current_activity',
     'device.info',
     'device.ipv6_addrs',
+    'device.ipv6_routes',
     'device.list',
     'device.logcat',
     'device.packages',

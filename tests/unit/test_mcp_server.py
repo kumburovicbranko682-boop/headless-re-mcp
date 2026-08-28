@@ -273,6 +273,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "device.connect",
         "device.info",
         "device.ipv6_addrs",
+        "device.ipv6_routes",
         "device.properties",
         "device.packages",
         "device.install",
