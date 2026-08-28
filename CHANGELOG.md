@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（alt_kinds 在三路以上重叠合并中丢失 kind）
+
+- `iat_rank._merge_overlaps` 的 docstring 承诺 "union kinds"，实现却只用手上两个 dict 重建集合：
+  `kinds = {existing["kind"], item["kind"]}`，随后 `merged["alt_kinds"] = sorted(kinds)` 整个覆盖。
+  当第三个候选与一个**已经合并过**的范围重叠时，这次赋值抹掉了上一轮的并集，第一次合并贡献的
+  kind 被静默丢弃；四个重叠候选丢两个。`alt_kinds` 记录的是"哪些探测手段各自独立指向同一 IAT
+  范围"，即调用方在用 `imports.read` 确认候选之前所依据的相互印证——丢条目就是在低报一个恰恰
+  因为多次扫描彼此一致才存活下来的范围背后的证据。现在合并会把两侧已有的 `alt_kinds` 一并并入，
+  对任意合并次数都是真正的并集。
+- 新增的三路与四路重叠测试在改动前失败；其余为对照，钉死并集与"哪个候选胜出"无关、重复 kind
+  收敛为一个而非累加、以及未发生合并的候选依然不报 `alt_kinds`。
+
 ### 修复（NETReactorSlayer 输出别名测试的同款 Windows-only 路径炸裂）
 
 - 与 de4dot 同批落地的 `test_net_reactor_slayer_paths.py::test_output_equal_to_input_is_refused`
