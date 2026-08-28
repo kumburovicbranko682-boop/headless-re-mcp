@@ -40,6 +40,8 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_CMDLINE_TOKENS = 512
+_MAX_CMDLINE_RAW = 8192
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -525,6 +527,57 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def cmdline(self, serial: str) -> JsonObject:
+        """Parse the kernel boot command line from /proc/cmdline.
+
+        The authoritative boot command line, the source of the device's boot
+        posture: params like androidboot.verifiedbootstate (green/yellow/orange
+        tells locked vs unlocked), androidboot.veritymode, and hardware
+        identifiers -- the boot dimension that complements device.security's
+        SELinux/su read, straight from the kernel rather than a mirrored
+        getprop. /proc/cmdline is world-readable, so no root is needed.
+
+        The line is whitespace-separated tokens: key=value tokens become params
+        (a later duplicate key wins, as the kernel's last value does), and bare
+        tokens without = become flags. raw keeps the exact line so nothing is
+        lost to parsing, and both collections are capped with truncated marking
+        an over-long line. A read that comes back empty -- which a live device
+        never has -- is an error rather than empty params.
+        """
+        dev = self._device(serial)
+        raw = _device_shell(dev, "cat /proc/cmdline")
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError(
+                "backend_error", "reading /proc/cmdline failed", output=text[:800]
+            )
+        stripped = text.strip()
+        params: dict[str, str] = {}
+        flags: list[str] = []
+        truncated = False
+        for token in stripped.split():
+            if len(params) + len(flags) >= _MAX_CMDLINE_TOKENS:
+                truncated = True
+                break
+            if "=" in token:
+                key, _, value = token.partition("=")
+                if key:
+                    params[key] = value
+            else:
+                flags.append(token)
+        if not params and not flags:
+            raise AdbError(
+                "backend_error", "/proc/cmdline returned nothing", output=text[:800]
+            )
+        result: JsonObject = {
+            "params": params,
+            "flags": flags,
+            "raw": stripped[:_MAX_CMDLINE_RAW],
+        }
+        if truncated or len(stripped) > _MAX_CMDLINE_RAW:
+            result["truncated"] = True
+        return result
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a

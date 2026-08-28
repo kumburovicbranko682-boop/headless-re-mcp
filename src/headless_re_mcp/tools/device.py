@@ -71,6 +71,21 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
+    @tools.tool(name="device.cmdline")
+    def device_cmdline(serial: str) -> dict[str, Any]:
+        """Parse the kernel boot command line (/proc/cmdline).
+
+        The authoritative boot posture, straight from the kernel: params like
+        androidboot.verifiedbootstate (green/yellow/orange = locked vs
+        unlocked), androidboot.veritymode, and hardware identifiers -- the boot
+        dimension that complements device.security's SELinux/su read. Answers
+        with params (key=value tokens), flags (bare tokens), and raw (the exact
+        line so nothing is lost to parsing), plus truncated when an over-long
+        line is cut. /proc/cmdline is world-readable so no root is needed, and a
+        read that comes back empty is an error rather than empty params.
+        """
+        return _dump(analysis.device_cmdline(serial))
+
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,
