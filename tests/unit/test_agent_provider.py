@@ -212,6 +212,61 @@ async def test_reasoning_and_content_parts_count_as_generation(
     assert [event.text for event in events if event.type == "text_delta"] == ["hi"]
 
 
+@pytest.mark.parametrize(
+    "reasoning",
+    [
+        {"content": "abc"},
+        {"text": "abc"},
+        {"summary": "abc"},
+    ],
+)
+def test_object_shaped_reasoning_is_extracted_once(reasoning: dict[str, str]) -> None:
+    """A dict-valued ``reasoning`` field must yield its text once, not twice.
+
+    ``reasoning`` is one of the hidden-delta keys the loop already runs through
+    ``_plain_text``, which reads text out of a str, a list, or an object. A
+    second explicit dict branch used to append the same text again, so a provider
+    that streams ``reasoning`` as an object had every thinking chunk duplicated.
+    """
+    assert openai_compatible._hidden_texts({"reasoning": reasoning}) == ["abc"]
+
+
+def test_string_and_content_reasoning_shapes_are_untouched() -> None:
+    """The plain shapes the loop already handled must still extract exactly once."""
+    assert openai_compatible._hidden_texts({"reasoning": "abc"}) == ["abc"]
+    assert openai_compatible._hidden_texts({"reasoning_content": "abc"}) == ["abc"]
+    assert openai_compatible._hidden_texts(
+        {"reasoning_content": "a", "reasoning": {"content": "b"}}
+    ) == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_object_shaped_reasoning_streams_a_single_delta(tmp_path: Path) -> None:
+    """End to end, an object-shaped reasoning chunk reaches the caller once."""
+    del tmp_path
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        chunks = [
+            {"choices": [{"delta": {"reasoning": {"content": "plan "}}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ]
+        body = "".join(
+            f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n" for chunk in chunks
+        ) + "data: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(respond),
+    )
+    events = [
+        event
+        async for event in provider.stream_chat(messages=[], tools=[], model="m")
+    ]
+    assert [event.text for event in events if event.type == "reasoning_delta"] == ["plan "]
+
+
 @pytest.mark.asyncio
 async def test_stream_counts_reasoning_usage_and_message_snapshots(
     tmp_path: Path,
