@@ -146,6 +146,67 @@ def test_methods_clamp_negative_offset(tmp_path: Path, monkeypatch: Any) -> None
     assert payload["methods"][0]["name"] == "m0"
 
 
+class _FakeUnorderedMethod:
+    def __init__(self, name: str, descriptor: str = "()V", access: str = "public") -> None:
+        self.name = name
+        self.descriptor = descriptor
+        self.access = access
+
+
+class _FakeUnorderedMethodClass:
+    def __init__(self, methods: list[_FakeUnorderedMethod]) -> None:
+        self.name = "Lcom/example/Foo;"
+        self._methods = methods
+
+    def get_methods(self) -> list[_FakeUnorderedMethod]:
+        return self._methods
+
+
+class _FakeUnorderedMethodParsed:
+    def __init__(self, methods: list[_FakeUnorderedMethod]) -> None:
+        self.analysis = self
+        self._classes = [_FakeUnorderedMethodClass(methods)]
+
+    def get_classes(self) -> list[_FakeUnorderedMethodClass]:
+        return self._classes
+
+
+def test_methods_are_sorted_before_the_page_so_offset_paging_is_stable(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """classes and strings sort before the offset slice; methods must too.
+
+    androguard's get_methods() order is an undocumented implementation detail,
+    so an unsorted slice makes offset paging depend on it -- a re-parse (cache
+    evicted between page 1 and page 2) could reorder rows and overlap or skip.
+    Feeding methods in a deliberately non-sorted order, every page must come
+    back keyed by (name, descriptor), and concatenating the pages must cover the
+    whole class once in that stable order.
+    """
+    raw = [
+        _FakeUnorderedMethod("charlie"),
+        _FakeUnorderedMethod("alpha", "(I)V"),
+        _FakeUnorderedMethod("alpha", "()V"),
+        _FakeUnorderedMethod("bravo"),
+    ]
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeUnorderedMethodParsed(raw)
+    )
+    client = ApkClient()
+    full = client.methods(tmp_path / "app.apk", "com.example.Foo", offset=0, limit=10)
+    keys = [(m["name"], m["descriptor"]) for m in full["methods"]]
+    assert keys == [("alpha", "()V"), ("alpha", "(I)V"), ("bravo", "()V"), ("charlie", "()V")]
+
+    # Two half pages of the same stable order concatenate to the whole class,
+    # with no overlap or gap -- the property the sort exists to guarantee.
+    first = client.methods(tmp_path / "app.apk", "com.example.Foo", offset=0, limit=2)
+    second = client.methods(tmp_path / "app.apk", "com.example.Foo", offset=2, limit=2)
+    paged = [(m["name"], m["descriptor"]) for m in first["methods"] + second["methods"]]
+    assert paged == keys
+    assert first["has_more"] is True
+    assert second["has_more"] is False
+
+
 def test_methods_clamp_oversized_limit(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setattr(
         ApkClient, "_parsed", lambda self, path: _FakeMethodParsed(_MAX_METHODS_PAGE + 5)

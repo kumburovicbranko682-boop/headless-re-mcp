@@ -405,6 +405,14 @@ class ApkClient:
                 )
             if scan_more:
                 break
+        # Sort before the offset window, the way classes and strings already do.
+        # androguard's get_methods() iteration order is an undocumented
+        # implementation detail; a page-1 then page-2 call that re-parsed the APK
+        # (its cache evicted between the two) could otherwise slice a different
+        # order and overlap or skip rows. A deterministic (name, descriptor,
+        # access) key makes offset paging stable across re-parses and matches the
+        # sibling readers. Overloads keep their descriptor grouping under one name.
+        methods.sort(key=lambda entry: (entry["name"], entry["descriptor"], entry["access"]))
         start, cap = _clamp_page(offset, limit, max_limit=_MAX_METHODS_PAGE)
         window = methods[start : start + cap]
         return {
