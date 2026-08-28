@@ -104,4 +104,36 @@ def build_elf_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.elf_dynamic(path))
 
+    @tools.tool(name="elf.strings")
+    def elf_strings(
+        path: str,
+        min_length: Annotated[int, Field(ge=1, le=256)] = 4,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+        section: str | None = None,
+    ) -> dict[str, Any]:
+        """Extract an ELF's printable strings, labelled by section, stdlib-only.
+
+        A bare ``strings`` flattens the file into one anonymous list; this
+        keeps the provenance an analyst reasons with, reading the binary by
+        path with no external tool.
+
+        Each run of printable bytes at least min_length long is reported with
+        the section it came from (.rodata for real constants, .comment for the
+        compiler fingerprint, .dynstr/.strtab for names, .data for initialised
+        globals), its file offset and -- for an allocated section -- its
+        virtual address (vaddr). Pass section to scan just one section by name.
+        Every section with file content is scanned (.bss and other SHT_NOBITS
+        have none and are skipped); a section-stripped binary falls back to
+        scanning the PT_LOAD segments, labelling each string with its segment
+        index. sections_scanned lists what was read; strings_total is capped
+        (truncated flags the cap) and paged with offset/limit (has_more). A
+        file that is not an ELF is invalid_params, one over 128 MiB too_large.
+        """
+        return _dump(
+            analysis.elf_strings(
+                path, min_length=min_length, offset=offset, limit=limit, section=section
+            )
+        )
+
     return tools.bindings

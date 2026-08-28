@@ -6,8 +6,9 @@ that are not always installed. This mixin reads a standalone ELF by path with th
 stdlib alone: elf_summary returns the header/section/dependency triage,
 elf_symbols pages through the dynamic symbol table (imports and exports),
 elf_segments reads the program header table (the loadable view plus the
-interp/nx/relro/W^X security posture) and elf_dynamic decodes the whole
-.dynamic array with the pie/bind_now/textrel/relro verdicts, so a native
+interp/nx/relro/W^X security posture), elf_dynamic decodes the whole
+.dynamic array with the pie/bind_now/textrel/relro verdicts and elf_strings
+extracts printable literals labelled by the section they sit in, so a native
 binary is a first-class thing to inspect offline. These are core,
 path-based tools -- no session, no target kind -- so they stay visible in every
 workspace profile.
@@ -22,6 +23,7 @@ from headless_re_mcp.backends.common.elf import (
     ElfParseError,
     list_elf_dynamic,
     list_elf_segments,
+    list_elf_strings,
     list_elf_symbols,
     summarize_elf,
 )
@@ -143,6 +145,40 @@ class ElfAnalysisMixin:
         """
         try:
             listing = list_elf_dynamic(_load_elf(path))
+            return _success(listing, backend="elf")
+        except _ElfFileError as exc:
+            return _err(exc.code, str(exc), **exc.details)
+        except ElfParseError as exc:
+            return _err("invalid_params", str(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def elf_strings(
+        self,
+        path: str,
+        *,
+        min_length: int = 4,
+        offset: int = 0,
+        limit: int = 200,
+        section: str | None = None,
+    ) -> Result[JsonObject]:
+        """Printable string literals, located by the section they sit in.
+
+        Extracts runs of printable bytes (at least min_length long) the way
+        ``strings`` does, but keeps each one's provenance: the section (or, on
+        a stripped binary, the segment) it came from, its file offset and its
+        virtual address. A section filter narrows the scan. The total is capped
+        and paginated with offset/limit; the same file-level failures as
+        elf_summary apply.
+        """
+        try:
+            listing = list_elf_strings(
+                _load_elf(path),
+                min_length=min_length,
+                offset=offset,
+                limit=limit,
+                section=section,
+            )
             return _success(listing, backend="elf")
         except _ElfFileError as exc:
             return _err(exc.code, str(exc), **exc.details)

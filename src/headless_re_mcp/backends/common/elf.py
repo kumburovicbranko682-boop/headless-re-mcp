@@ -20,6 +20,11 @@ security posture. list_elf_dynamic decodes the whole .dynamic array
 (``readelf -d``): every tag named, string tags resolved, the DT_FLAGS and
 DT_FLAGS_1 words spelled out, and the verdicts stated -- pie, bind_now,
 textrel, and relro as the checksec full/partial/none tri-state.
+list_elf_strings extracts printable string literals the way ``strings`` does
+but keeps each one's provenance -- the section (or, when stripped, the
+segment) it sits in, its file offset and virtual address -- so .rodata
+constants, the .comment compiler fingerprint and .dynstr names stay
+distinguishable.
 
 Both ELF classes (32- and 64-bit) and both byte orders are handled. The header
 walk is exact; the section, program, dynamic and symbol tables are followed
@@ -41,6 +46,14 @@ _MAX_NEEDED = 1024
 _MAX_DYN_ENTRIES = 65536
 _MAX_WARNINGS = 32
 _MAX_SYMBOL_PAGE = 1000
+
+_MAX_STRINGS = 50000
+_MAX_STRING_LEN = 8192
+_MAX_STRING_PAGE = 1000
+_MIN_STRING_LENGTH = 4
+_SHT_NOBITS = 8
+# GNU strings' default alphabet: space through tilde, plus horizontal tab.
+_PRINTABLE = frozenset(range(0x20, 0x7F)) | {0x09}
 
 _OSABI = {
     0: "System V",
@@ -873,5 +886,133 @@ def list_elf_dynamic(data: bytes) -> JsonObject:
         "bind_now": bind_now,
         "textrel": textrel,
         "relro": relro,
+        "warnings": warnings,
+    }
+
+
+def _scan_printable(blob: bytes, min_length: int) -> list[tuple[int, str]]:
+    """Runs of printable bytes of at least ``min_length``, as (offset, text)."""
+    found: list[tuple[int, str]] = []
+    i = 0
+    n = len(blob)
+    while i < n:
+        if blob[i] in _PRINTABLE:
+            start = i
+            while i < n and blob[i] in _PRINTABLE:
+                i += 1
+            if i - start >= min_length:
+                raw = blob[start : min(i, start + _MAX_STRING_LEN)]
+                found.append((start, raw.decode("ascii", errors="replace")))
+        else:
+            i += 1
+    return found
+
+
+def list_elf_strings(
+    data: bytes,
+    *,
+    min_length: int = _MIN_STRING_LENGTH,
+    offset: int = 0,
+    limit: int = 200,
+    section: str | None = None,
+) -> JsonObject:
+    """Printable string literals, located by the section (or segment) they sit in.
+
+    Where a bare ``strings`` flattens the file into one anonymous list, this
+    keeps the provenance an analyst reasons with: each run of printable bytes
+    (at least ``min_length`` long) is reported with the section it came from --
+    ``.rodata`` for real constants, ``.comment`` for the compiler fingerprint,
+    ``.dynstr``/``.strtab`` for names, ``.data`` for initialised globals -- plus
+    its file offset and, for an allocated section, its virtual address. A
+    ``section`` filter narrows the scan to one section by name.
+
+    Every section that carries file content is scanned (SHT_NOBITS like .bss
+    has none and is skipped); when the section table is stripped it falls back
+    to scanning the PT_LOAD segments, labelling each string with its segment
+    index instead. Raises ElfParseError only when the bytes are not an ELF; the
+    total is capped and paginated with offset/limit, and an out-of-file section
+    or segment is skipped with a warning rather than raising.
+    """
+    image = _read_image(data)
+    bits: int = image["bits"]
+    warnings: list[str] = image["warnings"]
+
+    def warn(message: str) -> None:
+        if len(warnings) < _MAX_WARNINGS:
+            warnings.append(message)
+
+    min_length = max(1, min(int(min_length), 256))
+    start = max(0, int(offset))
+    window = max(1, min(int(limit), _MAX_STRING_PAGE))
+
+    # Each scan region is (label, addr-or-None, file_offset, size); addr lets an
+    # allocated section report a virtual address alongside the file offset.
+    regions: list[tuple[str, int, int, int]] = []
+    source: str
+    if image["sections"]:
+        source = "sections"
+        for raw in image["sections"]:
+            if raw["type"] == _SHT_NOBITS:
+                continue
+            off, size = raw["offset"], raw["size"]
+            if off <= 0 or size <= 0:
+                continue
+            if off + size > len(data):
+                warn(f"section {raw['name']!r} content is past end of file")
+                continue
+            regions.append((raw["name"], raw["addr"], off, size))
+    else:
+        source = "segments"
+        for index, (p_type, p_off, p_vaddr, p_filesz) in enumerate(_collect_phdrs(data, image)):
+            if p_type != _PT_LOAD or p_filesz <= 0:
+                continue
+            if p_off + p_filesz > len(data):
+                warn(f"segment {index} content is past end of file")
+                continue
+            regions.append((f"segment {index}", p_vaddr, p_off, p_filesz))
+        if not regions:
+            warn("no sections and no loadable segments to scan")
+
+    matched_filter = section is None
+    scanned: list[str] = []
+    all_strings: list[JsonObject] = []
+    truncated = False
+    for label, addr, off, size in regions:
+        if section is not None and label != section:
+            continue
+        matched_filter = True
+        scanned.append(label)
+        for rel, text in _scan_printable(data[off : off + size], min_length):
+            entry: JsonObject = {
+                "section": label,
+                "offset": off + rel,
+                "vaddr": f"0x{addr + rel:x}" if addr else None,
+                "value": text,
+            }
+            all_strings.append(entry)
+            if len(all_strings) >= _MAX_STRINGS:
+                truncated = True
+                break
+        if truncated:
+            break
+
+    if section is not None and not matched_filter:
+        warn(f"no section named {section!r}")
+
+    total = len(all_strings)
+    page = all_strings[start : start + window]
+    return {
+        "class": f"ELF{bits}",
+        "source": source,
+        "min_length": min_length,
+        "section_filter": section,
+        "sections_scanned": scanned,
+        "strings": page,
+        "strings_listed": len(page),
+        "strings_total": total,
+        "offset": start,
+        "limit": window,
+        "has_more": start + len(page) < total,
+        "truncated": truncated,
         "warnings": warnings,
     }
