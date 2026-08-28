@@ -15,12 +15,14 @@ from __future__ import annotations
 import struct
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from headless_re_mcp.backends.common.dex import (
     DexParseError,
     list_dex_classes,
+    list_dex_methods,
     summarize_dex,
 )
 from headless_re_mcp.config import Settings
@@ -327,5 +329,178 @@ def test_service_class_listing_refuses_non_dex(tmp_path: Path) -> None:
 
 def test_service_class_listing_reports_missing_file(tmp_path: Path) -> None:
     result = _service(tmp_path).dex_classes(str(tmp_path / "nope.dex"))
+    assert not result.ok
+    assert result.error.code == "not_found"
+
+
+# --- method table (list_dex_methods / dex.methods) ----------------------------
+
+
+def _build_methody_dex(
+    strings: list[str],
+    types: list[int],
+    protos: list[dict[str, Any]],
+    methods: list[dict[str, int]],
+) -> bytes:
+    """A DEX with string, type, proto and method tables (and proto type_lists).
+
+    ``protos`` items are ``{shorty, ret, params}`` where shorty is a string index,
+    ret is a type index and params is a list of type indices. ``methods`` items
+    are ``{class, proto, name}`` (type index, proto index, string index).
+    """
+    header_size = 0x70
+    string_ids_off = header_size
+    type_ids_off = string_ids_off + len(strings) * 4
+    proto_ids_off = type_ids_off + len(types) * 4
+    method_ids_off = proto_ids_off + len(protos) * 12
+    data_start = method_ids_off + len(methods) * 8
+    data = bytearray()
+    proto_param_off: list[int] = []
+    for proto in protos:
+        params = proto.get("params") or []
+        if params:
+            proto_param_off.append(data_start + len(data))
+            data += struct.pack("<I", len(params))
+            for type_idx in params:
+                data += struct.pack("<H", type_idx)
+        else:
+            proto_param_off.append(0)
+    string_offsets: list[int] = []
+    for text in strings:
+        string_offsets.append(data_start + len(data))
+        data += _uleb(len(text)) + text.encode("utf-8") + b"\x00"
+    string_ids = b"".join(struct.pack("<I", off) for off in string_offsets)
+    type_ids = b"".join(struct.pack("<I", t) for t in types)
+    proto_ids = b"".join(
+        struct.pack("<III", p.get("shorty", 0), p.get("ret", 0), proto_param_off[i])
+        for i, p in enumerate(protos)
+    )
+    method_ids = b"".join(
+        struct.pack("<HHI", m["class"], m["proto"], m["name"]) for m in methods
+    )
+    body = string_ids + type_ids + proto_ids + method_ids + bytes(data)
+    header = bytearray(header_size)
+    header[0:8] = b"dex\n035\x00"
+    struct.pack_into("<I", header, 0x08, 0x1234ABCD)
+    header[0x0C:0x20] = bytes(range(20))
+    fields = [
+        header_size + len(body), header_size, 0x12345678, 0, 0, 0,
+        len(strings), string_ids_off,
+        len(types), type_ids_off,
+        len(protos), proto_ids_off,
+        0, 0,
+        len(methods), method_ids_off,
+        0, 0, 0, 0,
+    ]
+    struct.pack_into("<20I", header, 0x20, *fields)
+    return bytes(header) + body
+
+
+# strings: Foo;, String;, "bar", "<init>", shorty "VIL", shorty "ZL", and the
+# primitive/array descriptors I, Z, V, [I as their own strings.
+_M_STRINGS = [
+    "Lcom/example/Foo;",
+    "Ljava/lang/String;",
+    "bar",
+    "<init>",
+    "VIL",
+    "ZL",
+    "I",
+    "Z",
+    "V",
+    "[I",
+]
+_M_TYPES = [0, 1, 6, 7, 8, 9]  # Foo, String, I, Z, V, [I
+_M_PROTOS = [
+    {"shorty": 4, "ret": 4, "params": [2, 1]},  # (int, String) -> void
+    {"shorty": 5, "ret": 3, "params": [5]},  # (int[]) -> boolean
+]
+_M_METHODS = [
+    {"class": 0, "proto": 0, "name": 2},  # Foo.bar
+    {"class": 0, "proto": 1, "name": 3},  # Foo.<init>
+]
+
+
+def _methody_dex() -> bytes:
+    return _build_methody_dex(_M_STRINGS, _M_TYPES, _M_PROTOS, _M_METHODS)
+
+
+def test_methods_are_resolved_with_signatures() -> None:
+    out = list_dex_methods(_methody_dex())
+    assert out["methods_total"] == 2
+    assert out["has_more"] is False
+    bar, init = out["methods"]
+    assert bar["name"] == "bar"
+    assert bar["class_name"] == "com.example.Foo"
+    assert bar["return_type"] == "V"
+    assert bar["parameters"] == ["I", "Ljava/lang/String;"]
+    assert bar["shorty"] == "VIL"
+    assert bar["signature"] == "com.example.Foo.bar(int, java.lang.String): void"
+    # Array parameter renders as int[] and the boolean return resolves.
+    assert init["signature"] == "com.example.Foo.<init>(int[]): boolean"
+    assert out["warnings"] == []
+
+
+def test_methods_are_paginated_honestly() -> None:
+    out = list_dex_methods(_methody_dex(), offset=1, limit=1)
+    assert out["offset"] == 1
+    assert out["methods_count"] == 1
+    assert out["methods_total"] == 2
+    assert out["has_more"] is False
+    assert out["methods"][0]["name"] == "<init>"
+    tail = list_dex_methods(_methody_dex(), offset=50, limit=5)
+    assert tail["methods"] == []
+    assert tail["has_more"] is False
+
+
+def test_a_corrupt_method_name_index_is_a_warning() -> None:
+    data = bytearray(_methody_dex())
+    method_ids_off = (
+        0x70 + len(_M_STRINGS) * 4 + len(_M_TYPES) * 4 + len(_M_PROTOS) * 12
+    )
+    struct.pack_into("<I", data, method_ids_off + 4, 9999)  # name_idx out of range
+    out = list_dex_methods(bytes(data))
+    assert out["methods"][0]["name"] == ""  # unresolved name, but still a row
+    assert out["methods"][0]["class_name"] == "com.example.Foo"
+
+
+def test_a_method_with_a_bad_proto_still_lists() -> None:
+    data = bytearray(_methody_dex())
+    method_ids_off = (
+        0x70 + len(_M_STRINGS) * 4 + len(_M_TYPES) * 4 + len(_M_PROTOS) * 12
+    )
+    struct.pack_into("<H", data, method_ids_off + 2, 999)  # proto_idx out of range
+    out = list_dex_methods(bytes(data))
+    method = out["methods"][0]
+    assert method["return_type"] is None
+    assert method["parameters"] == []
+    assert method["signature"].endswith(": ?")  # unknown return renders as ?
+
+
+@pytest.mark.parametrize("blob", [b"", b"NOTA" + b"\x00" * 120])
+def test_list_methods_rejects_non_dex(blob: bytes) -> None:
+    with pytest.raises(DexParseError):
+        list_dex_methods(blob)
+
+
+def test_service_lists_methods(tmp_path: Path) -> None:
+    dex = tmp_path / "classes.dex"
+    dex.write_bytes(_methody_dex())
+    result = _service(tmp_path).dex_methods(str(dex))
+    assert result.ok, result.model_dump(mode="json")
+    assert result.data["methods_total"] == 2
+    assert {m["name"] for m in result.data["methods"]} == {"bar", "<init>"}
+
+
+def test_service_method_listing_refuses_non_dex(tmp_path: Path) -> None:
+    junk = tmp_path / "classes.dex"
+    junk.write_bytes(b"not a dalvik executable")
+    result = _service(tmp_path).dex_methods(str(junk))
+    assert not result.ok
+    assert result.error.code == "invalid_params"
+
+
+def test_service_method_listing_reports_missing_file(tmp_path: Path) -> None:
+    result = _service(tmp_path).dex_methods(str(tmp_path / "nope.dex"))
     assert not result.ok
     assert result.error.code == "not_found"

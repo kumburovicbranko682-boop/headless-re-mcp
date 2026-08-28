@@ -183,7 +183,7 @@ def _u16(data: bytes, offset: int) -> int:
 
 
 def _readable_type(descriptor: str | None) -> str:
-    """A Dalvik descriptor rendered for a human: ``[I`` -> ``int[]``, ``Ljava/lang/String;`` -> dotted."""
+    """A Dalvik descriptor rendered for a human: ``[I`` -> ``int[]``, ``Lp/q;`` -> dotted."""
     if not descriptor:
         return ""
     depth = 0

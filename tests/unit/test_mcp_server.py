@@ -271,6 +271,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         # Standalone Dalvik executable (dex.*)
         "dex.summary",
         "dex.classes",
+        "dex.methods",
         # Device control (device.*)
         "device.list",
         "device.connect",
