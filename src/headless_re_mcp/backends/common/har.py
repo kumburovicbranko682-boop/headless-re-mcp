@@ -63,6 +63,26 @@ def _iso_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def iso_from_epoch(epoch: float | None) -> str | None:
+    """ISO 8601 (with offset) for a Unix epoch, or None when it is unknown.
+
+    HAR's ``startedDateTime`` is mandatory, so an entry with no captured time
+    falls back to the export instant. But a capture that *does* know when a
+    request began (the proxy records mitmproxy's ``request.timestamp_start``)
+    should say so: passing the real time through here makes a HAR viewer's
+    waterfall reflect the actual request order instead of stamping every flow
+    with the single export instant, which reads as if they all happened at once.
+    Returns None for an absent or unparseable epoch so the caller takes the
+    export-time fallback rather than emitting a bad timestamp.
+    """
+    if epoch is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(epoch), tz=UTC).isoformat()
+    except (ValueError, OverflowError, OSError, TypeError):
+        return None
+
+
 def _query_string(url: str) -> list[JsonObject]:
     """Parse the URL's query into HAR ``name``/``value`` pairs, bounded.
 
