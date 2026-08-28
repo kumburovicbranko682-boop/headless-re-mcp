@@ -6,9 +6,18 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 
 JsonObject = dict[str, Any]
+# The dump tool schemas declare 0 < timeout <= 300; the live (non-invasive
+# attach) tool schemas declare 0 < timeout <= 120. See clamp_cli_timeout.
+_MAX_DUMP_TIMEOUT_S = 300.0
+_MAX_LIVE_TIMEOUT_S = 120.0
 _ALLOWED_CMDS = frozenset({"lm", "k", "r", "u", "~*", "version", "vertarget"})
 # cdb -c treats these as command composition, so a head token of `lm` must
 # not smuggle `lm; !process` or `k\n.shell` past the allow-list. `&` is the
@@ -219,6 +228,18 @@ class WindbgClient:
             **_carried(data),
         }
 
+    def _bounded_timeout(self, timeout: float, *, maximum: float) -> float:
+        # cdb attaches to a live target or opens a dump, so the deadline has to
+        # be sane before we spawn it: a non-positive/NaN value would launch cdb
+        # only to have run_bounded kill it at once and report a misleading
+        # timeout, and a huge one would hold a debugger on the target for as
+        # long as the caller named. The agent transport bypasses the schema
+        # bound, so clamp here as the r2/jadx/apktool/jsre adapters already do.
+        try:
+            return clamp_cli_timeout(timeout, maximum=maximum)
+        except InvalidTimeout as exc:
+            raise WindbgError("invalid_params", str(exc)) from exc
+
     def _run_process(
         self,
         pid: int,
@@ -227,6 +248,7 @@ class WindbgClient:
         allowed_pid: int,
         timeout: float,
     ) -> JsonObject:
+        timeout = self._bounded_timeout(timeout, maximum=_MAX_LIVE_TIMEOUT_S)
         cdb = self._require_cdb()
         if type(pid) is not int or pid <= 0:
             raise WindbgError("invalid_params", "pid must be a positive integer")
@@ -276,6 +298,7 @@ class WindbgClient:
         }
 
     def _run_dump(self, dump: Path, commands: list[str], *, timeout: float) -> JsonObject:
+        timeout = self._bounded_timeout(timeout, maximum=_MAX_DUMP_TIMEOUT_S)
         cdb = self._require_cdb()
         if not dump.is_file():
             raise WindbgError("not_found", "dump file not found", path=str(dump))
