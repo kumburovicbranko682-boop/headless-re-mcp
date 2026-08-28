@@ -8,6 +8,7 @@ from headless_re_mcp.mcp.routes.device import register_device_tools
 from headless_re_mcp.mcp.routes.dex import register_dex_tools
 from headless_re_mcp.mcp.routes.dynamic import register_dynamic_tools
 from headless_re_mcp.mcp.routes.dynamic_analysis import register_dynamic_analysis_tools
+from headless_re_mcp.mcp.routes.elf import register_elf_tools
 from headless_re_mcp.mcp.routes.frida import register_frida_tools
 from headless_re_mcp.mcp.routes.ghidra import register_ghidra_tools
 from headless_re_mcp.mcp.routes.js_wasm import register_js_wasm_tools
@@ -35,6 +36,7 @@ def register_remaining_tools(server: FastMCP[None], analysis: AnalysisService) -
     register_windbg_tools(server, analysis)
     register_apk_tools(server, analysis)
     register_dex_tools(server, analysis)
+    register_elf_tools(server, analysis)
     register_device_tools(server, analysis)
     register_js_wasm_tools(server, analysis)
     register_web_tools(server, analysis)

@@ -24,6 +24,7 @@ from headless_re_mcp.tools.device import build_device_tools
 from headless_re_mcp.tools.dex import build_dex_tools
 from headless_re_mcp.tools.dynamic import build_dynamic_tools
 from headless_re_mcp.tools.dynamic_analysis import build_dynamic_analysis_tools
+from headless_re_mcp.tools.elf import build_elf_tools
 from headless_re_mcp.tools.frida import build_frida_tools
 from headless_re_mcp.tools.ghidra import build_ghidra_tools
 from headless_re_mcp.tools.js_wasm import build_js_wasm_tools
@@ -58,6 +59,7 @@ TOOL_FACTORIES: tuple[ToolFactory, ...] = (
     build_windbg_tools,
     build_apk_tools,
     build_dex_tools,
+    build_elf_tools,
     build_device_tools,
     build_js_wasm_tools,
     build_web_tools,

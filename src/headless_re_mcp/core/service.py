@@ -94,6 +94,7 @@ from headless_re_mcp.core.service_detect import DetectAnalysisMixin
 from headless_re_mcp.core.service_device import DeviceAnalysisMixin
 from headless_re_mcp.core.service_dotnet import DotnetAnalysisMixin
 from headless_re_mcp.core.service_dynamic_inspect import DynamicInspectMixin
+from headless_re_mcp.core.service_elf import ElfAnalysisMixin
 from headless_re_mcp.core.service_ext import (
     _DEBUG_EVENT_BUDGET_PER_BATCH,
     ExtAnalysisMixin,
@@ -330,6 +331,7 @@ class AnalysisService(
     UnpackCliMixin,
     WorkflowAnalysisMixin,
     ApkAnalysisMixin,
+    ElfAnalysisMixin,
     DeviceAnalysisMixin,
     FridaDeviceMixin,
     JsReAnalysisMixin,
