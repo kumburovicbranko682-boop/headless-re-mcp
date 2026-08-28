@@ -48,15 +48,21 @@ class ApkError(RuntimeError):
 
 
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
-    items: list[str] = []
-    has_more = False
-    for item in values or []:
-        if len(items) >= limit:
-            has_more = True
-            break
-        items.append(str(item))
-    items.sort()
-    return items, has_more
+    """Sorted alphabetical prefix of ``values``, and whether any were left out.
+
+    Sort before the cap, not after. A capped list must be a real alphabetical
+    prefix, so a name absent from within the returned range is genuinely absent
+    -- with cap-then-sort a name could sit past the cap in the source's order
+    yet sort early, going missing from the middle of a page that looked ordered,
+    and an agent checking "does it declare permission X / component Y" would read
+    that gap as "no". The source lists are already fully in memory, so sorting
+    the whole set before slicing costs nothing. Matches apk.classes / strings and
+    device.packages, which page their sorted set rather than sort a raw slice.
+    """
+    items = sorted(str(item) for item in (values or []))
+    if len(items) > limit:
+        return items[:limit], True
+    return items, False
 
 
 def _spill_manifest_xml(xml: str, spill_dir: Path) -> str | None:
@@ -357,7 +363,6 @@ class ApkClient:
         apk = self._apk(path)
         libs: list[str] = []
         abis: set[str] = set()
-        has_more = False
         for name in apk.get_files() or []:
             text = str(name)
             if not text.startswith("lib/"):
@@ -365,16 +370,18 @@ class ApkClient:
             parts = text.split("/")
             if len(parts) >= 3:
                 abis.add(parts[1])
-            if len(libs) >= _MAX_NATIVE_LIBS:
-                has_more = True
-                continue
             libs.append(text)
+        # Sort before the cap, not after: the whole file list is already walked
+        # here (to collect every abi), so a capped native_libs page must be the
+        # alphabetical prefix, not a file-order slice that was merely sorted --
+        # otherwise an early-sorting .so past the cap vanishes from the page.
         libs.sort()
+        total = len(libs)
         return {
-            "native_libs": libs,
+            "native_libs": libs[:_MAX_NATIVE_LIBS],
             "abis": sorted(abis),
-            "count": len(libs),
-            "has_more": has_more,
+            "count": min(total, _MAX_NATIVE_LIBS),
+            "has_more": total > _MAX_NATIVE_LIBS,
         }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:

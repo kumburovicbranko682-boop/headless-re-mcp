@@ -65,3 +65,38 @@ def test_apk_components_names_the_four_lists_not_components() -> None:
     assert "Answers with activities" in doc
     assert "has_more" in doc
     assert "main_activity" in doc
+
+
+class _ReverseComponentsApk:
+    """Activities arrive in reverse-alphabetical order and overflow the cap."""
+
+    def get_activities(self) -> list[str]:
+        return [f"com.x.A{index:04d}" for index in range(300)][::-1]
+
+    def get_services(self) -> list[str]:
+        return []
+
+    def get_receivers(self) -> list[str]:
+        return []
+
+    def get_providers(self) -> list[str]:
+        return []
+
+    def get_main_activity(self) -> str:
+        return "com.x.A0000"
+
+
+def test_apk_components_capped_list_is_the_alphabetical_prefix() -> None:
+    """A capped component list must be the alphabetically first names, not a
+    manifest-order slice that was merely sorted. The parser hands them back
+    reversed and 300 deep against a 256 cap; requiring the page to start at
+    A0000 and be the sorted prefix pins sort-before-cap, so an agent that does
+    not see a component sorting within the page can trust it is not declared."""
+    client = ApkClient()
+    client._apk = lambda _path: _ReverseComponentsApk()  # type: ignore[method-assign]
+    payload = client.components(Path("dummy.apk"))
+    activities = payload["activities"]
+    assert len(activities) == 256
+    assert payload["has_more"] is True
+    assert activities == sorted(f"com.x.A{index:04d}" for index in range(300))[:256]
+    assert activities[0] == "com.x.A0000"

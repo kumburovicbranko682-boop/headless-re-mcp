@@ -55,3 +55,25 @@ def test_apk_native_libs_names_native_libs_not_libraries() -> None:
     assert "Answers with native_libs" in doc
     assert "abis" in doc
     assert "has_more" in doc
+
+
+class _ReverseLibsApk:
+    """lib paths arrive in reverse order and overflow the cap."""
+
+    def get_files(self) -> list[str]:
+        libs = [f"lib/arm64-v8a/l{index:04d}.so" for index in range(300)][::-1]
+        return [*libs, "classes.dex"]
+
+
+def test_apk_native_libs_capped_list_is_the_alphabetical_prefix() -> None:
+    """A capped .so list must be the alphabetically first paths, not a file-order
+    slice that was merely sorted -- otherwise an early-sorting library past the
+    cap goes missing from the middle of a page that looked complete."""
+    client = ApkClient()
+    client._apk = lambda _path: _ReverseLibsApk()  # type: ignore[method-assign]
+    payload = client.native_libs(Path("dummy.apk"))
+    libs = payload["native_libs"]
+    assert len(libs) == 256
+    assert payload["has_more"] is True
+    assert libs == sorted(f"lib/arm64-v8a/l{index:04d}.so" for index in range(300))[:256]
+    assert libs[0] == "lib/arm64-v8a/l0000.so"

@@ -52,7 +52,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `spill_dir` 时落全文并带 `manifest_xml_path`、未超限不落盘且不建空目录、不给 `spill_dir` 保持旧形状(向后\
   兼容)、写失败降级为无路径,以及服务层把溢出文件注册成带 `artifact_id` 的制品。
 
-### 诚实（device.packages / device.properties 先排序再切页，超限页是真正的字母序前缀，而非装作有序的安装序切片）
+### 诚实（device.packages / properties 与 apk.permissions / components / native_libs 先排序再切页，超限页是真正的字母序前缀，而非装作有序的安装序切片）
 
 - `device.packages` / `device.properties` 过去按设备返回顺序(安装序 / getprop 序)收满 `capped` 条就 `break`,\
   再对这一页 `sort()`。结果是“任意子集,排过序”:一个字母序靠前的包/键完全可能排在设备返回的第 501 位而被丢在\
@@ -62,6 +62,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   再分页的诚实范式一致。收全再切页的内存开销可忽略(原始 shell 文本本就整段在内存里)。
 - 文档串补明这一语义;`tests/unit/test_adb_device_readouts.py` 与 `test_device_properties_fields.py` 把\
   逆序输入下的返回页钉到字母序前缀(`com.a/b/c`、`ro.k.a/b/c`),cap-then-sort 会失败。
+- 同一 cap-then-sort 反模式在 APK 侧一并收敛:`apk.permissions` / `apk.components`(activities / services /\
+  receivers / providers)共用的 `_cap_names`,以及 `apk.native_libs`,过去都按解析顺序收满 256 条再对这一页排序。\
+  大型应用动辄声明数百个组件,于是一个字母序靠前的 activity/权限/`.so` 会排在解析顺序的 cap 之外而从有序页中间\
+  消失,agent 查“声明了组件 Y 吗”便误判为“没有”。三者都改为先排序整表再切 `[:limit]`——源列表本就整份在内存里\
+  (`native_libs` 更是已经遍历了全部文件以收集 abi),开销可忽略。`certificates` 不动:签名顺序有意义,不能按主题\
+  重排。`tests/unit/test_apk_components_fields.py` 与 `test_apk_native_libs_fields.py` 以逆序输入把返回页钉到\
+  字母序前缀。
 
 ### 测试（钉住 frida.java.classes / methods 的 has_more 全靠“向脚本多要一个”：脚本按 limit+1 枚举，回包按 limit 切页）
 
