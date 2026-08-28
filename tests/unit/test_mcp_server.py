@@ -307,6 +307,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "js.deobfuscate",
         "js.beautify",
         "js.unpack_bundle",
+        "js.strings",
         "wasm.info",
         "wasm.summary",
         "wasm.names",

@@ -68,6 +68,52 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="js.strings")
+    def js_strings(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        min_length: Annotated[int, Field(ge=1, le=1024)] = 3,
+        name_filter: str = "",
+    ) -> dict[str, Any]:
+        """Extract string literals from a JavaScript file, without webcrack.
+
+        js.deobfuscate/beautify/unpack_bundle all need webcrack (Node); this
+        reads and lexes the source in-process, so it stays available when
+        webcrack is not configured -- the js-line analogue of the
+        wasm.summary/names/strings trio being wabt-free. It is the ``strings`` of
+        a bundle: the URLs, api endpoints, error messages and embedded keys a
+        triage pass greps for live in string literals, and this pulls them out
+        without reading megabytes of minified code. A real lexer, not a regex
+        sweep, so quotes inside comments and regex literals are not mistaken for
+        strings; and \\x/\\u escape sequences are decoded, which unmasks a URL an
+        obfuscator hid as "\\x68\\x74\\x74\\x70". Answers with strings (each
+        {offset (char index of the literal), text (decoded), size (decoded
+        length), kind (single|double|template)}, plus text_truncated when one
+        literal exceeded the text clip), count, total, offset, has_more, and
+        scan_capped when the file held more literals than the collect ceiling.
+        min_length is the shortest literal kept (default 3, dropping the empty
+        and single/two-char literals minified code is full of); raise it to cut
+        the noise on a large bundle. name_filter keeps only literals whose text
+        contains that substring (case-insensitive, since these are prose and
+        URLs), applied before paging so total is the match count -- the way to
+        find "http" or an api host among thousands. A template `...` literal's
+        static chunks are extracted per chunk (a ${...} hole splits them); the
+        expressions inside ${...} are not separately extracted. The list field is
+        strings. For a readable form of the whole file use js.beautify; to unpack
+        a bundle into modules use js.unpack_bundle. A missing file is not_found;
+        one over 16 MiB is too_large.
+        """
+        return _dump(
+            analysis.js_strings(
+                path,
+                offset=offset,
+                limit=limit,
+                min_length=min_length,
+                name_filter=name_filter,
+            )
+        )
+
     @tools.tool(name="wasm.summary")
     def wasm_summary(
         path: str,

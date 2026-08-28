@@ -16,6 +16,7 @@ from typing import Any
 from uuid import uuid4
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.jsre.js_strings import extract_strings as extract_js_strings
 from headless_re_mcp.backends.jsre.wasm_summary import WasmParseError
 from headless_re_mcp.backends.jsre.wasm_summary import parse_data_strings as parse_wasm_strings
 from headless_re_mcp.backends.jsre.wasm_summary import parse_function_names as parse_wasm_names
@@ -48,6 +49,8 @@ _MAX_UNPACK_TIMEOUT_S = 1200.0
 _MAX_WASM_NAMES_PAGE = 2000
 # Same rationale for wasm.strings.
 _MAX_WASM_STRINGS_PAGE = 2000
+# Same rationale for js.strings.
+_MAX_JS_STRINGS_PAGE = 2000
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -251,6 +254,47 @@ class JsClient:
             "offset": start,
             "has_more": start + len(window) < file_count,
             "listing_truncated": listed_more,
+        }
+
+    def strings(
+        self,
+        path: Path,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        min_length: int = 3,
+        name_filter: str = "",
+    ) -> JsonObject:
+        """Extract string literals from a JavaScript file, without webcrack.
+
+        Dependency-free (no Node/webcrack): the source is read and lexed in
+        process, so this stays available when webcrack is not configured -- the
+        way the wasm.summary/names/strings trio stays available without wabt.
+        \\x/\\u escapes are decoded, which unmasks a URL an obfuscator hid as a
+        hex-escaped string. Paged; total is the count that matched the filter,
+        and scan_capped marks a file with more literals than the collect ceiling.
+        """
+        resolved = _require_existing_file(path, missing="input file not found")
+        try:
+            raw = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        source = raw.decode("utf-8", errors="replace")
+        rows, scan_capped = extract_js_strings(
+            source, min_length=min_length, name_filter=name_filter
+        )
+        start = max(0, int(offset))
+        capped = max(1, min(int(limit), _MAX_JS_STRINGS_PAGE))
+        window = rows[start : start + capped]
+        return {
+            "strings": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_capped,
         }
 
 

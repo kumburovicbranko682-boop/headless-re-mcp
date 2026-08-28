@@ -294,6 +294,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **JS 静态线只有 `js.deobfuscate`/`js.beautify`/`js.unpack_bundle` 三把，且都要 webcrack（Node），没装则整条线 `capability_unavailable`；
+  想从一份 bundle 里捞 URL、api 端点、报错文案、内嵌 key，只能先反混淆再对着满屏代码翻**。新增只读工具 `js.strings`：在进程内读源码、
+  用一个小词法器抽字符串字面量（不调 webcrack，故 Node 没装也能用——正是 `wasm.summary`/`names`/`strings` 三件套免 wabt 的同一思路）。
+  是词法器而非正则扫街：注释里、正则字面量里的引号不会被误当成字符串（正则/除法用标准的「前一个有意义 token」启发式判别）；且 `\x`/`\u`
+  转义会**解码**——这正是把混淆器写成 `"\x68\x74\x74\x70"` 的 URL 还原出来的关键。答复带 `strings`（每行 `{offset（字面量的字符下标）,
+  text（已解码）, size（解码后长度）, kind（single|double|template）}`，单条超文本上限时置 `text_truncated`）、`count`/`total`/`offset`/
+  `has_more`，以及字面量数超采集上限时的 `scan_capped`。`min_length` 默认 3（丢掉 minified 代码里成堆的空串与一两字符串）；调高可在大
+  bundle 上进一步降噪。`name_filter` 对文本做大小写不敏感子串匹配（是文案/URL 而非符号）、在分页前应用，故 `total` 是命中数——在上千条里
+  找 "http" 或某 api host 的办法。模板 `...` 的静态段按段抽取（`${...}` 空洞把它切开），`${...}` 里的表达式不单独抽。整段文本仍用
+  `js.beautify`、拆 bundle 仍用 `js.unpack_bundle`。缺文件 `not_found`、超 16 MiB `too_large`。只读，工具总数 285→286（168 只读 / 118 写）。
 - **`wasm.summary` 给结构、`wasm.names` 给符号，唯独读不到模块的内容——rodata 里的 URL、报错文案、格式串、内嵌 key 没有工具能捞**。
   这些常量字符串是 wasm 逆向 triage 最先 grep 的东西，都住在 data 段，但此前要么装 wabt 跑 `wasm.wat` 在满屏文本里翻、要么无从下手。
   新增只读工具 `wasm.strings`：同样在进程内解析（不调 wabt），把 data（id 11）段当二进制做 `strings`——扫出 ≥`min_length` 的可打印
