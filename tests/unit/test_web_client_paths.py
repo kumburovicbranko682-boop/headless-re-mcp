@@ -646,6 +646,70 @@ def test_open_rolls_back_and_reaps_the_driver_when_launch_fails(
     assert killed == [4321]
 
 
+def test_open_rollback_leaves_a_reservation_another_open_replaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rollback must not delete a slot that no longer holds its own token.
+
+    open() reserves the slot with a per-open token. If the launch fails but that
+    reservation was replaced meanwhile (a concurrent close/open took the slot),
+    the rollback must leave the slot alone -- popping it would evict a session it
+    does not own. The pop is guarded by an identity check on the token; a swapping
+    runner that fails the build drives the not-equal branch deterministically.
+    """
+    backend = WebBackend()
+    backend._check_available = lambda: None  # type: ignore[method-assign]
+    intruder = object()
+
+    class _SwappingRunner:
+        def __init__(self, name: str) -> None:
+            del name
+            self.shutdowns = 0
+
+        def call(self, work: Any, *, timeout: float = 0.0) -> Any:
+            del work, timeout
+            backend._sessions["s"] = intruder  # someone else took the slot
+            raise WebError("backend_error", "failed mid-build")
+
+        def shutdown(self) -> None:
+            self.shutdowns += 1
+
+    stub = types.ModuleType("playwright.sync_api")
+    stub.sync_playwright = lambda: SimpleNamespace(start=lambda: SimpleNamespace())  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", stub)
+    monkeypatch.setattr(web_client, "_Runner", _SwappingRunner)
+
+    with pytest.raises(WebError) as caught:
+        backend.open("s", "http://x/start")
+    assert caught.value.code == "backend_error"
+    # The replaced reservation survived: rollback skipped the pop (identity check).
+    assert backend._sessions["s"] is intruder
+
+
+def test_runner_skips_a_call_that_was_cancelled_before_it_ran() -> None:
+    """A future cancelled before the worker reaches it is never executed.
+
+    ``set_running_or_notify_cancel`` returns False for a cancelled future, so the
+    worker loop skips the work: a caller that gave up must not have its (now
+    pointless, possibly unsafe) Playwright call run behind its back.
+    """
+    from concurrent.futures import Future
+
+    runner = web_client._Runner("cancel-test")
+    try:
+        ran: list[str] = []
+        cancelled: Future[Any] = Future()
+        assert cancelled.cancel() is True  # pending -> cancelled
+        runner._queue.put((lambda: ran.append("cancelled"), cancelled))
+        # A normal call flushes the single FIFO worker; once it returns, the
+        # cancelled item ahead of it has already been reached and skipped.
+        assert runner.call(lambda: "live", timeout=5.0) == "live"
+        assert ran == []
+    finally:
+        runner.shutdown()
+
+
 # --- close paths and process helpers -------------------------------------
 
 
