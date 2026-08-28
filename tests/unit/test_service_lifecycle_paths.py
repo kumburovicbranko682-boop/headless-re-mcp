@@ -10,6 +10,7 @@ Everything runs against the in-process FakeDynamicWorker.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -207,6 +208,42 @@ def test_session_work_dir_rejects_an_id_with_path_separators(tmp_path: Path) -> 
 
     assert service._session_work_dir("jadx", "bad/id") is None
     assert service._session_work_dir("jadx", "good") is not None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink escape")
+def test_session_work_dir_rejects_an_id_that_symlinks_out_of_its_kind(
+    tmp_path: Path,
+) -> None:
+    """The separator check is not enough: a symlink can still escape the tree.
+
+    jadx / apktool / ghidra work dirs are reclaimed by rmtree on close. A
+    session id with no separators passes the name check, but if that entry is a
+    symlink to somewhere outside <root>/<kind>, resolve() follows it -- so the
+    relative_to guard is what stops close from deleting an unrelated tree.
+    """
+    service = _service(tmp_path, FakeDynamicWorker())
+    kind_root = service.settings.artifact_root.expanduser().resolve() / "jadx"
+    kind_root.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "somewhere-else"
+    outside.mkdir()
+    (kind_root / "escapee").symlink_to(outside, target_is_directory=True)
+
+    assert service._session_work_dir("jadx", "escapee") is None
+
+
+# --- construction guard ---------------------------------------------------------
+
+
+def test_constructing_with_both_worker_factories_is_refused(tmp_path: Path) -> None:
+    """worker_factory is the old name for static_worker_factory; passing both is
+    an ambiguous configuration the composition root must reject outright rather
+    than silently pick one."""
+    with pytest.raises(ValueError, match="not both"):
+        AnalysisService(
+            _settings(tmp_path),
+            worker_factory=lambda *a, **k: FakeDynamicWorker(),
+            static_worker_factory=lambda *a, **k: FakeDynamicWorker(),
+        )
 
 
 # --- close_session / close_all failure disclosures ------------------------------
