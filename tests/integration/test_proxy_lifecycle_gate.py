@@ -198,6 +198,72 @@ def test_proxy_records_traffic_forwarded_through_it(tmp_path: Path) -> None:
         backend.close_all()
 
 
+@pytest.mark.integration
+def test_proxy_flows_filter_narrows_a_live_capture(tmp_path: Path) -> None:
+    """Server-side filtering must narrow a real capture, not just a synthetic one.
+
+    The unit tests pin the filter logic over a hand-built recorder; this proves it
+    holds over flows mitmproxy actually recorded. Route two GETs (to /alpha and
+    /beta) and one POST (to /submit) through the running proxy, then filter the
+    log by verb and by URL substring and assert each narrows to the right flows
+    while captured still reports the whole ring. skip != pass without mitmproxy.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy filter Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    backend.start("filter", host="127.0.0.1", port=proxy_port)
+    try:
+        with _origin_site() as origin:
+            handler = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
+            opener = urllib.request.build_opener(handler)
+            for path in ("/alpha", "/beta"):
+                with opener.open(f"{origin}{path}", timeout=15.0) as response:
+                    assert _ORIGIN_MARKER in response.read().decode("utf-8", "replace")
+            with opener.open(
+                urllib.request.Request(f"{origin}/submit", data=b"x=1", method="POST"),
+                timeout=15.0,
+            ) as response:
+                assert _ORIGIN_MARKER in response.read().decode("utf-8", "replace")
+
+            # Wait until all three flows landed in the ring.
+            _poll(
+                lambda: backend.flows("filter", limit=100),
+                lambda r: r["captured"] >= 3
+                and any(str(f.get("method")) == "POST" for f in r["flows"]),
+            )
+
+            posts = backend.flows("filter", method="post")
+            assert posts["total"] == 1, posts
+            assert posts["captured"] >= 3, posts
+            assert posts["filter"] == {"method": "POST"}
+            assert str(posts["flows"][0]["url"]).endswith("/submit"), posts
+
+            gets = backend.flows("filter", method="GET")
+            assert gets["total"] == 2, gets
+            assert {str(f["url"]).rsplit("/", 1)[-1] for f in gets["flows"]} == {"alpha", "beta"}
+
+            # URL substring narrows to one flow; combining with the verb still holds.
+            alpha = backend.flows("filter", url_contains="/alpha")
+            assert alpha["total"] == 1, alpha
+            assert str(alpha["flows"][0]["url"]).endswith("/alpha")
+            beta_get = backend.flows("filter", method="GET", url_contains="/beta")
+            assert beta_get["total"] == 1, beta_get
+            assert beta_get["filter"] == {"method": "GET", "url_contains": "/beta"}
+
+            # A filter matching nothing is a clean empty page; captured is unchanged.
+            miss = backend.flows("filter", url_contains="/nowhere-9449")
+            assert miss["total"] == 0 and miss["flows"] == [], miss
+            assert miss["captured"] >= 3, miss
+
+            # No filter: total equals the whole ring and no filter key is echoed.
+            plain = backend.flows("filter")
+            assert plain["total"] == plain["captured"] >= 3, plain
+            assert "filter" not in plain
+    finally:
+        backend.close_all()
+
+
 _REQUIRED_ENTRY = {"startedDateTime", "time", "request", "response", "cache", "timings"}
 _REQUIRED_REQUEST = {
     "method",

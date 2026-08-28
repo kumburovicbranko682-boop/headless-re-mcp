@@ -115,6 +115,118 @@ def test_proxy_flows_names_has_more_and_dropped(monkeypatch: Any) -> None:
     assert "dropped" in doc
 
 
+def _record(recorder: _FlowRecorder, *, method: str, url: str, host: str, status: int, ctype: str,
+            flow_id: str) -> None:
+    request = SimpleNamespace(method=method, pretty_url=url, host=host)
+    response = SimpleNamespace(status_code=status, headers={"content-type": ctype})
+    recorder.response(SimpleNamespace(id=flow_id, request=request, response=response))
+
+
+def _filterable_backend(monkeypatch: Any) -> ProxyBackend:
+    recorder = _FlowRecorder(capacity=50)
+    _record(recorder, method="GET", url="http://api.example.com/users", host="api.example.com",
+            status=200, ctype="application/json", flow_id="a")
+    _record(recorder, method="POST", url="http://api.example.com/login", host="api.example.com",
+            status=401, ctype="application/json", flow_id="b")
+    _record(recorder, method="GET", url="http://cdn.other.com/app.js", host="cdn.other.com",
+            status=200, ctype="application/javascript", flow_id="c")
+    _record(recorder, method="GET", url="http://api.example.com/health", host="api.example.com",
+            status=500, ctype="text/plain", flow_id="d")
+    backend = ProxyBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=recorder))
+    return backend
+
+
+def test_proxy_flows_filters_narrow_the_log(monkeypatch: Any) -> None:
+    """A busy capture must be narrowable server-side, not only paged.
+
+    method is an exact verb, host/url_contains/content_type are case-insensitive
+    substrings, status is exact, and filters AND together. total becomes the
+    match count while captured stays the whole ring, so a narrow result is never
+    read as a small capture.
+    """
+    backend = _filterable_backend(monkeypatch)
+
+    # No filter: total == captured, and no filter key is echoed.
+    plain = backend.flows("s")
+    assert plain["total"] == 4
+    assert plain["captured"] == 4
+    assert "filter" not in plain
+
+    # Exact verb.
+    posts = backend.flows("s", method="post")
+    assert posts["total"] == 1
+    assert posts["captured"] == 4
+    assert [row["method"] for row in posts["flows"]] == ["POST"]
+    # The echoed filter is normalised to the case the match used.
+    assert posts["filter"] == {"method": "POST"}
+
+    # Host substring, case-insensitive.
+    api = backend.flows("s", host="API.example.com")
+    assert api["total"] == 3
+    assert all("api.example.com" in row["host"] for row in api["flows"])
+    assert api["filter"] == {"host": "api.example.com"}
+
+    cdn = backend.flows("s", host="cdn")
+    assert cdn["total"] == 1
+    assert cdn["flows"][0]["id"] == "c"
+
+    # Content-type substring.
+    json_flows = backend.flows("s", content_type="json")
+    assert json_flows["total"] == 2
+    assert {row["id"] for row in json_flows["flows"]} == {"a", "b"}
+
+    # URL substring.
+    login = backend.flows("s", url_contains="/LOGIN")
+    assert login["total"] == 1
+    assert login["flows"][0]["id"] == "b"
+
+    # Exact status; 0 means any.
+    ok = backend.flows("s", status=200)
+    assert ok["total"] == 2
+    assert {row["id"] for row in ok["flows"]} == {"a", "c"}
+    assert backend.flows("s", status=0)["total"] == 4
+
+    # Filters combine with AND.
+    get_json = backend.flows("s", method="GET", content_type="json")
+    assert get_json["total"] == 1
+    assert get_json["flows"][0]["id"] == "a"
+    assert get_json["filter"] == {"method": "GET", "content_type": "json"}
+
+    # A filter that matches nothing is a clean empty page, not the whole log.
+    none = backend.flows("s", host="nonexistent.invalid")
+    assert none["total"] == 0
+    assert none["count"] == 0
+    assert none["flows"] == []
+    assert none["captured"] == 4
+
+
+def test_proxy_flows_filter_paginates_over_matches(monkeypatch: Any) -> None:
+    """offset/limit page the filtered set, and has_more reflects the matches."""
+    recorder = _FlowRecorder(capacity=50)
+    for index in range(10):
+        # Even ids are POST, odd are GET; page over the five POSTs.
+        _record(recorder, method="POST" if index % 2 == 0 else "GET",
+                url=f"http://x/{index}", host="x", status=200, ctype="text/plain",
+                flow_id=str(index))
+    backend = ProxyBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=recorder))
+
+    first = backend.flows("s", method="POST", offset=0, limit=3)
+    assert first["total"] == 5
+    assert first["count"] == 3
+    assert first["has_more"] is True
+    second = backend.flows("s", method="POST", offset=3, limit=3)
+    assert second["count"] == 2
+    assert second["has_more"] is False
+
+
+def test_proxy_flows_docstring_names_the_filter_fields() -> None:
+    doc = _tool_docstring("proxy.flows")
+    for token in ("captured", "url_contains", "content_type", "status", "filter"):
+        assert token in doc, token
+
+
 def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypatch: Any) -> None:
     """The catalog said headers and body, never where a spill actually lands.
 

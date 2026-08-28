@@ -55,12 +55,17 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        status: Annotated[int, Field(ge=0, le=599)] = 0,
     ) -> dict[str, Any]:
-        """List captured HTTP flows (method, url, status, content type).
+        """List captured HTTP flows (method, url, status, content type), filterable.
 
         Answers with flows (id, seq, method, url, host, status, content_type),
-        count, total, offset, has_more, and dropped. body_omitted is set on a
-        row whose request/response body was over the retain cap. A WebSocket
+        count, total, offset, has_more, dropped, and captured. body_omitted is set
+        on a row whose request/response body was over the retain cap. A WebSocket
         flow (the 101 handshake) also carries websocket true and ws_messages,
         the retained frame count, plus ws_dropped once frames were evicted to
         stay under the per-flow retention cap; fetch the frames with
@@ -69,8 +74,28 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         content_type. dropped is how many the capture ring already evicted;
         a page that filled the limit is not the whole log. metadata_truncated
         marks bounded oversized summary fields.
+
+        On a busy target, narrow the log instead of paging it all: method is an
+        exact verb (GET, POST), host and url_contains and content_type are
+        case-insensitive substrings (api.example.com, /login, json), and status
+        is an exact code (0 means any). Filters combine with AND. When any filter
+        is set the reply echoes it as filter, total becomes the number of matches
+        (so offset/has_more page the matches), and captured still reports every
+        flow in the ring -- so a small match set is never misread as a small
+        capture. dropped always reflects ring eviction, filter or not.
         """
-        return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
+        return _dump(
+            analysis.proxy_flows(
+                session_id,
+                offset=offset,
+                limit=limit,
+                method=method,
+                host=host,
+                url_contains=url_contains,
+                content_type=content_type,
+                status=status,
+            )
+        )
 
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:

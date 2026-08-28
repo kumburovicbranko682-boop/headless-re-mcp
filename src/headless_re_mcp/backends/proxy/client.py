@@ -753,6 +753,52 @@ class _ProxyInstance:
         self._loop = None
 
 
+def _flow_filter(
+    method: str, host: str, url_contains: str, content_type: str, status: int
+) -> JsonObject:
+    """The active, normalised proxy.flows filter -- empty when nothing was asked.
+
+    Each field is folded to the case the comparison uses (method upper, the
+    substring fields lower) so the echoed ``filter`` in the reply is exactly what
+    was matched, and an all-blank request produces an empty dict, which the caller
+    reads as "unfiltered".
+    """
+    active: JsonObject = {}
+    if isinstance(method, str) and method.strip():
+        active["method"] = method.strip().upper()
+    if isinstance(host, str) and host.strip():
+        active["host"] = host.strip().lower()
+    if isinstance(url_contains, str) and url_contains.strip():
+        active["url_contains"] = url_contains.strip().lower()
+    if isinstance(content_type, str) and content_type.strip():
+        active["content_type"] = content_type.strip().lower()
+    if isinstance(status, int) and status > 0:
+        active["status"] = int(status)
+    return active
+
+
+def _flow_matches(row: JsonObject, active: JsonObject) -> bool:
+    """True when one summary row satisfies every field of an active filter.
+
+    method is exact (case-insensitive); host/url/content_type are
+    case-insensitive substrings so a caller can name ``api.example.com`` or
+    ``json`` without knowing the exact value; status is an exact code. A row with
+    no status (a still-pending flow) never matches a status filter.
+    """
+    if "method" in active and str(row.get("method") or "").upper() != active["method"]:
+        return False
+    if "host" in active and active["host"] not in str(row.get("host") or "").lower():
+        return False
+    if "url_contains" in active and active["url_contains"] not in str(row.get("url") or "").lower():
+        return False
+    if (
+        "content_type" in active
+        and active["content_type"] not in str(row.get("content_type") or "").lower()
+    ):
+        return False
+    return not ("status" in active and row.get("status") != active["status"])
+
+
 class ProxyBackend:
     def __init__(self) -> None:
         self._instances: dict[str, _ProxyInstance] = {}
@@ -841,23 +887,49 @@ class ProxyBackend:
             "retained_bytes_max": _MAX_RETAINED_BYTES,
         }
 
-    def flows(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    def flows(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        status: int = 0,
+    ) -> JsonObject:
         inst = self._get(session_id)
         items = inst.recorder.snapshot()
-        start = max(0, int(offset))
-        cap = max(1, min(int(limit), 1000))
-        window = items[start : start + cap]
+        captured = len(items)
+        # dropped is a property of the capture ring, not of any filter: compute it
+        # from the full snapshot before narrowing, so a filtered view still
+        # discloses that older flows were evicted.
         dropped = 0
         if items:
             dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
-        return {
+        active = _flow_filter(method, host, url_contains, content_type, status)
+        matched = [row for row in items if _flow_matches(row, active)] if active else items
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = matched[start : start + cap]
+        result: JsonObject = {
             "flows": window,
             "count": len(window),
-            "total": len(items),
+            # total is the size of the set being paged: the matches when a filter
+            # is active, so offset/has_more stay honest over the filtered view.
+            "total": len(matched),
             "offset": start,
-            "has_more": start + len(window) < len(items),
+            "has_more": start + len(window) < len(matched),
             "dropped": dropped,
+            # Every flow still in the ring, so a caller sees the filter narrow
+            # captured -> total and cannot misread a small match set as a small
+            # capture.
+            "captured": captured,
         }
+        if active:
+            result["filter"] = active
+        return result
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
         inst = self._get(session_id)
