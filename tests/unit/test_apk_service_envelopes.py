@@ -68,9 +68,9 @@ class _FakeApk:
         self._maybe_fail("components")
         return {"activities": []}
 
-    def native_libs(self, binary: Path) -> JsonObject:
+    def native_libs(self, binary: Path, *, offset: int = 0, limit: int = 256) -> JsonObject:
         self._maybe_fail("native_libs")
-        return {"native_libs": []}
+        return {"native_libs": [], "offset": offset, "limit": limit}
 
     def classes(self, binary: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         self._maybe_fail("classes")

@@ -77,3 +77,38 @@ def test_apk_native_libs_capped_list_is_the_alphabetical_prefix() -> None:
     assert payload["has_more"] is True
     assert libs == sorted(f"lib/arm64-v8a/l{index:04d}.so" for index in range(300))[:256]
     assert libs[0] == "lib/arm64-v8a/l0000.so"
+
+
+def test_apk_native_libs_offset_pages_the_tail_past_the_cap() -> None:
+    """A large multi-ABI app can ship more .so files than the page cap, and they
+    are listed by no other reader -- so offset must reach the tail, not merely
+    flag it with has_more. 300 libs, cap 256: the head is the alphabetical
+    prefix with has_more, and offset 256 fetches the remaining 44 with has_more
+    false, so the whole set is reachable rather than truncated at page one."""
+    client = ApkClient()
+    client._apk = lambda _path: _ReverseLibsApk()  # type: ignore[method-assign]
+    ordered = sorted(f"lib/arm64-v8a/l{index:04d}.so" for index in range(300))
+
+    head = client.native_libs(Path("dummy.apk"))
+    assert head["native_libs"] == ordered[:256]
+    assert head["total"] == 300
+    assert head["offset"] == 0
+    assert head["has_more"] is True
+
+    tail = client.native_libs(Path("dummy.apk"), offset=256)
+    assert tail["native_libs"] == ordered[256:]
+    assert tail["count"] == 44
+    assert tail["offset"] == 256
+    assert tail["total"] == 300
+    assert tail["has_more"] is False
+    # abis stays the complete set on the tail page, not just this slice.
+    assert tail["abis"] == ["arm64-v8a"]
+
+    # A negative offset floors to 0; a past-end offset yields an empty page.
+    floored = client.native_libs(Path("dummy.apk"), offset=-10, limit=1)
+    assert floored["native_libs"] == ["lib/arm64-v8a/l0000.so"]
+    assert floored["offset"] == 0
+    past_end = client.native_libs(Path("dummy.apk"), offset=999)
+    assert past_end["native_libs"] == []
+    assert past_end["count"] == 0
+    assert past_end["has_more"] is False

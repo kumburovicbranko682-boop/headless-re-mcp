@@ -364,7 +364,9 @@ class ApkClient:
             "has_more": a_more or s_more or r_more or p_more,
         }
 
-    def native_libs(self, path: Path) -> JsonObject:
+    def native_libs(
+        self, path: Path, *, offset: int = 0, limit: int = _MAX_NATIVE_LIBS
+    ) -> JsonObject:
         apk = self._apk(path)
         libs: list[str] = []
         abis: set[str] = set()
@@ -376,17 +378,27 @@ class ApkClient:
             if len(parts) >= 3:
                 abis.add(parts[1])
             libs.append(text)
-        # Sort before the cap, not after: the whole file list is already walked
-        # here (to collect every abi), so a capped native_libs page must be the
-        # alphabetical prefix, not a file-order slice that was merely sorted --
-        # otherwise an early-sorting .so past the cap vanishes from the page.
+        # Sort before the page, not after: the whole file list is already walked
+        # here (to collect every abi), so a paged native_libs slice must be the
+        # alphabetical one, not a file-order slice that was merely sorted --
+        # otherwise an early-sorting .so past the cap vanishes from the page. And
+        # offset makes the tail reachable: a large multi-ABI app can ship more
+        # .so files than the page cap, and they are listed by no other reader, so
+        # without paging a library past the cap was only flagged by has_more,
+        # never fetchable -- the apk.classes / apk.strings offset contract, which
+        # this reader carried the sort-before-cap half of but not the paging half.
+        # abis stays the complete set across every library, not just this page.
         libs.sort()
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_NATIVE_LIBS)
+        window = libs[start : start + cap]
         total = len(libs)
         return {
-            "native_libs": libs[:_MAX_NATIVE_LIBS],
+            "native_libs": window,
             "abis": sorted(abis),
-            "count": min(total, _MAX_NATIVE_LIBS),
-            "has_more": total > _MAX_NATIVE_LIBS,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
         }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:

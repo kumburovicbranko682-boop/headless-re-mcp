@@ -59,6 +59,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   即“无事可查”地失败。以把 `service_ext` 某处退回重包裹形态验证非空:守卫精确报出 `('service_ext','FridaError',517)`,
   还原后转绿——这条守卫本可在上一轮就自动逮住那个 `service_ext` 缺口。
 
+### `apk.native_libs` 现在支持 `offset`/`limit` 分页，让排在 cap 之后的 .so 可达（与 `device.packages`/`device.properties` 同一缺口：此前固定封顶 256、只回 has_more，多 ABI 大应用的 .so 超过 256 时尾部无法枚举，且这些库别处也不列）
+
+- `apk.native_libs` 遍历整个 APK 文件表收集全部 `lib/` 条目与全部 ABI,排序后固定封顶 `_MAX_NATIVE_LIBS`(256)、报 `has_more`,
+  其注释明写“排在 cap 之后、字母序靠前的 .so 会从页里消失”。但它既无 `offset` 也无 `limit`:一个多 ABI 的大应用(如 4 个 ABI ×
+  上百个 .so)轻松超过 256,而 native 库**别的读取器都不列**,于是超出部分只被 `has_more` 标出“还有”、永远取不到——正是前两条为
+  `device.packages`/`device.properties` 补的同一类“诚实但不可达”缺口,而这个读取器早已带了 sort-before-cap 那一半、独缺分页那一半。
+- 新增 caller `offset`+`limit`,复用 apk 家的 `_clamp_page`(与 `apk.classes`/`strings`/`methods`/`xrefs` 同款):排序后切
+  `libs[offset:offset+cap]`,回包补 `total`/`offset`,`has_more` 改为 `offset + len(window) < total`;`abis` 仍是**全量**(跨所有库、
+  不随分页变),因为它本就来自整表遍历。schema `offset: Field(ge=0)`、`limit: Field(ge=1, le=256)`(过 `test_non_pe_pagination_schema_bounds`
+  的 schema/文档双守卫——docstring 现点名 `total`/`offset`/`has_more`),后端 `_clamp_page` 兜底(过 `test_non_pe_backend_clamp_guard`)。
+- 为纯粹加能力、不改既有默认返回量,`limit` 默认取 256(= 旧固定 cap):不传参的老调用仍拿到首 256 个 + `has_more`,新增的 `offset`
+  才用来翻尾部。service 的 `_apk_call` 派发器扩成转发 `**kwargs`(其余零参读取器不受影响),`apk_native_libs` 据此透传 offset/limit。
+- 单测钉住:300 个 .so 逆序输入下,首页是字母序前缀 `l0000..l0255` 且 `has_more` 为真、`offset=256` 取回其余 44 个且 `has_more` 归假、
+  尾页 `abis` 仍全量;负 `offset` 归零、越界 `offset` 得空页。既有“字段名是 native_libs 而非 libraries”“capped 页是字母序前缀”等
+  断言不受影响(limit 默认 256)。
+
 ### `device.properties` 现在支持 `offset` 分页，让排在 cap 之后的 getprop 键可达（与 `device.packages` 同一缺口：此前只回“按键字母序前缀 + has_more”，属性数超过 2000 时尾部键无法翻到，其注释自称“matching packages”却缺了这一半）
 
 - `device.properties` 把 `getprop` 输出按键排序、按 `limit`(上限 2000)切、报 `has_more`,其注释明写“matching packages:一个封顶的

@@ -77,14 +77,21 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.apk_components(session_id))
 
     @tools.tool(name="apk.native_libs")
-    def apk_native_libs(session_id: str) -> dict[str, Any]:
+    def apk_native_libs(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=256)] = 256,
+    ) -> dict[str, Any]:
         """List bundled native libraries and their ABIs.
 
-        Answers with native_libs, abis, count, and has_more so a list that
-        filled the cap is not read as every .so. There is no libs or
-        libraries field.
+        Answers with native_libs, abis, count, total, offset and has_more so a
+        page that filled the cap is not read as every .so. native_libs is an
+        alphabetical slice starting at offset; abis is always the complete ABI
+        set across all libraries, not just this page. Page with offset to reach
+        .so paths past the cap rather than assuming the first page is every
+        library. There is no libs or libraries field.
         """
-        return _dump(analysis.apk_native_libs(session_id))
+        return _dump(analysis.apk_native_libs(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="apk.classes")
     def apk_classes(
