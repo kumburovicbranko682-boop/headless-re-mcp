@@ -1196,6 +1196,52 @@ def _bounded_text(*values: str, limit: int = 4096) -> str:
     return result[:limit] + "\n...[truncated]"
 
 
+def _ghidra_java_bounds(home: Path) -> tuple[int | None, int | None]:
+    """Read the min/max JDK major Ghidra declares for this install.
+
+    Ghidra records the JVM range it supports in ``Ghidra/application.properties``
+    (``application.java.min`` / ``application.java.max``), so the probe can honour
+    the installed release's own requirement instead of hardcoding a version that
+    drifts every few releases. Unknown (file or key absent) returns None so the
+    caller stays conservative and does not invent a requirement.
+    """
+    props = home / "Ghidra" / "application.properties"
+    try:
+        text = props.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return (None, None)
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        values[key.strip()] = value.strip()
+
+    def _major(key: str) -> int | None:
+        raw = values.get(key, "")
+        return int(raw) if raw.isdigit() else None
+
+    return (_major("application.java.min"), _major("application.java.max"))
+
+
+def _java_major_version(text: str) -> int | None:
+    """Parse the major version from ``java -version`` output.
+
+    ``java -version`` prints to stderr as ``... version "21.0.10" ...`` on modern
+    JDKs and ``... version "1.8.0_392" ...`` on 8 and earlier, where the major is
+    the second component. Return None when nothing parses so the caller does not
+    downgrade a working install on an unrecognised banner.
+    """
+    match = re.search(r'version "(\d+)(?:\.(\d+))?', text)
+    if match is None:
+        return None
+    first = int(match.group(1))
+    if first == 1 and match.group(2) is not None:
+        return int(match.group(2))
+    return first
+
+
 def probe_ghidra(settings: Settings) -> Probe:
     home = getattr(settings, "ghidra_home", None)
     if home is None:
@@ -1226,10 +1272,55 @@ def probe_ghidra(settings: Settings) -> Probe:
             {"home": str(home), "analyze_headless": str(analyze)},
             "Install a JRE and put java on PATH before treating Ghidra as ready.",
         )
-    return Probe(
-        "ghidra",
-        ProbeStatus.READY,
-        "Ghidra analyzeHeadless is available",
-        {"home": str(home), "analyze_headless": str(analyze), "java": java},
-        None,
-    )
+
+    details: dict[str, Any] = {
+        "home": str(home),
+        "analyze_headless": str(analyze),
+        "java": java,
+    }
+    java_min, java_max = _ghidra_java_bounds(home)
+    details["java_min"] = java_min
+    details["java_max"] = java_max
+    java_major: int | None = None
+    try:
+        version = _probe_run([java, "-version"], timeout=10)
+    except (OSError, TimedOut) as exc:
+        details["java_version_error"] = f"{type(exc).__name__}: {exc}"
+    else:
+        java_major = _java_major_version(_bounded_text(version.stderr, version.stdout))
+    details["java_major"] = java_major
+
+    # Only downgrade when the JDK is *provably* out of the range Ghidra itself
+    # declares. analyzeHeadless refuses to launch its JVM on a JDK below the
+    # minimum (Ghidra 11.3+ needs 21), so a READY here with, say, JDK 17 was a
+    # false green: the probe someone runs to explain a failure would have said
+    # the failing backend was fine. An unreadable properties file or an
+    # unparseable banner leaves java_major/bounds None and keeps the prior
+    # behaviour rather than inventing a not-ready.
+    if java_major is not None and java_min is not None and java_major < java_min:
+        return Probe(
+            "ghidra",
+            ProbeStatus.DETECTED,
+            f"analyzeHeadless needs JDK {java_min}+ but java on PATH is {java_major}",
+            details,
+            (
+                f"Install a JDK {java_min}+ and put it on PATH; "
+                f"Ghidra will not launch on {java_major}."
+            ),
+        )
+    if java_major is not None and java_max is not None and java_major > java_max:
+        return Probe(
+            "ghidra",
+            ProbeStatus.DETECTED,
+            f"analyzeHeadless supports JDK up to {java_max} but java on PATH is {java_major}",
+            details,
+            (
+                f"Use a JDK between {java_min or 'the minimum'} and {java_max}; "
+                f"Ghidra rejects {java_major}."
+            ),
+        )
+
+    summary = "Ghidra analyzeHeadless is available"
+    if java_major is not None:
+        summary = f"Ghidra analyzeHeadless is available (JDK {java_major})"
+    return Probe("ghidra", ProbeStatus.READY, summary, details, None)

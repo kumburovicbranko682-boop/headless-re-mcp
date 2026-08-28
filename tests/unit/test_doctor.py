@@ -19,6 +19,7 @@ from headless_re_mcp.doctor import (
     format_report,
     probe_die,
     probe_exeinfope,
+    probe_ghidra,
     probe_optional_tool,
     probe_upx,
     probe_x64dbg_binaries,
@@ -598,3 +599,110 @@ def test_linux_hidden_desktop_setting_is_not_an_isolation_signal(tmp_path: Path)
     assert probe.status == ProbeStatus.MISSING
     assert probe.details["hidden_desktop"] is True
     assert probe.details["hidden_desktop_supported"] is False
+
+
+def _ghidra_home(tmp_path: Path, *, java_min: str = "21", java_max: str = "") -> Path:
+    """A minimal Ghidra layout the probe can read: launcher + version metadata."""
+    home = tmp_path / "ghidra"
+    (home / "support").mkdir(parents=True)
+    launcher = home / "support" / "analyzeHeadless"
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+    (home / "Ghidra").mkdir()
+    (home / "Ghidra" / "application.properties").write_text(
+        "application.name=Ghidra\n"
+        "application.version=11.3.2\n"
+        f"application.java.min={java_min}\n"
+        f"application.java.max={java_max}\n",
+        encoding="utf-8",
+    )
+    return home
+
+
+def test_java_major_version_parses_modern_and_legacy_banners() -> None:
+    assert doctor_module._java_major_version('openjdk version "21.0.10" 2026-01-20') == 21
+    assert doctor_module._java_major_version('java version "17.0.2" 2022-01-18') == 17
+    # JDK 8 and earlier put the real major in the second component.
+    assert doctor_module._java_major_version('java version "1.8.0_392"') == 8
+    assert doctor_module._java_major_version("no version here") is None
+
+
+def test_ghidra_java_bounds_reads_declared_range(tmp_path: Path) -> None:
+    home = _ghidra_home(tmp_path, java_min="21", java_max="")
+    assert doctor_module._ghidra_java_bounds(home) == (21, None)
+    home2 = _ghidra_home(tmp_path / "b", java_min="17", java_max="21")
+    assert doctor_module._ghidra_java_bounds(home2) == (17, 21)
+    # No properties file at all is unknown, not an invented requirement.
+    assert doctor_module._ghidra_java_bounds(tmp_path / "empty") == (None, None)
+
+
+def test_ghidra_probe_ready_when_jdk_meets_declared_minimum(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _ghidra_home(tmp_path, java_min="21")
+    settings = replace(_settings(None, tmp_path / "artifacts"), ghidra_home=home)
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda name: "/usr/bin/java")
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(
+            command, 0, stdout="", stderr='openjdk version "21.0.10" 2026-01-20\n'
+        )
+
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
+    probe = probe_ghidra(settings)
+
+    assert probe.status == ProbeStatus.READY
+    assert probe.details["java_major"] == 21
+    assert probe.details["java_min"] == 21
+    assert "JDK 21" in probe.summary
+
+
+def test_ghidra_probe_detects_a_jdk_below_the_declared_minimum(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A too-old JDK must not read as READY: analyzeHeadless refuses to launch.
+
+    Ghidra 11.3+ declares JDK 21, and its launcher aborts before the JVM starts
+    on anything older. A READY here would be a false green -- the doctor someone
+    runs *because* Ghidra is failing would have said the failing backend is fine.
+    """
+    home = _ghidra_home(tmp_path, java_min="21")
+    settings = replace(_settings(None, tmp_path / "artifacts"), ghidra_home=home)
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda name: "/usr/bin/java")
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(
+            command, 0, stdout="", stderr='openjdk version "17.0.2" 2022-01-18\n'
+        )
+
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
+    probe = probe_ghidra(settings)
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.details["java_major"] == 17
+    assert "21" in (probe.remediation or "")
+
+
+def test_ghidra_probe_stays_ready_when_version_is_unknowable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unparseable java banner must not downgrade a working install.
+
+    The check only fires on a *proven* mismatch; an unrecognised banner leaves
+    the major unknown, so the probe keeps its prior READY rather than inventing
+    a not-ready that would itself be a false report.
+    """
+    home = _ghidra_home(tmp_path, java_min="21")
+    settings = replace(_settings(None, tmp_path / "artifacts"), ghidra_home=home)
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda name: "/usr/bin/java")
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="garbled\n")
+
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
+    probe = probe_ghidra(settings)
+
+    assert probe.status == ProbeStatus.READY
+    assert probe.details["java_major"] is None

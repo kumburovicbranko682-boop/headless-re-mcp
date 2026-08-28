@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Ghidra doctor 探针把不兼容的 JDK 误报为 ready）
+
+- `probe_ghidra` 过去只要 `analyzeHeadless` 存在、`java` 在 PATH 上就报 `ready`，从不校验 JDK 版本。
+  但 Ghidra 11.3+ 要求 JDK 21，其启动器在起 JVM 前就会因 JDK 过低而拒绝启动，于是装了 JDK 17 时探针
+  仍说 ready、而每次 `analyzeHeadless` 都启动失败——正是"为排查故障才去跑的 doctor 却说出故障后端一切正常"
+  这种假绿。探针现从安装自身的 `Ghidra/application.properties` 读取 `application.java.min`/`.max`（Ghidra
+  自己声明的 JDK 区间，避免硬编码随版本漂移），解析 `java -version` 的主版本号，只在**可证实**低于下限
+  （或高于上限）时降级为 `detected` 并给出修复建议；properties 读不到或版本号解析不出时保持原有 `ready`，
+  绝不凭空造出一个 not-ready。已在真实 Ghidra 12.1.3 上验证：JDK 21 报 ready 且 summary 标注 `(JDK 21)`，
+  伪装成 JDK 17 时报 detected 并提示需要 JDK 21+。
+
 ### 修复（NETReactorSlayer 输出别名测试的同款 Windows-only 路径炸裂）
 
 - 与 de4dot 同批落地的 `test_net_reactor_slayer_paths.py::test_output_equal_to_input_is_refused`
