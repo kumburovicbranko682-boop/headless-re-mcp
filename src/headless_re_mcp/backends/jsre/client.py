@@ -71,6 +71,26 @@ class JsReError(RuntimeError):
         self.details = details
 
 
+def _page_int(value: object, name: str) -> int:
+    """Coerce a paging argument to int, or raise a structured invalid_params.
+
+    ``unpack_bundle`` fed ``offset``/``limit`` straight to ``int(...)``. The
+    jsre.unpack schema types both as integers, but the agent and OpenAI-bridge
+    transports call the handler with no pydantic coercion, so a float (inf from
+    a JSON 1e400), nan, null, or a non-numeric string reached ``int(...)`` and
+    raised OverflowError/ValueError/TypeError. None is a JsReError, so the
+    service's ``except BaseException`` filed an internal_error incident for what
+    is only a bad page window. A bool is an int subclass but never a valid page
+    bound. Validate before spawning webcrack so a bad page fails fast.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise JsReError("invalid_params", f"{name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise JsReError("invalid_params", f"{name} must be an integer") from exc
+
+
 def _require_existing_file(path: Path, *, missing: str) -> Path:
     """Resolve a regular file, or refuse one that would bind the child unbounded."""
     resolved = path.expanduser()
@@ -198,6 +218,10 @@ class JsClient:
         offset: int = 0,
         limit: int = 100,
     ) -> JsonObject:
+        # Validate the page window before spawning webcrack: a bad offset/limit
+        # is a caller error, not worth an unpack run to discover.
+        start = max(0, _page_int(offset, "offset"))
+        cap = max(1, min(_page_int(limit, "limit"), _MAX_LISTED_FILES))
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
         stdout, stderr, code = _run(
@@ -213,8 +237,6 @@ class JsClient:
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )
-        start = max(0, int(offset))
-        cap = max(1, min(int(limit), _MAX_LISTED_FILES))
         window = files[start : start + cap]
         result: JsonObject = {
             "output_dir": str(out_dir),
