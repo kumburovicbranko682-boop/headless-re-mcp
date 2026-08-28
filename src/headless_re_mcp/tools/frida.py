@@ -176,16 +176,23 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def frida_java_classes(
         session_id: str,
         name_filter: str = "",
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
         pid: int = 0,
     ) -> dict[str, Any]:
         """Enumerate loaded Java classes on the authorized device pid (ART only).
 
-        Answers with classes, count, and has_more so a page that filled the
-        limit is not read as every loaded class.
+        Answers with classes (sorted), count for this page, total, offset, and
+        has_more so a page that filled the limit is not read as every loaded
+        class. Advance offset by the returned count to read the next page while
+        has_more is true (an ART app has tens of thousands of loaded classes).
+        Use name_filter to narrow the set. scan_capped is present when the target
+        held more than the probe's 50k enumeration ceiling, so total is a floor.
         """
         return _dump(
-            analysis.frida_java_classes(session_id, name_filter=name_filter, limit=limit, pid=pid)
+            analysis.frida_java_classes(
+                session_id, name_filter=name_filter, offset=offset, limit=limit, pid=pid
+            )
         )
 
     @tools.tool(name="frida.java.methods")

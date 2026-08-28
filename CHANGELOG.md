@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（frida.java.classes 报 has_more 却没有 offset，翻不到第一页之后的类，且返回的还是运行时任意顺序的子集）
+
+- 与刚修的 frida.modules / frida.exports 同一类缺陷，但更严重：`frida.java.classes` 用 `_page` 做无游标的
+  top-N，报 `has_more` 却不收 `offset`，上限 2000；而一个 ART 应用加载的类动辄上万（框架 + 应用 + 各种库），
+  于是 `has_more` 为真时第一页之后的类完全翻不到——且旧实现在注入脚本里一凑满 `limit` 就 `throw` 提前结束
+  枚举，返回的 2000 个是 `enumerateLoadedClasses` 的运行时枚举顺序前缀（未排序），调用方连自己拿到的是哪
+  2000 个都无法预测。现改为：注入脚本在目标进程内枚举全部匹配的类（设 5 万上限以约束目标侧数组），排序后
+  只把 `[offset, offset+limit)` 这一窗口连同真实 `total` 通过 RPC 传回（全量枚举在目标侧完成，只有这一页跨
+  RPC，成本有界）。客户端 `java_enumerate` 增加 `offset`，防御性夹取（agent/OpenAI 传输会绕过 schema 的
+  `offset >= 0`），构造 `classes/count/total/offset/has_more`，并在目标侧命中 5 万上限时带上 `scan_capped`
+  表示 total 只是下界；仍兼容旧脚本的裸列表形态（无 total 时按尾部处理，has_more False）。offset 一路贯穿
+  service `frida_java_classes`/`_java` 与 `frida.java.classes` 工具（新增 `offset` 参数，`Field(ge=0)`，并在
+  docstring 说明按 count 递进翻页、用 name_filter 收窄、以及 scan_capped 的含义）。`frida.java.methods` 维持
+  无游标 top-N：单个类声明的方法极少超过 2000，上限几乎不可能命中。新增回归测试：25 个类、页大小 10 →
+  count 10、total 25、offset 0、has_more True；offset 20 limit 10 → 末尾五个（offset 20、count 5、has_more
+  False）；负 offset 夹取回头部。
+
 ### 修复（proxy.flows 的 dropped 由 seq 推算，重记同一 flow.id 时会报出并不存在的丢弃数）
 
 - 紧接上一条 recorder 重记修复：`flows()` 里的 `dropped`（"抓包环已淘汰多少条"）此前是用最新摘要的

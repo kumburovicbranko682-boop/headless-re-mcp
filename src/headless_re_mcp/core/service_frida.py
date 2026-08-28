@@ -175,9 +175,21 @@ class FridaDeviceMixin:
             return _failure(exc, session_id=session_id)
 
     def frida_java_classes(
-        self, session_id: str, name_filter: str = "", limit: int = 200, pid: int = 0
+        self,
+        session_id: str,
+        name_filter: str = "",
+        offset: int = 0,
+        limit: int = 200,
+        pid: int = 0,
     ) -> Result[JsonObject]:
-        return self._java(session_id, "classes", name_filter=name_filter, limit=limit, pid=pid)
+        return self._java(
+            session_id,
+            "classes",
+            name_filter=name_filter,
+            offset=offset,
+            limit=limit,
+            pid=pid,
+        )
 
     def frida_java_methods(
         self, session_id: str, class_name: str, limit: int = 200, pid: int = 0
@@ -191,6 +203,7 @@ class FridaDeviceMixin:
         *,
         class_name: str | None = None,
         name_filter: str | None = None,
+        offset: int = 0,
         limit: int = 200,
         pid: int = 0,
     ) -> Result[JsonObject]:
@@ -204,6 +217,7 @@ class FridaDeviceMixin:
                 mode=mode,
                 class_name=class_name,
                 name_filter=name_filter,
+                offset=offset,
                 limit=limit,
             )
             return _success(data, session_id=session_id, backend="frida")

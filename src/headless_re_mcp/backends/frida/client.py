@@ -156,8 +156,17 @@ rpc.exports = {
 
 _JAVA_SCRIPT = """
 rpc.exports = {
-  classes: function (filter, limit) {
-    var out = [];
+  classes: function (filter, offset, limit) {
+    // Collect every matching loaded class up to a ceiling that bounds the
+    // target-side array, sort, then return only the requested window plus the
+    // full total -- so has_more is exact and a caller can page the whole set.
+    // The old form threw at `limit` and returned that arbitrary enumeration-
+    // order prefix with no offset: an ART app has tens of thousands of loaded
+    // classes, so every class past the first page was unreachable and even the
+    // first page was a runtime-order-arbitrary subset, not the sorted head. The
+    // enumeration is materialized target-side; only the window crosses the RPC.
+    var all = [];
+    var scanCapped = false;
     Java.perform(function () {
       try {
         Java.enumerateLoadedClasses({
@@ -165,8 +174,8 @@ rpc.exports = {
             if (filter && name.indexOf(filter) === -1) {
               return;
             }
-            out.push(name);
-            if (out.length >= limit) {
+            all.push(name);
+            if (all.length >= 50000) {
               throw 'headless-re-mcp:class-cap';
             }
           },
@@ -176,9 +185,13 @@ rpc.exports = {
         if (String(e) !== 'headless-re-mcp:class-cap') {
           throw e;
         }
+        scanCapped = true;
       }
     });
-    return out;
+    all.sort();
+    var start = offset > 0 ? offset : 0;
+    var end = start + (limit > 0 ? limit : 0);
+    return {classes: all.slice(start, end), total: all.length, capped: scanCapped};
   },
   methods: function (className, limit) {
     var out = [];
@@ -754,6 +767,7 @@ class FridaClient:
         mode: str,
         class_name: str | None = None,
         name_filter: str | None = None,
+        offset: int = 0,
         limit: int = 200,
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
@@ -775,10 +789,39 @@ class FridaClient:
                 script = session.create_script(_JAVA_SCRIPT)
                 script.load()
                 if mode == "classes":
-                    values, has_more = _page(
-                        script.exports_sync.classes(name_filter or "", capped + 1), capped
-                    )
-                    return {"classes": values, "count": len(values), "has_more": has_more}
+                    # classes once reported only has_more (a cursorless top-N) but
+                    # capped at 2000, while an ART app has tens of thousands of
+                    # loaded classes -- so has_more True left every class past the
+                    # first page unreachable, and the page was a runtime-order
+                    # subset, not even the sorted head. The probe now windows a
+                    # sorted enumeration target-side and reports total; page by
+                    # advancing offset while has_more is true. Clamp offset
+                    # defensively (the agent/OpenAI transports bypass the schema).
+                    start = max(0, int(offset))
+                    raw = script.exports_sync.classes(name_filter or "", start, capped)
+                    # A newer probe returns {classes, total, capped}; tolerate the
+                    # older bare-list shape (no total) exactly as methods/modules
+                    # do -- treat the window as the tail so has_more stays False.
+                    if isinstance(raw, dict):
+                        held = list(raw.get("classes") or [])
+                        total = int(raw.get("total") or (start + len(held)))
+                        scan_capped = bool(raw.get("capped"))
+                    else:
+                        held = list(raw or [])
+                        total = start + len(held)
+                        scan_capped = False
+                    result: JsonObject = {
+                        "classes": held,
+                        "count": len(held),
+                        "total": total,
+                        "offset": start,
+                        "has_more": start + len(held) < total,
+                    }
+                    if scan_capped:
+                        # The target-side enumeration hit its 50k ceiling, so
+                        # total is a floor and classes past it were never scanned.
+                        result["scan_capped"] = True
+                    return result
                 if mode == "methods":
                     if not class_name:
                         raise FridaError("invalid_params", "class_name is required")

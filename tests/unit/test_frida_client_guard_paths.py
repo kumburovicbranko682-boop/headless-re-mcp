@@ -737,7 +737,10 @@ def test_java_enumerate_maps_a_timeout_flavored_attach_failure_to_timeout() -> N
 
 
 def test_java_enumerate_methods_requires_a_class_name() -> None:
-    api = _Api(classes=lambda f, c: [], methods=lambda cn, c: {"found": True, "methods": []})
+    api = _Api(
+        classes=lambda f, o, c: {"classes": [], "total": 0},
+        methods=lambda cn, c: {"found": True, "methods": []},
+    )
     client = _device_client(_Device(session=_Session(api=api)))
 
     with pytest.raises(FridaError) as caught:
@@ -747,7 +750,10 @@ def test_java_enumerate_methods_requires_a_class_name() -> None:
 
 
 def test_java_enumerate_rejects_an_unknown_mode() -> None:
-    api = _Api(classes=lambda f, c: [], methods=lambda cn, c: {"found": True, "methods": []})
+    api = _Api(
+        classes=lambda f, o, c: {"classes": [], "total": 0},
+        methods=lambda cn, c: {"found": True, "methods": []},
+    )
     client = _device_client(_Device(session=_Session(api=api)))
 
     with pytest.raises(FridaError) as caught:
