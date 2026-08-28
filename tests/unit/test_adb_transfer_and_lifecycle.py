@@ -252,6 +252,44 @@ def test_pull_returns_the_size_on_success(tmp_path: Path) -> None:
     assert local.read_bytes() == b"data"
 
 
+def test_pull_refuses_an_empty_file_for_a_non_empty_remote(tmp_path: Path) -> None:
+    """A clean pull that writes nothing for a sized remote must not read success.
+
+    The pre-pull stat saw four bytes, but sync.pull left an empty file (the
+    remote vanished mid-transfer, or the transfer was cut). Returned as size 0
+    the caller opens the empty file as the remote's content; the backend must
+    delete it and raise instead.
+    """
+    sync = _Sync(
+        stat_result=_StatResult(mode=stat.S_IFREG | 0o644, size=4),
+        pull_bytes=b"",
+    )
+    dev = _FakeDev(sync=sync)
+    local = tmp_path / "short.bin"
+    with pytest.raises(AdbError) as excinfo:
+        _backend_with(dev).pull("emulator-5554", "/sdcard/short.bin", local)
+    assert excinfo.value.code == "backend_error"
+    assert "empty local file" in str(excinfo.value)
+    assert not local.exists()
+
+
+def test_pull_allows_a_genuinely_empty_remote(tmp_path: Path) -> None:
+    """A remote that stats as zero bytes pulls through as a real empty file.
+
+    The short-pull guard keys off a non-empty remote, so a truly empty file is
+    a valid size-0 result the caller can keep, not an interrupted transfer.
+    """
+    sync = _Sync(
+        stat_result=_StatResult(mode=stat.S_IFREG | 0o644, size=0),
+        pull_bytes=b"",
+    )
+    dev = _FakeDev(sync=sync)
+    local = tmp_path / "empty.bin"
+    payload = _backend_with(dev).pull("emulator-5554", "/sdcard/empty.bin", local)
+    assert payload["size"] == 0
+    assert local.is_file()
+
+
 def test_push_rejects_a_missing_local_file(tmp_path: Path) -> None:
     """A local path that is not a file never reaches adb."""
     dev = _FakeDev(sync=_Sync(stat_result=None))

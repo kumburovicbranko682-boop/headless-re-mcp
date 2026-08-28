@@ -46,6 +46,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（device.pull 拒绝把非空远端拉成空文件当成功返回）
+
+- `AdbBackend.pull` 会先 `sync.stat` 探一次远端(尽力而为),据此拒目录、拒超限,随后
+  `sync.pull` 落盘并用 `capped_file_size` 读回大小。但 adb sync 可能报告一次干净的 pull
+  却写出空文件(远端在传输中途消失,或传输被打断);此前只挡了「本地文件不存在」,对「远端
+  探到有内容、落地却是 0 字节」这一情形仍回 `size` 为 0 的「成功」,调用方照 `local` 打开
+  空文件当成远端真实内容。现记住 stat 探到的远端大小,当远端 `> 0` 而落地为 0 时,删除这个
+  空文件并抛 `backend_error`(消息「pull produced an empty local file for a non-empty
+  remote」,附 `remote_size`);远端本就是 0 字节的空文件仍按真实的 size-0 正常返回。回归
+  测试以注入的假设备驱动这两条路径。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
