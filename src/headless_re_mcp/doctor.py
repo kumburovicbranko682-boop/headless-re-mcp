@@ -294,15 +294,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             needs_runtime=("node", "Node.js"),
             install_hint="Install Node.js and webcrack (npm install -g webcrack).",
         ),
-        probe_optional_tool(
-            "wabt",
-            current,
-            "wabt",
-            ("wasm2wat",),
-            install_hint=(
-                "Install wabt so wasm2wat is on PATH (e.g. apt install wabt, brew install wabt)."
-            ),
-        ),
+        probe_wabt(current),
     ]
     return DoctorReport(
         probes=tuple(probes),
@@ -1230,6 +1222,40 @@ def probe_optional_tool(
         ProbeStatus.MISSING,
         f"Optional {name} tool is not installed",
         remediation=install_hint,
+    )
+
+
+def probe_wabt(settings: Settings) -> Probe:
+    """Resolve wasm2wat exactly as the wasm backend does, dir configs included.
+
+    HEADLESS_RE_WABT may name the wasm2wat binary itself, the directory that
+    holds it, or a wabt install root whose bin/ holds it -- WasmClient accepts
+    all three through _resolve_wabt_tool and keys its availability on wasm2wat
+    alone. probe_optional_tool only honours a configured *file* before falling
+    back to PATH, so a configured wabt directory with wasm2wat inside but not
+    on PATH read MISSING while wasm.* worked -- the same doctor/client
+    discovery drift the radare2 probe had. Delegate to the client's own
+    resolver so the report cannot drift from what the backend loads.
+    """
+    from headless_re_mcp.backends.jsre.client import _resolve_wabt_tool
+
+    configured = getattr(settings, "wabt", None)
+    wasm2wat = _resolve_wabt_tool(configured, "wasm2wat")
+    if wasm2wat is not None:
+        details = {"wasm2wat": str(wasm2wat)}
+        objdump = _resolve_wabt_tool(configured, "wasm-objdump")
+        if objdump is not None:
+            details["wasm-objdump"] = str(objdump)
+        return Probe("wabt", ProbeStatus.DETECTED, "wabt wasm2wat detected", details)
+    return Probe(
+        "wabt",
+        ProbeStatus.MISSING,
+        "Optional wabt tool is not installed",
+        remediation=(
+            "Install wabt so wasm2wat is on PATH, or set HEADLESS_RE_WABT to the "
+            "wasm2wat binary, its directory, or the wabt install root "
+            "(e.g. apt install wabt, brew install wabt)."
+        ),
     )
 
 

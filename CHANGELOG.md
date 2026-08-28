@@ -5,6 +5,26 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（doctor 的 wabt 探针改用客户端自己的解析器，目录配置不再误报 MISSING）
+
+- 接着 radare2 探针对齐继续核查 wabt:`HEADLESS_RE_WABT` 按 `WasmClient` 的 `_resolve_wabt_tool`
+  合同可以指向三种布局——wasm2wat 二进制本身、装着它的目录、或 `bin/` 下有它的 wabt 安装根目录,
+  客户端三种都接受且以 wasm2wat 是否解析成功定 `available`。而 doctor 走的通用 `probe_optional_tool`
+  只认"配置成**文件**",否则回落 PATH——于是把 `HEADLESS_RE_WABT` 指到不在 PATH 上的 wabt
+  目录时,`wasm.wat`/`wasm.info` 正常工作、doctor 却报 MISSING,与 radare2 修的是同一类
+  doctor/客户端发现漂移(这次的根因不是名字列表分叉,而是"目录也算合法配置"这一形状差异,
+  所以不能靠改通用探针解决——jadx/apktool 等的 `available` 要求配置是文件,给通用探针加
+  目录搜索反而会制造反向漂移)。
+- 新增专用 `probe_wabt`,直接委托客户端的 `_resolve_wabt_tool` 解析 wasm2wat(与 `probe_ghidra`
+  复用 `_find_analyze_headless` 同一范式),报告从结构上不可能再与后端实际加载的东西分叉;
+  解析成功时顺带报出 wasm-objdump 路径,MISSING 补救话术现在把三种合法配置形状都点名。
+- 新增四条单测钉住:目录配置 DETECTED(同时断言 `WasmClient(...).available is True`,直接钉
+  探针与客户端的一致性)、安装根 `bin/` 布局 DETECTED(且不虚构 objdump 细节)、PATH 回落、
+  未配置且不在 PATH 上 MISSING 且补救提到 `HEADLESS_RE_WABT`。mutation 验证(把 run_doctor
+  换回通用探针,目录与 bin/ 两例即失败)。既有"强制全缺"元测试仍然密闭:它 patch 的是共享
+  `shutil` 模块对象的 `which`,`_resolve_wabt_tool` 的 PATH 查询同样经它。全量单测
+  6631 passed / 55 skipped。
+
 ### 修复（doctor 的 radare2 探针与 R2Client 的发现名对齐，消除虚假的 MISSING）
 
 - 审计 doctor 与各后端"实际发现逻辑"是否一致时发现漂移:`R2Client._discover()` 按
@@ -18,8 +38,6 @@ until 1.0 the tool surface may still change between minor versions.
   逐个把"仅该名字在 PATH"喂给真实 `run_doctor`,断言 radare2 探针 DETECTED——探针从此不可能比客户端搜索更窄的
   集合。mutation 验证(把 doctor 改回 `("r2", "rizin")`,`radare2` 那例即失败,`r2`/`rizin` 仍过)。
   同步把该文件里三处显式写 `("r2", "rizin")` 的 radare2 用例改用共享常量。doctor+r2 单测 83 passed。
-  (注:wabt 探针对"配置成目录"的情形也与客户端 `_resolve_wabt_tool` 略有出入,但通用探针的简化尚属合理,
-  留待后续。)
 
 ### 修复（adb launch/force_stop 的失败信息带上目标包名，并清掉误导的死代码）
 

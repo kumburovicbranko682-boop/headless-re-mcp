@@ -149,6 +149,90 @@ def test_radare2_probe_missing_when_neither_configured_nor_on_path(
     assert probe.status == ProbeStatus.MISSING
 
 
+def test_wabt_probe_honors_a_configured_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wabt *directory* config must read DETECTED, because wasm.* works with it.
+
+    HEADLESS_RE_WABT may name the wasm2wat binary, the directory holding it, or
+    the install root whose bin/ holds it -- WasmClient accepts all three via
+    _resolve_wabt_tool. The generic probe only honoured a configured *file*
+    before falling back to PATH, so a wabt directory with wasm2wat inside but
+    off PATH read MISSING while wasm.wat worked: the same doctor/client
+    discovery drift the radare2 probe had. probe_wabt delegates to the client's
+    resolver; assert parity against WasmClient.available itself so the two can
+    never diverge again.
+    """
+    from headless_re_mcp.backends.jsre.client import WasmClient
+
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
+    wabt_dir = tmp_path / "wabt"
+    wabt_dir.mkdir()
+    wasm2wat = wabt_dir / "wasm2wat"
+    wasm2wat.write_text("#!/bin/sh\n", encoding="utf-8")
+    (wabt_dir / "wasm-objdump").write_text("#!/bin/sh\n", encoding="utf-8")
+    settings = replace(_settings(None, tmp_path / "artifacts"), wabt=wabt_dir)
+
+    assert WasmClient(wabt_dir).available is True
+    report = run_doctor(settings)
+
+    probe = next(p for p in report.probes if p.name == "wabt")
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.details.get("wasm2wat") == str(wasm2wat)
+    assert probe.details.get("wasm-objdump") == str(wabt_dir / "wasm-objdump")
+
+
+def test_wabt_probe_honors_a_configured_install_root_with_bin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An install-root config (tools under bin/) is the third layout wasm.* accepts."""
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
+    root = tmp_path / "wabt-1.0.34"
+    (root / "bin").mkdir(parents=True)
+    wasm2wat = root / "bin" / "wasm2wat"
+    wasm2wat.write_text("#!/bin/sh\n", encoding="utf-8")
+    settings = replace(_settings(None, tmp_path / "artifacts"), wabt=root)
+
+    report = run_doctor(settings)
+
+    probe = next(p for p in report.probes if p.name == "wabt")
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.details.get("wasm2wat") == str(wasm2wat)
+    # No wasm-objdump in this layout: the detail must not invent one.
+    assert "wasm-objdump" not in probe.details
+
+
+def test_wabt_probe_falls_back_to_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    on_path = tmp_path / "wasm2wat"
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_module.shutil,
+        "which",
+        lambda cmd: str(on_path) if cmd == "wasm2wat" else None,
+    )
+    settings = replace(_settings(None, tmp_path / "artifacts"), wabt=None)
+
+    report = run_doctor(settings)
+
+    probe = next(p for p in report.probes if p.name == "wabt")
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.details.get("wasm2wat") == str(on_path)
+
+
+def test_wabt_probe_missing_when_unconfigured_and_off_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
+    settings = replace(_settings(None, tmp_path / "artifacts"), wabt=None)
+
+    report = run_doctor(settings)
+
+    probe = next(p for p in report.probes if p.name == "wabt")
+    assert probe.status == ProbeStatus.MISSING
+    assert probe.remediation is not None
+    assert "HEADLESS_RE_WABT" in probe.remediation
+
+
 def test_jvm_tool_probe_flags_missing_java_on_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
