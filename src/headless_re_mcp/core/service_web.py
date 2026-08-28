@@ -218,6 +218,26 @@ class WebAnalysisMixin:
             key_filter=key_filter,
         )
 
+    def web_indexed_db(
+        self,
+        session_id: str,
+        offset: int = 0,
+        limit: int = 200,
+        database_filter: str = "",
+        store_filter: str = "",
+        key_filter: str = "",
+    ) -> Result[JsonObject]:
+        return self._web_wrap(
+            session_id,
+            "indexed_db",
+            session_id,
+            offset=offset,
+            limit=limit,
+            database_filter=database_filter,
+            store_filter=store_filter,
+            key_filter=key_filter,
+        )
+
     def web_frames(
         self,
         session_id: str,

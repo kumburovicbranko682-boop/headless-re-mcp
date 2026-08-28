@@ -294,6 +294,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **Web 动态分析原来只有 `web.cookies` 和 `web.storage`（local/session）两处取数，但现代 SPA 越来越多地把 auth token、缓存的 API 响应、用户数据放进
+  IndexedDB——Set-Cookie 抓包、`document.cookie`、Web Storage 都够不到它**。新增只读工具 `web.indexed_db`：沿用 `web.storage` 的做法（页面内固定
+  片段、不接受任意 JS），只针对顶层文档 origin 读 IndexedDB。返回两块：`databases` 是结构——每个库一行 `{name, version, stores（对象存储名）}`，某库被截断或打不开时带
+  `stores_truncated`/`error`；`records` 是扁平、分页的数据，每行 `{database, store, key, value}`，value 在浏览器里 JSON 序列化（ArrayBuffer/Blob/
+  TypedArray/Date 渲染成 `[Blob 1234]` 这样的短占位符而不是丢弃或变成 `{}`）并裁剪、过长置 value_truncated。答复另带 `count`/`total`/`offset`/`has_more`
+  与 `collection_truncated`（打开的库数、扫描的存储数、读取的记录数任一触及页面内上限时为真）。每一层都在浏览器里设了界（库、跨库存储数、每存储与总记录数、单值字节），
+  故再大或再深的库也不会整个序列化进本进程。`database_filter`/`store_filter`/`key_filter` 分别对 record 的库/存储/键做大小写不敏感子串匹配、分页前应用，
+  故 `total` 是命中数；`databases` 结构图不受这些过滤影响。`data:`/`about:blank` 这种不透明 origin（或浏览器不暴露 `indexedDB.databases`）没有 IndexedDB，
+  报 `invalid_state` 而不是空结果。列表字段是 `records`，结构总览是 `databases`。只读：没有 put/delete。只读，工具总数 293→294（176 只读 / 118 写）。
 - **`wasm.strings`/`wasm.endpoints` 补齐后，WASM 这条线离 JS/APK 的三件套只差最后一件「这个模块把哪些凭据编进去了」**。新增只读工具
   `wasm.secrets`：复用 `wasm.strings` 的同一段 data 段解析（进程内、免 wabt）拿到 rodata 的可打印串，再把 `js.secrets`/`apk.secrets` 共用的那套
   高精度凭据探测器（共享模块 `backends/common/secret_scan.py`，现在 JS/APK/代理/WASM 四条线共用一份规则）跑在每条串上——于是一个由 Rust/Go/C++

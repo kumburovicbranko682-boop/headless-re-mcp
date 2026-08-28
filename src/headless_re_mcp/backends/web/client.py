@@ -99,6 +99,135 @@ _STORAGE_JS = """
   return { origin: (location && location.origin) || '', items, total, over };
 }
 """
+# web.indexed_db reads IndexedDB through a fixed in-page snippet (the web.storage
+# pattern, not caller-supplied JS). IndexedDB is databases -> object stores ->
+# records, and a hostile (or just large) origin can hold many of each, so every
+# level is bounded in-browser: the databases opened, the stores scanned across
+# them, the records read per store and in total, and each serialised value. A
+# highly compressible or deeply nested value cannot serialise whole into this
+# process because the value clip is applied in the page.
+_MAX_IDB_DATABASES = 50
+_MAX_IDB_STORES = 200
+_MAX_IDB_RECORDS = 5000
+_MAX_IDB_RECORDS_PER_STORE = 500
+_MAX_IDB_VALUE = 8 * 1024
+_MAX_IDB_PAGE = 1000
+# A fixed reader: the caller chooses only which records to keep (filters/paging),
+# never code. It walks indexedDB.databases() -> each db's object stores -> a
+# bounded slice of each store's records, JSON-serialising values with a replacer
+# that renders the non-JSON structured-clone types (ArrayBuffer/typed array/Blob/
+# Date/bigint) as short placeholders rather than throwing or emitting `{}`. Every
+# open/transaction/read is wrapped so one unreadable database or store degrades
+# to empty instead of failing the whole snapshot.
+_INDEXED_DB_JS = """
+(args) => {
+  const origin = (location && location.origin) || '';
+  if (!self.indexedDB || typeof indexedDB.databases !== 'function') {
+    return { unavailable: true, origin };
+  }
+  const openDb = (name) => new Promise((resolve) => {
+    let req;
+    try { req = indexedDB.open(name); } catch (e) { resolve(null); return; }
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => resolve(null);
+    req.onblocked = () => resolve(null);
+  });
+  const readStore = (db, storeName, maxPerStore) => new Promise((resolve) => {
+    let store;
+    try {
+      store = db.transaction(storeName, 'readonly').objectStore(storeName);
+    } catch (e) { resolve({ keys: [], values: [] }); return; }
+    let kReq, vReq;
+    try {
+      kReq = store.getAllKeys(undefined, maxPerStore);
+      vReq = store.getAll(undefined, maxPerStore);
+    } catch (e) { resolve({ keys: [], values: [] }); return; }
+    let keys = [], values = [], done = 0;
+    const finish = () => { done++; if (done >= 2) resolve({ keys, values }); };
+    kReq.onsuccess = () => { keys = kReq.result || []; finish(); };
+    kReq.onerror = () => finish();
+    vReq.onsuccess = () => { values = vReq.result || []; finish(); };
+    vReq.onerror = () => finish();
+  });
+  const serialize = (v, maxValue) => {
+    let s;
+    try {
+      s = JSON.stringify(v, (k, val) => {
+        if (val instanceof ArrayBuffer) return '[ArrayBuffer ' + val.byteLength + ']';
+        if (ArrayBuffer.isView(val)) {
+          const n = (val.constructor && val.constructor.name) || 'TypedArray';
+          return '[' + n + ' ' + (val.byteLength || 0) + ']';
+        }
+        if (typeof Blob !== 'undefined' && val instanceof Blob) return '[Blob ' + val.size + ']';
+        if (val instanceof Date) return val.toISOString();
+        if (typeof val === 'bigint') return val.toString();
+        return val;
+      });
+    } catch (e) {
+      try { s = String(v); } catch (e2) { s = '[unserializable]'; }
+    }
+    if (typeof s !== 'string') s = (s == null) ? '' : String(s);
+    const clipped = s.length > maxValue;
+    return { value: clipped ? s.slice(0, maxValue) : s, truncated: clipped };
+  };
+  const run = async () => {
+    let dbList;
+    try {
+      dbList = await indexedDB.databases();
+    } catch (e) { return { unavailable: true, origin }; }
+    if (!Array.isArray(dbList)) dbList = [];
+    const databases = [];
+    const records = [];
+    let over = false;
+    let storesScanned = 0;
+    for (let i = 0; i < dbList.length; i++) {
+      if (databases.length >= args.maxDatabases) { over = true; break; }
+      const meta = dbList[i] || {};
+      const dbName = String(meta.name == null ? '' : meta.name);
+      const version = (typeof meta.version === 'number') ? meta.version : null;
+      const db = await openDb(dbName);
+      if (!db) {
+        databases.push({ name: dbName, version, stores: [], error: true });
+        continue;
+      }
+      let storeNames = [];
+      try {
+        storeNames = Array.prototype.slice.call(db.objectStoreNames);
+      } catch (e) { storeNames = []; }
+      const shownStores = [];
+      let storesOver = false;
+      for (let j = 0; j < storeNames.length; j++) {
+        if (storesScanned >= args.maxStores) { over = true; storesOver = true; break; }
+        const sName = String(storeNames[j]);
+        shownStores.push(sName);
+        storesScanned++;
+        if (records.length >= args.maxRecords) { over = true; continue; }
+        const res = await readStore(db, sName, args.maxRecordsPerStore);
+        const n = Math.max(res.keys.length, res.values.length);
+        if (n >= args.maxRecordsPerStore) over = true;
+        for (let r = 0; r < n; r++) {
+          if (records.length >= args.maxRecords) { over = true; break; }
+          let keyStr;
+          try {
+            keyStr = (res.keys[r] == null) ? '' : String(res.keys[r]);
+          } catch (e) { keyStr = ''; }
+          const ser = serialize(res.values[r], args.maxValue);
+          records.push({
+            database: dbName, store: sName, key: keyStr,
+            value: ser.value, value_truncated: ser.truncated,
+          });
+        }
+      }
+      try { db.close(); } catch (e) {}
+      const row = { name: dbName, version, stores: shownStores };
+      if (storesOver) row.stores_over = true;
+      databases.push(row);
+    }
+    return { origin, databases, records, over, unavailable: false };
+  };
+  return run();
+}
+"""
 # Header lists live on the ring entry but are stripped from network.list.
 _NETWORK_HEADER_KEYS = frozenset({"request_headers", "response_headers"})
 # Ring-only capture detail that no network.* view should surface directly: the
@@ -1299,6 +1428,134 @@ class WebBackend:
                 "kind": area,
                 "origin": origin,
                 "storage": window,
+                "count": len(window),
+                "total": total,
+                "offset": start,
+                "has_more": start + len(window) < total,
+                "collection_truncated": bool(raw.get("over")),
+            }
+
+        return self._runner(handle).call(work)
+
+    def indexed_db(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        database_filter: str = "",
+        store_filter: str = "",
+        key_filter: str = "",
+    ) -> JsonObject:
+        """Read IndexedDB for the top document's origin: databases, stores, records.
+
+        The third Web-storage surface, after cookies() and storage(): a modern SPA
+        keeps auth tokens, cached API responses and user data in IndexedDB, not
+        cookies or localStorage, and no Set-Cookie capture, document.cookie read
+        or Web Storage read reaches it. Read through a fixed in-page snippet (like
+        storage(), no caller code), and only for the top document's origin. Two
+        things come back: ``databases`` is the structure -- one row per database
+        with its object-store names -- and ``records`` is a flat, paged list of
+        the actual entries ({database, store, key, value}). Values are
+        JSON-serialised in the page (ArrayBuffer/Blob/typed-array/Date rendered as
+        short placeholders) and clipped, with value_truncated when long. Every
+        level is bounded in-browser and collection_truncated is set when any cap
+        truncated the walk. A data:/about:blank page (or a browser without
+        indexedDB.databases) has none and is reported invalid_state rather than an
+        empty result.
+        """
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            try:
+                raw = handle.page.evaluate(
+                    _INDEXED_DB_JS,
+                    {
+                        "maxDatabases": _MAX_IDB_DATABASES,
+                        "maxStores": _MAX_IDB_STORES,
+                        "maxRecords": _MAX_IDB_RECORDS,
+                        "maxRecordsPerStore": _MAX_IDB_RECORDS_PER_STORE,
+                        "maxValue": _MAX_IDB_VALUE,
+                    },
+                )
+            except WebError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"cannot read IndexedDB: {exc}") from exc
+            if not isinstance(raw, dict):
+                raise WebError("backend_error", "IndexedDB read returned no object")
+            origin = _bounded_metadata(raw.get("origin"), _MAX_METADATA_BYTES)[0]
+            if raw.get("unavailable"):
+                raise WebError(
+                    "invalid_state",
+                    "IndexedDB is unavailable for this origin (data:/about:blank pages "
+                    "have none, and the browser must expose indexedDB.databases); "
+                    "navigate to an http(s) page first",
+                    origin=origin,
+                )
+            # Structure summary: one row per database with its store names. Kept
+            # whole (not narrowed by the record filters) so the caller always sees
+            # what exists, the way proxy.hosts summarises alongside the flows.
+            raw_dbs = raw.get("databases")
+            db_entries = raw_dbs if isinstance(raw_dbs, list) else []
+            databases: list[JsonObject] = []
+            for entry in db_entries[:_MAX_IDB_DATABASES]:
+                if not isinstance(entry, dict):
+                    continue
+                raw_stores = entry.get("stores")
+                store_names = [
+                    _bounded_metadata(name, _MAX_METADATA_BYTES)[0]
+                    for name in (raw_stores if isinstance(raw_stores, list) else [])
+                ]
+                version = entry.get("version")
+                db_row: JsonObject = {
+                    "name": _bounded_metadata(entry.get("name"), _MAX_METADATA_BYTES)[0],
+                    "version": version if isinstance(version, int) and not isinstance(version, bool)
+                    else None,
+                    "stores": store_names,
+                }
+                if entry.get("stores_over"):
+                    db_row["stores_truncated"] = True
+                if entry.get("error"):
+                    db_row["error"] = True
+                databases.append(db_row)
+            # Flat record list, filtered and paged on the Python side.
+            raw_records = raw.get("records")
+            rec_entries = raw_records if isinstance(raw_records, list) else []
+            rows: list[JsonObject] = []
+            for item in rec_entries:
+                if not isinstance(item, dict):
+                    continue
+                value, value_over = _bounded_metadata(item.get("value"), _MAX_IDB_VALUE)
+                row: JsonObject = {
+                    "database": _bounded_metadata(item.get("database"), _MAX_METADATA_BYTES)[0],
+                    "store": _bounded_metadata(item.get("store"), _MAX_METADATA_BYTES)[0],
+                    "key": _bounded_metadata(item.get("key"), _MAX_METADATA_BYTES)[0],
+                    "value": value,
+                }
+                if value_over or bool(item.get("value_truncated")):
+                    row["value_truncated"] = True
+                rows.append(row)
+            # Case-insensitive substring filters applied before paging so total is
+            # the matching set: database/store isolate one app's data from the
+            # noise a page accretes, key finds a single record.
+            db_needle = database_filter.strip().lower() if isinstance(database_filter, str) else ""
+            if db_needle:
+                rows = [r for r in rows if db_needle in str(r.get("database", "")).lower()]
+            store_needle = store_filter.strip().lower() if isinstance(store_filter, str) else ""
+            if store_needle:
+                rows = [r for r in rows if store_needle in str(r.get("store", "")).lower()]
+            key_needle = key_filter.strip().lower() if isinstance(key_filter, str) else ""
+            if key_needle:
+                rows = [r for r in rows if key_needle in str(r.get("key", "")).lower()]
+            total = len(rows)
+            start = max(0, int(offset))
+            cap = max(1, min(int(limit), _MAX_IDB_PAGE))
+            window = rows[start : start + cap]
+            return {
+                "origin": origin,
+                "databases": databases,
+                "records": window,
                 "count": len(window),
                 "total": total,
                 "offset": start,

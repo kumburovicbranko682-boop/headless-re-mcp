@@ -221,6 +221,51 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="web.indexed_db")
+    def web_indexed_db(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+        database_filter: str = "",
+        store_filter: str = "",
+        key_filter: str = "",
+    ) -> dict[str, Any]:
+        """Read the page's IndexedDB -- the third token/data store SPAs use.
+
+        The companion to web.cookies and web.storage: a modern app keeps auth
+        tokens, cached API responses and user records in IndexedDB, which no
+        Set-Cookie capture, document.cookie read or localStorage/sessionStorage
+        read reaches. It is read through a fixed in-page snippet (like web.storage,
+        no arbitrary JS) and only for the top document's origin (a cross-origin
+        iframe's IndexedDB is not included). Two things come back: databases is the
+        structure -- one row per database {name, version, stores (its object-store
+        names)} plus stores_truncated/error when a database was capped or would not
+        open -- and records is the flat, paged data, each {database, store, key,
+        value} with value clipped and value_truncated when long. Values are
+        JSON-serialised in the browser, with ArrayBuffer/Blob/typed-array/Date
+        rendered as short placeholders (e.g. '[Blob 1234]') rather than dropped.
+        Answers also carry count, total, offset, has_more and collection_truncated
+        (true when the databases opened, stores scanned, or records read hit their
+        in-browser caps). database_filter, store_filter and key_filter each keep
+        only records whose database/store/key contains that substring
+        (case-insensitive), applied before paging so total is the match count;
+        databases stays the full structure map regardless. A data:/about:blank
+        page (or a browser without indexedDB.databases) has none and answers
+        invalid_state -- navigate to an http(s) page first, not an empty result.
+        The list field is records; the structure overview is databases. Read-only:
+        there is no put or delete.
+        """
+        return _dump(
+            analysis.web_indexed_db(
+                session_id,
+                offset=offset,
+                limit=limit,
+                database_filter=database_filter,
+                store_filter=store_filter,
+                key_filter=key_filter,
+            )
+        )
+
     @tools.tool(name="web.frames")
     def web_frames(
         session_id: str,
