@@ -561,6 +561,31 @@ class TestBackendFlows:
         assert out["dropped"] == 0
         assert out["has_more"] is False
 
+    def test_flows_has_more_is_false_when_the_last_page_exactly_fills(self) -> None:
+        """The off-by-one boundary of ``start + len(window) < total``.
+
+        A final page whose window exactly reaches the end (``start + count ==
+        total``) must report ``has_more`` False, and a page one row short of the
+        end must report True. This is the ``<`` vs ``<=`` slip the whole
+        offset-paginated non-PE surface (proxy.flows, web.network/scripts,
+        apk.classes/methods/strings, jsre files) shares the same formula for, so
+        pinning it here guards the exact edge the mid-list cases leave open.
+        """
+        backend = ProxyBackend()
+        inst = _ProxyInstance("127.0.0.1", 8080)
+        for i in range(6):
+            inst.recorder.response(_flow(f"f{i}", resp=True))
+        backend._instances["s"] = inst
+        # Last page perfectly filled: items[3:6] is 3 rows, 3 + 3 == 6.
+        exact = backend.flows("s", offset=3, limit=3)
+        assert exact["count"] == 3
+        assert exact["total"] == 6
+        assert exact["has_more"] is False
+        # One row short of the end: items[2:5] is 3 rows, 2 + 3 == 5 < 6.
+        short = backend.flows("s", offset=2, limit=3)
+        assert short["count"] == 3
+        assert short["has_more"] is True
+
 
 class TestBackendFlowGet:
     def test_flow_get_raises_not_found(self, monkeypatch: MP, tmp_path: Path) -> None:
