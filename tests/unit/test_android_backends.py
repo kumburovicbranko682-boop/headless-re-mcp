@@ -321,38 +321,6 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
-class TestFridaEnumerationsSayWhenTheyStopped:
-    """`count` alone cannot distinguish "that is all" from "that is your page"."""
-
-    def test_a_full_page_reports_more(self) -> None:
-        from headless_re_mcp.backends.frida.client import _page
-
-        page, has_more = _page(list(range(25)), 10)
-        assert page == list(range(10))
-        assert has_more is True
-
-    def test_a_short_answer_is_complete(self) -> None:
-        from headless_re_mcp.backends.frida.client import _page
-
-        page, has_more = _page(["a", "b"], 10)
-        assert page == ["a", "b"]
-        assert has_more is False
-
-    def test_exactly_one_page_with_nothing_behind_it_is_complete(self) -> None:
-        """The enumerations ask for limit+1, so this is what "exactly full" looks like."""
-        from headless_re_mcp.backends.frida.client import _page
-
-        page, has_more = _page(list(range(10)), 10)
-        assert len(page) == 10
-        assert has_more is False
-
-    def test_nothing_at_all_is_not_partial(self) -> None:
-        from headless_re_mcp.backends.frida.client import _page
-
-        assert _page(None, 10) == ([], False)
-        assert _page([], 10) == ([], False)
-
-
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

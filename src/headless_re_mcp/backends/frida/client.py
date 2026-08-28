@@ -193,9 +193,17 @@ rpc.exports = {
     var end = start + (limit > 0 ? limit : 0);
     return {classes: all.slice(start, end), total: all.length, capped: scanCapped};
   },
-  methods: function (className, limit) {
+  methods: function (className, offset, limit) {
+    // Collect every declared method, sort, then return the requested window plus
+    // the full total -- so has_more is exact and a caller can page the whole set.
+    // The old form stopped at `limit` in reflection order with no offset: a class
+    // with more declared methods than the page (generated or framework classes
+    // run to hundreds) left the rest unreachable and the page an arbitrary
+    // reflection-order subset. getDeclaredMethods is the class's own methods, a
+    // bounded array, so it is materialized whole; only the window crosses the RPC.
     var out = [];
     var found = false;
+    var total = 0;
     Java.perform(function () {
       var clazz;
       try {
@@ -205,29 +213,20 @@ rpc.exports = {
       }
       found = true;
       var methods = clazz.class.getDeclaredMethods();
-      for (var i = 0; i < methods.length && out.length < limit; i++) {
-        out.push(methods[i].toString());
+      var names = [];
+      for (var i = 0; i < methods.length; i++) {
+        names.push(methods[i].toString());
       }
+      names.sort();
+      total = names.length;
+      var start = offset > 0 ? offset : 0;
+      var end = start + (limit > 0 ? limit : 0);
+      out = names.slice(start, end);
     });
-    return {found: found, methods: out};
+    return {found: found, methods: out, total: total};
   }
 };
 """
-
-
-def _page(values: Any, limit: int) -> tuple[list[Any], bool]:
-    """Cut a list to the page size, saying whether anything was left out.
-
-    The enumerations here are asked for one more than the page so this can tell
-    "that is all there is" from "that is all you asked for" without counting the
-    rest. A caller reading `count` alone cannot tell those apart, and the ones
-    that matter -- which classes are loaded, which exports a module has -- are
-    exactly the ones an agent draws conclusions from.
-    """
-    items = list(values or [])
-    if len(items) > limit:
-        return items[:limit], True
-    return items, False
 
 
 class FridaError(RuntimeError):
@@ -825,7 +824,16 @@ class FridaClient:
                 if mode == "methods":
                     if not class_name:
                         raise FridaError("invalid_params", "class_name is required")
-                    raw = script.exports_sync.methods(class_name, capped + 1)
+                    # methods once asked for capped+1 and reported has_more with
+                    # no offset, so a class with more declared methods than the
+                    # page (generated/framework classes run to hundreds) left the
+                    # rest unreachable and the page an arbitrary reflection-order
+                    # subset -- the same broken contract classes/exports/modules
+                    # had. The target now windows a sorted enumeration and reports
+                    # total; page by advancing offset while has_more. Clamp offset
+                    # defensively (the agent/OpenAI transports bypass the schema).
+                    start = max(0, int(offset))
+                    raw = script.exports_sync.methods(class_name, start, capped)
                     # found distinguishes "class is not loaded on the target"
                     # (found false, methods empty) from "loaded, but declares no
                     # methods of its own" (found true, methods empty) -- an empty
@@ -834,16 +842,23 @@ class FridaClient:
                     # as ``modules`` does.
                     if isinstance(raw, dict):
                         found = bool(raw.get("found"))
-                        values, has_more = _page(list(raw.get("methods") or []), capped)
+                        held = list(raw.get("methods") or [])
+                        total = int(raw.get("total") or (start + len(held)))
                     else:
+                        # Degraded older-script shape (no total): treat the window
+                        # as the tail so has_more stays False rather than paging
+                        # forever, exactly as the classes/modules branches do.
                         found = True
-                        values, has_more = _page(list(raw or []), capped)
+                        held = list(raw or [])
+                        total = start + len(held)
                     return {
                         "class_name": class_name,
                         "found": found,
-                        "methods": values,
-                        "count": len(values),
-                        "has_more": has_more,
+                        "methods": held,
+                        "count": len(held),
+                        "total": total,
+                        "offset": start,
+                        "has_more": start + len(held) < total,
                     }
                 raise FridaError("invalid_params", "mode must be classes or methods")
             finally:

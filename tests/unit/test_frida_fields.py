@@ -353,8 +353,18 @@ class _JavaApi:
             "capped": False,
         }
 
-    def methods(self, class_name: str, count: int) -> list[str]:
-        return [f"m{index}" for index in range(int(count))]
+    def methods(
+        self, class_name: str, offset: int = 0, limit: int = 200
+    ) -> dict[str, Any]:
+        # Emulate the real probe: the target enumerates every declared method,
+        # sorts, and returns only the window plus the true total, so the client's
+        # offset/total/has_more contract is exercised.
+        alle = sorted(f"m{index:02d}" for index in range(25))
+        return {
+            "found": True,
+            "methods": alle[offset : offset + limit],
+            "total": len(alle),
+        }
 
 
 class _JavaScript:
@@ -489,9 +499,9 @@ def test_frida_java_classes_flags_scan_capped_when_the_target_ceiling_is_hit() -
 def test_frida_java_methods_puts_the_list_in_methods_and_says_when_it_stopped() -> None:
     """The catalog never named the payload.
 
-    Measured: 11 methods requested for a page of 10 -> count 10, has_more
-    True, field is methods. Looking for method_list after a successful call
-    reads as no methods, and a full page with no has_more reads as every
+    Measured: 25 declared methods, a page of 10 -> count 10, total 25, offset 0,
+    has_more True, field is methods. Looking for method_list after a successful
+    call reads as no methods, and a full page with no has_more reads as every
     declared method.
     """
     client = FridaClient()
@@ -504,28 +514,94 @@ def test_frida_java_methods_puts_the_list_in_methods_and_says_when_it_stopped() 
     assert "method_list" not in payload
     assert payload["class_name"] == "Foo"
     assert payload["count"] == 10
+    assert payload["total"] == 25
+    assert payload["offset"] == 0
     assert len(payload["methods"]) == 10
     assert payload["has_more"] is True
-    # A bare-array script shape is tolerated and reported as found.
     assert payload["found"] is True
     doc = _tool_docstring("frida.java.methods")
     assert "Answers with methods" in doc
     assert "has_more" in doc
+    assert "offset" in doc
     assert "found" in doc
 
 
+def test_frida_java_methods_offset_pages_past_a_filled_limit() -> None:
+    """offset reaches the declared methods a filled first page hides.
+
+    frida.java.methods advertised has_more but took no offset: it asked the
+    target for one past the page in reflection order, so a class with more
+    declared methods than the page (generated or framework classes run to
+    hundreds) reported has_more True yet gave no way to reach the rest, and the
+    page was an arbitrary reflection-order subset rather than the sorted head --
+    the same broken contract frida.java.classes/exports/modules had. With 25
+    methods, offset 20 limit 10 must return the final five (offset 20, count 5,
+    total 25, has_more False), and a negative offset (the agent/OpenAI transports
+    bypass the schema's offset >= 0 bound) must clamp to the head.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _JavaDevice()  # type: ignore[method-assign]
+
+    tail = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="methods", class_name="Foo", offset=20, limit=10
+    )
+    assert tail["offset"] == 20
+    assert tail["count"] == 5
+    assert tail["total"] == 25
+    assert tail["has_more"] is False
+    assert tail["methods"] == [f"m{index:02d}" for index in range(20, 25)]
+
+    negative = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="methods", class_name="Foo", offset=-5, limit=10
+    )
+    assert negative["offset"] == 0
+    assert negative["methods"] == [f"m{index:02d}" for index in range(0, 10)]
+    assert negative["has_more"] is True
+
+
+def test_frida_java_methods_tolerates_the_bare_list_older_script_shape() -> None:
+    """A bare-array methods reply (no found/total) is still reported as found.
+
+    The injected script ships with the client so this degraded shape is a
+    defensive tolerance rather than a live case; keep the else-branch covered. A
+    bare list has no total, so the window is treated as the tail: has_more stays
+    False rather than paging forever off a count it cannot know.
+    """
+
+    class _BareApi:
+        def methods(self, class_name: str, offset: int = 0, limit: int = 200) -> list[str]:
+            del class_name, offset
+            return [f"m{index}" for index in range(int(limit))]
+
+    client = _java_client_returning(_BareApi())
+    payload = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="methods", class_name="Foo", limit=10
+    )
+    assert payload["found"] is True
+    assert payload["count"] == 10
+    assert payload["offset"] == 0
+    assert payload["total"] == 10
+    assert payload["has_more"] is False
+
+
 class _JavaApiFound:
-    """Newer script shape: methods() returns {found, methods}."""
+    """Newer script shape: methods() windows a sorted list and returns total."""
 
     def __init__(self, *, found: bool, count: int) -> None:
         self._found = found
         self._count = count
 
-    def methods(self, class_name: str, limit: int) -> dict[str, Any]:
-        del class_name, limit
+    def methods(
+        self, class_name: str, offset: int = 0, limit: int = 200
+    ) -> dict[str, Any]:
+        del class_name
+        alle = [f"m{index}" for index in range(self._count)]
         return {
             "found": self._found,
-            "methods": [f"m{index}" for index in range(self._count)],
+            "methods": alle[offset : offset + limit],
+            "total": self._count,
         }
 
 

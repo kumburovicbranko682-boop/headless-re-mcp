@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（frida.java.methods 报 has_more 却无 offset:声明方法超过一页的部分永远够不着)
+
+- `frida.java.methods` 是 frida 这条线上最后一个仍是"无游标 top-N"的列表读取:它向目标进程要 `limit+1` 个声明方法、
+  按 count 与 `has_more` 应答,却既没有 `offset` 也没有 `total`,而目标侧只按 `getDeclaredMethods()` 的反射顺序取头
+  `limit` 个。于是一个声明方法数超过一页的类(生成代码或框架基类动辄数百个方法)会报 `has_more` 为真,却没有游标能
+  拿到剩下的,而且那一页还是反射顺序的任意子集、连排好序的头部都算不上——正是我此前修过的 `frida.modules`/`exports`/
+  `java.classes` 与 `apk.xrefs`、`ghidra.functions/symbols/xrefs` 的同款可达性坏契约,也是同一条线上 `java.classes`
+  已经翻页、`java.methods` 却掉队的不一致。现在给它加上 `offset`,贯穿注入脚本(`_JAVA_SCRIPT.methods`)→client→
+  service→tool:目标侧把该类的声明方法全部物化、排序、再切出请求的窗口并回带 `total`(单个类的声明方法本就是有界数组,
+  不像已加载类空间那样需要 50k 扫描封顶,所以不设 `scan_capped`);client 侧按 `total` 精确判定 `has_more`,把负 offset
+  归零(agent/OpenAI 传输会绕过 schema 的 `ge=0`),并保留对旧版裸数组应答的兜底——没有 `total` 时把窗口当作末尾,让
+  `has_more` 保持假而非对着一个够不着的 count 永远翻页,和 classes/modules 分支处理一致。原先专为"要 limit+1 判断截断"
+  服务的 `_page` 助手随之无人再用,一并删除(其单测同样移除,截断语义已由 classes/methods 的 offset/total 契约测试覆盖)。
+  新增测试:`java.methods` 的 offset 翻页(offset 20/limit 10 取末五、负 offset 归零到头部)、payload 带 count/total/offset/
+  has_more、旧裸数组 shape 仍报 found 且 has_more 保持假、工具文档如实写明按 count 递增 offset;既有的 found/未加载区分与
+  显式 pid 测试的桩同步接受 3 参 `(class_name, offset, limit)`。纯翻页可达性修正,不改任何成功路径已有字段的含义。
+
 ### 修复（后端 timeout 错误被标成不可重试,与原生 TimedOut 的契约不一致)
 
 - 每个后端错误(adb / apk / frida / ghidra / jsre / proxy / radare2 / web)都要经由各条线的 `_as_rpc` 助手或

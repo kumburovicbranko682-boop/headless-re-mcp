@@ -199,17 +199,24 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def frida_java_methods(
         session_id: str,
         class_name: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
         pid: int = 0,
     ) -> dict[str, Any]:
         """List declared methods of a Java class on the authorized device pid (ART only).
 
-        Answers with methods, class_name, found, count, and has_more so a page
-        that filled the limit is not read as every declared method. found is
-        false when the class is not loaded on the target, which an empty
-        methods list alone cannot distinguish from a loaded class that declares
-        none of its own.
+        Answers with methods (sorted), class_name, found, count for this page,
+        total, offset, and has_more so a page that filled the limit is not read
+        as every declared method. Advance offset by the returned count to read
+        the next page while has_more is true (a generated or framework class can
+        declare hundreds of methods). found is false when the class is not loaded
+        on the target, which an empty methods list alone cannot distinguish from
+        a loaded class that declares none of its own.
         """
-        return _dump(analysis.frida_java_methods(session_id, class_name, limit=limit, pid=pid))
+        return _dump(
+            analysis.frida_java_methods(
+                session_id, class_name, offset=offset, limit=limit, pid=pid
+            )
+        )
 
     return tools.bindings
