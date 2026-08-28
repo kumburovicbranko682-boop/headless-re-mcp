@@ -40,6 +40,27 @@ def _require_allowed_cmd(cmd: str) -> None:
 _MAX_OUTPUT = 500_000
 _MAX_STDERR = 50_000
 _MAX_ATTACH_OUTPUT = 8_000
+# The tool schemas declare 0 < timeout <= 300 for dump analysis and <= 120 for
+# the live-process probes. The agent and OpenAI-bridge transports call these
+# handlers straight from model arguments and never run that pydantic
+# validation, so the bound has to be re-applied here or a hostile value reaches
+# run_bounded -- where a huge timeout lets a hung cdb hold the live debuggee for
+# as long as the caller named, and a NaN disables the deadline entirely because
+# every ``remaining <= 0`` comparison against NaN is False.
+_MAX_DUMP_TIMEOUT_S = 300.0
+_MAX_LIVE_TIMEOUT_S = 120.0
+
+
+def _bounded_timeout(timeout: float, *, maximum: float) -> float:
+    """Reject a non-positive/NaN deadline and cap an oversized one.
+
+    Raises WindbgError rather than clamp_cli_timeout's InvalidTimeout so the
+    result keeps the backend's structured invalid_params code instead of the
+    generic invalid_request the ValueError path would produce.
+    """
+    if type(timeout) not in (int, float) or timeout != timeout or timeout <= 0:
+        raise WindbgError("invalid_params", "timeout must be a positive number")
+    return min(float(timeout), maximum)
 
 
 def _bounded(raw: bytes, limit: int) -> tuple[str, dict[str, object]]:
@@ -228,6 +249,7 @@ class WindbgClient:
         timeout: float,
     ) -> JsonObject:
         cdb = self._require_cdb()
+        timeout = _bounded_timeout(timeout, maximum=_MAX_LIVE_TIMEOUT_S)
         if type(pid) is not int or pid <= 0:
             raise WindbgError("invalid_params", "pid must be a positive integer")
         if pid != allowed_pid:
@@ -277,6 +299,7 @@ class WindbgClient:
 
     def _run_dump(self, dump: Path, commands: list[str], *, timeout: float) -> JsonObject:
         cdb = self._require_cdb()
+        timeout = _bounded_timeout(timeout, maximum=_MAX_DUMP_TIMEOUT_S)
         if not dump.is_file():
             raise WindbgError("not_found", "dump file not found", path=str(dump))
         for cmd in commands:

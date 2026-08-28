@@ -293,6 +293,85 @@ def test_a_live_probe_timeout_reports_the_killed_debugger(
     assert caught.value.details["killed_pids"] == [4242]
 
 
+# --- timeout bounds ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [0, -5, float("nan"), True, "30"])
+def test_dump_analysis_rejects_a_non_positive_or_non_numeric_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: object
+) -> None:
+    """The schema declares 0 < timeout, but the agent transport skips it.
+
+    A NaN would otherwise disable run_bounded's deadline entirely, so a hung
+    cdb would never be killed; a non-positive value spawns cdb only to kill it
+    on the first loop. Both must be refused before any launch.
+    """
+    client = _client(tmp_path, monkeypatch)
+    launched = _record_run(monkeypatch)
+    with pytest.raises(WindbgError) as caught:
+        client.modules(_dump(tmp_path), timeout=bad)  # type: ignore[arg-type]
+    assert caught.value.code == "invalid_params"
+    assert launched == []
+
+
+@pytest.mark.parametrize("bad", [0, -1, float("nan"), True])
+def test_live_probe_rejects_a_non_positive_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: object
+) -> None:
+    client = _client(tmp_path, monkeypatch)
+    launched = _record_run(monkeypatch)
+    with pytest.raises(WindbgError) as caught:
+        client.attach(4242, allowed_pid=4242, timeout=bad)  # type: ignore[arg-type]
+    assert caught.value.code == "invalid_params"
+    assert launched == []
+
+
+def test_dump_analysis_caps_an_oversized_timeout_at_the_schema_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A huge value must not let a hung cdb hold on past the declared maximum."""
+    client = _client(tmp_path, monkeypatch)
+    captured: dict[str, float] = {}
+
+    def capture(argv: list[str], *args: Any, **kwargs: Any) -> Completed:
+        captured["timeout"] = kwargs["timeout"]
+        return Completed(0, b"lm output", b"")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", capture)
+    client.modules(_dump(tmp_path), timeout=1e18)
+    assert captured["timeout"] == 300.0
+
+
+def test_live_probe_caps_an_oversized_timeout_at_the_schema_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client(tmp_path, monkeypatch)
+    captured: dict[str, float] = {}
+
+    def capture(argv: list[str], *args: Any, **kwargs: Any) -> Completed:
+        captured["timeout"] = kwargs["timeout"]
+        return Completed(0, b"probe output", b"")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", capture)
+    client.attach(4242, allowed_pid=4242, timeout=1e9)
+    assert captured["timeout"] == 120.0
+
+
+def test_a_normal_timeout_reaches_run_bounded_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client(tmp_path, monkeypatch)
+    captured: dict[str, float] = {}
+
+    def capture(argv: list[str], *args: Any, **kwargs: Any) -> Completed:
+        captured["timeout"] = kwargs["timeout"]
+        return Completed(0, b"lm output", b"")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", capture)
+    client.modules(_dump(tmp_path), timeout=45.0)
+    assert captured["timeout"] == 45.0
+
+
 # --- cdb discovery ----------------------------------------------------------
 
 
