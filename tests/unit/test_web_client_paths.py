@@ -479,6 +479,11 @@ def test_network_get_reports_invalid_base64(tmp_path: Path) -> None:
     backend = _backend_with(handle)
     result = backend.network_get("s", "r", tmp_path)
     assert "was not valid base64" in result["body_error"]
+    # Same documented shape as every other network_get error path, so a caller
+    # reading result["body"] does not hit a missing key on this one.
+    assert result["body"] == ""
+    assert result["base64_encoded"] is False
+    assert result["body_truncated"] is False
 
 
 def test_console_returns_the_newest_tail() -> None:

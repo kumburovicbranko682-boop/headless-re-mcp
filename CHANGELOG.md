@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（web.network.get 的非法 base64 分支不再返回残缺 shape）
+
+- `backends/web/client.py` 的 `network_get` 有两条「拿不到可用响应体」的错误路径：CDP
+  取体失败（重定向、体已被逐出缓存）那条按合同返回完整 shape——`body`、
+  `base64_encoded`、`body_truncated` 加 `body_error`，专门保证调用方读 `result["body"]`
+  不会在失败路径上撞 KeyError；但当 CDP 声明 `base64Encoded=True` 而体又无法解码时，那条
+  只返回请求元数据加 `body_error`，漏掉了 `body`/`base64_encoded`/`body_truncated`，正是
+  另一条路径明文规避的那个坑。改为返回与 CDP 失败路径一致的完整 shape（空体、非 base64、
+  未截断，`body_error` 说明原因）。原有两个用例只断言 `body_error` 存在，故该残缺一直漏
+  网；顺带把 `test_web_network_get_binary.py` 与 `test_web_client_paths.py` 的非法 base64
+  用例加固到断言完整 shape（去掉修复即因缺 `body` 抛 KeyError，非空覆盖）。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
