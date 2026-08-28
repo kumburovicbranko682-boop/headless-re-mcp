@@ -75,6 +75,12 @@ Two triage themes the other native gates cannot cover from system binaries:
   imports) and API forwarding (a facade whose exports live elsewhere). A
   synthetic dylib carrying all three command kinds must split in the reader
   exactly as llvm-objdump's load-command decode does.
+- The separate-debug-file link (ELF .gnu_debuglink) -- where the stripped
+  symbols went, the ELF pair to the PE pdb-path fact. The gate replays the
+  distro strip pipeline (objcopy --only-keep-debug / --strip-debug /
+  --add-gnu-debuglink) so the record's producer is the real one, then
+  referees the name through readelf's raw section dump and the checksum
+  through zlib's independent CRC32 of the debug file's actual bytes.
 
 skip != pass when a tool is missing; gcc/readelf ship with the CI runner and
 llvm is installed on the Linux lane.
@@ -86,6 +92,7 @@ import re
 import shutil
 import struct
 import subprocess
+import zlib
 from pathlib import Path
 from typing import Any, cast
 
@@ -1583,6 +1590,72 @@ def test_macho_encryption_range_agrees_with_llvm_objdump(tmp_path: Path) -> None
             sessions.append(session_id)
             assert fixture_facts["encrypted"] is False
             assert "encryption_info" not in fixture_facts
+    finally:
+        for session_id in sessions:
+            service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_elf_debuglink_agrees_with_objcopy_and_zlib(tmp_path: Path) -> None:
+    """The .gnu_debuglink fact vs a real strip pipeline's own record.
+
+    objcopy --add-gnu-debuglink is the producer every distro's packaging uses:
+    it computes the CRC32 of the separate debug file and writes the record
+    this reader parses. The gate replays that pipeline (split the debug info
+    out, strip, link back by name), then referees the filename through
+    readelf's raw section dump and the checksum through zlib's independent
+    CRC32 -- if the reader's alignment step or byte order were wrong, the hex
+    would not match the digest of the actual file on disk.
+    """
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    if gcc is None:
+        pytest.skip("no C compiler installed — debuglink gate not run (skip != pass)")
+    objcopy = shutil.which("objcopy")
+    if objcopy is None:
+        pytest.skip("objcopy not installed — debuglink gate not run (skip != pass)")
+    readelf = shutil.which("readelf")
+    if readelf is None:
+        pytest.skip("readelf not installed — debuglink gate not run (skip != pass)")
+
+    binary = _compile_probe(gcc, tmp_path, "app", "-g")
+    debug = tmp_path / "app.debug"
+    for step in (
+        [objcopy, "--only-keep-debug", "app", "app.debug"],
+        [objcopy, "--strip-debug", "app"],
+        [objcopy, "--add-gnu-debuglink=app.debug", "app"],
+    ):
+        done = subprocess.run(step, cwd=tmp_path, capture_output=True, text=True, timeout=120)
+        assert done.returncode == 0, done.stderr
+
+    # Ground truth one: the CRC objcopy wrote is by definition the CRC32 of
+    # the debug file's bytes; zlib computes it with an implementation the
+    # reader does not share.
+    expected_crc = f"{zlib.crc32(debug.read_bytes()) & 0xFFFFFFFF:08x}"
+    # Ground truth two: readelf's raw dump of the section must carry the name,
+    # so the comparison below cannot pass on a section the pipeline never
+    # wrote. Kept as bytes: the dump ends with the CRC's raw bytes, which are
+    # whatever the checksum happens to be, not valid UTF-8.
+    dump = subprocess.run(
+        [readelf, "--string-dump=.gnu_debuglink", str(binary)],
+        capture_output=True,
+        timeout=60,
+    )
+    assert dump.returncode == 0, dump.stderr.decode(errors="replace")
+    assert b"app.debug" in dump.stdout
+
+    service = AnalysisService()
+    sessions: list[str] = []
+    try:
+        session_id, facts = _session_native(service, binary)
+        sessions.append(session_id)
+        assert facts["debug_link"] == {"filename": "app.debug", "crc32": expected_crc}
+
+        # Negative agreement: the same compile without the pipeline carries no
+        # record, and the fact stays absent rather than reading garbage.
+        plain = _compile_probe(gcc, tmp_path, "plain")
+        session_id, plain_facts = _session_native(service, plain)
+        sessions.append(session_id)
+        assert "debug_link" not in plain_facts
     finally:
         for session_id in sessions:
             service.close_session(session_id)

@@ -24,6 +24,7 @@ from headless_re_mcp.core.session import (
     _dotnet_high_entropy_resources,
     _dotnet_resource_payloads,
     _pe_authenticode,
+    _pe_build_time,
     _pe_capability_surface,
     _pe_debug_fingerprint,
     _pe_hardening_facts,
@@ -1378,6 +1379,7 @@ def _pe_with_debug(
     *,
     zero_file_pointer: bool = False,
     declared_size: int | None = None,
+    stamp: int = 0,
 ) -> bytes:
     """A minimal one-section PE whose debug directory (index 6) holds ``records``.
 
@@ -1385,14 +1387,15 @@ def _pe_with_debug(
     the section start with the blobs behind it, each entry carrying both the
     blob's RVA and its file pointer. ``zero_file_pointer`` leaves every
     PointerToRawData 0 so the reader must fall back to the RVA;
-    ``declared_size`` overrides each entry's SizeOfData.
+    ``declared_size`` overrides each entry's SizeOfData; ``stamp`` plants the
+    COFF TimeDateStamp.
     """
     sect_rva = 0x1000
     dos = bytearray(0x40)
     dos[0:2] = b"MZ"
     struct.pack_into("<I", dos, 0x3C, 0x40)
     opt_size = 0xF0
-    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", 0x8664, 1, 0, 0, 0, opt_size, 0)
+    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", 0x8664, 1, stamp, 0, 0, opt_size, 0)
     raw_off = 0x40 + len(coff) + opt_size + 40
     if raw_off % 0x200:
         raw_off += 0x200 - (raw_off % 0x200)
@@ -1526,6 +1529,71 @@ class TestPeDebugFingerprint:
         pdb = _pe_debug_fingerprint(_DOTNET_FIXTURE)["pdb"]
         assert pdb["guid"] == _GUID
         assert pdb["path"] == r"C:\build\headless\MyAssembly.pdb"
+
+
+class TestPeBuildTime:
+    """_pe_build_time reads the COFF stamp and the deterministic-build marker.
+
+    The PE build-time fact: a real TimeDateStamp is a timeline anchor, but a
+    REPRO debug entry (type 16) declares the stamp a content hash -- Roslyn's
+    default for years -- so rendering it as a date would misdate the binary.
+    The UTC rendering is offered only while the stamp still claims to be a
+    time: nonzero and not reproducible.
+    """
+
+    def test_a_real_stamp_renders_as_utc(self, tmp_path: Path) -> None:
+        path = tmp_path / "dated.exe"
+        path.write_bytes(_pe_with_debug([], stamp=0x60000000))
+        assert _pe_build_time(path) == {
+            "link_time": 0x60000000,
+            "reproducible": False,
+            "link_time_utc": "2021-01-14T08:25:36Z",
+        }
+
+    def test_a_repro_entry_declares_the_stamp_a_hash(self, tmp_path: Path) -> None:
+        # A deterministic build: the stamp survives as the raw fact, but no
+        # UTC rendering -- it is a hash wearing a timestamp's clothes.
+        path = tmp_path / "repro.exe"
+        path.write_bytes(_pe_with_debug([(16, b"")], stamp=0xE3B0C442))
+        assert _pe_build_time(path) == {
+            "link_time": 0xE3B0C442,
+            "reproducible": True,
+        }
+
+    def test_a_repro_entry_is_found_behind_other_records(self, tmp_path: Path) -> None:
+        # The REPRO entry rides alongside the CodeView record in real Roslyn
+        # output; the walk must not stop at the first non-REPRO type.
+        path = tmp_path / "mixed.exe"
+        blob = _rsds_blob(_GUID, 1, "a.pdb")
+        path.write_bytes(_pe_with_debug([(2, blob), (16, b"")], stamp=5))
+        assert _pe_build_time(path)["reproducible"] is True
+
+    def test_a_zero_stamp_gets_no_utc_rendering(self, tmp_path: Path) -> None:
+        # Stamp 0 is "not filled in" (old tools, some packers) -- rendering
+        # it as 1970 would be the misdating this fact exists to prevent.
+        path = tmp_path / "zeroed.exe"
+        path.write_bytes(_pe_with_debug([], stamp=0))
+        assert _pe_build_time(path) == {"link_time": 0, "reproducible": False}
+
+    def test_a_pe_without_a_debug_directory_still_reads_the_stamp(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "bare.exe"
+        path.write_bytes(_native_pe())
+        assert _pe_build_time(path) == {"link_time": 0, "reproducible": False}
+
+    def test_a_non_pe_reads_no_facts(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _pe_build_time(path) == {}
+
+    def test_session_over_a_pe_carries_the_build_time(self, tmp_path: Path) -> None:
+        path = tmp_path / "app.exe"
+        path.write_bytes(_pe_with_debug([(16, b"")], stamp=1735689600))
+        session = SessionRegistry().create(str(path))
+        assert session.metadata["pe"]["link_time"] == 1735689600
+        assert session.metadata["pe"]["reproducible"] is True
+        assert "link_time_utc" not in session.metadata["pe"]
 
 
 def _vs_node(
@@ -2217,6 +2285,8 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
             "gs": False,
             "safe_seh": False,
             "tls": {"present": False, "callbacks": 0},
+            "link_time": 0,
+            "reproducible": False,
             "wx_sections": [],
             "high_entropy_sections": [],
             "urls": [],

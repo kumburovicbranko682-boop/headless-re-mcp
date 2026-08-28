@@ -2905,6 +2905,61 @@ class TestElfToolchain:
         assert len(facts["toolchain"]) == 16  # _ELF_MAX_TOOLCHAIN
 
 
+def _debuglink_blob(filename: bytes, crc: int, *, drop_nul: bool = False) -> bytes:
+    """A ``.gnu_debuglink`` payload: name, NUL, pad to 4, then the CRC32."""
+    body = bytearray(filename)
+    if not drop_nul:
+        body += b"\x00"
+        while len(body) % 4:
+            body += b"\x00"
+    return bytes(body) + crc.to_bytes(4, "little")
+
+
+class TestElfDebugLink:
+    """describe_native reports .gnu_debuglink -- where the stripped symbols went.
+
+    The ELF pair to the PE pdb-path fact: the strip pipeline leaves the
+    separate debug file's basename plus a CRC32 of that file's bytes, and gdb
+    re-finds the symbols by both. Absent stays absent -- an image that never
+    went through objcopy --add-gnu-debuglink has nothing to report.
+    """
+
+    def test_the_record_reads_filename_and_crc(self, tmp_path: Path) -> None:
+        blob = _debuglink_blob(b"app.debug", 0xDEADBEEF)
+        data = _elf64_with_sections([(".text", 1, b"\x90" * 8), (".gnu_debuglink", 1, blob)])
+        facts = describe_native(_write(tmp_path, "linked.elf", data))["native"]
+        assert facts["debug_link"] == {"filename": "app.debug", "crc32": "deadbeef"}
+
+    def test_padding_between_name_and_crc_is_stepped_over(self, tmp_path: Path) -> None:
+        # A 3-char name needs no pad byte after its NUL; a 4-char name needs
+        # three. Both shapes must land on the same 4-aligned CRC slot.
+        for name in (b"abc", b"abcd"):
+            blob = _debuglink_blob(name, 0x0BADF00D)
+            data = _elf64_with_sections([(".gnu_debuglink", 1, blob)])
+            facts = describe_native(_write(tmp_path, f"{name.decode()}.elf", data))["native"]
+            assert facts["debug_link"] == {
+                "filename": name.decode(),
+                "crc32": "0badf00d",
+            }
+
+    def test_an_elf_without_the_section_records_nothing(self, tmp_path: Path) -> None:
+        data = _elf64_with_sections([(".text", 1, b"\x90" * 8)])
+        facts = describe_native(_write(tmp_path, "bare.elf", data))["native"]
+        assert "debug_link" not in facts
+
+    def test_a_record_without_a_nul_is_malformed(self, tmp_path: Path) -> None:
+        # No terminator means no way to tell name from CRC; fail closed.
+        blob = _debuglink_blob(b"noterminator", 0, drop_nul=True)
+        data = _elf64_with_sections([(".gnu_debuglink", 1, blob)])
+        facts = describe_native(_write(tmp_path, "nonul.elf", data))["native"]
+        assert "debug_link" not in facts
+
+    def test_a_record_too_short_for_the_crc_is_malformed(self, tmp_path: Path) -> None:
+        data = _elf64_with_sections([(".gnu_debuglink", 1, b"app\x00")])
+        facts = describe_native(_write(tmp_path, "short.elf", data))["native"]
+        assert "debug_link" not in facts
+
+
 class TestMachoSectionPayloads:
     """describe_native lists Mach-O sections whose bytes open with executable magic.
 

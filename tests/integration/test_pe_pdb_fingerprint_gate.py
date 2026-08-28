@@ -13,6 +13,16 @@ synthetic native PE with a planted record; the other gates the committed .NET
 fixture, tying the session-level fact to the same bytes the dotnet.inspect
 deep reader and its own objdump gate already agree on.
 
+The same debug directory also carries the deterministic-build declaration, so
+the build-time gate lives here too: ``link_time`` is the COFF TimeDateStamp,
+``reproducible`` is whether a type-16 (REPRO) entry declares the stamp a
+content hash rather than a time, and ``link_time_utc`` is rendered only while
+the stamp still claims to be one. pefile referees the raw stamp and the
+debug-entry types through its own parse, and the UTC rendering is re-derived
+through time.gmtime -- an implementation the reader does not share. A real
+compiler case (Mono's mcs) ties the fact to a producer neither builder
+controls: whatever mcs emitted, the reader and pefile must agree on it.
+
 objdump ships with binutils; pefile ships in the project's ``pe`` extra. skip
 != pass: each check skips, naming why, only when its referee is unavailable.
 """
@@ -23,6 +33,7 @@ import re
 import shutil
 import struct
 import subprocess
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -198,3 +209,150 @@ def test_the_committed_fixture_fingerprint_agrees_with_objdump() -> None:
     assert pdb["age"] == age
     assert pdb["path"] == path
     assert pdb["signature"] == f"{guid_hex.upper()}{age:X}"
+
+
+def _pe_with_stamp(stamp: int, debug_types: list[int]) -> bytes:
+    """A minimal native PE with a planted COFF stamp and typed debug entries.
+
+    Built independently of the reader's unit builder: the debug table sits at
+    +0x100 into the section (the RSDS builder's layout, reversed from the unit
+    builder's) and every entry's blob is empty -- the REPRO declaration is the
+    entry type itself, not its payload.
+    """
+    sect_rva = 0x1000
+    dos = bytearray(0x40)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x40)
+    opt_size = 0xF0
+    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", 0x8664, 1, stamp, 0, 0, opt_size, 0x0102)
+    raw_off = 0x40 + len(coff) + opt_size + 40
+    if raw_off % 0x200:
+        raw_off += 0x200 - (raw_off % 0x200)
+
+    sec = bytearray(0x200)
+    table_off = 0x100
+    for i, dbg_type in enumerate(debug_types):
+        struct.pack_into(
+            "<IIHHIIII", sec, table_off + i * 28, 0, 0, 0, 0, dbg_type, 0, 0, 0
+        )
+
+    opt = bytearray(opt_size)
+    struct.pack_into("<H", opt, 0, 0x20B)
+    struct.pack_into("<Q", opt, 24, 0x1_4000_0000)
+    struct.pack_into("<I", opt, 32, 0x1000)  # SectionAlignment
+    struct.pack_into("<I", opt, 36, 0x200)  # FileAlignment
+    struct.pack_into("<I", opt, 56, sect_rva + 0x1000)  # SizeOfImage
+    struct.pack_into("<I", opt, 60, raw_off)  # SizeOfHeaders
+    struct.pack_into("<I", opt, 108, 16)  # NumberOfRvaAndSizes
+    if debug_types:
+        struct.pack_into("<II", opt, 112 + 6 * 8, sect_rva + table_off, 28 * len(debug_types))
+
+    sect = bytearray(40)
+    sect[0:6] = b".rdata"
+    struct.pack_into("<I", sect, 8, len(sec))
+    struct.pack_into("<I", sect, 12, sect_rva)
+    struct.pack_into("<I", sect, 16, len(sec))
+    struct.pack_into("<I", sect, 20, raw_off)
+    struct.pack_into("<I", sect, 36, 0x40000040)
+
+    out = bytearray(dos + coff + opt + sect)
+    if len(out) < raw_off:
+        out += b"\x00" * (raw_off - len(out))
+    return bytes(out + sec)
+
+
+def _pefile_build_time(pefile_mod: Any, binary: Path) -> tuple[int, bool]:
+    """``(stamp, reproducible)`` as pefile reads them off its own parse."""
+    pe = pefile_mod.PE(str(binary))
+    stamp = int(pe.FILE_HEADER.TimeDateStamp)
+    entries = getattr(pe, "DIRECTORY_ENTRY_DEBUG", [])
+    return stamp, any(int(entry.struct.Type) == 16 for entry in entries)
+
+
+def _session_build_time(binary: Path) -> dict[str, Any]:
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok, created.error
+        pe = created.data["session"]["metadata"]["pe"]
+        keys = ("link_time", "link_time_utc", "reproducible")
+        return {key: pe[key] for key in keys if key in pe}
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("stamp", "debug_types"),
+    [
+        # A classically dated build: a real stamp, a CodeView-free debug dir.
+        (0x60000000, []),
+        # A deterministic build: the stamp is a hash, REPRO says so.
+        (0xE3B0C442, [16]),
+        # REPRO rides behind another entry type, as in real Roslyn output.
+        (0xE3B0C442, [2, 16]),
+        # An unfilled stamp: no time to render, nothing declared.
+        (0, []),
+    ],
+    ids=["dated", "repro", "repro-behind-codeview", "zero-stamp"],
+)
+def test_build_time_agrees_with_pefile(
+    tmp_path: Path, stamp: int, debug_types: list[int]
+) -> None:
+    pefile_mod = _pefile()
+    if pefile_mod is None:
+        pytest.skip("pefile not installed — PE build-time gate not run (skip != pass)")
+
+    binary = tmp_path / f"stamped_{stamp:x}.exe"
+    binary.write_bytes(_pe_with_stamp(stamp, debug_types))
+
+    # Referee sanity: pefile reads back exactly the stamp and declaration we
+    # planted, so the comparison below cannot pass vacuously.
+    pefile_stamp, pefile_repro = _pefile_build_time(pefile_mod, binary)
+    assert pefile_stamp == stamp
+    assert pefile_repro is (16 in debug_types)
+
+    facts = _session_build_time(binary)
+    assert facts["link_time"] == pefile_stamp
+    assert facts["reproducible"] is pefile_repro
+    if stamp and not pefile_repro:
+        # The UTC rendering, re-derived through time.gmtime rather than the
+        # reader's datetime path.
+        rendered = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stamp))
+        assert facts["link_time_utc"] == rendered
+    else:
+        # A hash or an unfilled stamp must never be dressed up as a date.
+        assert "link_time_utc" not in facts
+
+
+@pytest.mark.integration
+def test_build_time_of_an_mcs_compiled_pe_agrees_with_pefile(tmp_path: Path) -> None:
+    pefile_mod = _pefile()
+    if pefile_mod is None:
+        pytest.skip("pefile not installed — PE build-time gate not run (skip != pass)")
+    mcs = shutil.which("mcs")
+    if mcs is None:
+        pytest.skip("mcs (mono-mcs) not installed — build-time gate not run (skip != pass)")
+
+    source = tmp_path / "hello.cs"
+    source.write_text('class P { static void Main() { System.Console.WriteLine("hi"); } }\n')
+    binary = tmp_path / "hello.exe"
+    before = int(time.time())
+    subprocess.run(
+        [mcs, f"-out:{binary}", str(source)], check=True, capture_output=True, timeout=120
+    )
+    after = int(time.time())
+
+    pefile_stamp, pefile_repro = _pefile_build_time(pefile_mod, binary)
+    facts = _session_build_time(binary)
+    assert facts["link_time"] == pefile_stamp
+    assert facts["reproducible"] is pefile_repro
+    if pefile_repro or pefile_stamp == 0:
+        assert "link_time_utc" not in facts
+    else:
+        # Mono stamps the wall clock; a rendering that strays from the compile
+        # window would mean the reader misread or misconverted the field.
+        assert before <= pefile_stamp <= after + 60
+        assert facts["link_time_utc"] == time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(pefile_stamp)
+        )

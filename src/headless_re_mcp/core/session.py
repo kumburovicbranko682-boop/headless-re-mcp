@@ -180,6 +180,10 @@ class SessionRegistry:
                 # The CodeView RSDS record -- the PE build fingerprint, the
                 # pair to an ELF build-id / Mach-O UUID; absent is an answer.
                 metadata["pe"].update(_pe_debug_fingerprint(path))
+                # The COFF link timestamp and the deterministic-build marker:
+                # a REPRO debug entry turns the stamp into a content hash, so
+                # the UTC rendering is offered only while it is still a time.
+                metadata["pe"].update(_pe_build_time(path))
                 # VS_VERSIONINFO -- the self-declared identity (versions,
                 # CompanyName/ProductName strings); a claim, not a verdict.
                 metadata["pe"].update(_pe_version_info(path))
@@ -614,6 +618,14 @@ _ELF_TOOLCHAIN_SECTION = ".comment"
 _ELF_MAX_COMMENT = 64 * 1024
 _ELF_MAX_TOOLCHAIN = 16
 _ELF_MAX_TOOLCHAIN_CHARS = 256
+# .gnu_debuglink records where the stripped symbols went -- the ELF pair to
+# the PE pdb path (RSDS): objcopy --add-gnu-debuglink writes the separate
+# debug file's basename, a NUL, padding to 4, then a CRC32 of that file's
+# bytes in the object's byte order. gdb re-finds the file by both, and
+# readelf --string-dump prints the name, so the native gate can cross-check.
+_ELF_DEBUGLINK_SECTION = ".gnu_debuglink"
+_ELF_MAX_DEBUGLINK = 4096
+_ELF_MAX_DEBUGLINK_CHARS = 256
 _DT_NULL = 0
 _DT_NEEDED = 1
 _DT_STRTAB = 5
@@ -3976,6 +3988,11 @@ _PE_DEBUG_DIR = 6
 _PE_DEBUG_ENTRY_SIZE = 28
 _PE_MAX_DEBUG_ENTRIES = 32
 _PE_DEBUG_TYPE_CODEVIEW = 2
+# A debug-directory entry of type 16 (IMAGE_DEBUG_TYPE_REPRO) declares a
+# deterministic build: the COFF TimeDateStamp is then a content hash, not a
+# time. Roslyn and MSVC /Brepro write it; reading the stamp as a date without
+# checking for it is how analysts misdate half the modern Windows ecosystem.
+_PE_DEBUG_TYPE_REPRO = 16
 # RSDS sig (4) + GUID (16) + age (4) + at least a NUL for the path, up to a
 # bounded path length.
 _PE_MIN_RSDS = 25
@@ -5250,10 +5267,61 @@ def _pe_debug_fingerprint(path: Path) -> dict[str, Any]:
                     "guid": str(guid),
                     "age": age,
                     "path": pdb_path or None,
-                    "signature": f"{guid.hex.upper()}{age:X}",
-                }
+                "signature": f"{guid.hex.upper()}{age:X}",
             }
+        }
     return {}
+
+
+def _pe_build_time(path: Path) -> dict[str, Any]:
+    """The COFF link timestamp plus the deterministic-build marker.
+
+    The PE build-time fact -- the when to the Rich header's what-with and the
+    RSDS record's which-build. ``link_time`` is the COFF header's raw
+    TimeDateStamp; ``reproducible`` is True when a debug-directory entry of
+    type 16 (IMAGE_DEBUG_TYPE_REPRO) declares a deterministic build, in which
+    case the stamp is a content hash and reading it as a date misdates the
+    binary (Roslyn has emitted these by default for years). ``link_time_utc``
+    renders the stamp as an ISO UTC instant only while it still claims to be
+    one: nonzero and not reproducible. Malware analysts lean on this triple
+    both ways -- a real stamp is a timeline anchor, a zeroed or hashed one is
+    itself a statement about the toolchain.
+
+    Fail-closed: a non-PE yields ``{}``; a missing or unmappable debug
+    directory just means no REPRO declaration, which is a real False.
+    """
+    try:
+        if path.stat().st_size > _PE_MAX_IMPORT_FILE:
+            return {}
+        with path.open("rb") as stream:
+            raw = stream.read(_PE_MAX_IMPORT_FILE)
+    except OSError:
+        return {}
+    view = _pe_header_view(raw)
+    if view is None:
+        return {}
+    _magic, dir_count, dir_off, sections, _base = view
+    e_lfanew = int.from_bytes(raw[0x3C:0x40], "little")
+    stamp = int.from_bytes(raw[e_lfanew + 8 : e_lfanew + 12], "little")
+    facts: dict[str, Any] = {"link_time": stamp, "reproducible": False}
+    entry = dir_off + _PE_DEBUG_DIR * 8
+    if dir_count > _PE_DEBUG_DIR and entry + 8 <= len(raw):
+        table_rva = int.from_bytes(raw[entry : entry + 4], "little")
+        table_size = int.from_bytes(raw[entry + 4 : entry + 8], "little")
+        table_off = _pe_rva_to_offset(sections, table_rva) if table_rva else None
+        if table_off is not None:
+            for i in range(min(table_size // _PE_DEBUG_ENTRY_SIZE, _PE_MAX_DEBUG_ENTRIES)):
+                start = table_off + i * _PE_DEBUG_ENTRY_SIZE
+                rec = raw[start : start + _PE_DEBUG_ENTRY_SIZE]
+                if len(rec) < _PE_DEBUG_ENTRY_SIZE:
+                    break
+                if int.from_bytes(rec[12:16], "little") == _PE_DEBUG_TYPE_REPRO:
+                    facts["reproducible"] = True
+                    break
+    if stamp and not facts["reproducible"]:
+        instant = datetime.fromtimestamp(stamp, tz=UTC)
+        facts["link_time_utc"] = instant.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return facts
 
 
 def _pe_wx_sections(path: Path) -> dict[str, Any]:
@@ -5948,6 +6016,11 @@ def _elf_layout_facts(
         toolchain = _elf_toolchain(stream, sections)
         if toolchain:
             facts["toolchain"] = toolchain
+        # The .gnu_debuglink record -- where the stripped symbols went, the
+        # ELF pair to the PE pdb path; absent stays absent.
+        debuglink = _elf_debuglink(stream, order, sections)
+        if debuglink:
+            facts["debug_link"] = debuglink
         # Sections whose bytes measure near-random -- the packed-payload
         # flags the magic-byte census cannot raise. Empty is a real answer.
         facts["high_entropy_sections"] = _entropy_flags(
@@ -6904,6 +6977,47 @@ def _elf_toolchain(
                     break
         return records
     return []
+
+
+def _elf_debuglink(
+    stream: BinaryIO,
+    order: str,
+    sections: list[tuple[str, int, int, int]],
+) -> dict[str, Any] | None:
+    """The ``.gnu_debuglink`` record -- where the stripped symbols went.
+
+    The ELF pair to the PE pdb-path fact: a distro's strip pipeline
+    (objcopy --only-keep-debug / --add-gnu-debuglink) leaves behind the
+    separate debug file's basename plus a CRC32 of that file's bytes, and gdb
+    re-finds the symbols by both. The layout is the filename, a NUL, zero
+    padding to a 4-byte boundary, then the CRC in the object's byte order.
+
+    Returns ``None`` -- fact absent -- when there is no such section or its
+    record is malformed (no NUL, or too short to carry the CRC); bounded by a
+    section-size cap so a hostile header cannot inflate the read.
+    """
+    for name, stype, sh_offset, sh_size in sections:
+        if name != _ELF_DEBUGLINK_SECTION or stype != _SHT_PROGBITS:
+            continue
+        if sh_offset <= 0 or not 8 <= sh_size <= _ELF_MAX_DEBUGLINK:
+            return None
+        try:
+            stream.seek(sh_offset)
+            blob = stream.read(sh_size)
+        except OSError:
+            return None
+        end = blob.find(b"\x00")
+        if end <= 0:
+            return None
+        crc_off = (end + 4) & ~3  # NUL, then pad so the CRC sits 4-aligned
+        if crc_off + 4 > len(blob):
+            return None
+        crc = int.from_bytes(blob[crc_off : crc_off + 4], order)  # type: ignore[arg-type]
+        return {
+            "filename": blob[:end].decode("utf-8", errors="replace")[:_ELF_MAX_DEBUGLINK_CHARS],
+            "crc32": f"{crc:08x}",
+        }
+    return None
 
 
 def _elf_section_payloads(
