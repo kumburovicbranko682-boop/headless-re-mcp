@@ -117,6 +117,26 @@ def test_report_is_scoped_and_cleared_per_session() -> None:
     assert [item["session_id"] for item in monitor.report()] == ["s2"]
 
 
+def test_forget_also_clears_the_reconnect_backoff_bookkeeping() -> None:
+    # A failing reconnect records a skip counter under (session_id, backend) so
+    # an unreachable pipe is not retried every sweep. If forget dropped the
+    # health entry but left that counter, a new session reusing the same id and
+    # backend would inherit the old backoff and silently skip its early health
+    # checks -- reporting a stale "sitting one out" for a freshly opened target.
+    worker = FakeWorker(connected=False)
+    worker.reconnect_error = RuntimeError("pipe never came back")
+    monitor = _monitor(("s1", BackendKind.X64DBG, worker))
+
+    monitor.check_once()
+    key = ("s1", BackendKind.X64DBG.value)
+    assert key in monitor._reconnect_backoff, "the failing reconnect should have armed a backoff"
+
+    monitor.forget("s1")
+
+    assert monitor.report() == []
+    assert key not in monitor._reconnect_backoff
+
+
 class VanishingRuntimes(FakeRuntimes):
     """Hands out a runtime that the owner drops before it gets used."""
 
