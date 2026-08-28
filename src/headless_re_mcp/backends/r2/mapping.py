@@ -257,8 +257,17 @@ def enrich_r2_payload(
                 item["offset"] = item["addr"]
             if "lib" not in item and "libname" in item:
                 item["lib"] = item["libname"]
+            # The reverse drift: r2 5.x spells "this import has no PLT stub"
+            # as plt: 0 on an ELF's GOT-only imports, where 6.x omits the key.
+            # The zero page is never a real stub, yet 0 fell through to the
+            # address mapping below and grew a fabricated address at va 0 that
+            # an agent could try to dereference. Erase the sentinel so a
+            # stub-less import row is name-only on every r2, as the r2.imports
+            # docstring states.
+            if type(item.get("plt")) is int and item["plt"] == 0:
+                del item["plt"]
             va = _item_va(
-                entry,
+                item,
                 ("offset", "vaddr", "addr", "from", "to", "plt", "paddr"),
             )
             mapped = address_dict(va, module=module, image_base=image_base, architecture=arch)

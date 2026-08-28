@@ -100,6 +100,34 @@ def test_m11_r2_live_address_mapping() -> None:
         isinstance(row.get("lib"), str) and row["lib"] for row in import_items
     ), "no import carried the documented lib key"
 
+    # strings (izj) is the last whitelisted listing whose documented raw keys
+    # (string, section, type, vaddr) no live gate demanded of a real r2. offset
+    # and lib both drifted between r2 5.x and 6.x before their aliases; this is
+    # the tripwire that notices when the string keys drift too. The committed
+    # fixture embeds its own literals, so the listing is non-empty by
+    # construction and each documented key can be asserted, plus the mapped
+    # address the enrichment adds.
+    strings = client.run(fixture, ["izj"], timeout=60.0)
+    assert strings.get("parsed") is True
+    string_items = strings.get("items") or []
+    assert string_items, "r2 found no strings in the PE"
+    first_string = string_items[0]
+    for key in ("string", "section", "type", "vaddr"):
+        assert key in first_string, f"izj dropped the documented {key} key"
+    # Value-based, not shape-only: izj rows also carry paddr, which the
+    # enrichment would fall back to if vaddr stopped being read -- an address
+    # dict would still appear, holding a file offset instead of a va.
+    assert first_string["address"]["va"] == first_string["vaddr"]
+
+    # exports (iEj) on this fixture pins the empty-but-honest shape: a console
+    # exe exports nothing, and r2 answers [] -- which must read back as a
+    # parsed, zero-count listing, not a parse failure or an invented row. The
+    # ELF gate below covers the populated side of the same contract.
+    exports = client.run(fixture, ["iEj"], timeout=60.0)
+    assert exports.get("parsed") is True
+    assert exports.get("count") == 0
+    assert exports.get("items") == []
+
 
 @pytest.mark.integration
 def test_m11_r2_live_elf_address_mapping(tmp_path: Path) -> None:
@@ -123,7 +151,13 @@ def test_m11_r2_live_elf_address_mapping(tmp_path: Path) -> None:
         pytest.skip("no C compiler to build an ELF fixture — live Gate not run (skip≠pass)")
 
     source = tmp_path / "elf_fixture.c"
-    source.write_text("int helper(int x){return x+1;}\nint main(void){return helper(41);}\n")
+    # greet is a non-static global (so it lands in the symbol table r2 lists as
+    # exports) returning a planted literal (so .rodata holds a known string).
+    source.write_text(
+        "int helper(int x){return x+1;}\n"
+        'const char *greet(void){return "hello elf strings";}\n'
+        "int main(void){return helper(41);}\n"
+    )
     fixture = tmp_path / "elf_fixture"
     build = subprocess.run(
         [gcc, "-no-pie", "-O0", "-o", str(fixture), str(source)],
@@ -170,17 +204,56 @@ def test_m11_r2_live_elf_address_mapping(tmp_path: Path) -> None:
     assert disasm.get("address_va") == va
     assert disasm["address"]["rva"] == va - image_base
 
-    # imports (iij) on an ELF: the path must parse and map addresses, but unlike
-    # a PE the rows carry no lib -- an ELF resolves imports at runtime through
-    # DT_NEEDED, not per symbol -- so this pins the ELF contract the r2.imports
-    # docstring now states rather than asserting the PE-only lib key. A
-    # dynamically linked executable (a plain gcc build is one) always imports at
-    # least the libc startup functions, so the list is non-empty and each row
-    # names a symbol mapped through the same load base as the functions above.
+    # imports (iij) on an ELF: the rows carry no lib -- an ELF resolves imports
+    # at runtime through DT_NEEDED, not per symbol -- and, measured against a
+    # real toolchain, an import reached only through the GOT carries no plt or
+    # address either: a trivial gcc build's __libc_start_main row is name-only.
+    # This pins exactly what the r2.imports docstring promises for ELF (name
+    # always; lib never; address only with a stub), where the first draft of
+    # this gate wrongly demanded an address dict of every row. A dynamically
+    # linked executable always imports at least the libc startup functions, so
+    # the list is non-empty.
     imports = client.run(fixture, ["aa", "iij"], timeout=60.0)
     assert imports.get("parsed") is True
     import_items = imports.get("items") or []
     assert import_items, "r2 found no imports in a dynamically linked ELF"
-    first_import = import_items[0]
-    assert isinstance(first_import.get("name"), str) and first_import["name"]
-    assert isinstance(first_import.get("address"), dict)
+    for row in import_items:
+        assert isinstance(row.get("name"), str) and row["name"]
+        assert "lib" not in row, f"an ELF import claimed a lib: {row}"
+        # r2 5.x emits a plt: 0 sentinel for these stub-less rows (6.x omits
+        # the key); the alias layer must have erased it rather than mapping a
+        # fabricated address at va 0 -- on a 5.x CI this line is what proves
+        # the normalisation ran against the real tool.
+        assert row.get("plt") != 0, f"the plt zero sentinel leaked through: {row}"
+        if isinstance(row.get("address"), dict):
+            assert row["address"].get("va") != 0, f"a fabricated va-0 address: {row}"
+
+    # exports (iEj): for an ELF r2 lists the global symbols, and the build
+    # keeps its symtab (nothing strips it), so the fixture's own non-static
+    # greet must surface by name with the documented vaddr, its address mapped
+    # through the same load base as everything above. This is the populated
+    # counterpart to the PE gate's empty-export contract.
+    exports = client.run(fixture, ["iEj"], timeout=60.0)
+    assert exports.get("parsed") is True
+    export_rows = {
+        row.get("name"): row for row in exports.get("items") or [] if isinstance(row, dict)
+    }
+    assert "greet" in export_rows, f"greet missing from ELF exports: {sorted(export_rows)[:10]}"
+    greet = export_rows["greet"]
+    assert isinstance(greet.get("vaddr"), int)
+    assert greet["address"]["rva"] == greet["vaddr"] - image_base
+
+    # strings (izj): the planted .rodata literal must be recovered verbatim
+    # with the documented string/section/type/vaddr keys, its address mapped.
+    # Searching for the known literal (rather than trusting item 0) keeps this
+    # independent of whatever other strings the toolchain happens to embed.
+    strings = client.run(fixture, ["izj"], timeout=60.0)
+    assert strings.get("parsed") is True
+    planted = [
+        row for row in strings.get("items") or [] if row.get("string") == "hello elf strings"
+    ]
+    assert planted, "the planted .rodata literal was not recovered"
+    literal = planted[0]
+    for key in ("section", "type", "vaddr"):
+        assert key in literal, f"izj dropped the documented {key} key"
+    assert literal["address"]["rva"] == literal["vaddr"] - image_base

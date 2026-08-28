@@ -8,10 +8,15 @@ docstrings promise ``offset`` and ``lib`` by name, and CI pins radare2 to the
 distro's older 5.x where those keys still exist, so a drift here would ship a
 tool whose documented fields silently vanish for anyone on a current r2.
 
+The drift also runs the other way: 5.x emits a ``plt: 0`` sentinel for an ELF
+import with no PLT stub, which 6.x spells by omitting the key.
+
 enrich_r2_payload restores the documented spelling when only the newer one is
-present. These tests feed the 6.x shape (which CI's r2 never emits) and pin
-that the old, documented keys come back with the same value, and that the
-docstrings still name them so the alias and the contract cannot drift apart.
+present and erases the sentinel only the older one emits. These tests feed
+each version's shape (one of which the installed r2 never emits) and pin that
+the documented contract comes back identical either way, and that the
+docstrings still name the promised keys so the alias and the contract cannot
+drift apart.
 """
 
 from __future__ import annotations
@@ -136,3 +141,30 @@ def test_imports_do_not_overwrite_a_lib_r2_already_gave(tmp_path: Path) -> None:
         architecture=Architecture.X64,
     )
     assert payload["items"][0]["lib"] == "ntdll"
+
+
+def test_imports_drop_the_5x_plt_zero_sentinel(tmp_path: Path) -> None:
+    """A 5.x GOT-only import row says ``plt: 0``; it must come back name-only.
+
+    r2 5.x spells "this import has no PLT stub" as ``plt: 0``, where 6.x omits
+    the key entirely -- measured on the same gcc-built ELF, whose
+    __libc_start_main is reached only through the GOT. Zero is a sentinel, not
+    a location (the zero page is never a real stub), but it used to fall
+    through to the address mapping, so the same binary answered name-only rows
+    on r2 6.x and rows carrying a fabricated address at va 0 on the distro 5.x
+    CI pins -- an address an unattended agent would dereference. The sentinel
+    is erased so a stub-less import reads the same on every r2, which is
+    exactly the "such a row is name-only" the r2.imports docstring promises.
+    """
+    payload = enrich_r2_payload(
+        {
+            "raw": json.dumps([{"name": "__libc_start_main", "plt": 0, "bind": "GLOBAL"}]),
+            "commands": ["iij"],
+        },
+        binary=_pe(tmp_path),
+        architecture=Architecture.X64,
+    )
+    item = payload["items"][0]
+    assert item["name"] == "__libc_start_main"
+    assert "plt" not in item
+    assert "address" not in item

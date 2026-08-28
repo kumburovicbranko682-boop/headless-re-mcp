@@ -79,14 +79,16 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Imported symbols, with the resolving library on a PE.
 
-        Answers with items, each carrying name, plt and address
-        (va/rva/module), plus count. lib -- the DLL a name resolves to --
-        rides on a PE import, whose import table records it per symbol; an
-        ELF resolves its imports at runtime through DT_NEEDED, not per
-        symbol, so an ELF row carries no lib. There is no integer address
-        field. Read items_truncated, items_total and items_limit when the
-        list filled the cap (4096). There is no imports, truncated or
-        has_more field.
+        Answers with items, each carrying name, plus count. lib -- the DLL a
+        name resolves to -- rides on a PE import, whose import table records
+        it per symbol; an ELF resolves its imports at runtime through
+        DT_NEEDED, not per symbol, so an ELF row carries no lib. plt and
+        address (va/rva/module) ride on imports with a resolved stub address:
+        every PE import has one (its IAT entry), but an ELF import reached
+        only through the GOT has none, so such a row is name-only. There is
+        no integer address field. Read items_truncated, items_total and
+        items_limit when the list filled the cap (4096). There is no imports,
+        truncated or has_more field.
         """
         return _dump(analysis.r2_imports(session_id, timeout=timeout))
 
