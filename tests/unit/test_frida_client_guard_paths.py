@@ -174,6 +174,33 @@ def test_bound_timeout_rejects_a_non_positive_deadline() -> None:
     assert caught.value.code == "invalid_params"
 
 
+@pytest.mark.parametrize("bad", [None, "abc", {}, [], object()])
+def test_bound_timeout_rejects_a_non_numeric_deadline(bad: Any) -> None:
+    """timeout flows from the tool arguments with no schema coercion on the
+    agent transport, so float(timeout) can raise TypeError (null/object) or
+    ValueError (a non-numeric string). Neither is a FridaError, and the TypeError
+    is not mapped -- so a bad timeout filed an internal_error incident."""
+    with pytest.raises(FridaError) as caught:
+        frida_mod._bound_timeout(bad)
+    assert caught.value.code == "invalid_params"
+
+
+@pytest.mark.parametrize("nan", [float("nan"), "nan"])
+def test_bound_timeout_rejects_a_nan_deadline(nan: Any) -> None:
+    """nan <= 0 is False, so a NaN slipped past the positivity check and
+    min(nan, MAX) returned nan -- a nan deadline for Future.result(timeout=)."""
+    with pytest.raises(FridaError) as caught:
+        frida_mod._bound_timeout(nan)
+    assert caught.value.code == "invalid_params"
+
+
+def test_bound_timeout_clamps_infinity_and_huge_values_to_the_ceiling() -> None:
+    """inf and any over-large finite value still resolve to the workflow ceiling,
+    the behaviour callers relied on before the guard tightened."""
+    assert frida_mod._bound_timeout(float("inf")) == frida_mod.MAX_WORKFLOW_TIMEOUT
+    assert frida_mod._bound_timeout(10**9) == frida_mod.MAX_WORKFLOW_TIMEOUT
+
+
 def test_invoke_passes_a_timeout_only_when_the_callable_names_it() -> None:
     def with_timeout(value: int, timeout: float) -> tuple[int, float]:
         return value, timeout

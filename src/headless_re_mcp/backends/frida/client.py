@@ -218,9 +218,21 @@ def _accepts_timeout(func: Any) -> bool:
 
 
 def _bound_timeout(timeout: float) -> float:
-    value = float(timeout)
-    if value <= 0:
-        raise FridaError("invalid_params", "timeout must be positive")
+    try:
+        value = float(timeout)
+    except (TypeError, ValueError) as exc:
+        # timeout flows straight from the tool arguments, and the agent transport
+        # skips the schema, so a non-numeric string, null, or object reaches here.
+        # float() then raises ValueError/TypeError -- not a FridaError -- and the
+        # TypeError in particular is not mapped, so a bad timeout filed an
+        # internal_error incident instead of this invalid_params.
+        raise FridaError("invalid_params", "timeout must be a number") from exc
+    if not value > 0:
+        # ``not value > 0`` rather than ``value <= 0`` so a NaN (from a JSON NaN
+        # or "nan") is rejected too: ``nan <= 0`` is False, so it slipped through
+        # and ``min(nan, MAX)`` returned nan, which then became the deadline for
+        # Future.result(timeout=nan). ``inf`` still passes and is clamped below.
+        raise FridaError("invalid_params", "timeout must be a positive number")
     return min(value, MAX_WORKFLOW_TIMEOUT)
 
 
