@@ -1163,6 +1163,78 @@ def test_apk_method_xrefs_pin_a_cross_class_call_site(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_apk_method_cfg_recovers_a_conditional_and_a_loop(tmp_path: Path) -> None:
+    """apk.method_cfg must recover a real method's block graph from androguard.
+
+    apk.method_bytecode lists a method's instructions; this reads its shape.
+    The DEX carries one hand-assembled method: v0=3; loop: if v0==0 exit; v0--;
+    goto loop; return -- a conditional and a counted loop. Its CFG must therefore
+    have four blocks, a conditional block that both falls through and branches, a
+    back edge to an earlier block (the loop), and a terminal return block with no
+    out-edges. Every node offset must also be a real instruction address in
+    apk.method_bytecode -- the pivot the two tools share. skip != pass when
+    androguard is absent; the in-process DEX builder needs no external tool.
+    """
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — APK live gate not run (skip != pass)")
+    # const/4 v0,#3; loop: if-eqz v0,+5 (->exit); add-int/lit8 v0,v0,#-1; goto loop; return-void
+    insns = [0x3012, 0x0038, 0x0005, 0x00D8, 0xFF00, 0xFC28, 0x000E]
+    dex = _build_single_class_dex(
+        class_desc="Lcom/example/Loop;",
+        method_name="run",
+        method_is_static=True,
+        insns=insns,
+        registers=2,
+    )
+    apk = _build_apk(tmp_path / "loop.apk", dex=dex)
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+
+        cfg = service.apk_method_cfg(session_id, "com.example.Loop", "run")
+        assert cfg.ok and cfg.data is not None, cfg.error
+        data = cfg.data
+        assert data["has_code"] is True, data
+        assert data["entry"] == 0, data
+        assert data["node_count"] == len(data["nodes"]) == 4, data
+        assert data["edge_count"] == len(data["edges"]) == 4, data
+        assert data["blocks_truncated"] is False, data
+
+        # Nodes carry block geometry and a terminator; end == addr + size.
+        by_addr = {n["addr"]: n for n in data["nodes"]}
+        assert set(by_addr) == {0, 2, 6, 12}, by_addr
+        for node in data["nodes"]:
+            assert node["end"] == node["addr"] + node["size"], node
+            assert node["ninstr"] >= 1, node
+            assert isinstance(node.get("terminator"), str) and node["terminator"], node
+        # The conditional block ends in an if-*; the loop tail in a goto.
+        assert by_addr[2]["terminator"].startswith("if-"), by_addr[2]
+        assert by_addr[6]["terminator"] == "goto", by_addr[6]
+        assert by_addr[12]["terminator"].startswith("return"), by_addr[12]
+
+        kinds = {(e["src"], e["dst"]): e["kind"] for e in data["edges"]}
+        # The conditional both falls through (to 6) and branches out (to 12).
+        assert kinds[(2, 6)] == "fall_through", kinds
+        assert kinds[(2, 12)] == "branch", kinds
+        # The loop: the goto tail branches back to the earlier condition block.
+        assert kinds[(6, 2)] == "branch", kinds
+        assert any(dst < src for (src, dst) in kinds), kinds
+        # The return block is a sink: nothing flows out of it.
+        assert not any(src == 12 for (src, _dst) in kinds), kinds
+
+        # The seam: every CFG node start is a real instruction address, so a node
+        # pivots straight to apk.method_bytecode.
+        bc = service.apk_method_bytecode(session_id, "com.example.Loop", "run", limit=2000)
+        assert bc.ok and bc.data is not None, bc.error
+        insn_addrs = {ins["addr"] for ins in bc.data["instructions"]}
+        assert set(by_addr).issubset(insn_addrs), (sorted(by_addr), sorted(insn_addrs))
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_apk_readers_merge_classes_across_secondary_dex(tmp_path: Path) -> None:
     """Classes and xrefs must span classes.dex + classes2.dex, not just the first.
 
