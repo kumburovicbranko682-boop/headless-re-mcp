@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（PE 导入表：thunk 数组跑出节区却未标记截断，导致导入数被谎报为完整）
+
+- `detection/pe.py` 的 `_parse_imports` 有两种独立的截断形态。外层描述符数组跑出目录而
+  没有空描述符收尾的那种，已由外层 `while ... else` 标记；但内层 thunk（IAT）数组的那种
+  没有对应处理：当某个库的 thunk 数组一直读到其所在节区原始字节的末尾、却没有 NUL 收尾时，
+  内层 `while` 只是因边界条件为假而正常退出，`truncated` 不会被置位。结果是该库的导入函数被
+  少计（尾部根本不在文件里），而摘要却以 `truncated=False` 把"恰好放得下的那些函数"报成了
+  一份完整导入表——这正是把被截断的 dump 伪装成完好导入清单的廉价手法。相邻的 `_parse_tls`
+  回调读取器早已用 `else: truncated = True` 处理同一形态，导入读取器却漏了。修法：给内层
+  thunk `while` 补上对称的 `else: truncated = True`（NUL 收尾与函数数上限两个 `break` 都不会
+  触发它，因此只在"读到节区边界仍无终止符"时置位，对合法 PE 无误报）。新增
+  `tests/unit/test_pe_imports_thunk_truncation.py`：构造单个规范描述符、其 thunk 数组用序数
+  项填满节区窗口且无 NUL，钉住 `truncated=True`（函数数 64，远低于 16384 上限，确保是边界而
+  非上限触发），并配一例在窗口内带 NUL 终止符的对照，验证不误报。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
