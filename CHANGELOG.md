@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（重载恢复只回放第一页 run 历史，长回答留下永久空洞）
+
+- Web UI 重载后恢复活动 run 时，只拉一次
+  `/api/agent/runs/{id}/events/history?after=0` 并把返回当作全量回放。但服务端
+  一页封顶 1000 条事件 / 8 MiB（`list_events`），而 message.delta 每次刷写一条
+  ——一段长回答单独就能超页。结果:回放停在第一页末尾,续流又从保存的游标
+  (`runSeq`,可能远在其后)开始,两者之间的事件在恢复出的视图里**永久缺失**。
+  修复:`api/client.ts` 新增 `fetchRunHistory`,按"上一页末 seq"翻页直到空读
+  (存储每 run 最多保留 5000 条,页数护栏只防服务端异常,完整 run 到不了),
+  `useWorkbench` 恢复路径换用之。新增 3 项 Vitest:翻页拼接顺序与 URL 序列、
+  空读即停、护栏防无限循环;全套 65 项通过,`tsc --noEmit` 干净,SPA 以 CI 同
+  版 Node 24 重建(仅 JS 包更替,CSS 哈希未变)。
+
 ### 修复（SSE 事件流在收尾竞速里把终态事件永久漏掉）
 
 - run 事件流（`/api/agent/runs/{id}/events`）的循环是"先轮询事件、再读状态"，

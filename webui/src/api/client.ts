@@ -39,6 +39,27 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return payload as T;
 }
 
+export async function fetchRunHistory<T extends { seq: number }>(runId: string, maxPages = 8): Promise<T[]> {
+  // The server caps one history page (list_events: 1000 events / 8 MiB), and
+  // message.delta is one event per flush, so a single long answer overruns a
+  // page. Replaying only the first page left a permanent hole between it and
+  // the live cursor on resume. Page by last seq until an empty read; the
+  // store retains at most 5000 events per run, so the page guard is a bound
+  // against a misbehaving server, not a limit an intact run reaches.
+  const events: T[] = [];
+  let after = 0;
+  for (let page = 0; page < maxPages; page += 1) {
+    const result = await api<{ events?: T[] }>(
+      `/api/agent/runs/${encodeURIComponent(runId)}/events/history?after=${after}`,
+    );
+    const batch = Array.isArray(result.events) ? result.events : [];
+    if (batch.length === 0) break;
+    events.push(...batch);
+    after = batch[batch.length - 1].seq;
+  }
+  return events;
+}
+
 export async function apiBlob(path: string, signal?: AbortSignal): Promise<Blob> {
   const response = await fetch(path, {
     headers: authHeaders(),

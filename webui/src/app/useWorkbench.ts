@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { readApprovalMode, type ApprovalMode, type AutonomyResponse } from "../agent/autonomy";
 import { initialState, reducer, type Message, type RunEvent, type Thread } from "../agent/state";
 import type { LostSample } from "../components/SessionReconnect";
-import { api, bootstrapToken, streamEvents } from "../api/client";
+import { api, bootstrapToken, fetchRunHistory, streamEvents } from "../api/client";
 import { createTargetForProfile, openFormMode, type WorkspaceProfile } from "../lib/inspectorSurface";
 import { rememberSample, recallSample } from "../lib/sampleMemory";
 import { asFileName, readSession, type ListedSession } from "../lib/sessionLabel";
@@ -134,10 +134,13 @@ export function useWorkbench() {
         const resumeAfter = Number(window.history.state?.runSeq ?? 0);
         if (typeof resumeRun === "string") {
           try {
-            const history = await api<{ events: RunEvent[] }>(`/api/agent/runs/${encodeURIComponent(resumeRun)}/events/history?after=0`);
+            // Paged: one history page caps at 1000 events and one long answer
+            // exceeds that in message.delta events alone, so a single fetch
+            // replayed a hole between its last event and the live cursor.
+            const replay = await fetchRunHistory<RunEvent>(resumeRun);
             if (cancelled) return;
             dispatch({ type: "run", runId: resumeRun });
-            history.events.forEach((event) => dispatch({ type: "event", event }));
+            replay.forEach((event) => dispatch({ type: "event", event }));
             void consume(resumeRun, resumeAfter);
           } catch {
             window.history.replaceState({ ...(window.history.state ?? {}), activeRun: null }, "");
