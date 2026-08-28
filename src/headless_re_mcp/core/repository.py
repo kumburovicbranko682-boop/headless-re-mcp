@@ -547,7 +547,10 @@ class InMemoryAnalysisRepository:
     def list_backends(self, session_id: str | None = None) -> list[JsonObject]:
         with self._lock:
             values = [dict(item) for item in self._backends.values()]
-        if session_id is not None:
+        # Truthiness, matching the SQLite store's ``if session_id:`` -- a blank
+        # session id lists every backend rather than filtering to the empty-id
+        # set (nothing). Same parity fix as list_audit / list_artifacts.
+        if session_id:
             values = [item for item in values if item["session_id"] == session_id]
         return sorted(values, key=lambda item: (str(item["session_id"]), str(item["kind"])))
 
@@ -614,7 +617,11 @@ class InMemoryAnalysisRepository:
         offset = max(0, int(offset))
         with self._lock:
             items = [dict(item) for item in self._artifacts.values()]
-        if session_id is not None:
+        # Truthiness, matching the SQLite store's ``if session_id:`` -- a blank
+        # session id is "no filter, all rows", not a literal ``session_id == ""``
+        # (no artifact ever carries an empty one). See list_audit for the same
+        # parity fix.
+        if session_id:
             items = [item for item in items if item["session_id"] == session_id]
         items.sort(key=lambda item: str(item["created_at"]), reverse=True)
         total = len(items)

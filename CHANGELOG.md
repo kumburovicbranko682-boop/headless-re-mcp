@@ -24,6 +24,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（“空串过滤=全集”这条 SQLite↔内存分歧是成类的:上一轮修了 `list_audit`/`list_knowledge`,但 `list_artifacts`/`list_backends` 也同形——内存版一律 `if session_id is not None:`,SQLite 一律真值判断(`if session_id:`)。四个读取器同一 bug 形状,`session_id=""` 在两端相反:SQLite 视空串为“无过滤、全返回”,内存版按字面 `== ""` 过滤而返空)
+
+- 内存版 `list_artifacts`/`list_backends` 的会话过滤改 `if session_id:`,与 `list_audit` 及 SQLite 真值语义对齐:空串过滤=全集(等同 None),真实 id 仍精确过滤。至此四个 filter 读取器两端一致。
+- 测试:新增 `test_repository_blank_filter_parity.py`——把整类不变量收进一处(双仓库 × 四读取器 artifacts/backends/audit/knowledge 参数化):每个读取器“空串过滤=全集(与 None 同)、真实过滤仍收窄、两端结果一致”,种子每读取器 ≥2 行以区分“全集”与“误返空”。既守住本轮 artifacts/backends 修复,也回归护住上轮 audit/knowledge,并让未来第五个 filter 读取器无法再悄悄引入同一分歧。带外验证:回退 artifacts/backends 两处 → 仅这两者的 InMemory 变体如期失败(`0 == 2`)、SQLite 与已修的 audit/knowledge 变体仍绿。
+
 ### 修复（内存版仓库 `list_timeline` 与文件版(SQLite 端口)在两处可观测行为上分道,而 `application_services.list_timeline` 正靠其一区分“无此会话”与“空时间线”:①文件版在无时间线文件时回 `exists: False`,内存版按 session_id 取字典、缺失即回空页且无 `exists` 标记——于是同一个伪造/重启后失效的 id,经内存端口读回是“ok+空时间线”,经 SQLite 却是 `session_not_found`;`timeline.list` 文档明写“从未创建的会话答 session_not_found、而非空 events”,内存端口违背了这条已修契约。②文件版与 `timeline.list` schema 都把 limit 钳到 256,内存版钳到 1000——直连(agent/OpenAI 跳过 pydantic)传 limit=500 时,SQLite 回 ≤256 而内存回 ≤500)
 
 - 内存版 `list_timeline`:无 `session_id` 记录时补 `exists: False`(会话创建会写 `session.created` 进 `_timeline`,故键在即会话曾创建,与文件版“有文件即存在”同义),已创建会话不带该标记;limit 钳制 256↔1000 改为 256,与文件版及 schema 上限一致。两端在“缺失=exists False/total 0”“已创建=无 exists/total≥1”“limit=500→256”三点上现完全一致。
