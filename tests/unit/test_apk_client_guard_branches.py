@@ -6,15 +6,19 @@ availability probe, the ``_require`` path checks, the mtime-keyed cache with its
 eviction, and the per-method fallbacks that keep one androguard version quirk
 from turning a whole read into an exception. Each test here pins one of those.
 
-androguard is installed in this environment, so the parse seam is exercised by
-monkeypatching ``APK`` / ``AnalyzeAPK`` at their import site rather than shipping
-a real APK fixture; the client's caching and error translation is Python either
-way. The shared class-level caches are cleared around every test so a parse here
-cannot leak into another module's run.
+androguard is optional and may be absent here (CI installs only the core
+extras), so the parse seam is exercised by planting a stub ``androguard`` module
+tree in ``sys.modules`` and monkeypatching ``APK`` / ``AnalyzeAPK`` on it rather
+than shipping a real APK fixture; the client's lazy per-call import picks the
+stub up either way, and monkeypatch restores the previous state afterwards. The
+shared class-level caches are cleared around every test so a parse here cannot
+leak into another module's run.
 """
 
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +45,33 @@ def _available_client() -> ApkClient:
     client = ApkClient()
     client._available = True
     return client
+
+
+def _stub_androguard(monkeypatch: Any) -> None:
+    """Make the lazy androguard import sites patchable even when it is absent.
+
+    The client imports ``androguard.core.apk`` / ``androguard.misc`` inside each
+    call, so a stub module tree in ``sys.modules`` satisfies those imports
+    without the real package. ``monkeypatch.setitem`` restores whatever was
+    there before (including nothing), so an installed androguard is untouched
+    for other tests.
+    """
+    root = types.ModuleType("androguard")
+    core = types.ModuleType("androguard.core")
+    apk_mod = types.ModuleType("androguard.core.apk")
+    misc = types.ModuleType("androguard.misc")
+    apk_mod.APK = None  # type: ignore[attr-defined]
+    misc.AnalyzeAPK = None  # type: ignore[attr-defined]
+    core.apk = apk_mod  # type: ignore[attr-defined]
+    root.core = core  # type: ignore[attr-defined]
+    root.misc = misc  # type: ignore[attr-defined]
+    for name, module in (
+        ("androguard", root),
+        ("androguard.core", core),
+        ("androguard.core.apk", apk_mod),
+        ("androguard.misc", misc),
+    ):
+        monkeypatch.setitem(sys.modules, name, module)
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +162,7 @@ def test_apk_parse_caches_by_path_and_mtime(tmp_path: Path, monkeypatch: Any) ->
         def __init__(self, path: str) -> None:
             parses.append(path)
 
+    _stub_androguard(monkeypatch)
     monkeypatch.setattr("androguard.core.apk.APK", _FakeAPK)
     client = _available_client()
     first = client._apk(apk)
@@ -148,6 +180,7 @@ def test_apk_parse_evicts_the_oldest_when_the_cache_is_full(
         def __init__(self, path: str) -> None:
             self.path = path
 
+    _stub_androguard(monkeypatch)
     monkeypatch.setattr("androguard.core.apk.APK", _FakeAPK)
     client = _available_client()
     first = tmp_path / "a.apk"
@@ -166,6 +199,7 @@ def test_apk_parse_failure_becomes_backend_error(tmp_path: Path, monkeypatch: An
     def _raise(path: str) -> None:
         raise ValueError("bad zip")
 
+    _stub_androguard(monkeypatch)
     monkeypatch.setattr("androguard.core.apk.APK", _raise)
     client = _available_client()
     with pytest.raises(ApkError) as caught:
@@ -184,6 +218,7 @@ def test_full_analysis_caches_and_translates_failure(
         calls.append(path)
         return ("apk", "dex", "analysis")
 
+    _stub_androguard(monkeypatch)
     monkeypatch.setattr("androguard.misc.AnalyzeAPK", _analyze)
     client = _available_client()
     first = client._parsed(apk)
@@ -208,6 +243,7 @@ def test_full_analysis_evicts_the_oldest_when_full(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     monkeypatch.setattr("headless_re_mcp.backends.apk.client._CACHE_LIMIT", 1)
+    _stub_androguard(monkeypatch)
     monkeypatch.setattr(
         "androguard.misc.AnalyzeAPK", lambda path: ("apk", "dex", "analysis")
     )
