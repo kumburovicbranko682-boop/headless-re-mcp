@@ -1,12 +1,13 @@
-"""Android static line live gate: jadx decompilation and apktool decode.
+"""Android static line live gate: jadx decompile, apktool decode, androguard facts.
 
-The jadx and apktool backends carry deep subprocess-mocked unit coverage, but no
-gate on any platform ever ran the real CLIs against a real target -- so the whole
-Android *static* line (decompile an APK to Java, decode an APK to smali +
-resources) had never actually executed end to end. The synthetic Android gate
-builds a zip that only looks like an APK (a fake AXML manifest, a placeholder
-classes.dex), which is enough for stdlib classification but nothing a real tool
-can parse, so jadx and apktool were never exercised there.
+The jadx, apktool and androguard backends carry deep subprocess-/import-mocked
+unit coverage, but no gate on any platform ever ran the real tools against a real
+target -- so the whole Android *static* line (decompile an APK to Java, decode an
+APK to smali + resources, extract manifest/permission/class/xref facts) had never
+actually executed end to end. The synthetic Android gate builds a zip that only
+looks like an APK (a fake AXML manifest, a placeholder classes.dex): enough for
+stdlib classification, but nothing a real tool can parse, so it only ever asserts
+that androguard returns *some* envelope and never that it recovered real facts.
 
 This gate closes that hole by producing a *real* target at test time and driving
 the product clients over it:
@@ -17,16 +18,21 @@ the product clients over it:
   identical read-back path when the heavier APK toolchain is absent.
 * apktool: decode a real APK (a genuine binary AXML manifest plus a smali-built
   classes.dex) into smali + manifest and confirm the disassembly round-trips.
+* androguard: through the real ``AnalysisService`` session surface, open the APK
+  and read back its package, permission, launcher activity, recovered class and
+  methods, and the caller cross-reference of one method -- the metadata backbone
+  the apk.* tools expose.
 
 The real APK is assembled here with apktool's own bundled smali assembler plus
 aapt2, from a hand-written manifest and smali class -- no committed binary
 fixture, matching how the PE line builds its fixture rather than tracking one.
 
 skip != pass: each test skips only when the tool it needs is genuinely absent
-(jadx / apktool not configured, no JDK to compile the JAR, no aapt2 to link the
-APK), and never silently. The arithmetic the class computes (a * b + 7) is
-asserted in the recovered Java and smali, so a pass means the tool actually
-reconstructed the code, not merely emitted some file.
+(jadx / apktool / androguard not configured, no JDK to compile the JAR, no aapt2
+to link the APK), and never silently. The arithmetic the class computes
+(a * b + 7) and the run->compute call are asserted in the recovered Java, smali
+and xrefs, so a pass means the tool actually reconstructed the code, not merely
+emitted some file.
 """
 
 from __future__ import annotations
@@ -37,12 +43,21 @@ from pathlib import Path
 
 import pytest
 
+from headless_re_mcp.backends.apk.client import ApkClient
 from headless_re_mcp.backends.apktool.client import ApktoolClient
 from headless_re_mcp.backends.jadx.client import JadxClient
 from headless_re_mcp.config import Settings
+from headless_re_mcp.core.models import TargetKind
+from headless_re_mcp.core.service import AnalysisService
+from headless_re_mcp.core.session import classify_target
 
 _PACKAGE = "com.example.headless"
 _CLASS = "com.example.MainActivity"
+_SMALI_CLASS = "Lcom/example/MainActivity;"
+_PERMISSION = "android.permission.INTERNET"
+# ``run`` calls ``compute``; androguard should recover that caller as an xref.
+_CALLEE = "compute"
+_CALLER = "run"
 
 # One class, one method computing a * b + 7. Trivial but distinctive: the
 # multiply-then-add-7 survives both the .class->Java and the smali->dex->Java
@@ -54,11 +69,17 @@ public class MainActivity {
     public int compute(int a, int b) {
         return a * b + 7;
     }
+
+    public int run() {
+        return compute(2, 3);
+    }
 }
 """
 
 # The smali counterpart, assembled by apktool into a real classes.dex. Written by
 # hand so the APK needs no d8/dx from the Android SDK -- apktool bundles smali.
+# ``run`` calls ``compute`` so androguard's cross-reference analysis has a real
+# edge to recover, not just isolated methods.
 _SMALI_SOURCE = """\
 .class public Lcom/example/MainActivity;
 .super Ljava/lang/Object;
@@ -75,14 +96,29 @@ _SMALI_SOURCE = """\
     add-int/lit8 v0, v0, 0x7
     return v0
 .end method
+
+.method public run()I
+    .registers 4
+    const/4 v1, 0x2
+    const/4 v2, 0x3
+    invoke-virtual {p0, v1, v2}, Lcom/example/MainActivity;->compute(II)I
+    move-result v0
+    return v0
+.end method
 """
 
 _MANIFEST_SOURCE = f"""\
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="{_PACKAGE}">
+    <uses-permission android:name="{_PERMISSION}"/>
     <application android:label="Headless">
-        <activity android:name="com.example.MainActivity"/>
+        <activity android:name="com.example.MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
     </application>
 </manifest>
 """
@@ -240,3 +276,66 @@ def test_apktool_decodes_a_real_apk(tmp_path: Path) -> None:
     smali_text = smali_files[0].read_text(encoding="utf-8")
     assert "compute(II)I" in smali_text, "the compute method was not disassembled"
     assert "mul-int" in smali_text, "apktool did not recover the multiply instruction"
+
+
+@pytest.mark.integration
+def test_androguard_extracts_real_apk_facts(tmp_path: Path) -> None:
+    if not ApkClient().available:
+        pytest.skip("androguard not installed (android extra) — not run (skip≠pass)")
+    apktool = getattr(Settings.load(), "apktool", None)
+    if apktool is None:
+        pytest.skip("apktool not configured; cannot build a test APK — skip≠pass")
+    apk = _build_real_apk(tmp_path, apktool)
+    if apk is None:
+        pytest.skip("could not build a test APK (needs aapt2 for apktool build) — skip≠pass")
+
+    # A real APK must classify as one; the synthetic gate proves the fake zip
+    # does too, so this pins that the genuine article is not mis-routed.
+    assert classify_target(apk) is TargetKind.APK
+
+    # Drive the product session surface, not the client directly: this is the
+    # path the apk.* tools take, so it also exercises session creation, target
+    # dispatch and the Result envelopes.
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session = created.data["session"]
+        assert session["target"] == "apk"
+        session_id = session["id"]
+
+        opened = service.apk_open(session_id)
+        assert opened.ok, opened.error
+        assert opened.data["package"] == _PACKAGE
+        assert opened.data["main_activity"] == _CLASS
+
+        permissions = service.apk_permissions(session_id)
+        assert permissions.ok, permissions.error
+        assert _PERMISSION in permissions.data["permissions"]
+
+        components = service.apk_components(session_id)
+        assert components.ok, components.error
+        assert _CLASS in components.data["activities"]
+        assert components.data["main_activity"] == _CLASS
+
+        manifest = service.apk_manifest(session_id)
+        assert manifest.ok, manifest.error
+        assert _PACKAGE in manifest.data["manifest_xml"]
+
+        classes = service.apk_classes(session_id)
+        assert classes.ok, classes.error
+        assert _SMALI_CLASS in classes.data["classes"], "androguard did not recover our class"
+
+        methods = service.apk_methods(session_id, _CLASS)
+        assert methods.ok, methods.error
+        names = {item["name"] for item in methods.data["methods"]}
+        assert {_CALLEE, _CALLER} <= names, f"expected compute and run among {names}"
+
+        # The real payoff of full DEX analysis: run() calls compute(), so
+        # compute must report run as a caller. A mock never proves this edge.
+        xrefs = service.apk_xrefs(session_id, _CALLEE)
+        assert xrefs.ok, xrefs.error
+        callers = {item["method"] for item in xrefs.data["callers"]}
+        assert _CALLER in callers, f"compute's caller {_CALLER} not among {callers}"
+    finally:
+        service.close_all()
