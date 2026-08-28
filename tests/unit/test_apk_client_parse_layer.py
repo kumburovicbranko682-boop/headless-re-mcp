@@ -74,6 +74,19 @@ def _apk_file(tmp_path: Path, name: str = "app.apk") -> Path:
     return path
 
 
+def _hide_androguard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the lazy ``import androguard`` to fail regardless of the host.
+
+    androguard is optional, but the ``.[android]`` extra installs it, so a test
+    that asserts the absent-module path by relying on the ambient environment
+    fails the moment a developer (or a full-extras CI job) actually has it. A
+    ``None`` sentinel in ``sys.modules`` makes the import raise ImportError, so
+    the degradation branch is exercised on every machine -- skip != pass, and
+    neither does "happens to be uninstalled".
+    """
+    monkeypatch.setitem(sys.modules, "androguard", None)
+
+
 # --- availability ------------------------------------------------------------
 
 
@@ -82,15 +95,18 @@ def test_available_is_true_when_androguard_imports(monkeypatch: pytest.MonkeyPat
     assert ApkClient().available is True
 
 
-def test_available_is_false_when_androguard_is_absent() -> None:
-    # androguard is not installed in this environment; no fake is set up here.
+def test_available_is_false_when_androguard_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hide_androguard(monkeypatch)
     assert ApkClient().available is False
 
 
 # --- _require ----------------------------------------------------------------
 
 
-def test_require_reports_capability_unavailable_without_androguard(tmp_path: Path) -> None:
+def test_require_reports_capability_unavailable_without_androguard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _hide_androguard(monkeypatch)
     client = ApkClient()  # available False
     with pytest.raises(ApkError) as caught:
         client.open(_apk_file(tmp_path))

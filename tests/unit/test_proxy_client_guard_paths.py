@@ -454,12 +454,22 @@ def test_instance_run_falls_back_when_the_constructor_signature_differs(
     assert calls["dumpmaster"] == 2
 
 
-def test_instance_run_records_an_import_failure() -> None:
-    """With mitmproxy absent, the run thread records the import error."""
-    assert "mitmproxy" not in sys.modules
+def test_instance_run_records_an_import_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With mitmproxy unimportable, the run thread records the import error.
+
+    The ``.[proxy]`` extra installs mitmproxy, so a test that keys off the
+    module merely being uninstalled starts a real DumpMaster event loop instead
+    -- ``_run`` never returns and the thread wedges. Force the lazy import to
+    fail with a ``None`` sentinel in ``sys.modules`` so the guard branch runs
+    whether or not mitmproxy is present, and the worker thread captures the
+    ImportError rather than letting it escape.
+    """
+    monkeypatch.setitem(sys.modules, "mitmproxy", None)
+    monkeypatch.setitem(sys.modules, "mitmproxy.options", None)
+    monkeypatch.setitem(sys.modules, "mitmproxy.tools.dump", None)
     inst = _free_instance()
     _run_in_thread(inst)
-    assert inst._error is not None
+    assert isinstance(inst._error, ImportError)
 
 
 # --------------------------------------------------------------------------
