@@ -738,6 +738,84 @@ def test_web_network_endpoints_maps_a_live_capture() -> None:
 
 
 @pytest.mark.integration
+def test_web_network_secrets_extract_credentials_from_a_live_capture() -> None:
+    """web.network.secrets must harvest credentials from a real CDP capture.
+
+    The loopback document sets two cookies via Set-Cookie (a readable one and an
+    HttpOnly one) and the page fetches /app.js, which the browser sends back with
+    a Cookie header. web.network.secrets reads the headers CDP recorded, so it
+    must surface both response Set-Cookie findings (the HttpOnly one flagged
+    session with its attributes) and the request Cookie finding, and reveal must
+    return the real cookie value for replay. It is the browser-side twin of
+    proxy.secrets. skip != pass when playwright or chromium is unavailable.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web secrets Gate not run (skip != pass)")
+    with _local_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+            opened = service.web_open(session_id, headless=True, timeout=30.0)
+            if not opened.ok:
+                pytest.skip(
+                    "chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+            try:
+                nav = service.web_navigate(session_id, url, timeout=30.0)
+                assert nav.ok, nav.error
+
+                # Poll until the Set-Cookie the document sent has been folded in.
+                def _by_key(res: Any) -> dict[tuple[str, str], dict[str, Any]]:
+                    if not (res.ok and res.data):
+                        return {}
+                    return {(s["kind"], s["name"]): s for s in res.data["secrets"]}
+
+                got = _poll(
+                    lambda: service.web_network_secrets(session_id, reveal=True, limit=500),
+                    lambda r: ("set_cookie", _SITE_HTTPONLY_NAME) in _by_key(r),
+                )
+                assert got.ok, got.error
+                by_key = _by_key(got)
+
+                # The HttpOnly cookie the response set: flagged session, with
+                # its attributes captured.
+                sealed = by_key[("set_cookie", _SITE_HTTPONLY_NAME)]
+                assert sealed["location"] == "response"
+                assert sealed["session"] is True
+                assert sealed["cookie_attributes"].get("httponly") is True
+                assert sealed["value"] == _SITE_HTTPONLY_VALUE  # revealed for replay
+
+                # The readable cookie is also set on the response.
+                assert ("set_cookie", _SITE_COOKIE_NAME) in by_key, by_key.keys()
+
+                # The /app.js subresource carries the cookies back as a request
+                # Cookie header, so the readable cookie also appears request-side.
+                cookie_got = _poll(
+                    lambda: service.web_network_secrets(session_id, reveal=True, limit=500),
+                    lambda r: ("cookie", _SITE_COOKIE_NAME) in _by_key(r),
+                )
+                cookie_by_key = _by_key(cookie_got)
+                req_cookie = cookie_by_key[("cookie", _SITE_COOKIE_NAME)]
+                assert req_cookie["location"] == "request"
+                assert req_cookie["value"] == _SITE_COOKIE_VALUE
+
+                # The kind filter keeps only the requested category.
+                only = service.web_network_secrets(session_id, kind="set_cookie", limit=500)
+                assert only.ok, only.error
+                assert only.data["secrets"], only.data
+                assert all(s["kind"] == "set_cookie" for s in only.data["secrets"])
+                assert only.data["kind"] == "set_cookie"
+                assert only.data["captured"] >= 2, only.data
+            finally:
+                service.web_close(session_id)
+        finally:
+            service.close_all()
+
+
+@pytest.mark.integration
 def test_web_cookies_read_the_jar_including_httponly() -> None:
     """web.cookies must return the live jar, HttpOnly cookies included.
 
