@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from headless_re_mcp.backends.common import bounded_run
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.core import process_tree
 
@@ -215,3 +216,37 @@ def test_a_failed_exit_with_an_inherited_pipe_kills_the_orphan_and_raises(
     finally:
         with suppress(Exception):
             os.kill(_read_pid(pidfile), signal.SIGKILL)
+
+
+def test_a_surprise_error_after_launch_still_reaps_the_child(
+    monkeypatch: Any,
+) -> None:
+    """An unexpected error between Popen and the run loop must not leak the child.
+
+    run_bounded's finally is the last-resort reaper every CLI backend leans on:
+    if anything after the process is launched but before a normal return or the
+    timeout/cancel raises blows up, the child it just started must be killed, not
+    left running for the session's life. assign_to_process_group runs immediately
+    after Popen, so forcing it to raise reproduces exactly that surprise with the
+    child freshly alive. The injected error propagates unchanged, and the sleeper
+    is dead once the call returns.
+    """
+    captured: dict[str, int] = {}
+
+    def boom(pid: int) -> None:
+        captured["pid"] = pid
+        raise RuntimeError("surprise during bounded-run setup")
+
+    monkeypatch.setattr(bounded_run, "assign_to_process_group", boom)
+
+    with pytest.raises(RuntimeError, match="surprise during bounded-run setup"):
+        run_bounded([sys.executable, "-c", "import time; time.sleep(30)"], timeout=30.0)
+
+    child = captured["pid"]
+    deadline = time.monotonic() + 5.0
+    while _pid_alive(child) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    alive = _pid_alive(child)
+    with suppress(OSError):
+        os.kill(child, signal.SIGKILL)
+    assert alive is False, "the finally reaper leaked the child on a surprise error"
