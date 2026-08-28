@@ -56,6 +56,33 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     return items, has_more
 
 
+def _dangerous_permissions(apk: Any, *, limit: int) -> tuple[list[str], bool]:
+    """The requested permissions AOSP marks ``dangerous`` (runtime-prompted).
+
+    androguard's ``get_details_permissions()`` maps each requested AOSP
+    permission to its protection level; the base level is the part before any
+    ``|`` flag (``dangerous|instant`` -> ``dangerous``). Third-party or custom
+    permissions are absent from that table, so they are simply left
+    unclassified rather than guessed at.
+    """
+    try:
+        details = apk.get_details_permissions()
+    except Exception:  # noqa: BLE001 - androguard data/shape varies
+        return [], False
+    dangerous: list[str] = []
+    for perm, info in (details or {}).items():
+        try:
+            level = str(info[0]).split("|", 1)[0].strip().lower()
+        except (IndexError, TypeError, KeyError):
+            continue
+        if level == "dangerous":
+            dangerous.append(str(perm))
+    dangerous.sort()
+    if len(dangerous) > limit:
+        return dangerous[:limit], True
+    return dangerous, False
+
+
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     """Clamp a page window at the source, not only at the tool schema.
 
@@ -241,11 +268,16 @@ class ApkClient:
             )
         except Exception:  # noqa: BLE001 - older androguard lacks this
             requested, requested_more = declared, declared_more
+        dangerous, dangerous_more = _dangerous_permissions(apk, limit=_MAX_PERMISSIONS)
         return {
             "permissions": declared,
             "requested_permissions": requested,
+            # The requested permissions AOSP classes as dangerous (runtime-
+            # prompted): the privacy-sensitive surface to look at first.
+            "dangerous_permissions": dangerous,
             "count": len(declared),
-            "has_more": declared_more or requested_more,
+            "dangerous_count": len(dangerous),
+            "has_more": declared_more or requested_more or dangerous_more,
         }
 
     def certificates(self, path: Path) -> JsonObject:

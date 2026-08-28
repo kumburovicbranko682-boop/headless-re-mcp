@@ -43,11 +43,14 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.permissions")
     def apk_permissions(session_id: str) -> dict[str, Any]:
-        """List declared and requested permissions.
+        """List declared and requested permissions, flagging the dangerous ones.
 
         Answers with permissions, requested_permissions, count, and has_more
-        so a list that filled the cap is not read as every permission. There
-        is no declared or requested field.
+        so a list that filled the cap is not read as every permission. Also
+        dangerous_permissions and dangerous_count: the requested permissions
+        AOSP classes as dangerous (runtime-prompted) -- the privacy-sensitive
+        surface to look at first; custom/third-party permissions are not
+        classified. There is no declared or requested field.
         """
         return _dump(analysis.apk_permissions(session_id))
 

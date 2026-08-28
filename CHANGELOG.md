@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（apk.permissions 标出 dangerous 权限）
+
+- `apk.permissions` 新增 `dangerous_permissions` 与 `dangerous_count`：请求的权限里被
+  AOSP 定为 `dangerous`（运行时弹窗授权）的子集——CAMERA、ACCESS_FINE_LOCATION、READ_SMS
+  这类隐私敏感面，是 Android 安全/隐私分诊看的第一个信号，此前要人工对照 AOSP 权限表。
+  实现取 androguard `get_details_permissions()` 的保护级别，基级别取 `|` 前段
+  （`dangerous|instant` → `dangerous`），normal/signature 与表外的自定义权限不入列；
+  列表排序、超 256 上限并入 `has_more`。androguard 缺该 API 或数据畸形时安静回空表。
+  已用 aapt 构建的真实 APK（3 dangerous + INTERNET + 自定义权限）实测核对。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
