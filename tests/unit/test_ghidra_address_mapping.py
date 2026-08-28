@@ -58,6 +58,9 @@ def _write_pe64(path: Path, image_base: int = 0x140000000) -> Path:
         ("ram:0040114e", 0x40114E),
         ("EXTERNAL:00000001", 1),
         ("not-an-address", None),
+        # An address-space prefix with nothing after it: the rsplit leaves an
+        # empty string, which must be None rather than a crash on int("", 16).
+        ("ram:", None),
         (None, None),
     ],
 )
@@ -160,3 +163,80 @@ def test_enrich_is_a_noop_shape_for_empty_items(tmp_path: Path) -> None:
     out = enrich_ghidra_payload({"mode": "functions", "items": [], "count": 0}, binary=binary)
     assert out["items"] == []
     assert out["module"] == "a.out"
+
+
+# --- degradation on malformed export payloads -------------------------------
+#
+# ExportJson.py is trusted less than the binary itself: a Ghidra build, a script
+# edit, or a truncated stdout can hand back an items list with a stray non-object
+# or an address string that is not an address. The enrichment must ride those
+# through additively -- never raise, never drop the caller's data, and never
+# attach a coordinate it could not actually parse -- the same contract the r2
+# mapper keeps.
+
+
+def test_enrich_passes_through_a_non_dict_item_untouched(tmp_path: Path) -> None:
+    # A stray scalar in the items list is not an object to enrich; it rides
+    # through verbatim while the real neighbour beside it is still enriched.
+    binary = _write_elf(tmp_path / "a.out")
+    payload = {
+        "mode": "functions",
+        "items": ["not-a-dict", {"name": "f", "entry": "0040114e"}],
+        "count": 2,
+    }
+    out = enrich_ghidra_payload(payload, binary=binary)
+    assert out["items"][0] == "not-a-dict"
+    assert out["items"][1]["entry_address"]["rva"] == 0x114E
+
+
+def test_enrich_skips_the_companion_when_an_item_address_is_unparseable(
+    tmp_path: Path,
+) -> None:
+    # A non-address in an address field yields no coordinate: the original
+    # string is preserved and no companion object is fabricated beside it.
+    binary = _write_elf(tmp_path / "a.out")
+    payload = {
+        "mode": "functions",
+        "items": [{"name": "thunk", "entry": "not-an-address"}],
+        "count": 1,
+    }
+    out = enrich_ghidra_payload(payload, binary=binary)
+    item = out["items"][0]
+    assert item["entry"] == "not-an-address"
+    assert "entry_address" not in item
+
+
+def test_enrich_decompile_skips_entry_address_when_the_entry_is_unparseable(
+    tmp_path: Path,
+) -> None:
+    # The decompile mode's top-level entry gets the same treatment: an
+    # unparseable entry attaches no entry_address, but the module frame the
+    # payload always carries is still added.
+    binary = _write_elf(tmp_path / "a.out")
+    payload = {
+        "mode": "decompile",
+        "function": "f",
+        "entry": "??",
+        "decompiled": "int f(void){...}",
+    }
+    out = enrich_ghidra_payload(payload, binary=binary)
+    assert "entry_address" not in out
+    assert out["module"] == "a.out"
+
+
+def test_enrich_on_an_unrecognised_binary_is_module_and_va_only(tmp_path: Path) -> None:
+    # No recognisable header, so the shared base chain yields neither arch nor
+    # base: the payload gains only the module frame, no image_base or
+    # architecture is invented, and each address stays va-only.
+    binary = tmp_path / "junk.bin"
+    binary.write_bytes(b"not a binary at all")
+    payload = {
+        "mode": "functions",
+        "items": [{"name": "f", "entry": "0x1000"}],
+        "count": 1,
+    }
+    out = enrich_ghidra_payload(payload, binary=binary)
+    assert out["module"] == "junk.bin"
+    assert "image_base" not in out
+    assert "architecture" not in out
+    assert out["items"][0]["entry_address"]["va"] == 0x1000
