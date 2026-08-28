@@ -115,6 +115,29 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_disasm(session_id, address, count=count, timeout=timeout))
 
+    @tools.tool(name="r2.disasm_function")
+    def r2_disasm_function(
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Disassemble the whole function at address (pdfj), boundary-aware.
+
+        Runs analysis, then pdfj @ address, disassembling the entire function
+        radare2 resolves there -- unlike r2.disasm you need not guess an
+        instruction count or where the function ends. Answers with items, each
+        op carrying offset, opcode, disasm, type (call/jmp/mov...), size, bytes,
+        esil and jump (the branch-target VA when it branches), plus address
+        (va/rva/module) for the op. A function object gives the resolved name,
+        addr (and its mapped address), size in bytes and ninstr (instruction
+        count). Also count, address_va (the integer that was asked) and address
+        (mapped). Empty items with ninstr 0 means no function is defined at
+        address; run r2.functions first. Read items_truncated, items_total and
+        items_limit when the op list filled the cap (4096). There is no integer
+        address on the op, and no ops, truncated or has_more field.
+        """
+        return _dump(analysis.r2_disasm_function(session_id, address, timeout=timeout))
+
     @tools.tool(name="r2.xrefs")
     def r2_xrefs(
         session_id: str,

@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（`r2.disasm_function`：按函数边界整段反汇编）
+
+- `r2.disasm` 跑 `pdj N @ addr`，只反汇编固定 N 条指令，逆向者事先并不知道
+  函数有多少条指令、在哪里结束，只能反复试 N。新工具 `r2.disasm_function`
+  跑 `aa; pdfj @ addr`，反汇编 radare2 在该地址解析出的整个函数（传入函数
+  体内任意地址都会归到所属函数），无需猜测长度或边界。返回 items（每条 op
+  含 offset、opcode、disasm、type、size、bytes、esil，分支带 jump 目标 VA，
+  并映射 address 为 va/rva/module），外加 function 对象给出解析出的 name、
+  addr（及其映射 address）、size（字节）与 ninstr（指令数），以及 count、
+  address_va（所问地址）与 address。pdfj 产出的是函数对象而非 op 数组，
+  enrich 只会塞进 info 且不映射，故在客户端把 ops 提升回统一的 items 形态。
+  `pdfj @ <hex|dec>` 进白名单（正则全匹配，拒绝符号名与命令注入）。真实
+  ELF 上与裸 `r2 -c 'pdfj @ main'` 逐条一致（25 条 op、名称、边界全等），
+  从函数体内地址查询能正确归并到 main；无函数的地址返回空 items 且
+  ninstr 为 0。
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

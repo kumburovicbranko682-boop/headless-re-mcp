@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -13,7 +14,8 @@ from headless_re_mcp.backends.common.bounded_run import (
     clamp_cli_timeout,
     run_bounded,
 )
-from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
+from headless_re_mcp.backends.r2.mapping import address_dict, enrich_r2_payload
+from headless_re_mcp.core.models import Architecture
 
 JsonObject = dict[str, Any]
 _MAX_OUTPUT = 1_000_000
@@ -37,6 +39,7 @@ _ALLOWED = frozenset(
     }
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+_PDFJ_COMMAND = re.compile(r"pdfj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 _AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 
 
@@ -53,6 +56,8 @@ def _require_allowed_command(command: str) -> None:
         return
     pdj = _PDJ_COMMAND.fullmatch(command)
     if pdj is not None and int(pdj.group(1)) <= 512:
+        return
+    if _PDFJ_COMMAND.fullmatch(command) is not None:
         return
     if _AXJ_COMMAND.fullmatch(command) is not None:
         return
@@ -97,6 +102,62 @@ class R2Client:
         data["address"] = address
         data["count"] = count
         return enrich_r2_payload(data, binary=binary)
+
+    def disasm_function(
+        self,
+        binary: Path,
+        address: int,
+        *,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """Disassemble the whole function r2 resolves at ``address`` (pdfj).
+
+        pdfj emits a function *object* ({addr, name, size, ops}), not the plain
+        op array pdj gives, so enrich stashes it under ``info`` and maps
+        nothing. We lift ``ops`` back into the mapped ``items`` shape every
+        other r2 tool returns and hang the function-level metadata off a
+        ``function`` key.
+        """
+        if type(address) is not int or address < 0:
+            raise R2Error("invalid_params", "address must be a non-negative int")
+        cmd = f"pdfj @ {address}"
+        data = self.run(binary, ["aa", cmd], timeout=timeout)
+        info = data.get("info")
+        func = info if isinstance(info, dict) else {}
+        ops = func.get("ops")
+        ops_list = ops if isinstance(ops, list) else []
+        enriched = enrich_r2_payload(
+            {
+                "raw": json.dumps(ops_list),
+                "commands": list(data.get("commands") or []),
+                "address": address,
+            },
+            binary=binary,
+        )
+        fn: JsonObject = {}
+        name = func.get("name")
+        if isinstance(name, str):
+            fn["name"] = name
+        size = func.get("size")
+        if type(size) is int:
+            fn["size"] = size
+        fn["ninstr"] = len(ops_list)
+        fn_addr = func.get("addr")
+        if type(fn_addr) is int:
+            fn["addr"] = fn_addr
+            image_base = enriched.get("image_base")
+            arch_value = enriched.get("architecture")
+            arch = Architecture(arch_value) if isinstance(arch_value, str) else None
+            mapped = address_dict(
+                fn_addr,
+                module=binary.name,
+                image_base=image_base if isinstance(image_base, int) else None,
+                architecture=arch,
+            )
+            if mapped is not None:
+                fn["address"] = mapped
+        enriched["function"] = fn
+        return enriched
 
     def xrefs(
         self,
