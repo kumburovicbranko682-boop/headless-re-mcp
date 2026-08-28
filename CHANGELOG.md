@@ -5,6 +5,28 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### CI / 测试（可移植的非 PE 逆向 Gate 上托管 Linux CI，并修好长期漂移的 Agent 工作台浏览器 Gate）
+
+- 之前 `tests/integration` 只在手动触发的自建 Windows runner 上跑（README 明说这条「从未绿过」），
+  Linux CI 只跑 `tests/unit`。于是 Web（CDP + webcrack + wabt）、proxy（mitmproxy）与 Android 静态
+  （androguard）这几条非 PE 逆向线的真机 Gate 每次提交都只是 skip、从未真正执行——正是 README 反复
+  强调的「skip ≠ pass」缺口。
+- `ci.yml` 新增 `linux-integration` 作业：在托管 Ubuntu runner 上装 Playwright Chromium、webcrack、
+  wabt、mitmproxy 与 androguard/adbutils/frida，再 `pytest tests/integration -rs`（跑全量而非硬编码
+  子集，与 Windows job 同策略）。conftest 照常把 Windows-only 与未配置后端的 Gate 标成带原因的 skip，
+  只有可移植的 Web/Android/proxy Gate 真跑（本地实测 15 passed / 72 skipped，0 error / 0 fail）。
+- 修 `tests/integration/test_agent_browser_smoke.py` 三处长期漂移（这条 Gate 从未在 Linux 跑过，也就
+  没人发现它已经烂了）：
+  - 顶层 `from playwright.sync_api import ...` 会让缺 browser extra 的机器在收集阶段直接 ImportError、
+    整个 `tests/integration` 收集失败。改用 `pytest.importorskip`，像其它 web Gate 一样干净跳过。
+  - 硬编码的 Windows Chrome 绝对路径 `C:\Program Files\...\chrome.exe` 只能在装了该 Chrome 的 Windows
+    上启动，Linux 永远跑不起来。改用 Playwright 自管的 Chromium，两个平台通用。
+  - 断言仍用旧的英文 UI（Agent analysis / Send / Provider &amp; setup / Approve once…），而 SPA 早已中文化。
+    全部对齐到在跑的界面（发送 / 设置 / 批准一次 / 拒绝、`模型与设置` 弹窗字段），事件类型改从检查器
+    `事件` 标签读取，并用 exact 文本把聊天气泡与事件 JSON `<pre>` 区分开。
+  - `workflow.cancel` 现已被默认加壳分析 autonomy 预设自动放行，审批卡不再出现；把该 Gate 钉成
+    fail-closed autonomy（空白名单），让危险工具稳定弹出审批。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
