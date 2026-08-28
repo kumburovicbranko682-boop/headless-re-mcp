@@ -59,6 +59,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   即“无事可查”地失败。以把 `service_ext` 某处退回重包裹形态验证非空:守卫精确报出 `('service_ext','FridaError',517)`,
   还原后转绿——这条守卫本可在上一轮就自动逮住那个 `service_ext` 缺口。
 
+### 测试（“报了 has_more 就必须能翻页”漂移守卫：`device.packages`/`properties`、`apk.native_libs`、`adb list_devices` 接连四次以同一形态漏掉 offset——全量入内存、排序、回字母序前缀 + has_more，却无从翻到尾部——而 schema/clamp 守卫只查“已声明的 offset 是否有界”，查不出“该声明 offset 却没声明”，新增守卫钉住每个报 has_more 的读取器要么带 offset、要么在具名豁免表里）
+
+- 这四个读取器(前三条已修、`adb list_devices` 本轮同修)都对调用方说“排在本页却缺失即确实不存在”,但没有 offset 时这话只对**首页**成立:
+  一个排在 cap 之后的真实条目被 `has_more` 标了“还有”,却永远取不回来核对。每次的修法都一样——补 offset——每次都溜过了所有既有守卫,
+  因为 schema 守卫(`test_non_pe_pagination_schema_bounds`)与 clamp 守卫(`test_non_pe_backend_clamp_guard`)查的是“**已声明**的 offset 有没有
+  上下界”,而非“一个封顶全量集的读取器**该不该**声明 offset”。
+- 新增 `test_non_pe_full_set_reader_paging_guard.py`:AST 扫每个非 PE 后端 client 的类方法,凡方法体里出现字符串字面量 `has_more`(覆盖回包
+  dict 键与 `result["has_more"]=` 赋值,且下潜进 frida 那种在内层 `work`/`use` 闭包里拼回包的写法)即视作“报 has_more”,再看它有没有 `offset` 形参。
+  断言:凡报 has_more 却无 offset 的读取器必须落在**双向 fail-closed** 的 `_UNPAGED_HAS_MORE_OK` 具名豁免表里——新读取器忘了翻页会被拦,
+  而豁免表里某项若后来补了 offset(或改名)也会被“过期条目”那一半拦下,逼你删掉,免得豁免表烂成橡皮图章。
+- 豁免表精确等于当前无 offset 的 has_more 读取器集,每项附“尾部为何没被搁浅”的理由:`frida.modules`/`exports`/`java_enumerate` 是 live 运行时
+  枚举(列表跨调用会变,offset 会翻到移动目标);`web.console` 是有界环形缓冲(max limit 覆盖整环,没有 cap 之外的尾部可翻);`jadx.export_sources`
+  的 has_more/listing_truncated 标的是**磁盘上已全量落地**文件的预览列表(全集在 output_dir,不是被截的内存列表);`apk.permissions`/`certificates`/
+  `components` 是**多列表 overview**(声明+请求权限 / 签名文件+证书 / 四类组件),单个 offset 无法寻址多条独立列表,且各自 cap 相对真实清单足够宽。
+  离线另证:合成一个不在表里的无 offset has_more 读取器会被判违规、一个已翻页读取器若误列进表会被判过期,证明该守卫既非恒真也非恒假。
+
 ### `adb device.list` 现在支持 `offset` 分页，让排在 cap(64)之后的设备序列号可达（此前排序封顶 64、只回 has_more，超过 64 台的设备农场里尾部序列号既看不到、也就无法操作——而 device.list 正是发现序列号的入口）
 
 - `list_devices` 把设备按序列号排序、封顶 `_MAX_DEVICES`(64)、报 `has_more`,其注释明写“与 packages/properties 同款诚实:排在本页却缺失即
