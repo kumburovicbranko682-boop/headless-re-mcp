@@ -57,6 +57,9 @@ _MANIFEST_SCAN_BYTES = 64 * 1024
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
+# adb reverses (device->host) live on the adb server the same way and are the
+# mirror resource, so they get their own reservation table and cap.
+_MAX_REVERSES = 32
 # adbutils shell/sync calls otherwise wait forever when the device stalls.
 _ADB_SHELL_TIMEOUT_S = 30.0
 _ADB_PROBE_TIMEOUT_S = 8.0
@@ -403,6 +406,14 @@ class AdbBackend:
         # the full triple, and a local endpoint maps to one remote (re-forwarding
         # replaces it), which is why (serial, local) alone is the key.
         self._forwards: dict[tuple[str, str], str] = {}
+        self._reverse_lock = threading.Lock()
+        # (serial, remote) -> local for every reverse this process created. adb
+        # keeps a reverse until it is removed or the server dies, exactly like a
+        # forward, so close_all has to know; the host-side local is kept so
+        # device.reverses can report the full triple, and a device-side remote
+        # maps to one local (re-reversing replaces it), which is why
+        # (serial, remote) is the key -- the mirror of the forward table.
+        self._reverses: dict[tuple[str, str], str] = {}
         try:
             import adbutils
 
@@ -1279,4 +1290,148 @@ class AdbBackend:
                 for key, remote in retry:
                     if key not in self._forwards:
                         self._forwards[key] = remote
+        return {"removed": removed, "failed": failed, "count": len(removed)}
+
+    def reverse(self, serial: str, remote: str, local: str) -> JsonObject:
+        """Bind an adb reverse (device->host), the mirror of :meth:`forward`.
+
+        ``adb reverse <remote> <local>`` makes the device listen on ``remote``
+        (its side) and tunnel every connection back to ``local`` on this host --
+        the piece that lets an on-device app reach a host-run mitmproxy at
+        127.0.0.1:<port> (device.reverse tcp:8080 tcp:8080, then set the app's
+        proxy to 127.0.0.1:8080). adb takes the device-side spec first, so the
+        argument order is (remote, local), not forward's (local, remote). A
+        device-side remote maps to one host local (re-reversing replaces it), so
+        (serial, remote) keys the reservation table this process holds against
+        the cap; the slot is reserved only after the device resolves, and dropped
+        again if the reverse fails, so a bad call never leaks it.
+        """
+        spec = r"^(tcp:\d{1,5}|localabstract:[\w.\-]+)$"
+        if not re.match(spec, remote):
+            raise AdbError("invalid_params", "invalid remote reverse spec", remote=remote)
+        if not re.match(spec, local):
+            raise AdbError("invalid_params", "invalid local reverse spec", local=local)
+        serial_id = _check_serial(serial)
+        key = (serial_id, remote)
+        dev = self._device(serial)
+        reserved = False
+        with self._reverse_lock:
+            if key not in self._reverses:
+                if len(self._reverses) >= _MAX_REVERSES:
+                    raise AdbError(
+                        "invalid_state",
+                        "too many adb reverses",
+                        cap=_MAX_REVERSES,
+                        held=len(self._reverses),
+                    )
+                self._reverses[key] = local
+                reserved = True
+        try:
+            _call(dev.reverse, remote, local, timeout=_ADB_SHELL_TIMEOUT_S)
+        except AdbError:
+            if reserved:
+                with self._reverse_lock:
+                    self._reverses.pop(key, None)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if reserved:
+                with self._reverse_lock:
+                    self._reverses.pop(key, None)
+            raise AdbError("backend_error", f"reverse failed: {exc}") from exc
+        with self._reverse_lock:
+            self._reverses[key] = local
+        return {"remote": remote, "local": local}
+
+    def list_reverses(self) -> JsonObject:
+        """Report the adb reverses this process created and still holds.
+
+        The read side of the reverse table ``device.reverse`` counts against, the
+        mirror of ``list_forwards``: each entry is the (serial, remote, local)
+        triple that occupies a slot, so a caller that hit "too many adb reverses"
+        can see what is held and free one with ``remove_reverse`` instead of
+        tearing every session down. This is the process's own reservation table,
+        not adb's global list, and it is read from memory, so it needs no device
+        and cannot time out.
+        """
+        with self._reverse_lock:
+            held = list(self._reverses.items())
+        reverses = [
+            {"serial": serial, "remote": remote, "local": local}
+            for (serial, remote), local in held
+        ]
+        return {"reverses": reverses, "count": len(reverses), "cap": _MAX_REVERSES}
+
+    def remove_reverse(self, serial: str, remote: str) -> JsonObject:
+        """Remove one adb reverse this process created, freeing a slot.
+
+        The per-reverse inverse of :meth:`release_reverses` and the mirror of
+        ``remove_forward``: the device-side ``remote`` identifies the reverse (adb
+        keeps one host local per remote) and ``serial`` names the device.
+        Removing a reverse this process is not tracking is a no-op, not an error
+        (adb is still asked, and a "not found" is swallowed), so the call is
+        idempotent; ``removed`` is true only when the table actually held it. A
+        removal that fails while the table does hold it keeps the entry so the
+        next close_all retries it, matching release_reverses.
+        """
+        if not re.match(r"^(tcp:\d{1,5}|localabstract:[\w.\-]+)$", remote):
+            raise AdbError("invalid_params", "invalid remote reverse spec", remote=remote)
+        serial_id = _check_serial(serial)
+        key = (serial_id, remote)
+        with self._reverse_lock:
+            tracked = key in self._reverses
+        dev = self._device(serial)
+        remover = getattr(dev, "reverse_remove", None)
+        if remover is None:
+            raise AdbError("backend_error", "device has no reverse-remove API")
+        try:
+            _call(remover, remote, timeout=_ADB_SHELL_TIMEOUT_S)
+        except AdbError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if tracked:
+                raise AdbError(
+                    "backend_error", f"reverse remove failed: {exc}", remote=remote
+                ) from exc
+            return {"serial": serial_id, "remote": remote, "removed": False}
+        with self._reverse_lock:
+            removed = self._reverses.pop(key, None) is not None
+        return {"serial": serial_id, "remote": remote, "removed": removed}
+
+    def release_reverses(self) -> JsonObject:
+        """Drop every reverse this process created, the mirror of release_forwards.
+
+        ``adb reverse`` lives on the adb server, not in this process: closing
+        sessions does not remove one, and a long-lived agent that reverses a
+        proxy port every night eventually cannot bind another.
+        """
+        with self._reverse_lock:
+            held = list(self._reverses.items())
+            self._reverses.clear()
+        removed: list[JsonObject] = []
+        failed: list[JsonObject] = []
+        retry: list[tuple[tuple[str, str], str]] = []
+        for (serial, remote), local in held:
+            try:
+                dev = self._device(serial)
+                remover = getattr(dev, "reverse_remove", None)
+                if remover is None:
+                    failed.append(
+                        {
+                            "serial": serial,
+                            "remote": remote,
+                            "error": "device has no reverse-remove API",
+                        }
+                    )
+                    retry.append(((serial, remote), local))
+                    continue
+                _call(remover, remote, timeout=_ADB_SHELL_TIMEOUT_S)
+                removed.append({"serial": serial, "remote": remote})
+            except Exception as exc:  # noqa: BLE001
+                failed.append({"serial": serial, "remote": remote, "error": str(exc)})
+                retry.append(((serial, remote), local))
+        if retry:
+            with self._reverse_lock:
+                for key, local in retry:
+                    if key not in self._reverses:
+                        self._reverses[key] = local
         return {"removed": removed, "failed": failed, "count": len(removed)}

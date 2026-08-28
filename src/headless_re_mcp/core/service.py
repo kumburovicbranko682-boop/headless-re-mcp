@@ -1221,6 +1221,8 @@ class AnalysisService(
         if adb_backend is not None:
             with suppress(BaseException):
                 adb_backend.release_forwards()
+            with suppress(BaseException):
+                adb_backend.release_reverses()
         if errors:
             return Result[JsonObject](
                 ok=False,
@@ -1248,6 +1250,8 @@ class AnalysisService(
             return
         with suppress(BaseException):
             adb_backend.release_forwards()
+        with suppress(BaseException):
+            adb_backend.release_reverses()
 
     def dynamic_state(self, session_id: str) -> Result[JsonObject]:
         return self.services.dynamic.state(session_id)

@@ -308,4 +308,51 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_forward_remove(serial, local))
 
+    @tools.tool(name="device.reverse")
+    def device_reverse(serial: str, remote: str, local: str) -> dict[str, Any]:
+        """Set an adb reverse (device->host), the mirror of device.forward.
+
+        This is the piece that routes an on-device app's traffic into a host-run
+        proxy: proxy.start on the host, then device.reverse tcp:8080 tcp:8080 so
+        the device listens on its own tcp:8080 and tunnels back to 127.0.0.1:8080
+        here, then point the app's HTTP proxy at 127.0.0.1:8080 (with the CA from
+        proxy.ca.install_android). adb takes the device-side spec first, so the
+        argument order is (remote, local), not device.forward's (local, remote):
+        remote is where the device listens, local is where this host answers.
+        Answers with remote and local. Reverses stay on the adb server until
+        close_all or device.reverse_remove; this process refuses a new one once
+        the table is full -- device.reverses shows what is held and
+        device.reverse_remove frees a slot.
+        """
+        return _dump(analysis.device_reverse(serial, remote, local))
+
+    @tools.tool(name="device.reverses")
+    def device_reverses() -> dict[str, Any]:
+        """List the adb reverses this process created and still holds.
+
+        Answers with reverses (each {serial, remote, local}), count, and cap, the
+        mirror of device.forwards. This is the reservation table device.reverse
+        counts against: when a reverse is refused with "too many adb reverses",
+        this shows what is held so a slot can be freed with device.reverse_remove
+        instead of close_all. A reverse set by another tool or an earlier process
+        is not listed -- it is this process's own table, not adb's global reverse
+        list -- and it is read from memory, so no serial is taken and it never
+        touches a device.
+        """
+        return _dump(analysis.device_reverses())
+
+    @tools.tool(name="device.reverse_remove")
+    def device_reverse_remove(serial: str, remote: str) -> dict[str, Any]:
+        """Remove one adb reverse, freeing a slot against the reverse cap.
+
+        The per-reverse inverse of the close_all teardown and the mirror of
+        device.forward_remove: pass the same device-side remote endpoint
+        device.reverse was given (e.g. tcp:8080) to drop just that reverse.
+        Answers with serial, remote, and removed -- removed is true when this
+        process was tracking the reverse, false when it was not. The call still
+        asks adb to drop it either way, so removing one that is already gone is
+        an idempotent no-op, not an error.
+        """
+        return _dump(analysis.device_reverse_remove(serial, remote))
+
     return tools.bindings
