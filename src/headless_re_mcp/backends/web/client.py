@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
-from headless_re_mcp.backends.common.har import har_entry, serialize_har
+from headless_re_mcp.backends.common.har import har_entry, iso_from_epoch, serialize_har
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
 
@@ -473,6 +473,13 @@ class WebBackend:
                 "status": None,
                 "mimeType": None,
             }
+            # CDP's requestWillBeSent carries wallTime: the real epoch the
+            # request was initiated. Keeping it lets the HAR export stamp each
+            # entry's startedDateTime with the true time instead of the single
+            # export instant, so a HAR viewer's waterfall reflects request order.
+            wall_time = params.get("wallTime")
+            if isinstance(wall_time, (int, float)) and wall_time > 0:
+                entry["started_at"] = float(wall_time)
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
             with handle.lock:
@@ -824,6 +831,7 @@ class WebBackend:
                     status=e.get("status"),
                     mime_type=e.get("mimeType") or "",
                     resource_type=e.get("resourceType"),
+                    started_date_time=iso_from_epoch(e.get("started_at")),
                 )
                 for e in handle.requests.values()
             ]
