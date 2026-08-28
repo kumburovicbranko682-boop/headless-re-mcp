@@ -305,6 +305,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   仍用严格的 `[:=]` 边界(不加尾随 `\w*`),避免把 `tokenized=false` 这类诊断文本误抹。回归矩阵
   相应增加 `private_key`/`private-key`/`access_key`/`passwd`/`credential` 五种形态。
 
+### 修复（测试套件与开发者真实配置/产物库隔离）
+
+- `Settings.load()` 读用户 `config.json`(setup 向导会写)、三个
+  `HEADLESS_RE_*` 路径变量,并把 artifact_root 默认进用户数据目录。CI 环境
+  干净所以永远暴露不了:实测放一个含 `artifact_root`/`ida_home` 的真实
+  config.json 后 59 个测试直接失败;配置真实 artifact_root 时套件在全绿的
+  同时把测试会话与制品静默写进开发者的真实产物库。新增 `tests/conftest.py`
+  在导入期(早于任何模块级 `Settings.load()`)把 platformdirs 的配置/数据根
+  指向一次性临时目录并清掉三个路径变量;工具 opt-in 变量(HEADLESS_RE_UPX
+  等)保留。两个泄漏向量在敌意环境下均已实测闭合,双版本基线 5545 全过。
+
 ### 修复（CLI 适配器超时在后端边界夹取越界输入）
 
 - **apk（jadx/apktool）、web（webcrack/wabt）与 r2（radare2）几条 CLI 适配器把调用方的 `timeout`
