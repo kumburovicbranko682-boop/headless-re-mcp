@@ -50,6 +50,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_frida_ext_error_retryable.py`:以抛错的 FridaClient 替身 + monkeypatch `_require_debuggee_pid`,端到端驱动这五个
   服务方法,参数化断言 `timeout` 上报 retryable、确定性码 `invalid_params` 不报;以“把 `frida.modules` 退回丢标志构造式”
   验证非空,守卫精确点名 `frida.modules`,还原后 14 条(10 参数化 + 4 单元)全绿。
+- 把这个两轮修复固化成源码级漂移守卫:`service_ext` 的缺口之所以存在,正因转换是就地手写的
+  `XdbgRpcError(exc.code, exc.message, details=...)` 而非走 helper——下一个手写转换会同样悄悄丢 `retryable`,而按方法逐个写
+  行为测试拦不住“还没写测试的那个”。新增 `test_non_pe_error_conversion_guard.py`:AST 扫描全部 `core/service*.py`,凡
+  `except` 绑定了非 PE 后端错误类(八类之一)的处理块,禁止其体内出现 `XdbgRpcError(<被捕获名>.code, ...)` 这种重包裹
+  形态(必须改走 `backend_error_as_rpc` / `_as_rpc`);r2 / ghidra / windbg 属原生/PE 邻接线不在本约定内,故只按八个非 PE
+  错误类圈定,不误伤。正向非空校验须真扫到 `service_web` / `service_frida` / `service_apk` / `service_ext` 的处理块,枚举一断
+  即“无事可查”地失败。以把 `service_ext` 某处退回重包裹形态验证非空:守卫精确报出 `('service_ext','FridaError',517)`,
+  还原后转绿——这条守卫本可在上一轮就自动逮住那个 `service_ext` 缺口。
 
 ### 测试（非 PE 后端错误码词表守卫：八个后端的 code 是 agent 路由所依的机器契约，此前为散落的裸字符串、无枚举无校验，新增守卫钉住“抛出的 code 恰等于 canonical 词表”——拼写错 / 混入 PE 线方言 / 词表烂成宽集三向皆拦）
 
