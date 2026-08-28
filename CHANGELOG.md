@@ -5,6 +5,8 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+stdio JSON-RPC 传输在收到超过 8 MiB 上限的请求时不再让调用方永久挂起。超限记录会被截断到上限，`json.loads` 因此永远解析不出完整文档、`_request_id` 恒返回 `None`，于是服务器对一个 8 MiB 的 `tools/call` 静默不答——正是这个模块本该防住的失败。序列化器把 `id` 放在文档靠前处，故新增一个有界(仅扫描头部 4096 字符)的正则从截断片段里恢复请求 `id`,并回一个 `INVALID_REQUEST` 错误而非沉默;该正则的分支互斥(无回溯爆炸)、数字位数设上限(`int()` 保持廉价),且只在超限路径启用。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
