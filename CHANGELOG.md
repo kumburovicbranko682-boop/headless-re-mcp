@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（web.scripts 的 dropped 计数在锁外读取，单次响应可能自相矛盾）
+
+- `backends/web/client.py` 的 `scripts()` 在 `handle.lock` 内快照脚本列表，却在锁外
+  读取 `handle.scripts_dropped`。而 CDP 事件回调 `on_script` 在持锁时同时驱逐最旧脚本
+  并自增 `scripts_dropped`；于是读取器可能把驱逐前的 `total`/窗口与驱逐后的 `dropped`
+  凑进同一个响应，让调用方拿到互相矛盾的数字。姊妹读取器 `network_list` 与 `console`
+  都刻意在同一把锁内同时快照列表与其驱逐计数，正是为了避免这种撕裂读。
+- 改为在同一 `with handle.lock` 内一并读取 `scripts_dropped`，与另两个读取器的约定对齐。
+- 新增 `tests/unit/test_web_client_paths.py::test_scripts_reads_the_dropped_counter_under_the_lock`：
+  用一把会上报"当前是否被持有"的 `_TrackingLock` 和一个把读取时锁状态记录下来的
+  `scripts_dropped` property，断言该计数是在持锁时被读取的。把读取改回锁外可让该用例
+  失败（`dropped_read_while_held` 为 False），非空洞。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

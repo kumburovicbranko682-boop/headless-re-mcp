@@ -505,6 +505,62 @@ def test_scripts_filters_wasm_and_paginates() -> None:
     assert wasm["scripts"][0]["scriptId"] == "2"
 
 
+class _TrackingLock:
+    """An RLock that reports whether it is currently held, so a reader that
+    touches shared state off-lock can be caught deterministically."""
+
+    def __init__(self) -> None:
+        self._rlock = threading.RLock()
+        self._depth = 0
+
+    def __enter__(self) -> _TrackingLock:
+        self._rlock.acquire()
+        self._depth += 1
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self._depth -= 1
+        self._rlock.release()
+
+    @property
+    def held(self) -> bool:
+        return self._depth > 0
+
+
+class _DroppedProbeHandle:
+    """A minimal script handle whose dropped counter records the lock state at
+    the moment it is read. on_script bumps scripts_dropped under the lock while
+    evicting, so scripts() must read it under the same lock to avoid pairing a
+    pre-eviction total with a post-eviction dropped in one response."""
+
+    def __init__(self) -> None:
+        self.lock = _TrackingLock()
+        self.scripts: OrderedDict[str, Any] = OrderedDict()
+        self._dropped = 0
+        self.dropped_read_while_held: bool | None = None
+
+    @property
+    def scripts_dropped(self) -> int:
+        self.dropped_read_while_held = self.lock.held
+        return self._dropped
+
+    @scripts_dropped.setter
+    def scripts_dropped(self, value: int) -> None:
+        self._dropped = value
+
+
+def test_scripts_reads_the_dropped_counter_under_the_lock() -> None:
+    handle = _DroppedProbeHandle()
+    handle.scripts["1"] = {"scriptId": "1", "language": "JavaScript"}
+    handle.scripts_dropped = 4
+    backend = _backend_with(handle)
+    result = backend.scripts("s")
+    assert result["dropped"] == 4
+    # Reading dropped off-lock would pair it with a stale total; it must be
+    # captured inside the same critical section as the script snapshot.
+    assert handle.dropped_read_while_held is True
+
+
 def test_script_source_inlines_and_spills(tmp_path: Path) -> None:
     handle = _handle()
     handle.cdp.send = lambda *a, **k: {"scriptSource": "var a=1;"}

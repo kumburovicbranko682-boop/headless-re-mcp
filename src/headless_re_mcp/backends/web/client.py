@@ -703,7 +703,13 @@ class WebBackend:
     ) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
+            # Snapshot the list and its eviction counter under the one lock, as
+            # network_list and console do. on_script evicts and bumps
+            # scripts_dropped together while holding this lock; reading dropped
+            # afterwards could pair a pre-eviction total/window with a
+            # post-eviction dropped, so a single response contradicted itself.
             values = list(handle.scripts.values())
+            dropped = handle.scripts_dropped
         if wasm_only:
             values = [s for s in values if str(s.get("language")).lower() == "webassembly"]
         start = max(0, int(offset))
@@ -715,7 +721,7 @@ class WebBackend:
             "total": len(values),
             "offset": start,
             "has_more": start + len(window) < len(values),
-            "dropped": handle.scripts_dropped,
+            "dropped": dropped,
         }
 
     def script_source(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
