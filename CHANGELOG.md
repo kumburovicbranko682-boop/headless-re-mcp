@@ -316,6 +316,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   指向一次性临时目录并清掉三个路径变量;工具 opt-in 变量(HEADLESS_RE_UPX
   等)保留。两个泄漏向量在敌意环境下均已实测闭合,双版本基线 5545 全过。
 
+- 日志经由另一条根同样外泄:`resolve_log_dir()` 先取 `HEADLESS_RE_LOG_DIR`,
+  再落到 `user_log_path` ——即 *state* 目录(`XDG_STATE_HOME`),不在上面
+  已重定向的配置/数据根之内。实测干净检出上跑一轮完整单测,会往开发者真实的
+  `~/.local/state/headless-re-mcp/log/incidents.log` 追加约 7 KB 编造的
+  测试事故、旁边再写一份遥测,直接污染错误边界本应守护的线上事故史。
+  conftest 同步重定向 `XDG_STATE_HOME`(Windows 端 `user_log_path` 落在
+  已重定向的 LOCALAPPDATA 下)并清掉 `HEADLESS_RE_LOG_DIR`;封堵后复跑
+  全量单测,真实 state 目录零写入。
+
 ### 修复（CLI 适配器超时在后端边界夹取越界输入）
 
 - **apk（jadx/apktool）、web（webcrack/wabt）与 r2（radare2）几条 CLI 适配器把调用方的 `timeout`
