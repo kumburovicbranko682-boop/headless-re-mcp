@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（device.list 补 offset 分页与稳定排序，cap 之外的序列号不再不可达）
+
+- `backends/adb/client.py::list_devices` 此前按 adb 的枚举顺序截到 `_MAX_DEVICES`（64）、
+  只报 `has_more` 而没有 `offset`：超过 cap 的序列号被 `has_more` 挡在后面无法取到，
+  且返回的这一页顺序随 adb 重排而漂移。现在先按序列号（state 作平局键）排序，再按
+  `offset`/`limit` 开窗，返回新增 `total` 与 `offset` 字段，`has_more` 改为
+  `start + len(page) < total`；`limit` 在后端夹到 `[1, 64]`。与 `apk.classes` /
+  `apk.strings` 等既有分页读取器的契约一致。
+- 服务层 `core/service_device.py::device_list` 与工具 `tools/device.py` 的
+  `device.list` 同步加上 `offset`（`Field(ge=0)`）与 `limit`（`Field(ge=1, le=64)`），
+  docstring 明确"序列号已排序，按页大小推进 offset 可取到 has_more 之后的设备"。
+- `tests/unit/test_adb_list_devices_shaping.py` 新增
+  `test_offset_pages_serials_past_the_cap_over_one_sorted_order`（逆序喂五个序列号，
+  offset=0/2/4 分页覆盖全部、has_more 仅在到底那页翻假、越界 offset 是诚实空页）与
+  `test_limit_is_clamped_to_the_hard_cap`；两个 shaping 用例改为断言排序后的顺序并补
+  `total`/`offset`。非空性已核验：还原后端后三例分别因顺序错误与缺 offset/limit 关键字
+  而失败。同步修正 `test_unattended_resource_bounds.py` 两处按位置/整体 shape 的断言。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

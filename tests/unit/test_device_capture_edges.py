@@ -94,7 +94,7 @@ def test_a_non_backend_attribute_is_not_trusted_as_the_backend(tmp_path: Path) -
 
 
 class _FakeAdb:
-    def list_devices(self) -> JsonObject:
+    def list_devices(self, *, offset: int = 0, limit: int = 64) -> JsonObject:
         raise RuntimeError("adb server exploded")
 
     def info(self, serial: str) -> JsonObject:

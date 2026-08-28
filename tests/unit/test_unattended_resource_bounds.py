@@ -3645,7 +3645,13 @@ class TestAdbHostCallsAreBounded:
         backend._adbutils = FakeAdb
         result = backend.list_devices()
         assert seen["socket_timeout"] == _ADB_PROBE_TIMEOUT_S
-        assert result == {"devices": [], "count": 0, "has_more": False}
+        assert result == {
+            "devices": [],
+            "count": 0,
+            "total": 0,
+            "offset": 0,
+            "has_more": False,
+        }
 
     def test_list_includes_offline_devices_and_does_not_probe_get_state(self) -> None:
         from headless_re_mcp.backends.adb.client import AdbBackend
@@ -3672,7 +3678,11 @@ class TestAdbHostCallsAreBounded:
         backend._adbutils = FakeAdb
         result = backend.list_devices()
         assert result["count"] == 2
-        assert result["devices"][0]["state"] == "offline"
+        # The list is sorted by serial now, so find the offline row by serial
+        # rather than by position: the point is that offline devices are
+        # included and get_state is never probed, not where they land.
+        by_serial = {row["serial"]: row["state"] for row in result["devices"]}
+        assert by_serial["emulator-5554"] == "offline"
         assert result["has_more"] is False
 
     def test_open_transport_default_is_not_ten_minutes(self) -> None:
