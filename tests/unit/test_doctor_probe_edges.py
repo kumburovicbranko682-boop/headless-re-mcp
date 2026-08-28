@@ -560,7 +560,16 @@ def test_probe_run_decodes_bounded_output(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(doctor_module, "run_bounded", fake_run_bounded)
     output = doctor_module._probe_run(["tool", "--version"], timeout=7)
-    assert seen == {"command": ["tool", "--version"], "timeout": 7, "creationflags": 0}
+    # _probe_run suppresses the console window on Windows (CREATE_NO_WINDOW) and
+    # passes no flags on POSIX; assert the platform-appropriate value the same
+    # way _no_window_flags() derives it, rather than hardcoding 0 which only
+    # holds off Windows.
+    expected_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    assert seen == {
+        "command": ["tool", "--version"],
+        "timeout": 7,
+        "creationflags": expected_flags,
+    }
     assert output.returncode == 3
     assert output.stdout == "out\ufffd"
     assert output.stderr == "err"
