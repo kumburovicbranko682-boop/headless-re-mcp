@@ -14,6 +14,7 @@ import pytest
 import headless_re_mcp.backends.r2.client as r2_client
 from headless_re_mcp.backends.common.bounded_run import Completed
 from headless_re_mcp.backends.r2.mapping import (
+    _needed_header_bytes,
     address_dict,
     enrich_r2_payload,
     parse_r2_json,
@@ -464,3 +465,78 @@ def test_r2_info_puts_identity_in_raw_not_arch_bits_entry(
             described = ast.get_docstring(node) or ""
     assert "Answers with raw" in described
     assert "no format, arch, bits" in described
+
+
+# --- PE preferred-base degradation branches ---------------------------------
+#
+# The ELF and Mach-O readers have their hostile-input twins in
+# test_r2_header_hostile_input.py / test_r2_base_parsers.py; these are the PE
+# branch's, so the whole r2 coordinate mapper degrades the same safe way on a
+# malformed image handed to the native line: name the arch when the header
+# still declares it, but never rebase off a number the header does not support,
+# and never raise.
+
+
+def _pe_header(*, magic: int, image_base: int, pe_sig: bytes = b"PE\0\0") -> bytes:
+    """A minimal PE prefix with the optional-header magic and ImageBase set.
+
+    Mirrors ``_minimal_pe`` but exposes the two fields these branches turn on,
+    and lets the PE signature itself be corrupted for the header-size helper.
+    """
+    data = bytearray(0x200)
+    data[0:2] = b"MZ"
+    pe_offset = 0x80
+    data[0x3C:0x40] = pe_offset.to_bytes(4, "little")
+    data[pe_offset : pe_offset + 4] = pe_sig
+    optional_size = 0xF0
+    data[pe_offset + 20 : pe_offset + 22] = optional_size.to_bytes(2, "little")
+    optional_off = pe_offset + 24
+    data[optional_off : optional_off + 2] = magic.to_bytes(2, "little")
+    # PE32+ carries the 8-byte ImageBase at optional[24:32]; PE32 the 4-byte one
+    # at optional[28:32]. Writing eight bytes covers both layouts for the tests
+    # here, which only ever build a PE32+ (0x20B) image.
+    data[optional_off + 24 : optional_off + 32] = image_base.to_bytes(8, "little")
+    return bytes(data)
+
+
+def test_pe_preferred_base_declines_an_unsupported_optional_magic(tmp_path: Path) -> None:
+    # A ROM-image optional magic (0x107) is neither PE32 (0x10B) nor PE32+
+    # (0x20B): the header parsed far enough to read the field, but the layout
+    # past it is unknown, so no arch and no base are invented.
+    path = tmp_path / "rom.exe"
+    path.write_bytes(_pe_header(magic=0x107, image_base=0x140000000))
+    assert pe_preferred_base(path) == (None, None)
+
+
+def test_pe_preferred_base_names_the_arch_but_declines_a_zero_image_base(
+    tmp_path: Path,
+) -> None:
+    # A well-formed PE32+ that declares ImageBase 0: the machine is still known
+    # (x64), but zero is not a base to rebase against, so addresses stay
+    # va-only rather than folding every rva onto the raw va.
+    path = tmp_path / "zerobase.exe"
+    path.write_bytes(_pe_header(magic=0x20B, image_base=0))
+    arch, base = pe_preferred_base(path)
+    assert arch is Architecture.X64
+    assert base is None
+
+
+def test_needed_header_bytes_declines_a_bad_pe_signature() -> None:
+    # MZ present and the e_lfanew offset lands inside the window, but the four
+    # bytes there are not 'PE\\0\\0': the helper reports "not a PE" (None) rather
+    # than trusting a SizeOfOptionalHeader read from a non-PE region.
+    head = bytearray(0x100)
+    head[0:2] = b"MZ"
+    pe_offset = 0x80
+    head[0x3C:0x40] = pe_offset.to_bytes(4, "little")
+    head[pe_offset : pe_offset + 4] = b"NOPE"
+    assert _needed_header_bytes(bytes(head)) is None
+
+
+def test_needed_header_bytes_accepts_a_well_formed_pe_prefix() -> None:
+    # The positive companion: a valid signature yields the byte count that
+    # reaches the end of the optional header, so the not-a-PE None above is a
+    # real refusal and not the helper declining every input.
+    head = _pe_header(magic=0x20B, image_base=0x140000000)
+    pe_offset = 0x80
+    assert _needed_header_bytes(head) == pe_offset + 24 + 0xF0
