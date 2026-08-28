@@ -63,6 +63,14 @@ def test_tool_exception_returns_ai_envelope_and_logs(
         "access_key=sk-DEADBEEFsecret",
         "passwd=sk-DEADBEEFsecret",
         "credential: sk-DEADBEEFsecret",
+        # Forms the structured redactor masks but the inline scrubber used to
+        # miss: a non-bearer Authorization scheme, the providerApiKeys config
+        # key (the bare api-key boundary stops at the trailing 's'), plural
+        # keys, and a bearer token with no Authorization key in front of it.
+        "Authorization: Basic sk-DEADBEEFsecret",
+        "providerApiKeys=sk-DEADBEEFsecret",
+        "tokens: sk-DEADBEEFsecret",
+        "handshake used Bearer sk-DEADBEEFsecret",
     ],
 )
 def test_every_sensitive_keyword_form_is_redacted(marker: str) -> None:
@@ -85,6 +93,40 @@ def test_redaction_leaves_ordinary_diagnostics_intact() -> None:
     text = "read 4096 bytes at offset=1234 for session id=abc (retryable=false)"
 
     assert boundary._redact_text(text) == text
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "api_key",
+        "private_key",
+        "access_key",
+        "authorization",
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "credential",
+        "providerApiKeys",
+    ],
+)
+def test_inline_scrubber_masks_every_structured_secret_key(key: str) -> None:
+    """The inline scrubber must cover the structured redactor's key set.
+
+    A value the structured redactor masks under ``key`` (redaction._SECRET_KEY)
+    can still reach a plain string in an exception message; if the inline
+    scrubber does not know the same key, that message carries the secret to the
+    incident log and the 500 body in the clear.
+    """
+    from headless_re_mcp.redaction import is_secret_key, redact
+
+    assert is_secret_key(key), "test key must be one the structured redactor masks"
+    secret = "sk-DEADBEEFsecret"
+
+    assert redact({key: secret}) == {key: "***REDACTED***"}
+    redacted = boundary._redact_text(f"backend said {key}={secret} while connecting")
+    assert secret not in redacted
+    assert "[REDACTED]" in redacted
 
 
 def test_a_bearer_secret_never_reaches_the_envelope_or_the_log(

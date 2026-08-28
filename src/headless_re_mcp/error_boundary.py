@@ -40,10 +40,25 @@ _LOG_PATH: Path | None = None
 # envelope. The strict ``[:=]`` boundary (rather than a trailing ``\w*``) is
 # deliberate -- it keeps "tokenized=false" and similar diagnostics readable.
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+"),
+    # An Authorization value, whatever the scheme: the structured redactor masks
+    # the whole value under an ``authorization`` key, so the inline form must not
+    # stop at "bearer". Keep the "Authorization: " prefix and redact an optional
+    # scheme word plus the token, so trailing diagnostics on the same line stay
+    # readable.
+    re.compile(
+        r"(?i)(authorization\s*[:=]\s*)(?:[A-Za-z]+\s+)?[A-Za-z0-9._~+/=-]+"
+    ),
+    # A bearer token anywhere, matching redaction._BEARER, so a token that
+    # reaches a message without an "authorization" key in front of it is masked
+    # the same way the structured redactor would mask it.
+    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+"),
+    # key = value / key: value for every credential key the structured redactor
+    # (redaction._SECRET_KEY) masks. The trailing ``s?`` covers the plural forms
+    # ("tokens", "credentials") and the ``providerApiKeys`` config key, which the
+    # bare ``api[_-]?key`` boundary would otherwise miss.
     re.compile(
         r"(?i)((?:api[_-]?key|private[_-]?key|access[_-]?key|token|secret"
-        r"|password|passwd|credential)\s*[:=]\s*)[^\s,;]+"
+        r"|password|passwd|credential)s?\s*[:=]\s*)[^\s,;]+"
     ),
 )
 
