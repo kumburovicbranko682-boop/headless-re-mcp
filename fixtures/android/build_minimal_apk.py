@@ -6,9 +6,11 @@ purpose-built encoders:
 
 * the manifest as compiled binary XML (AXML) -- enough for androguard to read
   the package, versions, SDK levels, one permission, two shared-library
-  dependencies (<uses-library>), one launcher activity, and a mix of exported
-  and private components (an exported service, a private receiver, an exported
-  provider) that exercise every export rule;
+  dependencies (<uses-library>), one launcher activity (which also handles two
+  deep links through an ACTION_VIEW filter: an https host/pathPrefix and a bare
+  custom scheme), and a mix of exported and private components (an exported
+  service, a private receiver, an exported provider) that exercise every
+  export rule;
 * ``classes.dex`` as a valid DEX carrying one class
   (``com.example.headless.Sample``) with one static method (``getSecret``) that
   returns the string ``flag{headless-re}`` -- enough for androguard's full
@@ -72,6 +74,16 @@ PRIVATE_RECEIVER = "com.example.headless.PrivateReceiver"
 EXPORTED_PROVIDER = "com.example.headless.SharedProvider"
 PROVIDER_AUTHORITY = "com.example.headless.provider"
 CUSTOM_ACTION = "com.example.headless.action.PING"
+# The deep links the launcher activity handles: a second intent-filter with
+# ACTION_VIEW (BROWSABLE/DEFAULT, as a real link handler declares) whose two
+# <data> elements bind an https://deeplink.example.com/open prefix and a bare
+# custom scheme -- one web link and one app scheme, so the reader's URI-part
+# handling and the multi-<data> case are both exercised and cross-checkable
+# against apktool/androguard.
+DEEP_LINK_SCHEME_WEB = "https"
+DEEP_LINK_HOST = "deeplink.example.com"
+DEEP_LINK_PATH_PREFIX = "/open"
+DEEP_LINK_SCHEME_APP = "headless"
 
 # Framework attribute resource ids for the android:* attributes we emit. The
 # string-pool entries for these names must lead the pool so their indices line
@@ -89,6 +101,9 @@ ATTR_RES_IDS = {
     "required": 0x0101028E,
     "exported": 0x01010010,
     "authorities": 0x01010018,
+    "scheme": 0x01010027,
+    "host": 0x01010028,
+    "pathPrefix": 0x0101002B,
 }
 ATTR_NAMES = list(ATTR_RES_IDS)
 
@@ -219,12 +234,16 @@ def build_manifest() -> bytes:
         "intent-filter",
         "action",
         "category",
+        "data",
         PACKAGE,
         "1.0",
         MAIN_ACTIVITY,
         PERMISSION,
         "android.intent.action.MAIN",
         "android.intent.category.LAUNCHER",
+        "android.intent.action.VIEW",
+        "android.intent.category.DEFAULT",
+        "android.intent.category.BROWSABLE",
         "Headless",
         USES_LIBRARY_REQUIRED,
         USES_LIBRARY_OPTIONAL,
@@ -233,6 +252,10 @@ def build_manifest() -> bytes:
         EXPORTED_PROVIDER,
         PROVIDER_AUTHORITY,
         CUSTOM_ACTION,
+        DEEP_LINK_SCHEME_WEB,
+        DEEP_LINK_HOST,
+        DEEP_LINK_PATH_PREFIX,
+        DEEP_LINK_SCHEME_APP,
     ):
         pool.add(value)
 
@@ -278,6 +301,29 @@ def build_manifest() -> bytes:
         pool, "category", [Attr(ANDROID_NS, "name", "android.intent.category.LAUNCHER")]
     )
     body += _end_element(pool, "category")
+    body += _end_element(pool, "intent-filter")
+    # The deep-link filter: ACTION_VIEW + BROWSABLE/DEFAULT with two <data>
+    # elements, exactly how a real link handler declares an https prefix and a
+    # bare custom scheme side by side.
+    body += _start_element(pool, "intent-filter", [])
+    body += _start_element(pool, "action", [Attr(ANDROID_NS, "name", "android.intent.action.VIEW")])
+    body += _end_element(pool, "action")
+    body += _start_element(
+        pool, "category", [Attr(ANDROID_NS, "name", "android.intent.category.DEFAULT")]
+    )
+    body += _end_element(pool, "category")
+    body += _start_element(
+        pool, "category", [Attr(ANDROID_NS, "name", "android.intent.category.BROWSABLE")]
+    )
+    body += _end_element(pool, "category")
+    body += _start_element(pool, "data", [
+        Attr(ANDROID_NS, "scheme", DEEP_LINK_SCHEME_WEB),
+        Attr(ANDROID_NS, "host", DEEP_LINK_HOST),
+        Attr(ANDROID_NS, "pathPrefix", DEEP_LINK_PATH_PREFIX),
+    ])
+    body += _end_element(pool, "data")
+    body += _start_element(pool, "data", [Attr(ANDROID_NS, "scheme", DEEP_LINK_SCHEME_APP)])
+    body += _end_element(pool, "data")
     body += _end_element(pool, "intent-filter")
     body += _end_element(pool, "activity")
     # A service exported by an explicit android:exported="true", no filter.

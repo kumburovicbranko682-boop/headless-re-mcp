@@ -688,6 +688,14 @@ _AXML_ATTR_BY_RES_ID = {
     # whether another app can reach it -- the component's export status, read
     # by id so it resolves even when aapt2 keeps only the resource map.
     0x01010010: "exported",
+    # The <data> attributes of an intent-filter (framework ids from
+    # frameworks/base core/res public.xml): together with an ACTION_VIEW they
+    # declare which URIs open the app -- its deep links.
+    0x01010027: "scheme",
+    0x01010028: "host",
+    0x0101002A: "path",
+    0x0101002B: "pathPrefix",
+    0x0101002C: "pathPattern",
 }
 # A shared library the app declares it needs on the device (<uses-library>),
 # the Android analogue of a native DT_NEEDED / a managed AssemblyRef; capped
@@ -708,6 +716,16 @@ _AXML_COMPONENT_TAGS = frozenset(
     {"activity", "activity-alias", "service", "receiver", "provider"}
 )
 _AXML_MAX_COMPONENTS = 4096
+# Deep links: an activity intent-filter with ACTION_VIEW whose <data> declares
+# a URI scheme is remotely reachable -- a browser link, QR code or another
+# app's URI can start it. That makes it the remotely-triggerable subset of the
+# exported surface, the mobile analogue of an HTML form action. Each <data>
+# element with a scheme is one reported link, exactly as declared; the list
+# and the per-filter element scan are bounded like every other manifest fact.
+_ANDROID_ACTION_VIEW = "android.intent.action.VIEW"
+_AXML_DEEP_LINK_TAGS = frozenset({"activity", "activity-alias"})
+_AXML_MAX_DEEP_LINKS = 4096
+_AXML_MAX_FILTER_DATAS = 256
 
 # A DEX file opens with a fixed 0x70-byte header whose counts (classes, methods,
 # strings) and format version are at known offsets, so how much code an APK
@@ -1320,9 +1338,32 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
     comp_name: str | None = None
     comp_exported: bool | None = None
     comp_has_filter = False
+    # Deep-link tracking rides the same deferred-flush pattern: a filter's
+    # ACTION_VIEW and its <data> children can appear in any order, so the open
+    # filter's data elements are collected and only judged when the filter
+    # closes (the next intent-filter, the next component, or the walk's end).
+    deep_links: list[dict[str, Any]] = []
+    filter_view = False
+    filter_datas: list[dict[str, Any]] = []
+
+    def flush_filter() -> None:
+        nonlocal filter_view, filter_datas
+        if (
+            comp_type in _AXML_DEEP_LINK_TAGS
+            and comp_name
+            and filter_view
+        ):
+            for entry in filter_datas:
+                # Only a <data> that names a scheme is a URI the activity
+                # opens; a mimeType-only element is content-type routing.
+                if entry.get("scheme") and len(deep_links) < _AXML_MAX_DEEP_LINKS:
+                    deep_links.append({"activity": comp_name, **entry})
+        filter_view = False
+        filter_datas = []
 
     def flush_component() -> None:
         nonlocal comp_type, comp_name, comp_exported, comp_has_filter
+        flush_filter()
         if comp_type is not None and comp_name:
             # Explicit exported wins; otherwise an intent-filter makes it
             # reachable (the pre-Android-12 implicit default triage assumes).
@@ -1395,14 +1436,34 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
                 current_activity = comp_name if name in ("activity", "activity-alias") else None
                 filter_main = filter_launcher = False
             elif name == "intent-filter":
+                flush_filter()
                 comp_has_filter = True
                 filter_main = filter_launcher = False
             elif name == "action":
-                if _axml_str(attrs, "name") == _ANDROID_ACTION_MAIN:
+                action = _axml_str(attrs, "name")
+                if action == _ANDROID_ACTION_MAIN:
                     filter_main = True
+                elif action == _ANDROID_ACTION_VIEW:
+                    filter_view = True
             elif name == "category":
                 if _axml_str(attrs, "name") == _ANDROID_CATEGORY_LAUNCHER:
                     filter_launcher = True
+            elif name == "data" and len(filter_datas) < _AXML_MAX_FILTER_DATAS:
+                # One record per <data> element, exactly as declared; the
+                # optional URI parts are included only when present.
+                entry = {
+                    key: _axml_str(attrs, attr)
+                    for key, attr in (
+                        ("scheme", "scheme"),
+                        ("host", "host"),
+                        ("path", "path"),
+                        ("path_prefix", "pathPrefix"),
+                        ("path_pattern", "pathPattern"),
+                    )
+                    if _axml_str(attrs, attr) is not None
+                }
+                if entry:
+                    filter_datas.append(entry)
             if launcher_activity is None and current_activity and filter_main and filter_launcher:
                 launcher_activity = current_activity
         pos += csize
@@ -1427,6 +1488,11 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
         # and whether the export comes with an intent-filter. Empty for an app
         # that exposes nothing.
         "exported_components": exported_components,
+        # The URIs that open the app: each ACTION_VIEW intent-filter <data>
+        # with a scheme, bound to its activity, in declaration order -- the
+        # remotely-triggerable subset of the exported surface. Empty for an
+        # app that handles no links.
+        "deep_links": deep_links,
     }
     # Security-posture flags are reported only when the manifest declares them:
     # their framework defaults are version-dependent, so an explicit value is a

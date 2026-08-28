@@ -106,6 +106,41 @@ def _apktool_exported_components(manifest_xml: str) -> set[tuple[str, str]]:
     return exported
 
 
+def _apktool_deep_links(manifest_xml: str) -> set[tuple[str, str, str | None, str | None]]:
+    """The (activity, scheme, host, pathPrefix) links in apktool's manifest.
+
+    The same rule the tool-free reader applies -- an activity/alias
+    intent-filter carrying ACTION_VIEW, one record per <data> element that
+    names a scheme -- evaluated over apktool's independent text rendering, so
+    the two decoders can be compared link for link.
+    """
+    root = ET.fromstring(manifest_xml)
+    name_attr = f"{{{_ANDROID_NS}}}name"
+    links: set[tuple[str, str, str | None, str | None]] = set()
+    for activity in root.iter():
+        if activity.tag not in ("activity", "activity-alias"):
+            continue
+        name = activity.get(name_attr)
+        if not name:
+            continue
+        for filt in activity.findall("intent-filter"):
+            actions = {a.get(name_attr) for a in filt.findall("action")}
+            if "android.intent.action.VIEW" not in actions:
+                continue
+            for data in filt.findall("data"):
+                scheme = data.get(f"{{{_ANDROID_NS}}}scheme")
+                if scheme:
+                    links.add(
+                        (
+                            name,
+                            scheme,
+                            data.get(f"{{{_ANDROID_NS}}}host"),
+                            data.get(f"{{{_ANDROID_NS}}}pathPrefix"),
+                        )
+                    )
+    return links
+
+
 def _apktool_launcher_activity(manifest_xml: str) -> str | None:
     """The <activity>/<activity-alias> whose intent-filter has MAIN + LAUNCHER.
 
@@ -228,6 +263,29 @@ def test_android_apktool_decode_and_repack(tmp_path: Path) -> None:
             ("activity", "com.example.headless.MainActivity"),
             ("service", "com.example.headless.ExportedService"),
             ("provider", "com.example.headless.SharedProvider"),
+        }
+        # The deep links -- the remotely-triggerable subset of that surface --
+        # cross-checked link for link against apktool's rendering: the https
+        # host with its pathPrefix and the bare custom scheme, both bound to
+        # the launcher activity.
+        reader_links = {
+            (
+                link["activity"],
+                link["scheme"],
+                link.get("host"),
+                link.get("path_prefix"),
+            )
+            for link in reader_flags["deep_links"]
+        }
+        assert reader_links == _apktool_deep_links(manifest_xml)
+        assert reader_links == {
+            (
+                "com.example.headless.MainActivity",
+                "https",
+                "deeplink.example.com",
+                "/open",
+            ),
+            ("com.example.headless.MainActivity", "headless", None, None),
         }
 
         # apktool's own baksmali must have disassembled the fixture's class: the

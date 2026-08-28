@@ -63,6 +63,46 @@ def _exported_from_manifest_xml(xml_text: str) -> set[tuple[str, str]]:
     return exported
 
 
+def _deep_links_from_manifest_xml(xml_text: str) -> set[tuple[str, str, str | None, str | None]]:
+    """The (activity, scheme, host, pathPrefix) links off androguard's XML.
+
+    The same rule the stdlib reader applies -- an activity/alias intent-filter
+    carrying ACTION_VIEW, one record per <data> element that names a scheme --
+    evaluated over androguard's independent render of the manifest, so the two
+    decoders can be compared link for link.
+    """
+    root = ET.fromstring(xml_text)
+    app = root.find("application")
+    links: set[tuple[str, str, str | None, str | None]] = set()
+    if app is None:
+        return links
+    for element in list(app):
+        if element.tag not in ("activity", "activity-alias"):
+            continue
+        name = element.get(f"{{{_ANDROID_NS}}}name")
+        if not name:
+            continue
+        for intent_filter in element.findall("intent-filter"):
+            actions = {
+                action.get(f"{{{_ANDROID_NS}}}name")
+                for action in intent_filter.findall("action")
+            }
+            if "android.intent.action.VIEW" not in actions:
+                continue
+            for data in intent_filter.findall("data"):
+                scheme = data.get(f"{{{_ANDROID_NS}}}scheme")
+                if scheme:
+                    links.add(
+                        (
+                            name,
+                            scheme,
+                            data.get(f"{{{_ANDROID_NS}}}host"),
+                            data.get(f"{{{_ANDROID_NS}}}pathPrefix"),
+                        )
+                    )
+    return links
+
+
 @pytest.mark.integration
 def test_android_apk_static_happy_path() -> None:
     if not _FIXTURE.is_file():
@@ -143,6 +183,29 @@ def test_android_apk_static_happy_path() -> None:
             ("activity", "com.example.headless.MainActivity"),
             ("service", "com.example.headless.ExportedService"),
             ("provider", "com.example.headless.SharedProvider"),
+        }
+
+        # The deep links -- the remotely-triggerable subset of that surface --
+        # must match androguard's decode link for link: the https host with
+        # its pathPrefix and the bare custom scheme, both on the launcher.
+        reader_links = {
+            (
+                link["activity"],
+                link["scheme"],
+                link.get("host"),
+                link.get("path_prefix"),
+            )
+            for link in tool_free["deep_links"]
+        }
+        assert reader_links == _deep_links_from_manifest_xml(manifest.data["manifest_xml"])
+        assert reader_links == {
+            (
+                "com.example.headless.MainActivity",
+                "https",
+                "deeplink.example.com",
+                "/open",
+            ),
+            ("com.example.headless.MainActivity", "headless", None, None),
         }
 
         perms = service.apk_permissions(session_id)

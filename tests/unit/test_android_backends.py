@@ -467,8 +467,105 @@ def _axml_component_manifest(
     return struct.pack("<HHI", 0x0003, 8, 8 + len(payload)) + payload
 
 
+def _axml_deep_link_manifest(
+    components: list[tuple[str, str, list[tuple[list[str], list[dict[str, str]]]]]],
+    *,
+    package: str = "com.example.links",
+) -> bytes:
+    """A compiled manifest of components with intent-filters carrying <data>.
+
+    Each component is ``(tag, name, filters)``; each filter is ``(actions,
+    datas)`` where every data is a dict of android attribute names (scheme,
+    host, pathPrefix, ...) to string values. Emits a UTF-8 AXML the stdlib
+    reader walks exactly as a real compiled manifest, so deep-link extraction
+    is exercised over genuine element nesting.
+    """
+    order: list[str] = []
+    index: dict[str, int] = {}
+
+    def intern(text: str) -> int:
+        if text not in index:
+            index[text] = len(order)
+            order.append(text)
+        return index[text]
+
+    for fixed in (
+        "name", "scheme", "host", "path", "pathPrefix", "pathPattern",
+        "package", "manifest", "application", "intent-filter", "action", "data",
+    ):
+        intern(fixed)
+    intern(package)
+    for tag, name, filters in components:
+        intern(tag)
+        intern(name)
+        for actions, datas in filters:
+            for action in actions:
+                intern(action)
+            for data_attrs in datas:
+                for attr, value in data_attrs.items():
+                    intern(attr)
+                    intern(value)
+
+    def start(name_idx: int, attrs: list[tuple[int, int, int]]) -> bytes:
+        body = bytearray()
+        for name_index, data_type, value in attrs:
+            raw = value if data_type == 0x03 else -1
+            body += struct.pack("<iiiHBBI", -1, name_index, raw, 8, 0, data_type, value)
+        ext = struct.pack(
+            "<IIiIHHHHHH", 0xFFFFFFFF, 0xFFFFFFFF, -1, name_idx, 20, 20, len(attrs), 0, 0, 0
+        )
+        chunk = ext + bytes(body)
+        return struct.pack("<HHI", 0x0102, 16, 8 + len(chunk)) + chunk
+
+    def end(name_idx: int) -> bytes:
+        body = struct.pack("<IIiI", 0xFFFFFFFF, 0xFFFFFFFF, -1, name_idx)
+        return struct.pack("<HHI", 0x0103, 16, 8 + len(body)) + body
+
+    def named(value: str) -> list[tuple[int, int, int]]:
+        return [(intern("name"), 0x03, intern(value))]
+
+    body = bytearray()
+    body += start(intern("manifest"), [(intern("package"), 0x03, intern(package))])
+    body += start(intern("application"), [])
+    for tag, name, filters in components:
+        body += start(intern(tag), named(name))
+        for actions, datas in filters:
+            body += start(intern("intent-filter"), [])
+            for action in actions:
+                body += start(intern("action"), named(action))
+                body += end(intern("action"))
+            for data_attrs in datas:
+                data_list = [
+                    (intern(attr), 0x03, intern(value)) for attr, value in data_attrs.items()
+                ]
+                body += start(intern("data"), data_list)
+                body += end(intern("data"))
+            body += end(intern("intent-filter"))
+        body += end(intern(tag))
+    body += end(intern("application"))
+    body += end(intern("manifest"))
+
+    data = bytearray()
+    offsets: list[int] = []
+    for text in order:
+        offsets.append(len(data))
+        raw = text.encode("utf-8")
+        data += bytes([len(raw), len(raw)]) + raw + b"\x00"
+    while len(data) % 4:
+        data += b"\x00"
+    strings_start = 28 + len(order) * 4
+    pool = struct.pack(
+        "<HHIIIIII", 0x0001, 28, strings_start + len(data), len(order), 0, 1 << 8,
+        strings_start, 0,
+    )
+    pool += b"".join(struct.pack("<I", off) for off in offsets) + bytes(data)
+    payload = pool + bytes(body)
+    return struct.pack("<HHI", 0x0003, 8, 8 + len(payload)) + payload
+
+
 _MAIN = "android.intent.action.MAIN"
 _LAUNCHER = "android.intent.category.LAUNCHER"
+_VIEW = "android.intent.action.VIEW"
 
 
 class TestManifestFactsWithoutAndroguard:
@@ -531,6 +628,22 @@ class TestManifestFactsWithoutAndroguard:
                 "type": "provider",
                 "name": "com.example.headless.SharedProvider",
                 "has_intent_filter": False,
+            },
+        ]
+        # The deep links: the launcher's second intent-filter is ACTION_VIEW
+        # with two <data> elements -- an https host/pathPrefix and a bare
+        # custom scheme -- each one reported record, bound to its activity.
+        # The apktool/androguard gates cross-check this same set.
+        assert manifest["deep_links"] == [
+            {
+                "activity": "com.example.headless.MainActivity",
+                "scheme": "https",
+                "host": "deeplink.example.com",
+                "path_prefix": "/open",
+            },
+            {
+                "activity": "com.example.headless.MainActivity",
+                "scheme": "headless",
             },
         ]
 
@@ -823,6 +936,102 @@ class TestManifestFactsWithoutAndroguard:
         )["apk"]["manifest"]
         assert manifest["exported_components"] == [
             {"type": "activity", "name": ".WithFilter", "has_intent_filter": True}
+        ]
+
+    def test_a_view_filter_with_scheme_data_is_a_deep_link(self, tmp_path: Path) -> None:
+        # The canonical link handler: ACTION_VIEW plus a <data> naming a
+        # scheme and host. One data element, one reported link, bound to its
+        # activity with every declared URI part.
+        manifest_bytes = _axml_deep_link_manifest(
+            [
+                (
+                    "activity",
+                    ".Links",
+                    [([_VIEW], [{"scheme": "https", "host": "app.example", "path": "/x"}])],
+                )
+            ]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "links.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["deep_links"] == [
+            {"activity": ".Links", "scheme": "https", "host": "app.example", "path": "/x"}
+        ]
+
+    def test_data_without_a_scheme_is_not_a_link(self, tmp_path: Path) -> None:
+        # A <data> with only a host (or mimeType) declares no URI scheme, so
+        # there is no link to report even under ACTION_VIEW.
+        manifest_bytes = _axml_deep_link_manifest(
+            [("activity", ".NoScheme", [([_VIEW], [{"host": "app.example"}])])]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "noscheme.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["deep_links"] == []
+
+    def test_a_filter_without_view_reports_no_links(self, tmp_path: Path) -> None:
+        # A custom action's <data> is app-internal routing, not a deep link:
+        # only ACTION_VIEW makes the URI reachable from a browser or another
+        # app's plain view intent.
+        manifest_bytes = _axml_deep_link_manifest(
+            [("activity", ".Custom", [(["com.example.PING"], [{"scheme": "https"}])])]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "noview.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["deep_links"] == []
+
+    def test_view_data_on_a_service_is_not_a_deep_link(self, tmp_path: Path) -> None:
+        # Deep links start activities; a service with a VIEW filter is not a
+        # link target and must not be reported as one.
+        manifest_bytes = _axml_deep_link_manifest(
+            [("service", ".Svc", [([_VIEW], [{"scheme": "https", "host": "app.example"}])])]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "svc.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["deep_links"] == []
+
+    def test_data_before_the_view_action_still_counts(self, tmp_path: Path) -> None:
+        # Element order inside a filter is free: aapt may emit <data> before
+        # <action>. The filter is judged when it closes, so the link is
+        # reported either way. The builder emits actions first, so this case
+        # feeds the walker a manifest with the actions list empty and the VIEW
+        # action arriving through a second filter -- which must NOT count for
+        # the first filter's data; only the in-filter pairing does.
+        manifest_bytes = _axml_deep_link_manifest(
+            [
+                (
+                    "activity",
+                    ".Ordered",
+                    [
+                        ([], [{"scheme": "https", "host": "first.example"}]),
+                        ([_VIEW], [{"scheme": "app"}]),
+                    ],
+                )
+            ]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "ordered.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["deep_links"] == [{"activity": ".Ordered", "scheme": "app"}]
+
+    def test_links_bind_to_their_own_activity(self, tmp_path: Path) -> None:
+        # Two activities with one VIEW filter each: every link must carry the
+        # activity whose filter declared it, and an alias counts like an
+        # activity (it is what gets launched).
+        manifest_bytes = _axml_deep_link_manifest(
+            [
+                ("activity", ".First", [([_VIEW], [{"scheme": "one"}])]),
+                ("activity-alias", ".Second", [([_VIEW], [{"scheme": "two"}])]),
+            ]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "bound.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["deep_links"] == [
+            {"activity": ".First", "scheme": "one"},
+            {"activity": ".Second", "scheme": "two"},
         ]
 
     def test_manifest_is_present_but_empty_on_a_garbage_axml(self, tmp_path: Path) -> None:
