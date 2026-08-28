@@ -301,6 +301,132 @@ def test_doctor_not_ready_failure_body_also_scrubs_secrets(
     assert "api_key" not in blob.casefold()
 
 
+class TestPathAndImportProbes:
+    def test_a_none_path_simply_does_not_exist(self) -> None:
+        from headless_re_mcp.config_generate import _path_exists
+
+        assert _path_exists(None) is False
+
+    def test_a_path_whose_stat_blows_up_counts_as_absent(self) -> None:
+        from headless_re_mcp.config_generate import _path_exists
+
+        class ExplodingPath(Path):
+            def exists(self, **kwargs: object) -> bool:
+                raise OSError("filesystem went away")
+
+        assert _path_exists(ExplodingPath("/somewhere")) is False
+
+    def test_a_broken_import_system_reports_not_importable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import importlib.util
+
+        from headless_re_mcp.config_generate import _package_importable
+
+        def broken(name: str) -> None:
+            raise ValueError("bad module spec")
+
+        monkeypatch.setattr(importlib.util, "find_spec", broken)
+        assert _package_importable() is False
+
+
+class TestPythonpathResolution:
+    def test_no_in_tree_package_means_no_pythonpath(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headless_re_mcp.config_generate as cg
+
+        monkeypatch.setattr(cg, "repo_root", lambda: tmp_path)
+        assert cg.resolve_pythonpath_for_mcp() is None
+
+    def test_an_uninstalled_package_prefers_the_repo_src(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headless_re_mcp.config_generate as cg
+
+        (tmp_path / "src" / "headless_re_mcp").mkdir(parents=True)
+        monkeypatch.setattr(cg, "repo_root", lambda: tmp_path)
+        monkeypatch.setattr(cg, "_package_importable", lambda: False)
+        assert cg.resolve_pythonpath_for_mcp() == str((tmp_path / "src").resolve())
+
+
+class TestDiscoveredEnvBranches:
+    def test_no_config_path_anywhere_leaves_the_env_without_a_config_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headless_re_mcp.config_generate as cg
+
+        monkeypatch.setattr(cg, "default_config_path", lambda: None)
+        env, inventory = cg.build_discovered_env(_settings(tmp_path))
+        assert "HEADLESS_RE_CONFIG" not in env
+        assert all(row["key"] != "HEADLESS_RE_CONFIG" for row in inventory)
+
+    def test_pythonpath_can_be_opted_out(self, tmp_path: Path) -> None:
+        import headless_re_mcp.config_generate as cg
+
+        env, inventory = cg.build_discovered_env(
+            _settings(tmp_path), include_pythonpath=False
+        )
+        assert "PYTHONPATH" not in env
+
+    def test_an_unresolvable_pythonpath_is_just_omitted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headless_re_mcp.config_generate as cg
+
+        monkeypatch.setattr(cg, "resolve_pythonpath_for_mcp", lambda: None)
+        env, _ = cg.build_discovered_env(_settings(tmp_path))
+        assert "PYTHONPATH" not in env
+
+
+class TestStdioServerConfigBranches:
+    def test_embedded_env_without_any_config_path_keeps_the_plain_args(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headless_re_mcp.config_generate as cg
+
+        monkeypatch.setattr(cg, "default_config_path", lambda: None)
+        server = cg.build_stdio_server_config(
+            settings=_settings(tmp_path), embed_discovered_env=True
+        )
+        assert server["args"] == ["-m", "headless_re_mcp", "serve"]
+
+    def test_no_settings_and_no_config_path_yields_an_empty_env(self) -> None:
+        server = build_stdio_server_config()
+        assert server["env"] == {}
+        assert server["args"] == ["-m", "headless_re_mcp", "serve"]
+
+
+class TestMergeAndPersistBranches:
+    def test_merging_without_a_live_settings_returns_the_fresh_discovery(
+        self,
+    ) -> None:
+        from headless_re_mcp.config_generate import merge_live_settings
+
+        merged = merge_live_settings(None)
+        assert isinstance(merged, Settings)
+
+    def test_persist_skips_an_example_that_is_not_a_dict(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headless_re_mcp.config_generate as cg
+
+        monkeypatch.setattr(cg, "build_cursor_example", lambda server: None)
+        out_dir = tmp_path / "exports"
+        exported = cg.export_mcp_environment(
+            _settings(tmp_path),
+            config_path=tmp_path / "config.json",
+            persist=True,
+            output_dir=out_dir,
+            refresh_discovery=False,
+        )
+        assert exported["ok"] is True
+        assert "cursor" not in exported["written"]
+        assert "vscode" in exported["written"]
+        assert not (out_dir / "mcp.cursor.json").exists()
+        assert (out_dir / "mcp.vscode.json").is_file()
+
+
 def test_cli_config_generate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
