@@ -200,6 +200,41 @@ def test_proxy_status_names_flow_count_and_retained_max() -> None:
     assert "retained_bytes_max" in doc
 
 
+def test_proxy_status_and_flows_agree_on_the_evicted_count() -> None:
+    """A full ring quietly discarding flows must read that way from status too.
+
+    status() reported flow_count sitting at the cap but never dropped, so a
+    health check could not distinguish a full-but-stable ring from one shedding
+    flows on every request -- only paging flows() revealed the loss. Both now
+    read the same authority (recorder.dropped()), so a capacity-4 recorder fed
+    ten flows reports flow_count 4 and dropped 6 through either call.
+    """
+    recorder = _FlowRecorder(capacity=4)
+    for index in range(10):
+        request = SimpleNamespace(
+            method="GET", pretty_url=f"http://x/{index}", host="x"
+        )
+        response = SimpleNamespace(
+            status_code=200, headers={"content-type": "text/plain"}
+        )
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+    assert recorder.count() == 4
+    assert recorder.dropped() == 6
+
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(
+        host="127.0.0.1", port=8080, recorder=recorder
+    )
+    status = backend.status("s")
+    flows = backend.flows("s")
+    assert status["flow_count"] == 4
+    assert status["dropped"] == 6
+    assert flows["total"] == 4
+    assert status["dropped"] == flows["dropped"]
+
+
 def test_proxy_export_har_names_path_and_entry_count(
     tmp_path: Path,
 ) -> None:

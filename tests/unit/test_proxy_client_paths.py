@@ -720,7 +720,9 @@ def test_backend_start_detects_a_stop_during_launch(
 
 def test_backend_stop_and_status_report_a_live_instance() -> None:
     stopped: list[str] = []
-    recorder = SimpleNamespace(count=lambda: 3, retained_bytes=lambda: 4096)
+    recorder = SimpleNamespace(
+        count=lambda: 3, dropped=lambda: 0, retained_bytes=lambda: 4096
+    )
     inst = SimpleNamespace(
         host="127.0.0.1", port=8080, recorder=recorder, stop=lambda: stopped.append("stopped")
     )
@@ -730,6 +732,7 @@ def test_backend_stop_and_status_report_a_live_instance() -> None:
     status = backend.status("s")
     assert status["running"] is True
     assert status["flow_count"] == 3
+    assert status["dropped"] == 0
     assert status["retained_bytes"] == 4096
 
     payload = backend.stop("s")
@@ -739,7 +742,7 @@ def test_backend_stop_and_status_report_a_live_instance() -> None:
 
 def test_backend_flows_paginates_and_reports_dropped() -> None:
     entries = [{"id": f"f{i}", "seq": i + 10} for i in range(5)]
-    recorder = SimpleNamespace(snapshot=lambda: entries)
+    recorder = SimpleNamespace(snapshot=lambda: entries, dropped=lambda: 9)
     backend = ProxyBackend()
     backend._get = cast(Any, lambda session_id: SimpleNamespace(recorder=recorder))  # type: ignore[method-assign]
     payload = backend.flows("s", offset=1, limit=2)
@@ -747,12 +750,13 @@ def test_backend_flows_paginates_and_reports_dropped() -> None:
     assert payload["total"] == 5
     assert payload["offset"] == 1
     assert payload["has_more"] is True
-    # last seq 14, len 5 -> 9 dropped before the ring window.
+    # flows surfaces the recorder's evicted count verbatim, no longer recomputed
+    # inline from the newest summary's seq.
     assert payload["dropped"] == 9
 
 
 def test_backend_flows_on_an_empty_capture() -> None:
-    recorder = SimpleNamespace(snapshot=lambda: [])
+    recorder = SimpleNamespace(snapshot=lambda: [], dropped=lambda: 0)
     backend = ProxyBackend()
     backend._get = cast(Any, lambda session_id: SimpleNamespace(recorder=recorder))  # type: ignore[method-assign]
     payload = backend.flows("s")

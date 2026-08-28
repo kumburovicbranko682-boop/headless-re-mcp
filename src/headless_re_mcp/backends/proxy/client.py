@@ -428,6 +428,19 @@ class _FlowRecorder:
         with self._lock:
             return len(self.flows)
 
+    def dropped(self) -> int:
+        """How many flow summaries the ring has evicted since it started.
+
+        ``_seq`` counts every recorded flow and the ring holds at most its
+        capacity, so their difference is the number that scrolled off the top.
+        This is the one authority for that figure: ``flows()`` used to recompute
+        it inline from the newest summary's ``seq`` and ``status()`` did not
+        report it at all, so a health check via ``status`` could not tell a full
+        ring that is quietly discarding flows from one that is merely full.
+        """
+        with self._lock:
+            return max(0, self._seq - len(self.flows))
+
     def retained_bytes(self) -> int:
         with self._lock:
             return self._retained_bytes
@@ -621,6 +634,7 @@ class ProxyBackend:
             "host": inst.host,
             "port": inst.port,
             "flow_count": inst.recorder.count(),
+            "dropped": inst.recorder.dropped(),
             "retained_max": _MAX_FLOWS,
             "retained_bytes": inst.recorder.retained_bytes(),
             "retained_bytes_max": _MAX_RETAINED_BYTES,
@@ -632,16 +646,13 @@ class ProxyBackend:
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = items[start : start + cap]
-        dropped = 0
-        if items:
-            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
         return {
             "flows": window,
             "count": len(window),
             "total": len(items),
             "offset": start,
             "has_more": start + len(window) < len(items),
-            "dropped": dropped,
+            "dropped": inst.recorder.dropped(),
         }
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:

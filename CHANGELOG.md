@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（proxy.status 与 proxy.flows 对丢弃计数的可观测性不一致）
+
+- `backends/proxy/client.py`：`proxy.flows` 会返回 `dropped`（捕获环已淘汰的流数），
+  但 `proxy.status` 只报 `flow_count` 和 `retained_max`、从不报 `dropped`。于是把
+  `status` 当成健康检查的 agent 看到 `flow_count` 顶到 `retained_max` 时，无法区分
+  “环满但稳定”与“每来一条就丢一条”——只有翻 `flows()` 才看得到丢弃，而两者的丢弃数
+  还是各算各的（`flows()` 从最新摘要的 `seq` 内联重算，`status()` 干脆不算）。
+- 在 `_FlowRecorder` 上新增权威的 `dropped()`（在锁内以 `max(0, _seq - len(flows))`
+  计算），让 `status()` 与 `flows()` 都读同一来源：`status` 新增 `dropped` 字段，
+  `flows` 不再内联重算。二者从此对丢弃数报同一个值。同步更新 `proxy.status` 工具
+  文档串，点名 `dropped` 并说明 `flow_count` 顶格且 `dropped` 上升即代表正在丢流。
+- 新增 `test_proxy_status_and_flows_agree_on_the_evicted_count`：用容量 4 的真实
+  `_FlowRecorder` 灌 10 条流，断言 `count()==4`、`dropped()==6`，且 `status` 与
+  `flows` 报同一个 `dropped`。非空验证：去掉 `status` 的 `dropped` 行后该用例
+  `KeyError` 失败。相应更新使用假 recorder 的既有用例（补 `dropped` 桩）。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
