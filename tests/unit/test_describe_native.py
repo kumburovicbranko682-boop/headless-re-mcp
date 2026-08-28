@@ -1136,6 +1136,59 @@ def test_all_hard_imports_read_an_empty_weak_subset(tmp_path: Path) -> None:
     assert facts["exported_symbols"] == ["weak_export"]
 
 
+def test_fortify_source_names_the_chk_wrappers(tmp_path: Path) -> None:
+    # A -D_FORTIFY_SOURCE build imports libc's fortified wrappers, each named
+    # __<func>_chk; their presence is the checksec FORTIFY signal, and the
+    # count is how many distinct wrappers are used.
+    path = _write(
+        tmp_path,
+        "a.bin",
+        _elf64_with_dynsym(
+            [
+                ("__printf_chk", _STB_GLOBAL, _STT_FUNC, _SHN_UNDEF),
+                ("__memcpy_chk", _STB_GLOBAL, _STT_FUNC, _SHN_UNDEF),
+                ("puts", _STB_GLOBAL, _STT_FUNC, _SHN_UNDEF),
+            ]
+        ),
+    )
+    facts = describe_native(path)["native"]
+    assert facts["fortify_source"] is True
+    # Sorted, and only the fortified wrappers -- the plain libc import is out.
+    assert facts["fortified_functions"] == ["__memcpy_chk", "__printf_chk"]
+
+
+def test_an_unfortified_binary_reads_fortify_false(tmp_path: Path) -> None:
+    # Imports but no __*_chk wrapper: a real "built without FORTIFY" answer,
+    # present (not omitted) so the posture is definitively negative.
+    path = _write(
+        tmp_path,
+        "a.bin",
+        _elf64_with_dynsym([("puts", _STB_GLOBAL, _STT_FUNC, _SHN_UNDEF)]),
+    )
+    facts = describe_native(path)["native"]
+    assert facts["fortify_source"] is False
+    assert facts["fortified_functions"] == []
+
+
+def test_a_user_symbol_ending_in_chk_is_not_a_fortify_wrapper(tmp_path: Path) -> None:
+    # The wrappers are all __<func>_chk; a user import that merely ends in
+    # _chk (no __ prefix) must not be miscounted as FORTIFY, and the canary's
+    # own _fail/_guard symbols are not _chk wrappers either.
+    path = _write(
+        tmp_path,
+        "a.bin",
+        _elf64_with_dynsym(
+            [
+                ("validate_chk", _STB_GLOBAL, _STT_FUNC, _SHN_UNDEF),
+                ("__stack_chk_fail", _STB_GLOBAL, _STT_FUNC, _SHN_UNDEF),
+            ]
+        ),
+    )
+    facts = describe_native(path)["native"]
+    assert facts["fortify_source"] is False
+    assert facts["fortified_functions"] == []
+
+
 def test_no_dynsym_leaves_the_weak_import_fact_out_too(tmp_path: Path) -> None:
     # weak_imports rides with imported_symbols: no .dynsym, no import fact of
     # any kind, so the subset is absent rather than an empty list.

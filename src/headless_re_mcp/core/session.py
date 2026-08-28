@@ -5837,6 +5837,17 @@ def _elf_layout_facts(
         # dylib and a PE delay import. Present only alongside imports; an
         # empty list is a real "every import is hard" answer.
         facts["weak_imports"] = weak_imports
+        # FORTIFY_SOURCE posture -- the checksec column next to nx/relro/canary
+        # /pie that the mitigation facts have not carried yet. A -D_FORTIFY_
+        # SOURCE build routes bounded libc calls through fortified wrappers,
+        # each named ``__<func>_chk`` and imported from libc; their presence
+        # is the same signal checksec greps for (and its "Fortified" count is
+        # exactly how many distinct wrappers are used). The ``__`` prefix keeps
+        # a user function that merely ends in ``_chk`` out, and the wrappers
+        # never overlap the canary's ``_fail``/``_guard`` symbols.
+        fortified = [name for name in imports if name.startswith("__") and name.endswith("_chk")]
+        facts["fortify_source"] = bool(fortified)
+        facts["fortified_functions"] = fortified
     # Appended data past everything the headers map -- the PE overlay analogue,
     # where self-extractors and droppers park payloads. Absent means none.
     overlay = _elf_overlay(stream, order, bits, phoff, phentsize, phnum, shoff, shentsize, shnum)
