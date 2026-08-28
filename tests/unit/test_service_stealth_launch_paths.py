@@ -80,8 +80,9 @@ def test_prepare_derives_current_id_from_an_unknown_section(tmp_path: Path) -> N
     # known profile id: current_profile is None but current_section is a string.
     apply_profile(layout, "vmp", require_plugin=True)
     text = layout.ini.read_text(encoding="utf-8")
+    assert "CurrentProfile=VMProtect x86/x64" in text
     layout.ini.write_text(
-        text.replace("CurrentProfile = VMProtect x86/x64", "CurrentProfile = Bogus"),
+        text.replace("CurrentProfile=VMProtect x86/x64", "CurrentProfile=Bogus"),
         encoding="utf-8",
     )
 
