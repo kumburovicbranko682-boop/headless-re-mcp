@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **305（187 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **306（188 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -648,6 +648,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `path`/`http_only`/`secure`/`same_site`(Strict/Lax/None 或 null)、`set_count`(在 Set-Cookie
   中出现次数)、`sent_count`(在请求 Cookie 中出现次数)与 `sources`(set-cookie/cookie/两者)。
   没有 http_only 与 secure 的会话 cookie 是要标记的弱点。
+- 新增 `proxy.security_headers`:审计每个被服务文档的响应安全头——在途一侧的安全姿态。对抓到的每个
+  文档(凡 text/html 的响应,加上任何带受追踪头的响应)按 `(host, path)` 归并,报告哪些标准防护头在、
+  哪些缺——发现往往是"缺":一个页面既没 CSP 也没 HSTS。受追踪的头有 csp(Content-Security-Policy)、
+  hsts(Strict-Transport-Security)、x_frame_options、x_content_type_options、referrer_policy、
+  permissions_policy、coop/coep/corp(跨源隔离三件套)。与读实时页面 `<meta>` 里 CSP 的 `web.meta`
+  互补,这个读真正的响应头。回 `documents`(按 host+path 归并)、`count`、`total`、`truncated`、
+  `body_unavailable`(头被环形缓冲淘汰的文档数)、`tracked_headers`(全部键)与 `missing_counts`(有多少
+  文档缺每个头——头条数字)。每个文档带 `host`/`path`/`status`/`content_type`、`present`(它有的头键)、
+  `missing`(它缺的键)与 `headers`(在场头的值,裁过)。
 - 新增 `proxy.clear`(写):清空抓包环形缓冲但保持代理在跑——把下一次操作的流量隔进干净窗口,不必
   走 stop/start 那套(那会丢掉客户端的代理设置)。回 `cleared`(清掉的流摘要数)与 `running`(恒为
   true;真要停用 `proxy.stop`)。序号计数一并归零,于是 `proxy.flows` 的 dropped 从头算。会话没有代理

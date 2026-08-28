@@ -381,6 +381,22 @@ _MAX_ENDPOINTS_PAGE = 1000
 _MAX_COOKIE_HEADER_SCAN = 400
 _MAX_COOKIE_VALUE_CHARS = 4096
 _MAX_COOKIE_INVENTORY = 1000
+# proxy.security_headers: the response headers whose absence is the finding,
+# mapped to the short key the tool reports. Values and the document inventory
+# are bounded so a chatty capture cannot blow the response.
+_SECURITY_HEADERS: dict[str, str] = {
+    "content-security-policy": "csp",
+    "strict-transport-security": "hsts",
+    "x-frame-options": "x_frame_options",
+    "x-content-type-options": "x_content_type_options",
+    "referrer-policy": "referrer_policy",
+    "permissions-policy": "permissions_policy",
+    "cross-origin-opener-policy": "coop",
+    "cross-origin-embedder-policy": "coep",
+    "cross-origin-resource-policy": "corp",
+}
+_MAX_SEC_HEADER_VALUE_CHARS = 4096
+_MAX_SEC_DOCUMENTS = 1000
 
 
 def _cookie_header_pairs(part: Any) -> list[tuple[str, str]]:
@@ -530,6 +546,98 @@ def fold_cookies(
         "total": len(cookies),
         "truncated": len(window) < len(cookies),
         "body_unavailable": body_unavailable,
+    }
+
+
+def fold_security_headers(
+    rows: list[JsonObject], raw_lookup: Any, *, limit: int = 200
+) -> JsonObject:
+    """Audit each served document's response security headers.
+
+    Pure over the recorder's two views (summary rows plus the flow_id -> raw
+    lookup). A document is any response typed text/html, plus any response that
+    carries at least one tracked security header; each is folded by (host, path)
+    -- the query string dropped -- and reports which of the tracked headers
+    (CSP, HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy,
+    Permissions-Policy, COOP/COEP/CORP) are present and which are missing. The
+    finding is usually the absence: a page served with no CSP and no HSTS. A
+    flow whose body (and thus headers) was evicted contributes nothing and, when
+    it looked like a document, is counted in body_unavailable.
+    """
+    docs: dict[tuple[str, str], JsonObject] = {}
+    body_unavailable = 0
+    for row in rows:
+        content_type = str(row.get("content_type") or "")
+        is_html = "html" in content_type.lower()
+        flow_id = str(row.get("id") or "")
+        raw = raw_lookup(flow_id) if flow_id else None
+        if raw is _OMITTED_BODY:
+            if is_html:
+                body_unavailable += 1
+            continue
+        found: dict[str, str] = {}
+        if raw is not None:
+            resp = getattr(raw, "response", None)
+            if resp is not None:
+                for name_lower, value in _cookie_header_pairs(resp):
+                    mapped = _SECURITY_HEADERS.get(name_lower)
+                    if mapped is None:
+                        continue
+                    if mapped in found:
+                        # CSP and the like can legitimately repeat; keep them joined
+                        # rather than letting the last win.
+                        joined = found[mapped] + ", " + value
+                        found[mapped] = joined[:_MAX_SEC_HEADER_VALUE_CHARS]
+                    else:
+                        found[mapped] = value[:_MAX_SEC_HEADER_VALUE_CHARS]
+        # A non-document response with no security header at all is noise here.
+        if not is_html and not found:
+            continue
+        host = str(row.get("host") or "")
+        url = str(row.get("url") or "")
+        path = "/"
+        if url:
+            parts = urlsplit(url)
+            if not host:
+                host = parts.netloc
+            path = parts.path or "/"
+        key = (host, path)
+        doc = docs.get(key)
+        if doc is None:
+            doc = {
+                "host": host,
+                "path": path,
+                "status": row.get("status"),
+                "content_type": content_type,
+                "headers": {},
+            }
+            docs[key] = doc
+        headers: dict[str, str] = doc["headers"]
+        for name, value in found.items():
+            headers.setdefault(name, value)
+
+    tracked = sorted(_SECURITY_HEADERS.values())
+    missing_counts: dict[str, int] = dict.fromkeys(tracked, 0)
+    documents: list[JsonObject] = []
+    for doc in docs.values():
+        headers = doc["headers"]
+        doc["present"] = sorted(headers.keys())
+        missing = [name for name in tracked if name not in headers]
+        doc["missing"] = missing
+        for name in missing:
+            missing_counts[name] += 1
+        documents.append(doc)
+
+    cap = max(1, min(int(limit), _MAX_SEC_DOCUMENTS))
+    window = documents[:cap]
+    return {
+        "documents": window,
+        "count": len(window),
+        "total": len(documents),
+        "truncated": len(window) < len(documents),
+        "body_unavailable": body_unavailable,
+        "tracked_headers": tracked,
+        "missing_counts": missing_counts,
     }
 
 
@@ -1162,6 +1270,12 @@ class ProxyBackend:
     def cookies(self, session_id: str, *, limit: int = 200) -> JsonObject:
         inst = self._get(session_id)
         return fold_cookies(inst.recorder.snapshot(), inst.recorder.raw, limit=limit)
+
+    def security_headers(self, session_id: str, *, limit: int = 200) -> JsonObject:
+        inst = self._get(session_id)
+        return fold_security_headers(
+            inst.recorder.snapshot(), inst.recorder.raw, limit=limit
+        )
 
     def search(
         self,

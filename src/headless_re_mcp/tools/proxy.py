@@ -131,6 +131,33 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_cookies(session_id, limit=limit))
 
+    @tools.tool(name="proxy.security_headers")
+    def proxy_security_headers(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+    ) -> dict[str, Any]:
+        """Audit each served document's response security headers.
+
+        The wire-side security posture: for every document the capture saw
+        (anything served as text/html, plus any response carrying a tracked
+        header) this folds by (host, path) and reports which of the standard
+        protective headers are present and which are missing. The finding is
+        usually the absence -- a page shipped with no CSP and no HSTS. Tracked
+        headers are csp (Content-Security-Policy), hsts
+        (Strict-Transport-Security), x_frame_options, x_content_type_options,
+        referrer_policy, permissions_policy, coop/coep/corp (the cross-origin
+        isolation trio). Complementary to web.meta, which reads CSP from the
+        live page's <meta> tags; this reads the real response headers.
+
+        Answers with documents (folded per host+path), count, total, truncated,
+        body_unavailable (documents whose headers were evicted from the retain
+        ring), tracked_headers (the full key list) and missing_counts (how many
+        documents lack each header -- the headline). Each document carries host,
+        path, status, content_type, present (the header keys it has), missing
+        (the keys it lacks) and headers (the present headers' values, clipped).
+        """
+        return _dump(analysis.proxy_security_headers(session_id, limit=limit))
+
     @tools.tool(name="proxy.endpoints")
     def proxy_endpoints(
         session_id: str,
