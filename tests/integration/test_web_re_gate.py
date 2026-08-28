@@ -1452,3 +1452,48 @@ def test_wasm_readers_fault_soft_on_a_malformed_module(tmp_path: Path) -> None:
         assert "wasm" in ok.data["objdump"].lower()
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_summary_reads_the_module_surface_without_wabt() -> None:
+    """The structured import/export surface must come straight from the bytes.
+
+    Unlike the wat/info/decompile gates above, this must run whether or not wabt
+    is installed -- wasm.summary parses the module binary itself, so it is the one
+    WASM reader an agent can rely on with no external tool. The fixture exports a
+    memory and an "add" function and imports nothing, so the parsed surface must
+    name both exports with their kinds and report the section counts.
+    """
+    assert _WASM_FIXTURE.is_file(), f"fixture missing: {_WASM_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.wasm_summary(str(_WASM_FIXTURE))
+        assert result.ok and result.data is not None, result.error
+        data = result.data
+        assert data["version"] == 1
+        assert data["imports"] == []
+        assert data["import_count"] == 0
+        exports = {e["name"]: e for e in data["exports"]}
+        assert exports["add"]["kind"] == "func"
+        assert exports["mem"]["kind"] == "memory"
+        assert data["export_count"] == 2
+        assert data["function_count"] == 1
+        assert data["memory_count"] == 1
+        assert data["type_count"] == 1
+        assert data["sections"].get("export") == 2
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_summary_faults_soft_on_a_bad_module(tmp_path: Path) -> None:
+    """A non-wasm file must be a clean backend_error, never a crash."""
+    bad = tmp_path / "bad.wasm"
+    bad.write_bytes(b"NOPE\x01\x00\x00\x00garbage-past-the-magic")
+    service = AnalysisService()
+    try:
+        result = service.wasm_summary(str(bad))
+        assert not result.ok and result.error is not None
+        assert result.error.code == "backend_error", result.error
+    finally:
+        service.close_all()

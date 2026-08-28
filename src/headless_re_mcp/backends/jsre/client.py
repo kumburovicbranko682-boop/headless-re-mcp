@@ -214,6 +214,183 @@ class JsClient:
         }
 
 
+_WASM_MAGIC = b"\x00asm"
+# The four external kinds an import/export can carry (WebAssembly spec 5.5.5).
+_WASM_EXTERNAL_KINDS = {0: "func", 1: "table", 2: "memory", 3: "global"}
+_WASM_SECTION_NAMES = {
+    0: "custom",
+    1: "type",
+    2: "import",
+    3: "function",
+    4: "table",
+    5: "memory",
+    6: "global",
+    7: "export",
+    8: "start",
+    9: "element",
+    10: "code",
+    11: "data",
+    12: "data_count",
+}
+# Cap the import/export lists so a crafted module with a huge vec count cannot
+# make one summary build an unbounded envelope; the declared count is still
+# reported so the truncation is disclosed.
+_MAX_WASM_ITEMS = 4096
+_MAX_WASM_NAME = 512
+
+
+class _WasmParseError(Exception):
+    """A structural fault in the module bytes, mapped to a clean JsReError."""
+
+
+def _read_uleb128(data: bytes, pos: int) -> tuple[int, int]:
+    result = 0
+    shift = 0
+    while True:
+        if pos >= len(data):
+            raise _WasmParseError("truncated LEB128")
+        byte = data[pos]
+        pos += 1
+        result |= (byte & 0x7F) << shift
+        if not (byte & 0x80):
+            return result, pos
+        shift += 7
+        if shift > 63:
+            raise _WasmParseError("LEB128 too long")
+
+
+def _read_wasm_name(data: bytes, pos: int, end: int) -> tuple[str, int]:
+    length, pos = _read_uleb128(data, pos)
+    if length < 0 or pos + length > end:
+        raise _WasmParseError("name overruns section")
+    raw = data[pos : pos + length]
+    pos += length
+    text = raw.decode("utf-8", "replace")
+    return text[:_MAX_WASM_NAME], pos
+
+
+def _skip_wasm_limits(data: bytes, pos: int) -> int:
+    flags = data[pos]
+    pos += 1
+    _, pos = _read_uleb128(data, pos)  # min
+    if flags & 1:
+        _, pos = _read_uleb128(data, pos)  # max
+    return pos
+
+
+def _parse_wasm_summary(data: bytes, *, module: str) -> JsonObject:
+    """Parse a module's import/export/section structure straight from the bytes.
+
+    The WebAssembly binary format is versioned and stable, so walking its section
+    table for the import and export vectors needs no external tool and cannot
+    drift with a wabt release. Any structural fault becomes a clean
+    ``backend_error`` rather than a crash, matching the fault contract the
+    subprocess-backed readers use.
+    """
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        raise JsReError("backend_error", "not a WebAssembly module (bad magic)")
+    version = int.from_bytes(data[4:8], "little")
+    pos = 8
+    n = len(data)
+    counts: dict[str, int] = {}
+    imports: list[JsonObject] = []
+    exports: list[JsonObject] = []
+    imports_truncated = False
+    exports_truncated = False
+    try:
+        while pos < n:
+            sec_id = data[pos]
+            pos += 1
+            sec_size, pos = _read_uleb128(data, pos)
+            sec_end = pos + sec_size
+            if sec_size < 0 or sec_end > n:
+                raise _WasmParseError("section overruns module")
+            name = _WASM_SECTION_NAMES.get(sec_id, f"section_{sec_id}")
+            if sec_id == 0:
+                # A custom section is name-prefixed free-form bytes with no vec
+                # count; tally its presence and skip the payload.
+                counts["custom"] = counts.get("custom", 0) + 1
+                pos = sec_end
+                continue
+            count, body = _read_uleb128(data, pos)
+            counts[name] = count
+            if sec_id == 2:  # Import
+                p = body
+                for _ in range(count):
+                    mod_name, p = _read_wasm_name(data, p, sec_end)
+                    fld_name, p = _read_wasm_name(data, p, sec_end)
+                    if p >= sec_end:
+                        raise _WasmParseError("import entry truncated")
+                    kind = data[p]
+                    p += 1
+                    entry: JsonObject = {
+                        "module": mod_name,
+                        "name": fld_name,
+                        "kind": _WASM_EXTERNAL_KINDS.get(kind, str(kind)),
+                    }
+                    if kind == 0:  # func: type index
+                        entry["type_index"], p = _read_uleb128(data, p)
+                    elif kind == 1:  # table: elem type byte + limits
+                        p = _skip_wasm_limits(data, p + 1)
+                    elif kind == 2:  # memory: limits
+                        p = _skip_wasm_limits(data, p)
+                    elif kind == 3:  # global: value type byte + mutability byte
+                        p += 2
+                    else:
+                        raise _WasmParseError(f"unknown import kind {kind}")
+                    if len(imports) < _MAX_WASM_ITEMS:
+                        imports.append(entry)
+                    else:
+                        imports_truncated = True
+            elif sec_id == 7:  # Export
+                p = body
+                for _ in range(count):
+                    exp_name, p = _read_wasm_name(data, p, sec_end)
+                    if p >= sec_end:
+                        raise _WasmParseError("export entry truncated")
+                    kind = data[p]
+                    p += 1
+                    idx, p = _read_uleb128(data, p)
+                    if len(exports) < _MAX_WASM_ITEMS:
+                        exports.append(
+                            {
+                                "name": exp_name,
+                                "kind": _WASM_EXTERNAL_KINDS.get(kind, str(kind)),
+                                "index": idx,
+                            }
+                        )
+                    else:
+                        exports_truncated = True
+            # Resync at the declared section boundary either way, so a malformed
+            # entry cannot desynchronise the walk of the following sections.
+            pos = sec_end
+    except _WasmParseError as exc:
+        raise JsReError("backend_error", f"malformed WebAssembly module: {exc}") from exc
+    except IndexError as exc:  # a read ran off the end despite the guards
+        raise JsReError(
+            "backend_error", "malformed WebAssembly module: unexpected end of data"
+        ) from exc
+    result: JsonObject = {
+        "module": module,
+        "version": version,
+        "imports": imports,
+        "exports": exports,
+        "import_count": counts.get("import", 0),
+        "export_count": counts.get("export", 0),
+        "function_count": counts.get("function", 0),
+        "memory_count": counts.get("memory", 0),
+        "global_count": counts.get("global", 0),
+        "table_count": counts.get("table", 0),
+        "type_count": counts.get("type", 0),
+        "sections": counts,
+    }
+    if imports_truncated:
+        result["imports_truncated"] = True
+    if exports_truncated:
+        result["exports_truncated"] = True
+    return result
+
+
 class WasmClient:
     """wabt-backed WebAssembly inspection (wasm2wat, wasm-objdump)."""
 
@@ -230,6 +407,23 @@ class WasmClient:
         if tool is None:
             raise JsReError("capability_unavailable", f"{name} (wabt) is not configured")
         return _require_existing_file(path, missing="wasm file not found")
+
+    def summary(self, path: Path, *, timeout: float = 30.0) -> JsonObject:
+        """Structured module surface: imports, exports and per-section counts.
+
+        Where wasm.wat / wasm.info / wasm.decompile hand back text a caller has to
+        read, this parses the module binary itself into machine-readable lists --
+        what the module imports from its host (the JS glue, ``env.<name>``) and
+        what it exports back (the functions and memory a page calls) -- the
+        WebAssembly analogue of a PE/ELF import and export table. It reads the
+        bytes directly, so it needs no wabt installed and cannot drift with a wabt
+        version; a malformed module faults cleanly rather than crashing. ``timeout``
+        is accepted for signature symmetry with the wabt-backed readers but the
+        parse is a bounded in-process walk.
+        """
+        _ = timeout
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        return _parse_wasm_summary(resolved.read_bytes(), module=resolved.name)
 
     def wat(
         self, path: Path, *, timeout: float = 120.0, spill_dir: Path | None = None

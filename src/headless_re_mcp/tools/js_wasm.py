@@ -109,4 +109,27 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 
+    @tools.tool(name="wasm.summary")
+    def wasm_summary(
+        path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Structured import/export/section surface of a .wasm module.
+
+        Where wasm.info returns wasm-objdump's text and wasm.wat/decompile return
+        code text, this parses the module binary itself into machine-readable
+        lists: imports (module, name, kind, and type_index for functions) -- what
+        the module needs from its JS host (env.<name>) -- and exports (name, kind,
+        index) -- the functions and memory a page calls. It is the WebAssembly
+        analogue of a PE/ELF import and export table, the seam from "there is a
+        wasm module" to "here is its API". kind is func, table, memory or global.
+        Also answers with version, per-kind counts (import_count, export_count,
+        function_count, memory_count, global_count, table_count, type_count) and
+        sections (every section's declared entry count). Reads the bytes directly,
+        so it works with no wabt installed; a malformed module is a clean
+        backend_error. imports_truncated / exports_truncated mark a module whose
+        lists were longer than the 4096 cap (import_count/export_count stay the
+        real totals). An input over 16 MiB is refused as too_large.
+        """
+        return _dump(analysis.wasm_summary(path, timeout=timeout))
+
     return tools.bindings
