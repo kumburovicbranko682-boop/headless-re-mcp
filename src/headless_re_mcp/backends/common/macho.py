@@ -11,6 +11,10 @@ the dylib/rpath commands; the UUID, the entry point offset, the target platform
 and minimum OS from the version commands; and the triage booleans an analyst
 wants first -- pie, signed (LC_CODE_SIGNATURE), encrypted (LC_ENCRYPTION_INFO
 cryptid, the iOS store-encryption flag) and stripped (LC_SYMTAB).
+list_macho_symbols walks the LC_SYMTAB nlist array -- the import/export surface
+-- naming each symbol, saying whether it is imported (an undefined external,
+resolved to the dylib its library ordinal names) or exported (a defined
+external), and skipping debug stabs.
 
 Universal ("fat") binaries are handled too: each architecture slice is listed
 with its CPU/offset/size and summarized in place, bounded by a slice cap. Both
@@ -125,6 +129,32 @@ _VERSION_MIN_COMMANDS = {
 }
 
 _MH_PIE = 0x200000
+
+_MAX_SYMBOL_PAGE = 1000
+
+# nlist n_type field: a stab mask, an external bit, a private-external bit and a
+# 3-bit type nested in the low nibble.
+_N_STAB = 0xE0
+_N_PEXT = 0x10
+_N_TYPE = 0x0E
+_N_EXT = 0x01
+_N_UNDF = 0x0
+_N_ABS = 0x2
+_N_SECT = 0xE
+_N_PBUD = 0xC
+_N_INDR = 0xA
+_NTYPE_NAME = {
+    _N_UNDF: "undefined",
+    _N_ABS: "absolute",
+    _N_SECT: "section",
+    _N_PBUD: "prebound",
+    _N_INDR: "indirect",
+}
+
+# Special two-level-namespace library ordinals stored in the high byte of n_desc
+# for an undefined external symbol; anything else is a 1-based index into the
+# ordered dylib dependency list.
+_SPECIAL_ORDINALS = {0x0: "self", 0xFE: "dynamic_lookup", 0xFF: "executable"}
 
 
 class MachoParseError(ValueError):
@@ -376,4 +406,194 @@ def summarize_macho(data: bytes) -> JsonObject:
         return _summarize_thin(data)
     if magic in (_FAT_MAGIC_32, _FAT_MAGIC_64):
         return _summarize_fat(data)
+    raise MachoParseError("not a Mach-O file: unknown magic")
+
+
+def _symbol_name(strtab: bytes, strx: int) -> str:
+    """A NUL-terminated symbol name at ``strx`` in a string table, bounded/safe."""
+    if strx <= 0 or strx >= len(strtab):
+        return ""
+    end = strtab.find(b"\x00", strx)
+    raw = strtab[strx : end if end != -1 else len(strtab)]
+    return raw.decode("utf-8", errors="replace")[:_MAX_NAME]
+
+
+def _find_symtab_and_dylibs(data: bytes, endian: str, hdr_size: int, ncmds: int) -> JsonObject:
+    """Walk the load commands once for LC_SYMTAB and the ordered dylib names.
+
+    Returns the four LC_SYMTAB fields (or None when absent) and the dependency
+    list in link order, so an undefined symbol's library ordinal can be named.
+    Bounds are followed defensively; a bad command stops the walk with a warning.
+    """
+    warnings: list[str] = []
+    symtab: tuple[int, int, int, int] | None = None
+    dylibs: list[str] = []
+    offset = hdr_size
+    for index in range(min(ncmds, _MAX_CMDS)):
+        if offset + 8 > len(data):
+            warnings.append(f"load command {index} is past end of file")
+            break
+        cmd, cmdsize = struct.unpack_from(endian + "II", data, offset)
+        if cmdsize < 8 or offset + cmdsize > len(data):
+            warnings.append(f"load command {index} has a bad size")
+            break
+        cmd_end = offset + cmdsize
+        if cmd == _LC_SYMTAB and cmdsize >= 24:
+            symoff, nsyms, stroff, strsize = struct.unpack_from(endian + "IIII", data, offset + 8)
+            symtab = (symoff, nsyms, stroff, strsize)
+        elif cmd in _DYLIB_COMMANDS and cmdsize >= 12:
+            (str_offset,) = struct.unpack_from(endian + "I", data, offset + 8)
+            if len(dylibs) < _MAX_DYLIBS:
+                dylibs.append(_lc_string(data, offset, cmd_end, str_offset))
+        offset = cmd_end
+    return {"symtab": symtab, "dylibs": dylibs, "warnings": warnings}
+
+
+def _list_thin_symbols(data: bytes, *, offset: int, limit: int, extra: JsonObject) -> JsonObject:
+    """One page of a thin image's LC_SYMTAB symbols, classified import/export."""
+    magic = data[:4]
+    if magic not in _THIN_MAGICS:
+        raise MachoParseError("not a Mach-O image: unknown magic")
+    bits, endian, endian_name = _THIN_MAGICS[magic]
+    hdr_size = 32 if bits == 64 else 28
+    if len(data) < hdr_size:
+        raise MachoParseError("truncated Mach-O header")
+    cputype, _cpusubtype, _filetype, ncmds, _sizeofcmds, _flags = struct.unpack_from(
+        endian + "iiIIII", data, 4
+    )
+
+    found = _find_symtab_and_dylibs(data, endian, hdr_size, ncmds)
+    warnings: list[str] = list(found["warnings"])[:_MAX_WARNINGS]
+
+    def warn(message: str) -> None:
+        if len(warnings) < _MAX_WARNINGS:
+            warnings.append(message)
+
+    dylibs: list[str] = found["dylibs"]
+    start = max(0, int(offset))
+    window = max(1, min(int(limit), _MAX_SYMBOL_PAGE))
+
+    total = 0
+    symbols: list[JsonObject] = []
+    symtab = found["symtab"]
+    if symtab is None:
+        warn("no LC_SYMTAB: statically stripped, or a symbol-less image")
+    else:
+        symoff, nsyms, stroff, strsize = symtab
+        total = nsyms
+        strtab = b""
+        if 0 <= stroff <= stroff + strsize <= len(data):
+            strtab = data[stroff : stroff + strsize]
+        else:
+            warn("string table is past end of file; names unavailable")
+        nl_size = 16 if bits == 64 else 12
+        nl_fmt = endian + ("IBBHQ" if bits == 64 else "IBBhI")
+        for index in range(start, min(total, start + window)):
+            eoff = symoff + index * nl_size
+            if eoff < 0 or eoff + nl_size > len(data):
+                warn(f"symbol {index} is past end of file")
+                break
+            n_strx, n_type, _n_sect, n_desc, n_value = struct.unpack_from(nl_fmt, data, eoff)
+            name = _symbol_name(strtab, n_strx)
+            is_stab = bool(n_type & _N_STAB)
+            external = bool(n_type & _N_EXT) and not is_stab
+            ntype = n_type & _N_TYPE
+            defined = ntype in (_N_SECT, _N_ABS, _N_INDR)
+            imported = external and ntype == _N_UNDF and bool(name)
+            exported = external and defined and bool(name)
+            entry: JsonObject = {
+                "name": name,
+                "type": "debug" if is_stab else _NTYPE_NAME.get(ntype, f"0x{ntype:x}"),
+                "external": external,
+                "value": f"0x{n_value:x}",
+                "imported": imported,
+                "exported": exported,
+            }
+            if imported:
+                ordinal = (n_desc >> 8) & 0xFF
+                entry["library_ordinal"] = ordinal
+                if ordinal in _SPECIAL_ORDINALS:
+                    entry["library"] = _SPECIAL_ORDINALS[ordinal]
+                elif 1 <= ordinal <= len(dylibs):
+                    entry["library"] = dylibs[ordinal - 1]
+            symbols.append(entry)
+
+    result: JsonObject = {
+        "format": "Mach-O",
+        "bits": bits,
+        "endianness": endian_name,
+        "cpu": _CPU.get(cputype, f"0x{cputype:x}"),
+        "symbols": symbols,
+        "symbols_listed": len(symbols),
+        "symbols_total": total,
+        "imported_listed": sum(1 for s in symbols if s["imported"]),
+        "exported_listed": sum(1 for s in symbols if s["exported"]),
+        "offset": start,
+        "limit": window,
+        "has_more": start + len(symbols) < total,
+        "warnings": warnings,
+    }
+    result.update(extra)
+    return result
+
+
+def _list_fat_symbols(data: bytes, offset: int, limit: int) -> JsonObject:
+    """Symbols of a fat binary's first architecture slice, arch noted for context."""
+    is64 = data[:4] == _FAT_MAGIC_64
+    (nfat_arch,) = struct.unpack_from(">I", data, 4)
+    if nfat_arch == 0:
+        raise MachoParseError("fat binary with no architecture slices")
+    if nfat_arch > _MAX_SLICES:
+        raise MachoParseError(
+            f"implausible fat arch count {nfat_arch}"
+            " (a Java class file shares the 0xcafebabe magic)"
+        )
+    arch_fmt = ">iiQQII" if is64 else ">iiIII"
+    arch_size = struct.calcsize(arch_fmt)
+    available: list[str] = []
+    slices: list[tuple[int, int]] = []
+    for index in range(nfat_arch):
+        base = 8 + index * arch_size
+        if base + arch_size > len(data):
+            break
+        fields = struct.unpack_from(arch_fmt, data, base)
+        cputype, sliceoff, size = fields[0], fields[2], fields[3]
+        available.append(_CPU.get(cputype, f"0x{cputype:x}"))
+        slices.append((sliceoff, size))
+    if not slices:
+        raise MachoParseError("fat binary with no readable architecture slices")
+
+    sliceoff, size = slices[0]
+    if sliceoff < 0 or size < 0 or sliceoff + size > len(data):
+        raise MachoParseError("first fat slice extends past end of file")
+    extra: JsonObject = {"fat": True, "arch": available[0], "available_arches": available}
+    result = _list_thin_symbols(
+        data[sliceoff : sliceoff + size], offset=offset, limit=limit, extra=extra
+    )
+    if len(available) > 1:
+        note = f"fat binary; listed the {available[0]} slice of {available}"
+        if len(result["warnings"]) < _MAX_WARNINGS:
+            result["warnings"] = [note, *result["warnings"]]
+    return result
+
+
+def list_macho_symbols(data: bytes, *, offset: int = 0, limit: int = 200) -> JsonObject:
+    """One page of a Mach-O's LC_SYMTAB symbols: imports and exports.
+
+    The symbol table names what the binary imports from other dylibs (undefined
+    external entries, each carrying the library ordinal of the dylib that
+    provides it) and what it exports for others to link (defined external
+    entries); debug stabs are classified as such but neither imported nor
+    exported. Raises MachoParseError only when the bytes are not a Mach-O at
+    all; a thin image with no LC_SYMTAB is an empty listing with a warning, and
+    a fat binary is read on its first architecture slice (the arch and the full
+    slice list are reported).
+    """
+    if len(data) < 8:
+        raise MachoParseError("not a Mach-O file: too short for any header")
+    magic = data[:4]
+    if magic in _THIN_MAGICS:
+        return _list_thin_symbols(data, offset=offset, limit=limit, extra={"fat": False})
+    if magic in (_FAT_MAGIC_32, _FAT_MAGIC_64):
+        return _list_fat_symbols(data, offset, limit)
     raise MachoParseError("not a Mach-O file: unknown magic")

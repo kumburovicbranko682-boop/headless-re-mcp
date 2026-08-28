@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field
 
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
@@ -42,5 +44,30 @@ def build_macho_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         the 0xcafebabe magic is called out), one over 128 MiB too_large.
         """
         return _dump(analysis.macho_summary(path))
+
+    @tools.tool(name="macho.symbols")
+    def macho_symbols(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+    ) -> dict[str, Any]:
+        """List a Mach-O's symbols (imports/exports) with the stdlib.
+
+        The LC_SYMTAB nlist table is the binary's link surface: the functions
+        and objects it imports from other dylibs (undefined external entries)
+        and the ones it exports for others to link (defined external entries).
+        This reads it by path with no external tool: the offline nm -m triage.
+
+        Answers with one page of symbols (name, type undefined/section/absolute/
+        indirect or debug, external, value) plus imported/exported booleans per
+        symbol; an imported symbol also carries library_ordinal and the resolved
+        library it comes from (a dylib path, or self/executable/dynamic_lookup).
+        imported_listed / exported_listed / symbols_total / has_more let pages be
+        walked with offset/limit. A fat binary is read on its first architecture
+        slice (arch and available_arches are reported); an image with no
+        LC_SYMTAB is an empty listing with a warning. A file that is not a
+        Mach-O is invalid_params, one over 128 MiB too_large.
+        """
+        return _dump(analysis.macho_symbols(path, offset=offset, limit=limit))
 
     return tools.bindings

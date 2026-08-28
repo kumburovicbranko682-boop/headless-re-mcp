@@ -1,11 +1,13 @@
-"""Mach-O static-summary service method (pure stdlib, no external backend).
+"""Mach-O static-analysis service methods (pure stdlib, no external backend).
 
 With PE covered by a whole tool line and ELF by elf.summary/elf.symbols, Mach-O
 -- a macOS dylib, an iOS app's main binary, a Mach-O malware sample -- was the
 one first-class native format that could not be opened here at all. This mixin
-reads a standalone Mach-O (thin or universal) by path with the stdlib alone and
-returns the header/segment/dylib/platform triage. It is a core, path-based tool
--- no session, no target kind -- so it stays visible in every workspace profile.
+reads a standalone Mach-O (thin or universal) by path with the stdlib alone:
+macho_summary returns the header/segment/dylib/platform triage and macho_symbols
+pages through the LC_SYMTAB nlist array (imports and exports). These are core,
+path-based tools -- no session, no target kind -- so they stay visible in every
+workspace profile.
 """
 
 from __future__ import annotations
@@ -13,7 +15,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.macho import MachoParseError, summarize_macho
+from headless_re_mcp.backends.common.macho import (
+    MachoParseError,
+    list_macho_symbols,
+    summarize_macho,
+)
 from headless_re_mcp.core.limits import MACHO_SUMMARY_MAX_BYTES
 from headless_re_mcp.core.models import Result, RpcError
 from headless_re_mcp.core.results import _failure, _success
@@ -23,6 +29,42 @@ JsonObject = dict[str, Any]
 
 def _err(code: str, message: str, **details: object) -> Result[JsonObject]:
     return Result[JsonObject](ok=False, error=RpcError(code=code, message=message, details=details))
+
+
+class _MachoFileError(Exception):
+    """A path that cannot be read as a Mach-O, carrying its error envelope."""
+
+    def __init__(self, code: str, message: str, **details: object) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details
+
+
+def _load_macho(path: str) -> bytes:
+    """The bytes of the Mach-O at ``path``, or _MachoFileError naming what's wrong."""
+    resolved = Path(path).expanduser()
+    if not resolved.is_file():
+        raise _MachoFileError("not_found", "mach-o file not found", path=str(resolved))
+    try:
+        size = int(resolved.stat().st_size)
+    except OSError as exc:
+        raise _MachoFileError(
+            "backend_error", f"mach-o unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if size > MACHO_SUMMARY_MAX_BYTES:
+        raise _MachoFileError(
+            "too_large",
+            f"mach-o is {size} bytes, over the {MACHO_SUMMARY_MAX_BYTES}-byte limit",
+            path=str(resolved),
+            size=size,
+            cap=MACHO_SUMMARY_MAX_BYTES,
+        )
+    try:
+        return resolved.read_bytes()
+    except OSError as exc:
+        raise _MachoFileError(
+            "backend_error", f"mach-o unreadable: {exc}", path=str(resolved)
+        ) from exc
 
 
 class MachoAnalysisMixin:
@@ -40,23 +82,30 @@ class MachoAnalysisMixin:
         over the 128 MiB cap too_large, a missing one not_found.
         """
         try:
-            resolved = Path(path).expanduser()
-            if not resolved.is_file():
-                return _err("not_found", "mach-o file not found", path=str(resolved))
-            try:
-                size = int(resolved.stat().st_size)
-            except OSError as exc:
-                return _err("backend_error", f"mach-o unreadable: {exc}", path=str(resolved))
-            if size > MACHO_SUMMARY_MAX_BYTES:
-                return _err(
-                    "too_large",
-                    f"mach-o is {size} bytes, over the {MACHO_SUMMARY_MAX_BYTES}-byte limit",
-                    path=str(resolved),
-                    size=size,
-                    cap=MACHO_SUMMARY_MAX_BYTES,
-                )
-            summary = summarize_macho(resolved.read_bytes())
+            summary = summarize_macho(_load_macho(path))
             return _success(summary, backend="macho")
+        except _MachoFileError as exc:
+            return _err(exc.code, str(exc), **exc.details)
+        except MachoParseError as exc:
+            return _err("invalid_params", str(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def macho_symbols(self, path: str, *, offset: int = 0, limit: int = 200) -> Result[JsonObject]:
+        """One page of a Mach-O's LC_SYMTAB symbols: what it imports and exports.
+
+        Names each symbol and says whether it is imported (an undefined
+        external, resolved to the dylib its library ordinal names) or exported
+        (a defined external); debug stabs are marked as such. A fat binary is
+        read on its first architecture slice (the arch and slice list are
+        reported); an image with no LC_SYMTAB is an empty listing with a
+        warning. The same file-level failures as macho_summary apply.
+        """
+        try:
+            listing = list_macho_symbols(_load_macho(path), offset=offset, limit=limit)
+            return _success(listing, backend="macho")
+        except _MachoFileError as exc:
+            return _err(exc.code, str(exc), **exc.details)
         except MachoParseError as exc:
             return _err("invalid_params", str(exc))
         except BaseException as exc:
