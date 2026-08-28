@@ -9,8 +9,8 @@ and its export name table (what a DLL offers -- the pair to exported symbols).
 The descriptor walks, the PE32/PE32+ thunk-width switch, the ordinal decode,
 the VC6 VA-based delay-descriptor rebase and the export-name walk are all
 ours, so pefile referees them: it parses the same directories independently
-and hands back the DLL/function pairs and export names, which this compares
-against the reader's facts byte for byte.
+and hands back the DLL/function pairs, export names and forwarder targets,
+which this compares against the reader's facts byte for byte.
 
 pefile ships in the project's ``pe`` extra, so this needs no system tool. skip
 != pass: it skips only when pefile is unavailable.
@@ -42,12 +42,15 @@ def _pe_with_imports_exports(
     delay: list[tuple[str, list[object]]] | None = None,
     delay_va_based: bool = False,
     image_base: int = 0,
+    forwarders: dict[str, str] | None = None,
 ) -> bytes:
     """A minimal PE carrying the given import (index 1) and export (index 0)
     directories in one section -- the shape pefile parses. A function entry is a
     name or an int (an ordinal import). ``delay`` adds a delay-load directory
     (index 13); ``delay_va_based`` writes its descriptors in VC6's VA dialect
-    (attribute bit 0 clear, DWORD fields biased by ``image_base``). Built here
+    (attribute bit 0 clear, DWORD fields biased by ``image_base``).
+    ``forwarders`` maps an export name to a ``TARGET.Func`` string whose EAT
+    entry then points inside the export directory at that string. Built here
     independently of the reader's own test builder so the two implementations
     cannot share a blind spot.
     """
@@ -139,6 +142,7 @@ def _pe_with_imports_exports(
         dly_dir_rva, dly_dir_size = rva(dly_desc_off), 32 * (dly_n + 1)
 
     exp_dir_rva = exp_dir_size = 0
+    forwarders = forwarders or {}
     if exports:
         name_rvas = [rva(emit(name.encode() + b"\x00")) for name in exports]
         align(4)
@@ -161,7 +165,13 @@ def _pe_with_imports_exports(
             0, 0, 0, 0, rva(dll_name), 1,
             len(exports), len(exports), rva(eat_off), rva(names_off), rva(ord_off),
         )
-        exp_dir_rva, exp_dir_size = rva(exp_off), 40
+        # Forwarder target strings sit inside the directory's declared size,
+        # and the matching EAT entry points at them instead of at code.
+        for idx, name in enumerate(exports):
+            if name in forwarders:
+                target_off = emit(forwarders[name].encode() + b"\x00")
+                struct.pack_into("<I", sec, eat_off + idx * 4, rva(target_off))
+        exp_dir_rva, exp_dir_size = rva(exp_off), len(sec) - exp_off
 
     dos = bytearray(0x40)
     dos[0:2] = b"MZ"
@@ -227,6 +237,19 @@ def _pefile_exports(pefile_mod: object, data: bytes) -> list[str]:
     return sorted(s.name.decode() for s in pe.DIRECTORY_ENTRY_EXPORT.symbols if s.name)
 
 
+def _pefile_forwarders(pefile_mod: object, data: bytes) -> list[dict[str, str]]:
+    pe = pefile_mod.PE(data=data)  # type: ignore[attr-defined]
+    if not hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
+        return []
+    out: list[dict[str, str]] = []
+    for s in pe.DIRECTORY_ENTRY_EXPORT.symbols:
+        if s.forwarder:
+            name = s.name.decode() if s.name else f"#{s.ordinal}"
+            out.append({"name": name, "forward": s.forwarder.decode()})
+    out.sort(key=lambda item: item["name"])
+    return out
+
+
 def _pefile_delay_imports(pefile_mod: object, data: bytes) -> list[tuple[str, list[str]]]:
     pe = pefile_mod.PE(data=data)  # type: ignore[attr-defined]
     if not hasattr(pe, "DIRECTORY_ENTRY_DELAY_IMPORT"):
@@ -240,13 +263,13 @@ def _pefile_delay_imports(pefile_mod: object, data: bytes) -> list[tuple[str, li
     return out
 
 
-def _session_surface(path: Path) -> tuple[list[dict], list[dict], list[str]]:
+def _session_surface(path: Path) -> tuple[list[dict], list[dict], list[str], list[dict]]:
     service = AnalysisService()
     try:
         created = service.create_session(str(path))
         assert created.ok, created.error
         pe = created.data["session"]["metadata"]["pe"]
-        return pe["imports"], pe["delay_imports"], pe["exports"]
+        return pe["imports"], pe["delay_imports"], pe["exports"], pe["forwarded_exports"]
     finally:
         service.close_all()
 
@@ -284,7 +307,7 @@ def test_capability_surface_agrees_with_pefile(tmp_path: Path, magic: int) -> No
     }
     assert expected_exports == ["AlphaExport", "MidExport", "ZetaExport"]
 
-    reader_imports, reader_delay, reader_exports = _session_surface(binary)
+    reader_imports, reader_delay, reader_exports, reader_fwd = _session_surface(binary)
 
     # DLL for DLL, function for function: the reader's import table matches
     # pefile's, including the ordinal-only DLL rendered as #N on both sides.
@@ -292,9 +315,11 @@ def test_capability_surface_agrees_with_pefile(tmp_path: Path, magic: int) -> No
     pefile_map = {dll: funcs for dll, funcs in expected_imports}
     assert reader_map == pefile_map
     assert reader_exports == expected_exports
-    # No delay directory was planted, and neither view invents one.
+    # No delay directory or forwarder was planted, and neither view invents one.
     assert reader_delay == []
+    assert reader_fwd == []
     assert _pefile_delay_imports(pefile_mod, data) == []
+    assert _pefile_forwarders(pefile_mod, data) == []
 
 
 @pytest.mark.integration
@@ -319,7 +344,7 @@ def test_delay_imports_agree_with_pefile(tmp_path: Path, magic: int) -> None:
     # pefile really sees the planted lazy table, so it is a genuine referee.
     assert {dll for dll, _ in expected_delay} == {"WINHTTP.dll", "lazyengine.dll"}
 
-    reader_imports, reader_delay, _ = _session_surface(binary)
+    reader_imports, reader_delay, _, _ = _session_surface(binary)
     reader_map = {entry["dll"]: entry["functions"] for entry in reader_delay}
     assert reader_map == {dll: funcs for dll, funcs in expected_delay}
     # The regular table stays the regular table: no leak in either direction.
@@ -352,5 +377,48 @@ def test_va_based_delay_descriptors_agree_with_pefile(tmp_path: Path) -> None:
     expected_delay = _pefile_delay_imports(pefile_mod, data)
     assert expected_delay == [("OLD32.dll", ["LegacyInit", "LegacyRun"])]
 
-    _, reader_delay, _ = _session_surface(binary)
+    _, reader_delay, _, _ = _session_surface(binary)
     assert reader_delay == [{"dll": "OLD32.dll", "functions": ["LegacyInit", "LegacyRun"]}]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("magic", [0x20B, 0x10B], ids=["pe32+", "pe32"])
+def test_forwarded_exports_agree_with_pefile(tmp_path: Path, magic: int) -> None:
+    """The forwarded-export walk against pefile's, at both magics.
+
+    A forwarder's EAT entry points inside the export directory at a
+    ``TARGET.Func`` string; pefile exposes the same target on each symbol's
+    ``forwarder`` attribute. Both views must name the same forwards and,
+    crucially, leave the one plain export out of the forwarder list while
+    keeping it among the exports.
+    """
+    pefile_mod = _pefile()
+    if pefile_mod is None:
+        pytest.skip("pefile not installed — PE forwarded-export gate not run (skip != pass)")
+
+    exports = ["HeapAlloc", "HeapFree", "LocalRealFn"]
+    forwarders = {
+        "HeapAlloc": "NTDLL.RtlAllocateHeap",
+        "HeapFree": "NTDLL.RtlFreeHeap",
+    }
+    data = _pe_with_imports_exports([], exports, magic=magic, forwarders=forwarders)
+    binary = tmp_path / f"forward_{magic:x}.dll"
+    binary.write_bytes(data)
+
+    expected_fwd = _pefile_forwarders(pefile_mod, data)
+    expected_exports = _pefile_exports(pefile_mod, data)
+    # pefile really sees the two forwards (and only those), so it is a genuine
+    # second opinion, not an echo of the reader.
+    assert expected_fwd == [
+        {"name": "HeapAlloc", "forward": "NTDLL.RtlAllocateHeap"},
+        {"name": "HeapFree", "forward": "NTDLL.RtlFreeHeap"},
+    ]
+    assert "LocalRealFn" in expected_exports
+
+    _, _, reader_exports, reader_fwd = _session_surface(binary)
+    # Forward for forward, target for target: the reader matches pefile.
+    assert reader_fwd == expected_fwd
+    # The forwarded names still list as exports, alongside the plain one.
+    assert reader_exports == expected_exports
+    # And the plain export is on nobody's forwarder list.
+    assert "LocalRealFn" not in {item["name"] for item in reader_fwd}
