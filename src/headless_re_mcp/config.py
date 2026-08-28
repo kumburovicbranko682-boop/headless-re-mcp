@@ -23,7 +23,19 @@ def _read_json_object(path: Path) -> dict[str, Any]:
         payload = stream.read(_MAX_CONFIG_FILE_BYTES + 1)
     if len(payload) > _MAX_CONFIG_FILE_BYTES:
         raise ValueError(f"configuration file exceeds {_MAX_CONFIG_FILE_BYTES} bytes")
-    value = json.loads(payload.decode("utf-8"))
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except RecursionError as exc:
+        # A config file that nests arrays/objects a few thousand levels deep --
+        # still well under the byte cap -- overflows the C json decoder with a
+        # RecursionError, not the json.JSONDecodeError (a ValueError) that a
+        # syntax error raises. Every guarded caller expects ValueError:
+        # update_config_values turns it into "existing config is not valid
+        # JSON" and preserves the file, and Settings.load lets it surface as a
+        # bad-config error. An escaping RecursionError would instead crash the
+        # setup route or startup with a bare traceback, so map it to the same
+        # malformed-input signal.
+        raise ValueError("configuration file is nested too deeply") from exc
     if not isinstance(value, dict):
         raise ValueError("configuration root must be an object")
     return value

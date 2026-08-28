@@ -100,6 +100,35 @@ def test_config_update_refuses_to_overwrite_invalid_existing_config(
     assert list(tmp_path.glob(".config.json-*.tmp")) == []
 
 
+def test_config_update_refuses_a_config_nested_too_deeply(tmp_path: Path) -> None:
+    # Syntactically valid but nested thousands of levels deep, well under the
+    # byte cap: the C json decoder aborts this with a RecursionError, not the
+    # JSONDecodeError a plain syntax error raises. update_config_values guards
+    # config reads with ``except ValueError``, so before the mapping this
+    # escaped as a bare RecursionError instead of the intended refusal, and the
+    # existing file could be left half-considered.
+    path = tmp_path / "config.json"
+    damaged = ('{"x":' + "[" * 20000 + "]" * 20000 + "}").encode("utf-8")
+    assert len(damaged) < config_module._MAX_CONFIG_FILE_BYTES
+    path.write_bytes(damaged)
+
+    with pytest.raises(ValueError, match="existing config"):
+        update_config_values({"local_full_access": True}, config_path=path)
+
+    assert path.read_bytes() == damaged
+    assert list(tmp_path.glob(".config.json-*.tmp")) == []
+
+
+def test_settings_load_maps_deep_nesting_to_a_value_error(tmp_path: Path) -> None:
+    # The same file at startup must raise a ValueError (a bad-config signal),
+    # not a RecursionError that would crash Settings.load with a bare traceback.
+    path = tmp_path / "config.json"
+    path.write_bytes(('{"x":' + "[" * 20000 + "]" * 20000 + "}").encode("utf-8"))
+
+    with pytest.raises(ValueError, match="nested too deeply"):
+        Settings.load(path)
+
+
 def test_config_reads_are_bounded_and_oversized_files_are_preserved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
