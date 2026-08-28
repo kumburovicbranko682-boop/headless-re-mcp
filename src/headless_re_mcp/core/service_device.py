@@ -171,6 +171,9 @@ class DeviceAnalysisMixin:
             "packages", serial=serial, third_party_only=third_party_only, limit=limit
         )
 
+    def device_ipv6_routes(self, serial: str, limit: int = 512) -> Result[JsonObject]:
+        return self._adb_wrap("ipv6_routes", serial=serial, limit=limit)
+
     def device_install(
         self, serial: str, apk_path: str, reinstall: bool = True
     ) -> Result[JsonObject]:
