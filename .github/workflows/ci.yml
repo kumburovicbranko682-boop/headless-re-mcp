@@ -3,7 +3,7 @@ name: ci
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, "cursor/ci-checkpoint-elfhydrate-771a0c0b-82ce"]
   pull_request:
 
 concurrency:
