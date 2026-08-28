@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（Android 静态线 live gate：androguard 代码事实 + jadx 反编译）
+
+- `test_android_re_gate.py` 只用一个合成 zip（非合法 AXML）验信封，证明了管路却从没让真实
+  分析器读过真实代码。新增 `tests/integration/test_android_static_re_gate.py`，在测试期用
+  stock 工具现装一个真 APK（javac → d8 → aapt，不落任何被跟踪的二进制），断言工具还原出的
+  事实而非仅 `ok`：
+  - androguard：包名、唯一的非外部类 `Lcom/example/MainActivity;`（`total == 1`）、其
+    `compute`/`run` 方法、从字节码 xref 还原出的调用边 `run -> compute`（区分"解析了 dex"与
+    "看懂了调用图"）、声明的 `INTERNET` 权限、以及导出的 `MainActivity` 组件与 main activity；
+  - jadx：整包导出会在磁盘落地一个 `MainActivity.java`（`apk.export_sources`），单类反编译
+    （`apk.decompile`）的 Java 源码带类名、`compute` 方法与来自 `run` 的 `compute(2, 3)` 调用，
+    即 dex → Java 往返里算术逻辑无损。
+- 与重打包 gate 互补（那条覆盖 apktool + apksigner 写侧），本 gate 聚焦只读静态面。skip≠pass：
+  无 `[android]` extra 时 androguard 用例跳过，未配置 jadx 时 jadx 用例跳过，缺 SDK 构建工具时
+  两者都跳过。只加测试、不改源码。
+
 ### 测试（Android 重打包线 live gate：apktool 解码/重建 + apksigner 重签名端到端）
 
 - Android 重打包线（`apk.decode` → `apk.repack` → `apk.sign`）此前只有把 JVM mock 掉的
