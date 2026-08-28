@@ -53,6 +53,12 @@ Two triage themes the other native gates cannot cover from system binaries:
   from readelf's header/section decode (ELF) and llvm-objdump's segment and
   symtab decode (Mach-O), a pristine binary must report none, and a copy with
   bytes appended must report exactly those bytes at exactly that offset.
+- The dylib dependency classes (Mach-O LC_LOAD_WEAK_DYLIB / LC_REEXPORT_DYLIB)
+  -- the optional-capability channel (dyld leaves a missing weak dylib's
+  symbols null, so the image probes at runtime: the Mach-O pair to PE delay
+  imports) and API forwarding (a facade whose exports live elsewhere). A
+  synthetic dylib carrying all three command kinds must split in the reader
+  exactly as llvm-objdump's load-command decode does.
 
 skip != pass when a tool is missing; gcc/readelf ship with the CI runner and
 llvm is installed on the Linux lane.
@@ -841,6 +847,112 @@ def test_macho_build_tools_agree_with_llvm_objdump(tmp_path: Path) -> None:
             service.close_session(session_id)
 
 
+def _macho_dylib_command(cmd_kind: int, name: str) -> bytes:
+    """One dylib_command: cmd/cmdsize, lc_str offset 24, then the padded name."""
+    raw = name.encode() + b"\x00"
+    total = (24 + len(raw) + 7) & ~7  # 8-align, the width llvm-objdump enforces
+    body = struct.pack("<IIIIII", cmd_kind, total, 24, 0, 0x10000, 0x10000)
+    return body + raw.ljust(total - 24, b"\x00")
+
+
+def _macho_with_dylib_classes(plain: str, weak: str, fronted: str) -> bytes:
+    """A minimal MH_DYLIB carrying one dylib command of each dependency class.
+
+    Built here independently of the reader's unit builder: LC_ID_DYLIB first
+    (llvm-objdump rejects a dylib without one), then a plain LC_LOAD_DYLIB, a
+    weak and a reexported dependency. LLVM's strict decode doubles as the
+    well-formedness check on the synthetic image.
+    """
+    commands = (
+        _macho_dylib_command(0x0D, "/usr/lib/libprobe.dylib")  # LC_ID_DYLIB
+        + _macho_dylib_command(0x0C, plain)  # LC_LOAD_DYLIB
+        + _macho_dylib_command(0x80000018, weak)  # LC_LOAD_WEAK_DYLIB
+        + _macho_dylib_command(0x8000001F, fronted)  # LC_REEXPORT_DYLIB
+    )
+    header = struct.pack(
+        "<IIIIIIII", 0xFEEDFACF, 0x01000007, 3, 6, 4, len(commands), 0x4, 0
+    )  # x86_64 MH_DYLIB, MH_DYLDLINK
+    return header + commands
+
+
+# llvm-objdump --macho --all-headers prints each dylib command as a "cmd
+# LC_LOAD_DYLIB" line followed by "name /usr/lib/x.dylib (offset 24)".
+_LLVM_DYLIB_NAME_RE = re.compile(r"^\s*name (\S+) \(offset \d+\)$")
+
+
+def _llvm_dylib_classes(objdump: str, binary: Path) -> dict[str, list[str]]:
+    """``{command kind: [names]}`` as llvm-objdump decodes the load commands."""
+    result = subprocess.run(
+        [objdump, "--macho", "--all-headers", str(binary)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    classes: dict[str, list[str]] = {}
+    current = ""
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == "cmd":
+            current = parts[1]
+            continue
+        match = _LLVM_DYLIB_NAME_RE.match(line)
+        if match and current.endswith("_DYLIB"):
+            classes.setdefault(current, []).append(match.group(1))
+    return classes
+
+
+@pytest.mark.integration
+def test_macho_dylib_classes_agree_with_llvm_objdump(tmp_path: Path) -> None:
+    """The weak/reexport split against LLVM's decode of the same commands.
+
+    All three names must land in ``dylibs`` in command order, with exactly
+    the weak one in ``weak_dylibs`` and the fronted one in
+    ``reexported_dylibs`` -- the same classes llvm-objdump prints, and the
+    committed fixture (plain dependencies only) must read empty subsets in
+    both views.
+    """
+    objdump = shutil.which("llvm-objdump")
+    if objdump is None:
+        pytest.skip("llvm-objdump not installed — dylib-class gate not run (skip != pass)")
+
+    plain = "/usr/lib/libSystem.B.dylib"
+    weak = "/usr/lib/swift/libswiftCore.dylib"
+    fronted = "/usr/lib/libcore_real.dylib"
+    binary = tmp_path / "classes.dylib"
+    binary.write_bytes(_macho_with_dylib_classes(plain, weak, fronted))
+
+    truth = _llvm_dylib_classes(objdump, binary)
+    # LLVM really sees one command of each class, so it is a genuine referee.
+    assert truth["LC_LOAD_DYLIB"] == [plain]
+    assert truth["LC_LOAD_WEAK_DYLIB"] == [weak]
+    assert truth["LC_REEXPORT_DYLIB"] == [fronted]
+
+    service = AnalysisService()
+    sessions: list[str] = []
+    try:
+        session_id, native = _session_native(service, binary)
+        sessions.append(session_id)
+        assert native["dylibs"] == [plain, weak, fronted]
+        assert native["weak_dylibs"] == truth["LC_LOAD_WEAK_DYLIB"]
+        assert native["reexported_dylibs"] == truth["LC_REEXPORT_DYLIB"]
+        # And the dylib's own name stayed out of the dependency list.
+        assert native["install_name"] == "/usr/lib/libprobe.dylib"
+
+        if _MACHO_FIXTURE.is_file():
+            fixture_truth = _llvm_dylib_classes(objdump, _MACHO_FIXTURE)
+            assert "LC_LOAD_WEAK_DYLIB" not in fixture_truth
+            assert "LC_REEXPORT_DYLIB" not in fixture_truth
+            session_id, fixture_facts = _session_native(service, _MACHO_FIXTURE)
+            sessions.append(session_id)
+            assert fixture_facts["dylibs"] == fixture_truth.get("LC_LOAD_DYLIB", [])
+            assert fixture_facts["weak_dylibs"] == []
+            assert fixture_facts["reexported_dylibs"] == []
+    finally:
+        for session_id in sessions:
+            service.close_session(session_id)
+
+
 def _llvm_nm_names(nm: str, binary: Path, *selectors: str) -> set[str]:
     """The symbol names llvm-nm prints under the given selection flags.
 
@@ -934,7 +1046,7 @@ _READELF_SHNUM_RE = re.compile(r"Number of section headers:\s+(\d+)")
 _READELF_SHENTSIZE_RE = re.compile(r"Size of section headers:\s+(\d+)")
 # readelf -S -W rows: "[ 1] .interp PROGBITS 00...0002a8 0002a8 00001c ..." --
 # name, type, address, then the file offset and size columns this parse needs.
-_READELF_SECTION_RE = re.compile(
+_READELF_SH_ROW_RE = re.compile(
     r"^\s*\[\s*\d+\]\s+\S+\s+(\S+)\s+[0-9a-fA-F]+\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)",
     re.MULTILINE,
 )
@@ -960,7 +1072,7 @@ def _readelf_image_end(readelf: str, binary: Path) -> int:
         [readelf, "-S", "-W", str(binary)], capture_output=True, text=True, timeout=60
     )
     assert sections.returncode == 0, sections.stderr
-    for sh_type, offset_hex, size_hex in _READELF_SECTION_RE.findall(sections.stdout):
+    for sh_type, offset_hex, size_hex in _READELF_SH_ROW_RE.findall(sections.stdout):
         if sh_type != "NOBITS":
             end = max(end, int(offset_hex, 16) + int(size_hex, 16))
     return end
