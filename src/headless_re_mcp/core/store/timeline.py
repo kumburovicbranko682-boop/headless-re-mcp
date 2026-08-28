@@ -191,7 +191,35 @@ def _page(raw: bytes, offset: int, limit: int) -> tuple[int, list[str]]:
             end = len(raw)
             break
         end = nxt + 1
-    return total, raw[start:end].decode("utf-8", errors="replace").splitlines()
+    # Split on the newline separator ONLY. The window covers exactly the bytes of
+    # ``limit`` newline-delimited entries (the loops above stepped over ``\n``, and
+    # ``total`` counts ``\n``), so the returned list must count the same way.
+    # str.splitlines() -- what this used -- also breaks on U+2028, U+2029 and other
+    # Unicode line boundaries, and json.dumps(ensure_ascii=False) leaves those
+    # literal inside a details string (they are >= 0x20, so not escaped). One entry
+    # carrying a U+2028 was therefore torn into pieces: each piece failed json.loads
+    # so the entry vanished though it was valid on disk, and the extra pieces
+    # inflated the line count so has_more (offset + len(chunk) < total) read false
+    # early and the entries past it became unreachable. Splitting on "\n" keeps each
+    # JSON entry whole and the count in step with offset/total.
+    # Split on the newline separator ONLY. The window covers exactly the bytes of
+    # ``limit`` newline-delimited entries (the loops above stepped over ``\n``, and
+    # ``total`` counts ``\n``), so the returned list must count the same way.
+    # str.splitlines() -- what this used -- also breaks on U+2028, U+2029 and other
+    # Unicode line boundaries, and json.dumps(ensure_ascii=False) leaves those
+    # literal inside a details string (they are >= 0x20, so not escaped). One entry
+    # carrying a U+2028 was therefore torn into pieces: each piece failed json.loads
+    # so the entry vanished though it was valid on disk, and the extra pieces
+    # inflated the line count so has_more (offset + len(chunk) < total) read false
+    # early and the entries past it became unreachable. Splitting on "\n" keeps each
+    # JSON entry whole and the count in step with offset/total.
+    text = raw[start:end].decode("utf-8", errors="replace")
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        # Drop the empty piece after the window's trailing newline; an interior
+        # blank line (a torn write) stays, so it still consumes its offset slot.
+        lines.pop()
+    return total, lines
 
 
 def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:

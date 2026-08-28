@@ -133,6 +133,49 @@ def test_paging_walks_bytes_without_changing_a_single_answer(tmp_path: Path) -> 
     assert torn["has_more"] is False, "a malformed last line was still consumed"
 
 
+def test_an_entry_with_a_unicode_line_separator_stays_whole_and_reachable(
+    tmp_path: Path,
+) -> None:
+    """A U+2028 in a details string must not tear an entry or hide the ones after it.
+
+    Entries are stored as json.dumps(ensure_ascii=False) lines. U+2028 (and U+2029)
+    are >= 0x20, so json does not escape them: they land literal inside the JSON
+    text of a line, while the file is still delimited by ``\\n`` alone. The reader
+    used str.splitlines() to cut the window, which also breaks on U+2028 -- so one
+    such entry was split into pieces that each failed json.loads (the entry
+    vanished though it was valid on disk) and, worse, the extra pieces inflated the
+    window's line count so has_more read false early and every entry past it became
+    unreachable. Details carry redacted tool params, which include captured strings
+    (URLs, selectors, DOM text) where a bare U+2028 is entirely ordinary. Here the
+    second of three entries carries one; paging two at a time must still surface all
+    three, and the payload must round-trip intact.
+    """
+    path = tmp_path / "sessions" / "sep" / "timeline.jsonl"
+    for index in range(3):
+        details = {"s": "before\u2028after"} if index == 1 else {"i": index}
+        append_session_timeline(path, event=f"evt{index}", message="m", details=details)
+
+    whole = list_session_timeline(path, offset=0, limit=100)
+    assert whole["total"] == 3
+    assert whole["count"] == 3, "the U+2028 entry must not be dropped"
+    assert [e["event"] for e in whole["events"]] == ["evt0", "evt1", "evt2"]
+    carried = next(e for e in whole["events"] if e["event"] == "evt1")
+    assert carried["details"]["s"] == "before\u2028after", "payload round-trips intact"
+
+    # Page two at a time from offset 0: the old splitlines() count inflated by the
+    # split entry drove has_more false after the first page, stranding evt2. Walk
+    # must reach all three with no repeats and no gaps.
+    seen: list[str] = []
+    offset = 0
+    for _ in range(10):
+        page = list_session_timeline(path, offset=offset, limit=2)
+        seen.extend(e["event"] for e in page["events"])
+        if not page["has_more"]:
+            break
+        offset += 2
+    assert seen == ["evt0", "evt1", "evt2"]
+
+
 def test_a_session_that_never_existed_is_not_reported_as_a_quiet_one(
     tmp_path: Path,
 ) -> None:
