@@ -60,16 +60,20 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.properties")
     def device_properties(
-        serial: str, limit: Annotated[int, Field(ge=1, le=2000)] = 500
+        serial: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 500,
     ) -> dict[str, Any]:
         """Return getprop key/value pairs for a device.
 
-        Answers with properties (the name-to-value map), count, and has_more
-        so a page that filled the cap is not read as every property. There
-        is no props or items field. An adb error line (a dead or offline
+        Answers with properties (the name-to-value map), count, total, offset,
+        and has_more so a page that filled the cap is not read as every
+        property. Keys are sorted, and offset pages through that one stable
+        order: advance offset by the page size to reach keys past has_more.
+        There is no props or items field. An adb error line (a dead or offline
         device) is a failure, not an empty property set.
         """
-        return _dump(analysis.device_properties(serial, limit=limit))
+        return _dump(analysis.device_properties(serial, offset=offset, limit=limit))
 
     @tools.tool(name="device.packages")
     def device_packages(

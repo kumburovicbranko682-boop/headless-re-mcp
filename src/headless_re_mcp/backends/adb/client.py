@@ -477,24 +477,36 @@ class AdbBackend:
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read device info: {exc}") from exc
 
-    def properties(self, serial: str, *, limit: int = 500) -> JsonObject:
+    def properties(self, serial: str, *, offset: int = 0, limit: int = 500) -> JsonObject:
         dev = self._device(serial)
         capped = max(1, min(int(limit), _MAX_PROPERTIES))
+        start = max(0, int(offset))
         raw = _device_shell(dev, "getprop")
         text = str(raw)
         if _is_host_error_output(text):
             raise AdbError("backend_error", "getprop failed", output=text[:800])
-        props: dict[str, str] = {}
-        has_more = False
+        parsed: dict[str, str] = {}
         for line in text.splitlines():
             match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
-            if not match:
-                continue
-            if len(props) >= capped:
-                has_more = True
-                break
-            props[match.group(1)] = match.group(2)
-        return {"properties": props, "count": len(props), "has_more": has_more}
+            if match:
+                parsed[match.group(1)] = match.group(2)
+        # Sort by key, then window by offset. getprop's line order is not a
+        # contract worth paging against, and capping in read order returned an
+        # arbitrary subset while has_more hid the rest with no offset to reach
+        # them. A stable key order makes every page a slice of one order, so
+        # offset walks the whole property set instead of stranding keys past
+        # the first page.
+        keys = sorted(parsed)
+        total = len(keys)
+        window = keys[start : start + capped]
+        props = {key: parsed[key] for key in window}
+        return {
+            "properties": props,
+            "count": len(props),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
+        }
 
     def packages(
         self, serial: str, *, third_party_only: bool = False, limit: int = 500

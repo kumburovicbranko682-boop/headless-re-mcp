@@ -57,3 +57,48 @@ def test_a_capped_property_list_says_has_more() -> None:
     assert "Answers with properties" in doc
     assert "has_more" in doc
     assert "count" in doc
+
+
+class _SmallDev:
+    def shell(self, args: Any, timeout: float | None = None) -> str:
+        del args, timeout
+        # Emitted key order is deliberately not sorted, to prove the reader
+        # imposes its own stable order rather than paging getprop's line order.
+        return "\n".join(f"[k.{n}]: [{n}]" for n in (3, 1, 4, 0, 2))
+
+
+def _small_backend() -> AdbBackend:
+    backend = AdbBackend()
+    backend._available = True
+    backend._device = lambda serial: _SmallDev()  # type: ignore[method-assign]
+    return backend
+
+
+def test_properties_offset_pages_a_stable_sorted_key_order() -> None:
+    """offset must reach getprop keys past the cap, over one sorted order.
+
+    Keys past the limit were unreachable behind has_more, and capping in
+    getprop's line order returned an arbitrary subset. Paging offset=0 then
+    offset=3 over five keys emitted out of order returns disjoint, contiguous
+    slices of the sorted order (k.0..k.4) that cover them all, with has_more
+    false only on the page that reaches the end.
+    """
+    backend = _small_backend()
+
+    first = backend.properties("emulator-5554", offset=0, limit=3)
+    assert list(first["properties"]) == ["k.0", "k.1", "k.2"]
+    assert first["total"] == 5
+    assert first["offset"] == 0
+    assert first["count"] == 3
+    assert first["has_more"] is True
+
+    second = backend.properties("emulator-5554", offset=3, limit=3)
+    assert list(second["properties"]) == ["k.3", "k.4"]
+    assert second["total"] == 5
+    assert second["offset"] == 3
+    assert second["has_more"] is False
+
+    past = backend.properties("emulator-5554", offset=99, limit=3)
+    assert past["properties"] == {}
+    assert past["count"] == 0
+    assert past["has_more"] is False

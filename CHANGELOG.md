@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 改进（`device.properties` 增加 offset 分页，超过上限的 getprop 键可达；并按键排序开窗）
+
+- `device.properties` 与上一轮的 `device.packages` 同病：只有 `limit` 无 `offset`，`has_more`
+  为真时上限之外的 getprop 键无从取回；且后端按 getprop 的输出行序截断，返回的是任意子集。
+- 改法：后端 `properties` 解析全部键值后按键 `sorted()`，再按 `offset`/`limit` 开窗，返回
+  `properties, count, total, offset, has_more`，与 `device.packages`/`proxy.flows` 分页契约一致；
+  `offset` 超末尾即诚实空页。沿工具层 (`tools/device.py`，新增 `offset: Field(ge=0)=0`) 与服务层
+  (`service_device.py`) 贯通。getprop 键唯一，排序开窗不丢不重。
+- 新增 `tests/unit/test_device_properties_fields.py::test_properties_offset_pages_a_stable_sorted_key_order`：
+  设备按乱序 (3,1,4,0,2) 吐键，`offset=0/3` 取到 `[k.0,k.1,k.2]` 与 `[k.3,k.4]` 两段不相交连续切片、
+  覆盖全部、`has_more` 只在到末尾翻假、`offset=99` 得空页。该用例天然非空（offset 参数此前不存在），
+  且乱序输入下断言有序前缀，也钉住"先排序后开窗"而非按行序截断。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
