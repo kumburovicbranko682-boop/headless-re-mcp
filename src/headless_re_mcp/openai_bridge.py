@@ -31,8 +31,14 @@ _ALLOWED_EXTRA = frozenset({"_", "-"})
 
 def openai_function_name(tool_name: str) -> str:
     """Convert a dotted MCP tool name into an OpenAI-safe function name."""
+    # OpenAI restricts the name to ASCII [A-Za-z0-9_-]. ``str.isalnum`` is
+    # Unicode-aware and returns True for accented letters, CJK, and full-width
+    # digits, so a bare ``isalnum`` check would pass those through and emit a
+    # name the API rejects. Require ASCII so the output honors the contract.
     converted = "".join(
-        character if character.isalnum() or character in _ALLOWED_EXTRA else "_"
+        character
+        if (character.isascii() and character.isalnum()) or character in _ALLOWED_EXTRA
+        else "_"
         for character in tool_name
     )
     trimmed = converted.strip("_") or "tool"

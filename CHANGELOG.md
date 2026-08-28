@@ -146,6 +146,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   横幅、usage+容忍退出码、无标记但有输出的兜底、不可执行文件的 OSError 兜底。行覆盖
   60% → 97%(余量为两处实践中不可达的防御分支)。
 
+### 修复（OpenAI 函数名清洗未强制 ASCII，违反其自述契约）
+
+- `openai_bridge.openai_function_name` 的文档承诺产出 OpenAI 允许的
+  `[A-Za-z0-9_-]{1,64}` 名字，但过滤用的是 Unicode 版 `str.isalnum()`——它对重音字母、
+  CJK、全角数字（如 `é`/`中`/`１`）都返回真，于是这些字符会被原样保留，拼出 OpenAI API
+  会拒收的函数名。真实工具目录全是 ASCII，所以现有 `test_every_exported_name_is_openai_safe`
+  这类只校验真实目录的用例照样通过，缺口只在把该公开函数喂入任意工具名时才显现——而它正是
+  一个把任意 MCP 工具名转成外部 API 名字的边界函数。修法：把过滤条件从 `isalnum()` 收紧为
+  `character.isascii() and character.isalnum()`，让非 ASCII 字母数字统一落到 `_`，与既有的
+  去首尾下划线、长度截断逻辑一起保证输出始终满足契约。ASCII 名字行为不变。新增
+  `tests/unit/test_openai_bridge_ascii_names.py` 覆盖重音字母、CJK、全角数字、emoji、分数符号
+  等输入均产出 ASCII 安全名，并验证 ASCII 常规名与长度上限不回归。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
