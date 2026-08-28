@@ -247,7 +247,10 @@ jobs:
         # the section-payload gate uses to plant and dump Mach-O sections (GNU
         # binutils cannot read Mach-O at all). The ELF arm of that gate uses
         # binutils objcopy/readelf and file (libmagic), both on the runner.
-        run: sudo apt-get update && sudo apt-get install -y apksigner mono-utils llvm
+        # mono-mcs supplies mcs, whose compiled output gives the PE hardening
+        # gate one real-producer binary (subsystem/DllCharacteristics/entry
+        # written by Mono's linker, not by either test builder).
+        run: sudo apt-get update && sudo apt-get install -y apksigner mono-utils mono-mcs llvm
 
       - name: Install rcodesign for the Mach-O code-signature gate
         # apple-codesign is an independent, production Apple code-signing

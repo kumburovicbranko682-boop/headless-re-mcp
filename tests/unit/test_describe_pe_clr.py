@@ -22,6 +22,7 @@ from headless_re_mcp.core.session import (
     _dotnet_resource_payloads,
     _pe_authenticode,
     _pe_capability_surface,
+    _pe_hardening_facts,
     _pe_overlay,
     _pe_resource_payloads,
     describe_pe_clr,
@@ -573,6 +574,164 @@ class TestPeCapabilitySurface:
         assert session.metadata["pe"]["exports"] == ["Start"]
 
 
+def _pe_with_posture(
+    *,
+    subsystem: int = 3,
+    dllchar: int = 0,
+    entry_rva: int = 0,
+    image_base: int = 0x1_4000_0000,
+    magic: int = 0x20B,
+) -> bytes:
+    """A minimal PE whose optional header carries the given posture fields.
+
+    Subsystem and DllCharacteristics sit at offsets 68/70 for both PE32 and
+    PE32+; only ImageBase moves (32-bit at 28 vs 64-bit at 24), which is what
+    the entry-VA rebase must key off.
+    """
+    dos = bytearray(0x40)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x40)
+    machine = 0x8664 if magic == 0x20B else 0x14C
+    opt_size = 0xF0 if magic == 0x20B else 0xE0
+    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", machine, 0, 0, 0, 0, opt_size, 0)
+    opt = bytearray(opt_size)
+    struct.pack_into("<H", opt, 0, magic)
+    struct.pack_into("<I", opt, 16, entry_rva)
+    if magic == 0x20B:
+        struct.pack_into("<Q", opt, 24, image_base)
+    else:
+        struct.pack_into("<I", opt, 28, image_base)
+    struct.pack_into("<H", opt, 68, subsystem)
+    struct.pack_into("<H", opt, 70, dllchar)
+    struct.pack_into("<I", opt, 108 if magic == 0x20B else 92, 16)  # NumberOfRvaAndSizes
+    return bytes(dos) + coff + bytes(opt)
+
+
+class TestPeHardeningFacts:
+    """_pe_hardening_facts reads subsystem, mitigations and entry off the header.
+
+    The native PE build posture, the pair to the ELF nx/relro/canary/pie and
+    Mach-O nx/pie facts: what kind of program (gui/console/driver/EFI), which
+    loader mitigations the image opted into (DYNAMICBASE, NX_COMPAT, GUARD_CF,
+    high-entropy VA, forced integrity, AppContainer, no-SEH), and the entry VA
+    rebased to the preferred image base.
+    """
+
+    _ALL_BITS = 0x0020 | 0x0040 | 0x0080 | 0x0100 | 0x0400 | 0x1000 | 0x4000
+
+    def test_a_fully_hardened_gui_pe_reads_every_mitigation_on(self, tmp_path: Path) -> None:
+        path = tmp_path / "hardened.exe"
+        path.write_bytes(
+            _pe_with_posture(subsystem=2, dllchar=self._ALL_BITS, entry_rva=0x1234)
+        )
+        facts = _pe_hardening_facts(path)
+        assert facts == {
+            "subsystem": "gui",
+            "high_entropy_va": True,
+            "aslr": True,
+            "force_integrity": True,
+            "nx": True,
+            "no_seh": True,
+            "appcontainer": True,
+            "cfg": True,
+            "entry": 0x1_4000_1234,
+        }
+
+    def test_an_unhardened_console_pe_reads_every_mitigation_off(self, tmp_path: Path) -> None:
+        path = tmp_path / "soft.exe"
+        path.write_bytes(_pe_with_posture(subsystem=3, dllchar=0))
+        facts = _pe_hardening_facts(path)
+        assert facts["subsystem"] == "console"
+        for fact in (
+            "high_entropy_va",
+            "aslr",
+            "force_integrity",
+            "nx",
+            "no_seh",
+            "appcontainer",
+            "cfg",
+        ):
+            assert facts[fact] is False, fact
+
+    def test_each_mitigation_bit_flips_only_its_own_fact(self, tmp_path: Path) -> None:
+        bits = {
+            0x0020: "high_entropy_va",
+            0x0040: "aslr",
+            0x0080: "force_integrity",
+            0x0100: "nx",
+            0x0400: "no_seh",
+            0x1000: "appcontainer",
+            0x4000: "cfg",
+        }
+        for bit, fact in bits.items():
+            path = tmp_path / f"bit_{bit:04x}.exe"
+            path.write_bytes(_pe_with_posture(dllchar=bit))
+            facts = _pe_hardening_facts(path)
+            assert facts[fact] is True, fact
+            for other in bits.values():
+                if other != fact:
+                    assert facts[other] is False, f"{fact} leaked into {other}"
+
+    def test_subsystem_values_read_as_their_names(self, tmp_path: Path) -> None:
+        for value, name in ((1, "native"), (2, "gui"), (3, "console"), (10, "efi_application")):
+            path = tmp_path / f"subsystem_{value}.exe"
+            path.write_bytes(_pe_with_posture(subsystem=value))
+            assert _pe_hardening_facts(path)["subsystem"] == name
+        # An unmapped value still reads, numerically, rather than vanishing.
+        path = tmp_path / "subsystem_42.exe"
+        path.write_bytes(_pe_with_posture(subsystem=42))
+        assert _pe_hardening_facts(path)["subsystem"] == "subsystem_42"
+
+    def test_a_pe32_entry_rebases_off_the_narrow_image_base(self, tmp_path: Path) -> None:
+        # PE32 keeps a 32-bit ImageBase at offset 28 (after BaseOfData); a
+        # reader that assumed the PE32+ layout would rebase off garbage.
+        path = tmp_path / "x86.exe"
+        path.write_bytes(
+            _pe_with_posture(entry_rva=0x1000, image_base=0x40_0000, magic=0x10B)
+        )
+        assert _pe_hardening_facts(path)["entry"] == 0x40_1000
+
+    def test_a_zero_entry_rva_omits_the_entry_fact(self, tmp_path: Path) -> None:
+        # AddressOfEntryPoint 0 is how a resource-only DLL declares "no entry";
+        # reporting the bare image base would invent an address.
+        path = tmp_path / "noentry.dll"
+        path.write_bytes(_pe_with_posture(entry_rva=0))
+        assert "entry" not in _pe_hardening_facts(path)
+
+    def test_a_non_pe_reads_no_facts(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _pe_hardening_facts(path) == {}
+
+    def test_an_optional_header_too_short_for_the_fields_reads_no_facts(
+        self, tmp_path: Path
+    ) -> None:
+        # A 64-byte optional header ends before Subsystem/DllCharacteristics;
+        # fail closed rather than reading past it.
+        dos = bytearray(0x40)
+        dos[0:2] = b"MZ"
+        struct.pack_into("<I", dos, 0x3C, 0x40)
+        coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", 0x8664, 0, 0, 0, 0, 64, 0)
+        opt = bytearray(64)
+        struct.pack_into("<H", opt, 0, 0x20B)
+        path = tmp_path / "short.exe"
+        path.write_bytes(bytes(dos) + coff + bytes(opt))
+        assert _pe_hardening_facts(path) == {}
+
+    def test_session_over_a_pe_carries_the_posture(self, tmp_path: Path) -> None:
+        path = tmp_path / "app.exe"
+        path.write_bytes(
+            _pe_with_posture(subsystem=2, dllchar=0x0140, entry_rva=0x2000)
+        )
+        session = SessionRegistry().create(str(path))
+        pe = session.metadata["pe"]
+        assert pe["subsystem"] == "gui"
+        assert pe["aslr"] is True
+        assert pe["nx"] is True
+        assert pe["cfg"] is False
+        assert pe["entry"] == 0x1_4000_2000
+
+
 class TestPeResourcePayloads:
     """_pe_resource_payloads lists executable magic hidden in the resources.
 
@@ -750,7 +909,9 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
     assert session.architecture is Architecture.X86
     # A native PE has no .NET block, but it does now carry the whole-PE
     # Authenticode verdict -- unsigned here, a real answer rather than empty --
-    # an (empty) resource-payload census, and an (empty) import/export surface.
+    # an (empty) resource-payload census, an (empty) import/export surface, and
+    # the optional-header posture (all-zero fields: unknown subsystem, no
+    # mitigations, no declared entry).
     assert session.metadata == {
         "pe": {
             "authenticode": {"signed": False},
@@ -758,6 +919,14 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
             "resource_payload_count": 0,
             "imports": [],
             "exports": [],
+            "subsystem": "unknown",
+            "high_entropy_va": False,
+            "aslr": False,
+            "force_integrity": False,
+            "nx": False,
+            "no_seh": False,
+            "appcontainer": False,
+            "cfg": False,
         }
     }
 

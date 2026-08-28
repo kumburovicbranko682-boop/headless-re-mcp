@@ -157,6 +157,10 @@ class SessionRegistry:
                 imports, exports = _pe_capability_surface(path)
                 metadata["pe"]["imports"] = imports
                 metadata["pe"]["exports"] = exports
+                # Subsystem, loader mitigations and entry VA off the optional
+                # header -- the native PE build posture, the pair to the ELF
+                # nx/relro/canary/pie and Mach-O nx/pie facts.
+                metadata["pe"].update(_pe_hardening_facts(path))
                 # Managed resources are a separate store from the PE resource
                 # tree: the ManifestResource census covers the Assembly.Load
                 # packer pattern.
@@ -3443,6 +3447,39 @@ _PE_MAX_IMPORTS_PER_DLL = 4096
 _PE_MAX_EXPORTS = 8192
 _PE_MAX_SYMBOL_NAME = 512
 _PE_MAX_IMPORT_FILE = 128 * 1024 * 1024
+# Subsystem and DllCharacteristics sit at the same optional-header offsets for
+# PE32 and PE32+ (the layouts only diverge at ImageBase and the tail); together
+# they are the native PE build posture -- the pair to ELF nx/relro/canary/pie
+# and Mach-O nx/pie. The DllCharacteristics bits are the loader mitigation
+# contract that winchecksec and `dumpbin /headers` decode.
+_PE_ENTRY_RVA_OFF = 16
+_PE_SUBSYSTEM_OFF = 68
+_PE_DLLCHARACTERISTICS_OFF = 70
+_PE_SUBSYSTEMS = {
+    0: "unknown",
+    1: "native",
+    2: "gui",
+    3: "console",
+    5: "os2_console",
+    7: "posix_console",
+    8: "native_win9x",
+    9: "windows_ce_gui",
+    10: "efi_application",
+    11: "efi_boot_service_driver",
+    12: "efi_runtime_driver",
+    13: "efi_rom",
+    14: "xbox",
+    16: "windows_boot_application",
+}
+_PE_DLL_MITIGATIONS: tuple[tuple[int, str], ...] = (
+    (0x0020, "high_entropy_va"),  # HIGH_ENTROPY_VA: 64-bit ASLR entropy
+    (0x0040, "aslr"),  # DYNAMICBASE: image can be rebased at load
+    (0x0080, "force_integrity"),  # FORCE_INTEGRITY: signature enforced at load
+    (0x0100, "nx"),  # NX_COMPAT: DEP-compatible
+    (0x0400, "no_seh"),  # NO_SEH: image uses no structured exception handlers
+    (0x1000, "appcontainer"),  # APPCONTAINER: must run in an AppContainer
+    (0x4000, "cfg"),  # GUARD_CF: Control Flow Guard instrumented
+)
 _CLR_METADATA_MAGIC = b"BSJB"
 _CLR_MAX_VERSION_LEN = 256
 _COMIMAGE_FLAGS_ILONLY = 0x00000001
@@ -4049,6 +4086,61 @@ def _pe_exports(
         if name:
             exports.append(name)
     return sorted(exports)
+
+
+def _pe_hardening_facts(path: Path) -> dict[str, Any]:
+    """Subsystem, loader mitigations and entry VA off the PE optional header.
+
+    The native PE build posture -- the pair to the ELF nx/relro/canary/pie and
+    Mach-O nx/pie facts. ``subsystem`` answers what kind of program this is
+    (gui, console, a native driver, an EFI image); the DllCharacteristics bits
+    are the loader mitigation contract (DYNAMICBASE -> ``aslr``, NX_COMPAT ->
+    ``nx``, GUARD_CF -> ``cfg``, plus high-entropy 64-bit ASLR, forced
+    integrity, AppContainer and no-SEH); ``entry`` is AddressOfEntryPoint
+    rebased to the preferred image base -- the address an analyst lands on
+    first, mirroring the ELF/Mach-O ``entry`` facts -- and is omitted when the
+    header declares none (a resource-only DLL).
+
+    Fail-closed: a non-PE or an optional header too short to carry the fields
+    yields ``{}`` rather than guessed values.
+    """
+    try:
+        with path.open("rb") as stream:
+            dos = stream.read(0x40)
+            if len(dos) < 0x40 or dos[:2] != b"MZ":
+                return {}
+            stream.seek(int.from_bytes(dos[0x3C:0x40], "little"))
+            coff = stream.read(24)
+            if len(coff) < 24 or coff[:4] != b"PE\x00\x00":
+                return {}
+            optional = stream.read(int.from_bytes(coff[20:22], "little"))
+    except OSError:
+        return {}
+    magic = int.from_bytes(optional[0:2], "little") if len(optional) >= 2 else 0
+    if magic == 0x10B:
+        base_off, base_len = 28, 4  # PE32: 32-bit ImageBase after BaseOfData
+    elif magic == 0x20B:
+        base_off, base_len = 24, 8  # PE32+: 64-bit ImageBase, no BaseOfData
+    else:
+        return {}
+    if len(optional) < _PE_DLLCHARACTERISTICS_OFF + 2:
+        return {}
+    subsystem = int.from_bytes(
+        optional[_PE_SUBSYSTEM_OFF : _PE_SUBSYSTEM_OFF + 2], "little"
+    )
+    dllchar = int.from_bytes(
+        optional[_PE_DLLCHARACTERISTICS_OFF : _PE_DLLCHARACTERISTICS_OFF + 2], "little"
+    )
+    facts: dict[str, Any] = {
+        "subsystem": _PE_SUBSYSTEMS.get(subsystem, f"subsystem_{subsystem}"),
+    }
+    for bit, name in _PE_DLL_MITIGATIONS:
+        facts[name] = bool(dllchar & bit)
+    entry_rva = int.from_bytes(optional[_PE_ENTRY_RVA_OFF : _PE_ENTRY_RVA_OFF + 4], "little")
+    if entry_rva:
+        image_base = int.from_bytes(optional[base_off : base_off + base_len], "little")
+        facts["entry"] = image_base + entry_rva
+    return facts
 
 
 def _pe_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
