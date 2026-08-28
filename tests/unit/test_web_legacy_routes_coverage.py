@@ -11,6 +11,7 @@ a mocked service Result.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import httpx
@@ -145,6 +146,10 @@ def test_setup_endpoints_reject_missing_fields(tmp_path: Path) -> None:
         service.close_all()
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="on Windows the route opens a real file dialog and blocks on user input",
+)
 def test_pick_file_reports_unavailable_off_windows(tmp_path: Path) -> None:
     client, service = _client(tmp_path)
     try:
