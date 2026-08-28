@@ -167,6 +167,18 @@ def enrich_r2_payload(
             if not isinstance(entry, dict):
                 continue
             item = dict(entry)
+            # r2 renamed raw keys between 5.x and 6.x: aflj's function entry
+            # moved from `offset` to `addr`, and iij's import library from `lib`
+            # to `libname`. The mapped `address` below reads either spelling, but
+            # the raw keys the r2.* tool docstrings promise -- `offset` for
+            # functions, `lib` for imports -- must stay stable across r2 versions
+            # or a caller reading them breaks on a newer r2. Same value, same
+            # meaning; restore the documented spelling when only the newer one is
+            # present so the contract does not depend on the installed r2.
+            if "offset" not in item and "addr" in item:
+                item["offset"] = item["addr"]
+            if "lib" not in item and "libname" in item:
+                item["lib"] = item["libname"]
             va = _item_va(
                 entry,
                 ("offset", "vaddr", "addr", "from", "to", "plt", "paddr"),
