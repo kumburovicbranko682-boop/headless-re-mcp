@@ -664,6 +664,79 @@ def test_web_cdp_captures_network_console_and_screenshot(tmp_path: Path) -> None
 
 
 @pytest.mark.integration
+def test_web_network_endpoints_maps_a_live_capture() -> None:
+    """web.network.endpoints must fold a real CDP capture into id-normalised routes.
+
+    The unit tests pin the aggregation over a hand-built handle; this proves it
+    holds over requests the browser actually recorded. After the initial load,
+    navigate to two id-like document paths (/users/1 and /users/2) so the numeric
+    ids fold into one /users/{id} route (count 2, method GET, resource type
+    Document), assert the resource_type filter keeps only the document routes,
+    and that normalize=false keeps the raw ids apart. skip != pass when
+    playwright or chromium is unavailable.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web endpoints Gate not run (skip != pass)")
+    with _local_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+            opened = service.web_open(session_id, headless=True, timeout=30.0)
+            if not opened.ok:
+                pytest.skip(
+                    "chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+            try:
+                for path in ("users/1", "users/2"):
+                    nav = service.web_navigate(session_id, f"{url}{path}", timeout=30.0)
+                    assert nav.ok, nav.error
+
+                _poll(
+                    lambda: service.web_network_list(session_id, limit=500),
+                    lambda r: r.ok
+                    and sum(
+                        1
+                        for x in r.data["requests"]
+                        if "/users/" in str(x.get("url", ""))
+                    )
+                    >= 2,
+                )
+
+                out = service.web_network_endpoints(session_id, limit=500)
+                assert out.ok, out.error
+                by_path = {e["path"]: e for e in out.data["endpoints"]}
+                assert "/users/{id}" in by_path, by_path
+                folded = by_path["/users/{id}"]
+                assert folded["count"] == 2, folded
+                assert folded["methods"] == ["GET"], folded
+                assert "Document" in folded["resource_types"], folded
+                assert out.data["captured"] >= 2, out.data
+                assert out.data["normalized"] is True, out.data
+
+                # The resource_type filter keeps only the document routes.
+                docs = service.web_network_endpoints(session_id, resource_type="document")
+                assert docs.ok, docs.error
+                assert docs.data["endpoints"], docs.data
+                assert all(
+                    "Document" in e["resource_types"] for e in docs.data["endpoints"]
+                ), docs.data
+                assert docs.data["filter"] == {"resource_type": "document"}, docs.data
+
+                # normalize=false keeps the raw ids apart.
+                raw = service.web_network_endpoints(session_id, normalize=False, limit=500)
+                assert raw.ok, raw.error
+                raw_paths = {e["path"] for e in raw.data["endpoints"]}
+                assert {"/users/1", "/users/2"} <= raw_paths, raw_paths
+            finally:
+                service.web_close(session_id)
+        finally:
+            service.close_all()
+
+
+@pytest.mark.integration
 def test_web_cookies_read_the_jar_including_httponly() -> None:
     """web.cookies must return the live jar, HttpOnly cookies included.
 
