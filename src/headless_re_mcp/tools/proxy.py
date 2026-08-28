@@ -197,6 +197,35 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_hosts(session_id, limit=limit))
 
+    @tools.tool(name="proxy.content_types")
+    def proxy_content_types(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=200)] = 100,
+    ) -> dict[str, Any]:
+        """Inventory the served content types, flagging binary payloads.
+
+        The "what actually came down the wire" cut of a capture: proxy.stats
+        counts methods and statuses, proxy.hosts counts servers, this counts
+        media types and the bytes behind them -- and calls out the flows that
+        carried runnable code. Folds the summary rows (each keeps the response's
+        content_type and decoded size even when the body was evicted), so it
+        needs no per-flow fetch. The reason to run it: a benign-looking app that
+        pulls a native executable, a second APK, a JAR or an archive over HTTP is
+        the finding, and that download hides in the log as one more 200.
+
+        Answers with types (ranked by hit count) carrying content_type (the bare
+        media type, charset dropped), category (executable / android_package /
+        java / archive / binary / script / json / xml / image / ... ), suspicious
+        (the payload flag), count and bytes (summed decoded response size);
+        type_count, count and truncated for that list; total_flows, typed_flows
+        (rows that had a content type) and total_bytes; and flagged -- the
+        individual suspicious flows, each with id, method, url, host, status,
+        content_type, category and response_size -- with flagged_count and
+        flagged_truncated. Feed a flagged flow's id to proxy.flow.get to pull the
+        payload.
+        """
+        return _dump(analysis.proxy_content_types(session_id, limit=limit))
+
     @tools.tool(name="proxy.search")
     def proxy_search(
         session_id: str,

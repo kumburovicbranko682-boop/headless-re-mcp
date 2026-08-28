@@ -397,6 +397,140 @@ _SECURITY_HEADERS: dict[str, str] = {
 }
 _MAX_SEC_HEADER_VALUE_CHARS = 4096
 _MAX_SEC_DOCUMENTS = 1000
+# proxy.content_types: fold the served media types into a payload inventory.
+# The point of the tool is spotting a binary that flowed over the wire, so map
+# media types to a family and flag the ones that carry executable code.
+_MAX_CONTENT_TYPE_ROWS = 200
+_MAX_CONTENT_TYPE_FLAGGED = 200
+_SUSPICIOUS_CONTENT: dict[str, str] = {
+    "application/x-dosexec": "executable",
+    "application/x-msdownload": "executable",
+    "application/vnd.microsoft.portable-executable": "executable",
+    "application/x-executable": "executable",
+    "application/x-elf": "executable",
+    "application/x-mach-binary": "executable",
+    "application/x-sharedlib": "executable",
+    "application/vnd.android.package-archive": "android_package",
+    "application/java-archive": "java",
+    "application/x-java-archive": "java",
+    "application/zip": "archive",
+    "application/x-zip-compressed": "archive",
+    "application/x-7z-compressed": "archive",
+    "application/x-rar-compressed": "archive",
+    "application/vnd.rar": "archive",
+    "application/gzip": "archive",
+    "application/x-gzip": "archive",
+    "application/x-tar": "archive",
+    "application/x-bzip2": "archive",
+    "application/x-xz": "archive",
+    "application/octet-stream": "binary",
+    "application/x-sh": "script",
+    "text/x-shellscript": "script",
+    "application/x-python": "script",
+    "application/x-powershell": "script",
+}
+
+
+def _classify_content_type(media: str) -> tuple[str, bool]:
+    """Map a bare media type to a coarse family and whether it is a payload tell.
+
+    The suspicious set is the media types that carry runnable code or a packed
+    blob -- a native executable, an APK, a JAR, an archive, a shell/PowerShell
+    script, or the application/octet-stream a server hides a download behind.
+    Everything else is bucketed by its top-level type for the inventory.
+    """
+    media = media.strip().lower()
+    if not media:
+        return "unknown", False
+    if media in _SUSPICIOUS_CONTENT:
+        return _SUSPICIOUS_CONTENT[media], True
+    top = media.split("/", 1)[0]
+    known = {"text", "image", "audio", "video", "font", "application"}
+    if top in known:
+        if top == "application":
+            if media in ("application/json", "application/ld+json"):
+                return "json", False
+            if media in ("application/javascript", "application/x-javascript"):
+                return "script", False
+            if media in ("application/xml", "application/xhtml+xml"):
+                return "xml", False
+            return "application", False
+        return top, False
+    return "other", False
+
+
+def fold_content_types(rows: list[JsonObject], *, limit: int = 100) -> JsonObject:
+    """Fold a flow snapshot into a served-content inventory, flagging payloads.
+
+    Pure over the summary rows (each already carries content_type and
+    response_size, captured before the body could be evicted), so it needs no
+    raw lookup. Groups flows by bare media type (the ``; charset=...`` tail is
+    dropped), counting hits and summing decoded response bytes per type, and
+    classifies each into a family. flagged lists the individual flows whose type
+    is an executable, an APK/JAR, an archive, a script or an octet-stream blob --
+    the download an analyst wants to see, since a benign-looking app that pulls a
+    native binary or a second APK over the wire is the finding.
+    """
+    buckets: dict[str, JsonObject] = {}
+    flagged: list[JsonObject] = []
+    flagged_total = 0
+    typed = 0
+    total_bytes = 0
+    for row in rows:
+        media = str(row.get("content_type") or "").split(";", 1)[0].strip().lower()
+        size = row.get("response_size")
+        size_int = size if isinstance(size, int) and size >= 0 else 0
+        total_bytes += size_int
+        if media:
+            typed += 1
+        category, suspicious = _classify_content_type(media)
+        key = media or "(none)"
+        bucket = buckets.get(key)
+        if bucket is None:
+            bucket = {
+                "content_type": key,
+                "category": category,
+                "suspicious": suspicious,
+                "count": 0,
+                "bytes": 0,
+            }
+            buckets[key] = bucket
+        bucket["count"] += 1
+        bucket["bytes"] += size_int
+        if suspicious:
+            flagged_total += 1
+            if len(flagged) < _MAX_CONTENT_TYPE_FLAGGED:
+                flagged.append(
+                    {
+                        "id": row.get("id"),
+                        "method": row.get("method"),
+                        "url": row.get("url"),
+                        "host": row.get("host"),
+                        "status": row.get("status"),
+                        "content_type": key,
+                        "category": category,
+                        "response_size": size_int,
+                    }
+                )
+
+    ranked = sorted(
+        buckets.values(),
+        key=lambda b: (-int(b["count"]), str(b["content_type"])),
+    )
+    cap = max(1, min(int(limit), _MAX_CONTENT_TYPE_ROWS))
+    window = ranked[:cap]
+    return {
+        "types": window,
+        "count": len(window),
+        "type_count": len(ranked),
+        "truncated": len(window) < len(ranked),
+        "total_flows": len(rows),
+        "typed_flows": typed,
+        "total_bytes": total_bytes,
+        "flagged": flagged,
+        "flagged_count": flagged_total,
+        "flagged_truncated": flagged_total > len(flagged),
+    }
 
 
 def _cookie_header_pairs(part: Any) -> list[tuple[str, str]]:
@@ -1266,6 +1400,10 @@ class ProxyBackend:
     def hosts(self, session_id: str, *, limit: int = 100) -> JsonObject:
         inst = self._get(session_id)
         return fold_hosts(inst.recorder.snapshot(), limit=limit)
+
+    def content_types(self, session_id: str, *, limit: int = 100) -> JsonObject:
+        inst = self._get(session_id)
+        return fold_content_types(inst.recorder.snapshot(), limit=limit)
 
     def cookies(self, session_id: str, *, limit: int = 200) -> JsonObject:
         inst = self._get(session_id)

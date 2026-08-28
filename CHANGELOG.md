@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **313（195 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **314（196 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -705,6 +705,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `path`/`http_only`/`secure`/`same_site`(Strict/Lax/None 或 null)、`set_count`(在 Set-Cookie
   中出现次数)、`sent_count`(在请求 Cookie 中出现次数)与 `sources`(set-cookie/cookie/两者)。
   没有 http_only 与 secure 的会话 cookie 是要标记的弱点。
+- 新增 `proxy.content_types`:把抓包折成"被服务内容"清单,并标出二进制载荷。`proxy.stats` 数方法和状态码、
+  `proxy.hosts` 数服务器,这个数媒体类型及其背后的字节——并点名携带可运行代码的流。折叠摘要行(每行即便正文被
+  淘汰也留着响应的 content_type 与解码后大小),故无需逐流拉取。用它的理由:一个看似无害的应用经 HTTP 拉来一个
+  原生可执行文件、第二个 APK、一个 JAR 或一个压缩包,这就是发现,而那次下载在日志里只是又一个 200。回
+  `types`(按命中数排序)每条带 `content_type`(裸媒体类型,去掉 charset)、`category`(executable/
+  android_package/java/archive/binary/script/json/xml/image/...)、`suspicious`(载荷标志)、`count` 与 `bytes`
+  (累加解码后响应大小);该列表的 `type_count`/`count`/`truncated`;`total_flows`、`typed_flows`(有内容类型的
+  行数)与 `total_bytes`;以及 `flagged`——那些可疑流本身,各带 id/method/url/host/status/content_type/category/
+  response_size——外加 `flagged_count` 与 `flagged_truncated`。把某可疑流的 id 喂给 `proxy.flow.get` 即可拉载荷。
 - 新增 `proxy.security_headers`:审计每个被服务文档的响应安全头——在途一侧的安全姿态。对抓到的每个
   文档(凡 text/html 的响应,加上任何带受追踪头的响应)按 `(host, path)` 归并,报告哪些标准防护头在、
   哪些缺——发现往往是"缺":一个页面既没 CSP 也没 HSTS。受追踪的头有 csp(Content-Security-Policy)、
