@@ -93,10 +93,12 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Exported symbols with their addresses.
 
         Answers with items, each carrying name, vaddr and address
-        (va/rva/module), plus count. There is no integer address field.
-        Read items_truncated, items_total and items_limit when the
-        list filled the cap (4096). There is no exports, truncated or
-        has_more field.
+        (va/rva/module), plus count. Each export is listed once even when
+        the binary keeps it in both its symbol tables (a non-stripped .so),
+        so count is the number of distinct exports. There is no integer
+        address field. Read items_truncated, items_total and items_limit
+        when the list filled the cap (4096). There is no exports, truncated
+        or has_more field.
         """
         return _dump(analysis.r2_exports(session_id, timeout=timeout))
 

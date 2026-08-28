@@ -8,6 +8,14 @@ from headless_re_mcp.core.models import Address, Architecture
 
 JsonObject = dict[str, Any]
 _MAX_ITEMS = 4096
+# r2's iEj lists a non-stripped binary's exports out of *both* the ELF symbol
+# table and the dynamic symbol table, so each exported symbol comes back twice
+# -- byte-identical but for the per-table ``ordinal``. That doubles ``count``
+# and fills r2.exports with duplicate names, and for an Android ``.so`` (rarely
+# fully stripped) it is the common case, not a corner one. Collapse entries
+# that name the same symbol at the same address; imports (iij) and functions
+# (aflj) are already unique, so this is scoped to the exports command alone.
+_EXPORTS_COMMAND = "iEj"
 # Enough for any PE header: the DOS stub and the optional header live in the
 # first pages. The second read below covers the pathological ones.
 _HEADER_WINDOW = 64 * 1024
@@ -117,6 +125,29 @@ def parse_r2_json(raw: str) -> Any | None:
     return None
 
 
+def _dedupe_exports(entries: list[Any]) -> list[Any]:
+    """Drop iEj rows that repeat a symbol already seen at the same address.
+
+    The identity of an export is its name and location; two rows sharing both
+    are the same symbol seen through a second table (they differ only in
+    ``ordinal``). Distinct names, or the same name at a different address (an
+    aliased or relocated symbol), keep separate keys and survive. Non-dict rows
+    pass through untouched, and the first occurrence is the one kept.
+    """
+    seen: set[tuple[Any, Any, Any]] = set()
+    unique: list[Any] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            unique.append(entry)
+            continue
+        key = (entry.get("name"), entry.get("vaddr"), entry.get("paddr"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(entry)
+    return unique
+
+
 def _item_va(entry: JsonObject, keys: tuple[str, ...]) -> int | None:
     for key in keys:
         value = entry.get(key)
@@ -143,6 +174,10 @@ def enrich_r2_payload(
     raw = str(data.get("raw") or "")
     commands = list(data.get("commands") or [])
     parsed = parse_r2_json(raw)
+    if isinstance(parsed, list) and _EXPORTS_COMMAND in commands:
+        # count and items should reflect distinct exports, so collapse the
+        # symbol/dynamic-table doubling before anything downstream measures it.
+        parsed = _dedupe_exports(parsed)
     out = dict(data)
     out["module"] = module
     if image_base is not None:

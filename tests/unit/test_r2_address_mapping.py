@@ -371,3 +371,63 @@ def test_r2_info_puts_identity_in_raw_not_arch_bits_entry(
             described = ast.get_docstring(node) or ""
     assert "Answers with raw" in described
     assert "no format, arch, bits" in described
+
+
+def test_exports_listed_from_both_tables_are_collapsed(tmp_path: Path) -> None:
+    """iEj doubles every export of a non-stripped binary (symbol + dynamic
+    table), differing only in ordinal; r2.exports must count each once."""
+    binary = _minimal_pe(tmp_path, x64=True)
+    raw = json.dumps(
+        [
+            {"name": "exported_add", "vaddr": 0x1400, "paddr": 0x1400, "ordinal": 7,
+             "type": "FUNC"},
+            {"name": "exported_mul", "vaddr": 0x1420, "paddr": 0x1420, "ordinal": 8,
+             "type": "FUNC"},
+            {"name": "exported_add", "vaddr": 0x1400, "paddr": 0x1400, "ordinal": 25,
+             "type": "FUNC"},
+            {"name": "exported_mul", "vaddr": 0x1420, "paddr": 0x1420, "ordinal": 26,
+             "type": "FUNC"},
+        ]
+    )
+    payload = enrich_r2_payload(
+        {"raw": raw, "commands": ["iEj"]}, binary=binary, architecture=Architecture.X64
+    )
+    names = [item["name"] for item in payload["items"]]
+    assert names == ["exported_add", "exported_mul"]
+    assert payload["count"] == 2
+    # Address enrichment still happens on the surviving row, and the first
+    # occurrence (ordinal 7) is the one kept.
+    assert payload["items"][0]["address"]["va"] == 0x1400
+    assert payload["items"][0]["ordinal"] == 7
+
+
+def test_exports_dedupe_keeps_aliases_and_distinct_addresses(tmp_path: Path) -> None:
+    """Only same-name-same-address rows collapse: a second name at one address
+    (an alias) and one name at two addresses both stay distinct."""
+    binary = _minimal_pe(tmp_path, x64=True)
+    raw = json.dumps(
+        [
+            {"name": "real", "vaddr": 0x2000, "paddr": 0x2000, "ordinal": 1},
+            {"name": "alias", "vaddr": 0x2000, "paddr": 0x2000, "ordinal": 2},
+            {"name": "real", "vaddr": 0x3000, "paddr": 0x3000, "ordinal": 3},
+        ]
+    )
+    payload = enrich_r2_payload(
+        {"raw": raw, "commands": ["iEj"]}, binary=binary, architecture=Architecture.X64
+    )
+    assert payload["count"] == 3
+
+
+def test_duplicate_names_outside_exports_are_not_deduped(tmp_path: Path) -> None:
+    """The collapse is scoped to iEj; imports (iij) keep every row r2 returned."""
+    binary = _minimal_pe(tmp_path, x64=True)
+    raw = json.dumps(
+        [
+            {"name": "printf", "vaddr": 0x4000, "paddr": 0x4000},
+            {"name": "printf", "vaddr": 0x4000, "paddr": 0x4000},
+        ]
+    )
+    payload = enrich_r2_payload(
+        {"raw": raw, "commands": ["iij"]}, binary=binary, architecture=Architecture.X64
+    )
+    assert payload["count"] == 2

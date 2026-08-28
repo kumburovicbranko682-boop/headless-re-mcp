@@ -24,6 +24,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（r2.exports 不再把同一导出符号列两遍）
+
+- `r2.exports`（`iEj`）对未 strip 的二进制会把每个导出符号列**两遍**——一遍来自 ELF 符号表
+  （`.symtab`）、一遍来自动态符号表（`.dynsym`），两条记录除了 `ordinal` 逐字段相同。于是
+  `count` 翻倍、`items` 里满是重名项；而 Android 的 `.so` 极少完全 strip，这恰是常态而非边角。
+  现按「符号名 + 地址（`vaddr`/`paddr`）」折叠：同名同址只保留第一条，别名（同址不同名）或
+  同名不同址（重定位/别名符号）各自保留独立键、照常列出；导入（`iij`）与函数（`aflj`）本就
+  唯一，故折叠只作用于 `iEj` 一条命令。已在真 radare2 5.9.8 上核验：未 strip 的 `.so`
+  从 6 条降为 3 条互异导出、地址映射不变，strip 后的 `.so` 本就 3 条、折叠为空操作。
+  新增单测钉住双表折叠、别名/异址保留、以及非 `iEj` 命令（`iij` 重名）不受影响。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
