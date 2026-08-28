@@ -28,6 +28,7 @@ from headless_re_mcp.agent.models import (
     RunStatus,
 )
 from headless_re_mcp.agent.store import AgentStore
+from headless_re_mcp.core.isolation import IsolationError
 from headless_re_mcp.error_boundary import record_exception
 from headless_re_mcp.telemetry import record_alert
 
@@ -233,19 +234,36 @@ class MissionScheduler:
             # because a VM rollback takes that long. Inline, the loop the web
             # server shares stops for the whole rollback, and a supervisor
             # polling the health check restarts the process in the middle of it.
-            outcome = await asyncio.to_thread(
-                self.isolation.rotate, reason=f"mission:{mission.id}"
-            )
-            if self._mission_cancelled(mission.id):
-                return
-            if not outcome.get("ok", False):
+            try:
+                outcome = await asyncio.to_thread(
+                    self.isolation.rotate, reason=f"mission:{mission.id}"
+                )
+            except IsolationError as exc:
+                # rotate() raises exactly when the step is required and did
+                # not work; that is this mechanism's designed refusal, not an
+                # incident. Letting it fall through to tick()'s catch-all
+                # filed every required-isolation failure under an incident id
+                # -- and left the designed branch below unreachable, because
+                # the runner only *returns* ok=False when the operator chose
+                # best-effort.
+                if self._mission_cancelled(mission.id):
+                    return
+                detail = str(exc.detail.get("detail") or exc)
                 self.store.set_mission_status(
                     mission.id,
                     MissionStatus.FAILED,
-                    error=f"isolation step failed: {outcome.get('detail')}",
+                    error=f"isolation step failed: {detail}",
                 )
                 return
-            self._note_if_nothing_was_rotated(outcome)
+            if self._mission_cancelled(mission.id):
+                return
+            if outcome.get("ok", False):
+                self._note_if_nothing_was_rotated(outcome)
+            # A returned ok=False means the deployment declared the step
+            # best-effort (required=False) and the runner has already recorded
+            # the isolation_failed alert. Failing the mission here made that
+            # setting dead: either way a failed rotation killed the mission,
+            # which is exactly the trade required=False exists to decline.
 
         if self._mission_cancelled(mission.id):
             return
