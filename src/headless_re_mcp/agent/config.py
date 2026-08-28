@@ -234,6 +234,53 @@ class ProviderConfigStore:
         return profile.public(source="file")
 
     @staticmethod
+    def _zerofall_threshold(value: object, *, default: int = 75) -> int:
+        """Coerce the imported context-compression threshold.
+
+        The Zerofall config is client-supplied JSON, so this field can arrive as
+        null, an object, or a non-numeric string. ``int()`` raises TypeError on
+        null/containers and ValueError on a bad string; left unmapped, the null
+        and container cases reached the zerofall_import route -- which only
+        catches ValueError -- as a 500 rather than the 400 a malformed body
+        deserves. Absent (the common case for a foreign config) or explicitly
+        null falls back to the default; a present-but-unusable value is one
+        invalid-field error. The 10..95 range is still enforced in
+        ProviderProfile, which raises ValueError of its own for an out-of-range
+        number.
+        """
+        if value is None:
+            return default
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            raise ValueError("contextCompressionThresholdPercent must be a whole number")
+        try:
+            # int() truncates a float and parses a numeric string, but json also
+            # yields inf from 1e400 (int(inf) raises OverflowError) and nan
+            # (int(nan) raises ValueError); collapse all of these to one clear
+            # invalid-field error rather than letting OverflowError escape.
+            return int(value)
+        except (ValueError, OverflowError) as exc:
+            raise ValueError(
+                "contextCompressionThresholdPercent must be a whole number"
+            ) from exc
+
+    @staticmethod
+    def _zerofall_string_list(value: object) -> list[str]:
+        """The string entries of an imported array. A non-array (``knownModels:
+        5``) is dropped rather than iterated, so it cannot raise "int object is
+        not iterable" out to the route as a 500."""
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [item for item in value if isinstance(item, str)]
+
+    @staticmethod
+    def _zerofall_dict_list(value: object) -> list[dict[str, Any]]:
+        """The object entries of an imported array; a non-array is dropped for
+        the same reason as the string-list helper above."""
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [dict(item) for item in value if isinstance(item, dict)]
+
+    @staticmethod
     def _flatten_zerofall(raw: dict[str, Any]) -> dict[str, Any]:
         ai_value = raw.get("ai")
         ai: dict[str, Any] = ai_value if isinstance(ai_value, dict) else {}
@@ -264,10 +311,12 @@ class ProviderConfigStore:
             base_url=str(fields.get("ai.apiBaseUrl") or "https://api.openai.com/v1"),
             model=str(fields.get("model") or "gpt-4.1-mini"),
             api_key=str(api_key) if api_key else None,
-            known_models=[str(x) for x in fields.get("knownModels", []) if isinstance(x, str)],
-            model_catalogs=[dict(x) for x in fields.get("modelCatalogs", []) if isinstance(x, dict)],
+            known_models=self._zerofall_string_list(fields.get("knownModels")),
+            model_catalogs=self._zerofall_dict_list(fields.get("modelCatalogs")),
             enable_thinking=bool(fields.get("enableThinking", False)),
             reasoning_effort=str(fields["reasoningEffort"]) if fields.get("reasoningEffort") else None,
-            context_compression_threshold_percent=int(fields.get("contextCompressionThresholdPercent", 75)),
+            context_compression_threshold_percent=self._zerofall_threshold(
+                fields.get("contextCompressionThresholdPercent", 75)
+            ),
         )
         return self.save(profile)

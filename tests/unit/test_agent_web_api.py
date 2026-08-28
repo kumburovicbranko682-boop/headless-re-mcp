@@ -139,6 +139,29 @@ def test_agent_message_limits_are_client_errors_not_incidents(
         assert "run model" in invalid_model.json()["detail"]
 
 
+def test_zerofall_import_of_a_malformed_field_is_a_client_error_not_an_incident(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    # The imported config is client JSON, so a wrong-typed known field must land
+    # as a 400, not crash the import route with a TypeError-driven 500.
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    app = create_app(AnalysisService(settings), token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/providers/zerofall/import",
+            headers=headers,
+            json={
+                "config": {"model": "m", "contextCompressionThresholdPercent": {}},
+                "confirm": True,
+            },
+        )
+        assert response.status_code == 400
+        assert "contextCompressionThresholdPercent" in response.json()["detail"]
+
+
 def test_missions_are_queued_over_http_and_the_scheduler_runs(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """The unattended entry point, over the wire.
 
