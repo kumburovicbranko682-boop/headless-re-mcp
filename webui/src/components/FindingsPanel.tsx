@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { isSessionGone, inspectorDisconnectedHint } from "../lib/sessionGone";
 
@@ -30,12 +30,19 @@ export function FindingsPanel({ sessionId, onSessionMissing }: { sessionId: stri
   const [report, setReport] = useState<ReportData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The panel doesn't remount when the bound session changes, and nothing polls
+  // this list: a slow response for the previous session landing after the new
+  // session's would stick as its findings until a manual refresh. Compare the
+  // session each response was fetched for against the latest prop.
+  const currentSession = useRef(sessionId);
+  currentSession.current = sessionId;
 
   const load = useCallback(async () => {
     if (!sessionId) { setKnowledge(null); return; }
     const result = await api<Envelope<KnowledgeData>>(
       `/api/sessions/${encodeURIComponent(sessionId)}/knowledge`,
     );
+    if (currentSession.current !== sessionId) return;
     if (!result.ok || !result.data) {
       setKnowledge(null);
       const gone = isSessionGone(result.error);
@@ -55,11 +62,12 @@ export function FindingsPanel({ sessionId, onSessionMissing }: { sessionId: stri
         `/api/sessions/${encodeURIComponent(sessionId)}/report`,
         { method: "POST", body: JSON.stringify({}) },
       );
+      if (currentSession.current !== sessionId) return;
       if (!result.ok || !result.data) throw new Error(result.error?.message ?? "报告生成失败");
       setReport(result.data);
       setError(null);
     } catch (reason) {
-      setError(String(reason));
+      if (currentSession.current === sessionId) setError(String(reason));
     } finally {
       setBusy(false);
     }

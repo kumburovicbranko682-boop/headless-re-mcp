@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { RunEvent } from "../agent/state";
 import { api, apiBlob } from "../api/client";
 import type { WorkspaceProfile } from "../lib/inspectorSurface";
@@ -51,11 +51,18 @@ function MonitorPanel({
   const [data, setData] = useState<MonitorData | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // These panels don't remount when the bound session changes -- they only get a
+  // new prop -- so a slow response for the previous session can land after the
+  // new session's and overwrite it. Each load compares the session it fetched
+  // for against the latest prop and drops the result when the user moved on.
+  const currentSession = useRef(sessionId);
+  currentSession.current = sessionId;
 
   const load = useCallback(async () => {
     if (!sessionId) { setData(null); setError(null); return; }
     try {
       const result = await api<Envelope<MonitorData>>(`/api/sessions/${encodeURIComponent(sessionId)}/monitor`);
+      if (currentSession.current !== sessionId) return;
       const payload = result.data ?? null;
       setData(payload);
       if (result.ok === false || payload?.ok === false) {
@@ -67,6 +74,7 @@ function MonitorPanel({
       }
       setError(null);
     } catch (reason) {
+      if (currentSession.current !== sessionId) return;
       setError(String(reason));
     }
   }, [onSessionMissing, sessionId]);
@@ -158,10 +166,15 @@ function MonitorPanel({
 function TimelinePanel({ sessionId }: { sessionId: string }) {
   const [items, setItems] = useState<TimelineItem[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const currentSession = useRef(sessionId);
+  currentSession.current = sessionId;
 
   const load = useCallback(async () => {
     if (!sessionId) { setItems([]); return; }
     const result = await api<Envelope<{ events?: TimelineItem[] }>>(`/api/sessions/${encodeURIComponent(sessionId)}/timeline?limit=40`);
+    // Unlike the polling monitor, nothing refreshes this list on its own: a
+    // stale response for a previous session would stick until a manual click.
+    if (currentSession.current !== sessionId) return;
     if (result.ok === false) {
       setItems([]);
       setError(result.error?.message ?? "无法读取时间线");
@@ -192,10 +205,13 @@ function TimelinePanel({ sessionId }: { sessionId: string }) {
 function ArtifactsPanel({ sessionId }: { sessionId: string }) {
   const [items, setItems] = useState<Artifact[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const currentSession = useRef(sessionId);
+  currentSession.current = sessionId;
 
   const load = useCallback(async () => {
     const query = sessionId ? `session_id=${encodeURIComponent(sessionId)}&limit=40` : "limit=40";
     const result = await api<Envelope<{ artifacts?: Artifact[] }>>(`/api/artifacts?${query}`);
+    if (currentSession.current !== sessionId) return;
     setItems(result.data?.artifacts ?? []);
     setError(result.ok === false ? (result.error?.message ?? "无法列出产物") : null);
   }, [sessionId]);
@@ -235,10 +251,13 @@ function ArtifactsPanel({ sessionId }: { sessionId: string }) {
 function AuditPanel({ sessionId }: { sessionId: string }) {
   const [items, setItems] = useState<AuditEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const currentSession = useRef(sessionId);
+  currentSession.current = sessionId;
 
   const load = useCallback(async () => {
     const query = sessionId ? `session_id=${encodeURIComponent(sessionId)}&limit=40` : "limit=40";
     const result = await api<Envelope<{ entries?: AuditEntry[] }>>(`/api/audit?${query}`);
+    if (currentSession.current !== sessionId) return;
     setItems(result.data?.entries ?? []);
     setError(result.ok === false ? (result.error?.message ?? "无法读取审计") : null);
   }, [sessionId]);
