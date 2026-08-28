@@ -53,11 +53,15 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.certificates")
     def apk_certificates(session_id: str) -> dict[str, Any]:
-        """List signing certificates and v1 signature files.
+        """List signing certificates, signature files and the signing schemes.
 
         Answers with certificates (subject, issuer, serial, sha256),
         signature_files, v1_signed, and has_more so a list that filled the
-        cap is not read as every signer. There is no certs or signatures field.
+        cap is not read as every signer. Also signature_schemes, a {v1, v2, v3}
+        map of which APK signing schemes actually signed the package, and
+        v1_only -- true when only the JAR (v1) signature is present, which
+        leaves the APK open to Janus (CVE-2017-13156); v2 and v3 hash the whole
+        file and close it. There is no certs, signatures or v4 field.
         """
         return _dump(analysis.apk_certificates(session_id))
 

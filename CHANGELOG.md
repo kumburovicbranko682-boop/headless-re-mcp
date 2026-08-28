@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（`apk.certificates`：报告 v1/v2/v3 签名方案与 Janus 风险）
+
+- `apk.certificates` 此前只给证书条目与 `v1_signed`（是否存在 JAR 签名文件），
+  无法区分 APK 到底用哪些签名方案签的——而这是实打实的三级风险信号，不是形式：
+  只用 v1（JAR）签名的 APK 面临 Janus（CVE-2017-13156），可在 ZIP 前部塞入
+  DEX 而不破坏 JAR 签名；v2/v3 对整文件做哈希，堵住此洞。新增 `_signature_schemes`
+  经 androguard 的 `is_signed_v1/v2/v3()` 直接读 JAR 签名与 APK Signing Block，
+  在返回里加 `signature_schemes`（{v1,v2,v3} 布尔映射）与 `v1_only`（仅 v1、
+  无 v2/v3 时为真，即 Janus 信号）。每个探针都做了防御（签名块布局随签名者与
+  androguard 版本而异），旧版 androguard 缺方法时退化为全 False，`v1_signed`
+  仍独立由签名文件推出，向后兼容。用 apksigner 分别产出 v1-only／v2-only／
+  v1+v2+v3 三个真实签名 APK，`ApkClient.certificates()` 全路径检测与 apksigner
+  的 ground truth 逐一致。
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

@@ -56,6 +56,33 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     return items, has_more
 
 
+def _signature_schemes(apk: Any) -> JsonObject:
+    """Which APK signing schemes actually signed this package.
+
+    androguard reads the JAR signature (v1) and the APK Signing Block (v2/v3)
+    off the archive directly. The distinction is a real triage signal, not a
+    formality: a v1-only APK is open to Janus (CVE-2017-13156) -- a DEX can be
+    prepended to the ZIP without breaking the JAR signature -- whereas v2 and v3
+    hash the whole file and close that hole. Each probe is defended because the
+    signing-block layout varies by signer and androguard version.
+    """
+
+    def probe(method: str) -> bool:
+        fn = getattr(apk, method, None)
+        if fn is None:
+            return False
+        try:
+            return bool(fn())
+        except Exception:  # noqa: BLE001 - signing-block shapes vary by signer/version
+            return False
+
+    return {
+        "v1": probe("is_signed_v1"),
+        "v2": probe("is_signed_v2"),
+        "v3": probe("is_signed_v3"),
+    }
+
+
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     """Clamp a page window at the source, not only at the tool schema.
 
@@ -280,10 +307,16 @@ class ApkClient:
                 )
             except Exception:  # noqa: BLE001 - certificate objects vary by version
                 continue
+        schemes = _signature_schemes(apk)
         return {
             "signature_files": sig_files,
             "certificates": items,
             "v1_signed": bool(names),
+            # Which signing schemes are actually present. v1-only signing (no
+            # v2/v3) leaves the package open to Janus (CVE-2017-13156); v2+
+            # hash the whole file and close it.
+            "signature_schemes": schemes,
+            "v1_only": schemes["v1"] and not schemes["v2"] and not schemes["v3"],
             "has_more": certs_more or files_more,
         }
 
