@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（WASM 静态 wabt 稳健性门：魔数校验 + 损坏模块的错误契约（两条分支）+ 输入大小上界）
+
+`test_web_re_gate` 覆盖了 wabt 的顺风路径（`wasm.wat` 反汇编真实模块、`wasm.info` 列举 section），但三件事
+从没经**真实 wabt** 活体验证过，本门都补上，全程经 `wasm.*` 服务：
+
+- **魔数校验**——`wasm.*` 对缺少 `\0asm` 四字节魔数的文件在**启动工具之前**就以 `invalid_params` 拒绝，把
+  晦涩的子进程失败换成明确的原因。
+- **损坏模块的工具失败契约**——一个头合法、但 section 是垃圾的模块，必须以结构化信封返回，绝不崩、也绝不落成
+  `internal_error`。本门在真实工具上同时展示了 `_note_nonzero_exit` **两条**记录在案的分支：`wasm2wat` 非零
+  退出且无输出 → 结构化 `backend_error`（带 `exit_code`）；而 `wasm-objdump` 会先打印它读到的 section 再翻车 →
+  以 `tool_failed=True`（带 `exit_code`）连同**部分输出**一起返回，正是「别把中途夭折的一趟读成完成品」这条
+  契约——此前只能对**打桩**子进程断言的第二条分支，如今在实际 wabt 上跑通。
+- **输入大小上界**——>16 MiB 的输入在启动工具前就以 `too_large`（含 `size`/`max_file_size`）拒绝，免得无人
+  值守的一趟把整核占满整个 timeout。
+
+新增 `tests/integration/test_web_wasm_robustness_gate.py`。已实测：wabt 1.0.41（linux-x64）下三条全过；同时
+顺带把 `test_web_re_gate` 里既有的 `wasm.wat`/`wasm.info` 两条在真实 wabt 上跑通（i32.add/i32.mul、导出名等
+内容断言）。skip ≠ pass：wabt（wasm2wat/wasm-objdump）未装时干净 skip。
+
 ### 测试（Web 静态 JS 门：webcrack beautify + 恶意输入的错误契约 + 输入大小上界）
 
 `test_web_re_gate` 覆盖了 webcrack 的顺风路径（`js.deobfuscate` 解码隐藏串、`js.unpack_bundle` 拆 webpack
