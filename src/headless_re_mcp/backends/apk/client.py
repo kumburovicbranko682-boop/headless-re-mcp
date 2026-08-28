@@ -45,15 +45,17 @@ class ApkError(RuntimeError):
 
 
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
-    items: list[str] = []
-    has_more = False
-    for item in values or []:
-        if len(items) >= limit:
-            has_more = True
-            break
-        items.append(str(item))
+    # Sort the whole set before cutting to `limit`, so the page is the
+    # alphabetically first `limit` names -- a real sorted prefix. Breaking at the
+    # cap and sorting the collected page instead only reordered whichever names
+    # the source happened to yield first (androguard component/permission order
+    # is not alphabetical): a large app past the 256 cap saw a page that looked
+    # like a sorted prefix but was an arbitrary subset, with no way to tell which
+    # names it never saw. The source list is already fully in memory, so
+    # materialising it here adds no unbounded cost.
+    items = [str(item) for item in (values or [])]
     items.sort()
-    return items, has_more
+    return items[:limit], len(items) > limit
 
 
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
@@ -306,7 +308,6 @@ class ApkClient:
         apk = self._apk(path)
         libs: list[str] = []
         abis: set[str] = set()
-        has_more = False
         for name in apk.get_files() or []:
             text = str(name)
             if not text.startswith("lib/"):
@@ -314,16 +315,19 @@ class ApkClient:
             parts = text.split("/")
             if len(parts) >= 3:
                 abis.add(parts[1])
-            if len(libs) >= _MAX_NATIVE_LIBS:
-                has_more = True
-                continue
             libs.append(text)
+        # Sort the whole set before cutting, so native_libs is the alphabetically
+        # first _MAX_NATIVE_LIBS entries -- a real sorted prefix -- not whichever
+        # entries the zip happened to store first, reordered for display. abis is
+        # collected from every lib/ entry above, so it stays complete regardless
+        # of the listing cap.
         libs.sort()
+        page = libs[:_MAX_NATIVE_LIBS]
         return {
-            "native_libs": libs,
+            "native_libs": page,
             "abis": sorted(abis),
-            "count": len(libs),
-            "has_more": has_more,
+            "count": len(page),
+            "has_more": len(libs) > _MAX_NATIVE_LIBS,
         }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:

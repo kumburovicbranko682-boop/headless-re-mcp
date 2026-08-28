@@ -337,6 +337,55 @@ def test_native_libs_keeps_a_top_level_lib_entry_without_an_abi(tmp_path: Path) 
     assert payload["abis"] == ["arm64-v8a"]
 
 
+def test_native_libs_past_the_cap_returns_the_alphabetical_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A capped native-lib listing must be the alphabetically first entries.
+
+    The zip stores entries in an arbitrary order (here reverse-sorted). A
+    caller whose APK holds more .so files than the cap must still get a real
+    sorted prefix, not whichever entries the zip listed first, reordered for
+    display. Sorting only the collected page would return the last three
+    (``lib5/lib4/lib3``) here and fail this, which is what makes it non-vacuous.
+    abis must stay complete because it is gathered from every entry, not the
+    capped page.
+    """
+    monkeypatch.setattr(apk_mod, "_MAX_NATIVE_LIBS", 3)
+
+    class Apk:
+        def get_files(self) -> list[str]:
+            return [f"lib/arm64-v8a/lib{index}.so" for index in (5, 4, 3, 2, 1, 0)]
+
+    payload = _client_with_apk(Apk()).native_libs(tmp_path / "app.apk")
+    assert payload["count"] == 3
+    assert payload["has_more"] is True
+    assert payload["native_libs"] == [
+        "lib/arm64-v8a/lib0.so",
+        "lib/arm64-v8a/lib1.so",
+        "lib/arm64-v8a/lib2.so",
+    ]
+    assert payload["abis"] == ["arm64-v8a"]
+
+
+def test_cap_names_past_the_limit_returns_the_alphabetical_prefix() -> None:
+    """``_cap_names`` must return the alphabetically first ``limit`` names.
+
+    Components and permissions flow through this helper; androguard yields them
+    in an arbitrary (here reverse-sorted) order. Sorting only the collected page
+    would return ``c/d/e`` and fail this -- the guard that keeps the shared
+    helper from handing back an arbitrary subset dressed as a sorted prefix.
+    """
+    from headless_re_mcp.backends.apk.client import _cap_names
+
+    names, has_more = _cap_names(["e", "d", "c", "b", "a"], 3)
+    assert names == ["a", "b", "c"]
+    assert has_more is True
+
+    fits, fits_more = _cap_names(["b", "a"], 3)
+    assert fits == ["a", "b"]
+    assert fits_more is False
+
+
 def test_classes_skips_external_classes(tmp_path: Path) -> None:
     class Klass:
         def __init__(self, name: str, external: bool) -> None:

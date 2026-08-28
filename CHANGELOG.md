@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（apk.permissions/components/native_libs 在超出上限时也是伪装成有序前缀的任意子集）
+
+- `backends/apk/client.py` 里同一类问题的最后两处：共享助手 `_cap_names()`（供
+  `permissions` 的 declared/requested 与 `components` 的 activities/services/receivers/
+  providers 使用）以及 `native_libs()`，都是「先按来源顺序收集到上限（均为 256）就停、再对已
+  截断的这批排序」。androguard 给出的组件/权限顺序、以及 zip 里 `lib/` 条目的顺序都不是字母
+  序，于是超过 256 的大型应用拿到的列表看起来是有序前缀、实则是来源恰好先给出的那 256 个重排
+  序，且无从得知漏了哪些（`classes`/`strings` 已用 `_clamp_page` 做了 sort-before-page + offset
+  分页，不在此列）。
+- 改法：两处都先整体收集、排序，再切出前 `limit`/`_MAX_NATIVE_LIBS` 个作为这一页，`has_more`
+  按总数是否超过上限计算。`native_libs` 的 `abis` 仍从每个 `lib/` 条目收集，因此不受列表上限
+  影响、始终完整。来源列表本就已全量在内存，materialise 不引入新的无界开销。
+- 新增用例：`test_cap_names_past_the_limit_returns_the_alphabetical_prefix` 钉死逆序输入下
+  `_cap_names(["e","d","c","b","a"], 3) == ["a","b","c"]`（并覆盖未触上限时的完整排序）；
+  `test_native_libs_past_the_cap_returns_the_alphabetical_prefix` 把 `_MAX_NATIVE_LIBS` 压到 3、
+  以逆序 `lib5..lib0` 喂入，钉死返回 `lib0/lib1/lib2` 且 `abis` 仍完整。非空验证：改回
+  sort-after-cap 后两例均失败（返回 `["c","d","e"]` / `lib3/lib4/lib5`）。既有的字段名、解析
+  层、超上限披露等用例只钉计数/长度，未触上限时两种写法结果相同，故不受影响。
+
 ### 修复（apk.export_sources 的 java_files 在超出列表上限时也是伪装成有序前缀的任意子集）
 
 - `backends/jadx/client.py` 的 `_capped_java_listing()` 与 device.packages 是同一类问题：
