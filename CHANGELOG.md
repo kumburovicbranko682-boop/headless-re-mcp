@@ -33,6 +33,30 @@ skip（skip ≠ pass）。同时补两处单测护栏：`_find_analyze_headless`
 舍、以及 `ExportJson.py` 必须经 `getScriptArgs()` 取参并在读取前先给 `ARGS` 赋值。已在装有
 Ghidra 11.4.3 + JDK 21 的 Linux x86_64 上实跑通过（analyze≈5s，每个导出≈6s）。
 
+### 测试（Android 重打包线首次真机跑通 apktool 回构与 apksigner 重签名）
+
+Android 修改线的「解包」侧已有真机 Gate，但「写回」侧——把解包目录回构成 APK、再重签名——
+此前只有子进程 mock 单测。`ApktoolClient.sign` 里安全攸关的那部分（keystore 口令必须经
+`env:` 传给 apksigner、绝不落到 argv）因此从没对真的 apksigner 验证过，只对假的 `run_bounded`
+跑过。新增 `tests/integration/test_android_repackaging_gate.py`，用真工具跑通整条重打包流程：
+
+- **回构往返**：现造一个真实 APK → 解包 → 回构，断言回构出的 APK 是真 zip、且其
+  AndroidManifest.xml 是二进制 AXML（`0x03 0x00`）而非退化成的纯文本清单，androguard 还能把它
+  重新解析出原包名——也就是回构产出的是可安装 APK，而不是一个带文本清单的 zip。回构时不显式传
+  `-a`，走的正是 apktool 自带 aapt2 + 解包时装好的 framework，也就是产品 `apk.repack` 依赖的
+  路径。（附带查清：早先手搓工程在「从未解包过」的状态下 `apktool b` 会 NPE，但真实的
+  解包→回构往返因 decode 已装好 framework 而正常，故 `ApktoolClient.build` 并无产品缺陷。）
+- **重签名**：回构出未签名 APK，用 JDK 自带 keytool 现造一个一次性 keystore，经
+  `ApktoolClient.sign` 重签名。client 内部会自己跑 `apksigner verify` 且验不过就抛错，所以
+  返回 `signed: True` 即代表真的 apksigner 认可了签名；此外再独立跑一次 `apksigner verify` 兜底
+  证明签名为真，而非仅凭 client 自述。
+
+skip ≠ pass：仅当所需工具确实缺失（回构缺 apktool/aapt2、签名缺 apksigner/keytool）时干净
+skip，绝不静默略过。夹具在测试时由手写清单与 smali 类经 apktool 自带 smali 汇编器现造——不落地
+任何二进制 APK，与 PE 线做法一致。已在装有 apktool 2.10.0、aapt2 2.19、apksigner 0.9（Android
+build-tools r34）与 JDK 21 的 Linux x86_64 上实跑通过（回构往返≈3s，重签名并验签≈3s，签出
+v1+v2+v3 三套方案）。
+
 ### 测试（Android 静态线首次真机跑通 jadx 反编译、apktool 解包与 androguard 取证）
 
 `jadx`、`apktool` 与 `androguard` 三个后端的子进程/import mock 单测覆盖已满，但在任何平台上
