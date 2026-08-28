@@ -8,6 +8,11 @@ import json
 from ghidra.app.decompiler import DecompInterface
 from ghidra.util.task import ConsoleTaskMonitor
 
+try:
+    from ghidra.program.model.data import StringDataInstance
+except Exception:
+    StringDataInstance = None
+
 mode = ARGS[0] if ARGS else "functions"
 out_path = ARGS[1] if len(ARGS) > 1 else None
 limit = 256
@@ -76,6 +81,65 @@ elif mode == "xrefs":
                         "type": str(ref.getReferenceType()),
                     }
                 )
+    payload["items"] = items
+elif mode == "imports":
+    items = []
+    for fn in fm.getExternalFunctions():
+        if len(items) >= limit:
+            payload["has_more"] = True
+            break
+        lib = ""
+        addr = ""
+        try:
+            extloc = fn.getExternalLocation()
+            if extloc is not None:
+                lib = extloc.getLibraryName() or ""
+        except Exception:
+            lib = ""
+        try:
+            entry = fn.getEntryPoint()
+            addr = str(entry) if entry is not None else ""
+        except Exception:
+            addr = ""
+        items.append(
+            {
+                "name": fn.getName(),
+                "library": str(lib),
+                "address": addr,
+            }
+        )
+    payload["items"] = items
+elif mode == "strings":
+    items = []
+    for data in listing.getDefinedData(True):
+        if len(items) >= limit:
+            payload["has_more"] = True
+            break
+        is_str = False
+        if StringDataInstance is not None:
+            try:
+                is_str = StringDataInstance.isString(data)
+            except Exception:
+                is_str = False
+        if not is_str:
+            continue
+        try:
+            value = data.getValue()
+            text = "" if value is None else unicode(value)
+        except Exception:
+            try:
+                text = data.getDefaultValueRepresentation()
+            except Exception:
+                text = ""
+        items.append(
+            {
+                "address": str(data.getAddress()),
+                "value": text[:2000],
+                "length": int(data.getLength()),
+                "data_type": str(data.getDataType().getName()),
+                "truncated": len(text) > 2000,
+            }
+        )
     payload["items"] = items
 elif mode == "decompile":
     text = ""

@@ -61,6 +61,45 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.ghidra_symbols(session_id, limit=limit, timeout=timeout))
 
+    @tools.tool(name="ghidra.imports")
+    def ghidra_imports(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
+    ) -> dict[str, Any]:
+        """External (imported) functions Ghidra resolved.
+
+        The host surface a non-PE binary reaches for -- the ELF/Mach-O/.so
+        analogue of the PE import table -- read straight from Ghidra's analysis
+        so it reflects thunks and relocations, not just a raw dynamic-symbol
+        dump. Answers with items, each carrying name, library (the shared object
+        the symbol resolves to, empty when Ghidra could not attribute it) and
+        address (the thunk/external location), plus count and has_more so a page
+        that filled the limit is not read as the whole list. A failed export is
+        an error, not a binary with no imports. Minutes on a large binary;
+        requires HEADLESS_RE_GHIDRA_HOME.
+        """
+        return _dump(analysis.ghidra_imports(session_id, limit=limit, timeout=timeout))
+
+    @tools.tool(name="ghidra.strings")
+    def ghidra_strings(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
+    ) -> dict[str, Any]:
+        """Defined string data Ghidra recovered.
+
+        Ghidra's analysis-backed string view: only data the analyzer typed as a
+        string, so each carries a real address and length instead of the raw
+        offset-and-guess a byte scanner produces, and it spans every section
+        Ghidra defined strings in. Answers with items, each carrying address,
+        value (the decoded text), length (bytes), data_type (the Ghidra string
+        type, e.g. string, unicode) and truncated (the value was clipped), plus
+        count and has_more. A failed export is an error, not a binary with no
+        strings. Minutes on a large binary; requires HEADLESS_RE_GHIDRA_HOME.
+        """
+        return _dump(analysis.ghidra_strings(session_id, limit=limit, timeout=timeout))
+
     @tools.tool(name="ghidra.xrefs")
     def ghidra_xrefs(
         session_id: str,

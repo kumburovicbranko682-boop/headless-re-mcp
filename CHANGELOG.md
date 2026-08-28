@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **286（168 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **288（170 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -368,6 +368,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
   `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
   `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
+
+### 新增（Ghidra headless 非 PE 目标）
+
+- 新增 `ghidra.imports`:列出 Ghidra 解析出的外部(导入)函数——非 PE 二进制伸向的宿主面,是 PE
+  导入表在 ELF/Mach-O/.so 上的对应物,直接读 Ghidra 的分析结果,反映 thunk 与重定位,而非裸的动态
+  符号转储。回 `items`(每条带 `name`、`library`——符号解析到的共享对象,Ghidra 归因不了时为空、
+  `address`——thunk/外部位置)、`count`、`has_more`。导出失败是错误,不是"没有导入"。大二进制耗时以
+  分钟计;需 `HEADLESS_RE_GHIDRA_HOME`。
+- 新增 `ghidra.strings`:列出 Ghidra 认定为字符串的已定义数据——分析驱动的字符串视图,只收分析器
+  定型为字符串的数据,于是每条都带真实地址与长度,而非字节扫描器的"偏移加猜测",且覆盖 Ghidra 定义
+  了字符串的每个节。回 `items`(每条带 `address`、`value`——解码后的文本、`length`——字节数、
+  `data_type`——Ghidra 的字符串类型如 string/unicode、`truncated`——值被裁)、`count`、`has_more`。
+  导出失败是错误,不是"没有字符串"。大二进制耗时以分钟计;需 `HEADLESS_RE_GHIDRA_HOME`。
 
 ### 新增（WASM 结构摘要）
 

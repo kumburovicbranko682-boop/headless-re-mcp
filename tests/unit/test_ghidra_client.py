@@ -453,3 +453,71 @@ def test_ghidra_keeps_a_genuinely_empty_listing_on_a_clean_exit(
     listed = client.functions(_binary(tmp_path), tmp_path / "project")
 
     assert listed["items"] == []
+
+
+def _capture_mode_run(monkeypatch: pytest.MonkeyPatch, payload: str) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        argv = [str(part) for part in cmd]
+        calls.append(argv)
+        for arg in argv:
+            if arg.endswith(".json"):
+                Path(arg).write_text(payload, encoding="utf-8")
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    return calls
+
+
+def test_ghidra_imports_passes_the_imports_mode_to_the_post_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = (
+        '{"mode": "imports", "items": ['
+        '{"name": "strcpy", "library": "libc.so.6", "address": "00105000"}'
+        '], "count": 1, "has_more": false}'
+    )
+    calls = _capture_mode_run(monkeypatch, payload)
+    client = _client(tmp_path)
+
+    listed = client.imports(_binary(tmp_path), tmp_path / "project")
+
+    assert "imports" in calls[0]
+    assert listed["items"][0]["library"] == "libc.so.6"
+    assert listed["items"][0]["address"] == "00105000"
+    assert listed["export_path"]
+
+
+def test_ghidra_strings_passes_the_strings_mode_to_the_post_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = (
+        '{"mode": "strings", "items": ['
+        '{"address": "00302000", "value": "/api/login", "length": 10,'
+        ' "data_type": "string", "truncated": false}'
+        '], "count": 1, "has_more": false}'
+    )
+    calls = _capture_mode_run(monkeypatch, payload)
+    client = _client(tmp_path)
+
+    listed = client.strings(_binary(tmp_path), tmp_path / "project")
+
+    assert "strings" in calls[0]
+    row = listed["items"][0]
+    assert row["value"] == "/api/login"
+    assert row["length"] == 10
+    assert row["data_type"] == "string"
+
+
+def test_ghidra_imports_and_strings_descriptions_name_their_fields() -> None:
+    imports = _tool_docstring("ghidra.imports")
+    assert "library" in imports
+    assert "address" in imports
+    assert "has_more" in imports
+
+    strings = _tool_docstring("ghidra.strings")
+    assert "data_type" in strings
+    assert "truncated" in strings
+    assert "has_more" in strings
