@@ -1632,6 +1632,44 @@ def test_memory_regions_and_modules_dump_service_wrappers(tmp_path: Path) -> Non
     assert too_large.error.code == "dump_too_large"
 
 
+def test_dynamic_register_write_rejects_bad_name_or_value_before_dispatch(
+    tmp_path: Path,
+) -> None:
+    """The MCP schema types name (1..16 char str) and value (int); the agent path
+    bypasses it, so the service must refuse the same shapes before the worker.
+
+    registers.write is the run-control write whose siblings memory.read/write
+    already guard their address/size/data here. A non-string name or non-int
+    value used to reach the worker, and value=True was serialised as JSON true
+    into a register poke.
+    """
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    assert service.dynamic_launch(session_id).ok
+
+    ok_write = service.dynamic_register_write(session_id, "rax", 0x1000)
+    assert ok_write.ok and ok_write.data is not None
+    before = list(worker.requests)
+
+    for bad_name in (5, None, ["rax"], "", "r" * 17):
+        rejected = service.dynamic_register_write(session_id, bad_name, 0x10)  # type: ignore[arg-type]
+        assert not rejected.ok and rejected.error is not None
+        assert rejected.error.code == "invalid_request"
+    for bad_value in ("0x10", 1.5, None, True, [1]):
+        rejected = service.dynamic_register_write(session_id, "rax", bad_value)  # type: ignore[arg-type]
+        assert not rejected.ok and rejected.error is not None
+        assert rejected.error.code == "invalid_request"
+    assert worker.requests == before
+
+    still_ok = service.dynamic_register_write(session_id, "rbx", 0)
+    assert still_ok.ok and still_ok.data is not None
+    assert worker.requests[-1][0] == "registers.write"
+
+
 def test_modules_dump_rejects_a_worker_redirecting_the_artifact_path(tmp_path: Path) -> None:
     outside = tmp_path / "outside.bin"
     outside.write_bytes(b"keep")

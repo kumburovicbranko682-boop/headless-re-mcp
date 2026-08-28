@@ -1916,6 +1916,24 @@ class AnalysisService(
         name: str,
         value: int,
     ) -> Result[JsonObject]:
+        # name/value are schema-typed (dynamic.registers.write: name a 1..16 char
+        # string, value an int), but the agent and OpenAI-bridge transports invoke
+        # the handler straight from model arguments with no pydantic coercion. Its
+        # siblings dynamic_memory_read/write already refuse a bad address/size/data
+        # at this boundary; registers.write was the run-control write left
+        # forwarding raw, so a non-string name or non-int value reached the worker
+        # -- and value=True was serialised as JSON true into a register poke.
+        # Refuse the shapes the schema forbids the same way, before dispatch.
+        if not isinstance(name, str) or not 1 <= len(name) <= 16:
+            return _failure(
+                ValueError("name must be a register string of 1 to 16 chars"),
+                session_id=session_id,
+            )
+        if type(value) is not int:
+            return _failure(
+                ValueError("value must be an integer"),
+                session_id=session_id,
+            )
         return self._dynamic_request(
             session_id,
             "registers.write",
