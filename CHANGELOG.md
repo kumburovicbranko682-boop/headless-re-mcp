@@ -102,6 +102,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   横幅、usage+容忍退出码、无标记但有输出的兜底、不可执行文件的 OSError 兜底。行覆盖
   60% → 97%(余量为两处实践中不可达的防御分支)。
 
+### 测试（APK 识别只认根部 AndroidManifest.xml）
+
+- `core/session.py` 的 `_is_android_package` 用 `AndroidManifest.xml in namelist()` 精确匹配
+  归档**根部**条目来判定 APK，而非任意同名的嵌套条目。既有 `test_plain_zip_is_not_an_apk` 用的是
+  完全没有清单的 zip,因此“只认根部、不认嵌套”这条区分从未被检验——把根部精确匹配放宽成
+  子串/`any(... in name ...)` 匹配,现有用例仍全绿,却会把携带 `assets/AndroidManifest.xml`
+  的构造 zip 误路由到 Android 线。在 `TestApkClassification` 新增
+  `test_a_nested_manifest_alone_does_not_make_an_apk`:仅含嵌套清单的 zip 必须仍判 PE,且
+  `describe_apk` 对其抛 `ValueError`。变异验证:把根部匹配放宽成子串匹配后仅该用例失败(含
+  无清单对照在内的其余 4 例仍通过)。仅测试与 CHANGELOG,未改动产品代码。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

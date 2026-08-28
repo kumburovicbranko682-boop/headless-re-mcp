@@ -351,6 +351,22 @@ class TestApkClassification:
             archive.writestr("readme.txt", "hello")
         assert classify_target(plain) is TargetKind.PE
 
+    def test_a_nested_manifest_alone_does_not_make_an_apk(self, tmp_path: Path) -> None:
+        """The APK detector matches ``AndroidManifest.xml`` at the archive root,
+        not a nested entry that merely shares the name. A crafted zip carrying
+        only ``assets/AndroidManifest.xml`` must stay on the PE fallback rather
+        than being routed to the Android line -- the manifest-free zip fixture
+        never exercises this, so loosening the root check to a substring/any
+        match would go unnoticed."""
+        disguised = tmp_path / "disguised.bin"
+        with zipfile.ZipFile(disguised, "w") as archive:
+            archive.writestr("assets/AndroidManifest.xml", b"\x03\x00manifest")
+            archive.writestr("res/AndroidManifest.xml", b"\x03\x00manifest")
+            archive.writestr("classes.dex", b"dex\n035\x00")
+        assert classify_target(disguised) is TargetKind.PE
+        with pytest.raises(ValueError):
+            describe_apk(disguised)
+
     def test_describe_apk_reads_abis_without_androguard(self, tmp_path: Path) -> None:
         info = describe_apk(_apk(tmp_path / "app.apk"))["apk"]
         assert info["native_abis"] == ["arm64-v8a"]
