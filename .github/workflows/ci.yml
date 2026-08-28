@@ -184,6 +184,9 @@ jobs:
         run: |
           python -m pip install -U pip
           python -m pip install -e ".[test,dev,web,android,browser,proxy]"
+          # psutil is not a project dependency; the browser handle/fd-leak gate
+          # skips without it. Install it here so that regression check runs.
+          python -m pip install psutil
 
       - name: Install portable RE tooling
         run: |

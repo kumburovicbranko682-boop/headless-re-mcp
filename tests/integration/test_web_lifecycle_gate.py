@@ -35,7 +35,20 @@ def _this_process() -> Any:
     except ImportError:
         return None
     process = psutil.Process()
-    return process if hasattr(process, "num_handles") else None
+    # num_handles is Windows-only; num_fds is its POSIX counterpart. Accepting
+    # either lets the per-navigation growth check run on the hosted Linux runner
+    # too, so the browser handle/fd leak is guarded on both platforms rather
+    # than only where Windows OS handles happen to be countable.
+    if hasattr(process, "num_handles") or hasattr(process, "num_fds"):
+        return process
+    return None
+
+
+def _open_handle_count(process: Any) -> int:
+    """OS handles on Windows, open file descriptors on POSIX."""
+    if hasattr(process, "num_handles"):
+        return int(process.num_handles())
+    return int(process.num_fds())
 
 
 def _free_port() -> int:
@@ -156,7 +169,7 @@ def test_a_talkative_page_does_not_grow_the_process_handle_by_handle() -> None:
         pytest.skip("playwright not installed — browser lifecycle Gate not run (skip != pass)")
     process = _this_process()
     if process is None:
-        pytest.skip("handle counts are not available here (skip != pass)")
+        pytest.skip("psutil not installed — handle/fd growth check not run (skip != pass)")
 
     backend = WebBackend()
     try:
@@ -167,16 +180,17 @@ def test_a_talkative_page_does_not_grow_the_process_handle_by_handle() -> None:
 
         for _ in range(5):
             backend.navigate("loud", _LOUD)
-        settled = process.num_handles()
+        settled = _open_handle_count(process)
         for _ in range(20):
             backend.navigate("loud", _LOUD)
-        after = process.num_handles()
+        after = _open_handle_count(process)
 
         captured = backend.console("loud", limit=500)
         assert captured["count"] > 0, "the console must still be captured"
         assert any("line " in str(item.get("text")) for item in captured["console"])
         # A few handles of ordinary churn are fine; per-navigation growth is not.
-        assert after - settled < 100, f"handles grew by {after - settled} over 20 navigations"
+        growth = after - settled
+        assert growth < 100, f"open handles/fds grew by {growth} over 20 navigations"
     finally:
         backend.close_all()
 

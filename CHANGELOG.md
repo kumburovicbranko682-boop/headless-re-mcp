@@ -14,7 +14,10 @@ until 1.0 the tool surface may still change between minor versions.
 - `ci.yml` 新增 `linux-integration` 作业：在托管 Ubuntu runner 上装 Playwright Chromium、webcrack、
   wabt、mitmproxy 与 androguard/adbutils/frida，再 `pytest tests/integration -rs`（跑全量而非硬编码
   子集，与 Windows job 同策略）。conftest 照常把 Windows-only 与未配置后端的 Gate 标成带原因的 skip，
-  只有可移植的 Web/Android/proxy Gate 真跑（本地实测 15 passed / 72 skipped，0 error / 0 fail）。
+  只有可移植的 Web/Android/proxy Gate 真跑（本地实测 16 passed / 71 skipped，0 error / 0 fail）。
+- 浏览器生命周期 Gate 的句柄泄漏检查此前只认 Windows 的 `num_handles`，Linux 上永远 skip。改成
+  POSIX 用 `num_fds`（Windows 仍用 `num_handles`），并在 `linux-integration` 里装 psutil——
+  「20 次导航句柄/fd 增长 < 100」这条泄漏回归现在在托管 Linux CI 上真的执行。
 - 修 `tests/integration/test_agent_browser_smoke.py` 三处长期漂移（这条 Gate 从未在 Linux 跑过，也就
   没人发现它已经烂了）：
   - 顶层 `from playwright.sync_api import ...` 会让缺 browser extra 的机器在收集阶段直接 ImportError、
