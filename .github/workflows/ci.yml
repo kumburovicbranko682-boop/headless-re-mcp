@@ -157,6 +157,65 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  # The portable integration gates -- everything in tests/integration that
+  # needs no proprietary Windows backend -- never ran in any CI job, so they
+  # rotted invisibly: the browser smoke test shipped hard-coding a Windows
+  # Chrome path, and the webcrack unpack path broke against webcrack >= 2.x,
+  # both undetected because nothing executed them. This lane runs the whole
+  # directory rather than a whitelist, so every future gate is covered the day
+  # it lands. Windows-only, IDA and device-bound gates skip by design; the -rs
+  # listing keeps each skip visible so skip != pass stays auditable. Measured
+  # on ubuntu-24.04 with this exact install: 14 gates run for real (Android
+  # metadata/classification, proxy lifecycle x4, web lifecycle x5, web CDP,
+  # webcrack deobfuscate, wasm2wat), 72 skip honestly, in ~10s of test time.
+  linux-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Install portable non-PE backends
+        run: |
+          sudo apt-get update
+          # wabt drives the WASM gate; radare2 is the portable static backend.
+          sudo apt-get install -y --no-install-recommends wabt radare2
+          # webcrack is a Node CLI; the JS gates shell out to it.
+          npm install -g webcrack
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,android,browser,proxy,pe]"
+          # Bundled Chromium plus the system libraries it needs; the product
+          # and every web gate launch this exact browser (pw.chromium.launch).
+          python -m playwright install --with-deps chromium
+
+      - name: Tool sanity
+        # An install step that half-fails quietly turns every gate below into
+        # a skip, and a lane that skips everything reads exactly like a lane
+        # that passed. Fail here, naming the missing tool, instead.
+        run: |
+          webcrack --version
+          wasm2wat --version
+          r2 -v
+          python -c "import mitmproxy, androguard, playwright; print('proxy/apk/browser extras present')"
+
+      - name: Integration gates
+        # --deselect, not skip: test_agent_browser_smoke.py currently pins an
+        # absolute Windows Chrome executable_path, so on Linux it hard-fails at
+        # browser launch rather than skipping. The fix (bundled Chromium +
+        # current-UI selectors) is on its own branch; drop this deselect when
+        # it lands so the smoke runs here too.
+        timeout-minutes: 15
+        run: |
+          python -m pytest tests/integration -q -rs --tb=short --timeout=300 \
+            --deselect tests/integration/test_agent_browser_smoke.py
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

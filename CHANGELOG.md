@@ -5,6 +5,33 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 基建（CI 新增 Linux 集成 Gate 通道——可移植的非 PE Gate 至今没有任何 CI 任务在跑）
+
+- 现状：`ci.yml` 只有 Windows/Linux 单测与 webui 三个 job，`tests/integration/` 整个
+  目录不在任何 CI 通道里。后果已经发生过两次：browser smoke 测试从诞生起就写死
+  Windows Chrome 绝对路径（Linux 上 1 秒硬崩，实测复核），webcrack ≥ 2.x 上
+  `js.unpack_bundle` 整条路径坏掉——都是"没人跑就没人看见"的锈蚀。
+- 改法：新增 `linux-integration` job（ubuntu-latest，Python 3.12 + Node 24）。装齐
+  免费工具链：apt 的 wabt 与 radare2、npm 的 webcrack、pip extras
+  `test,dev,web,android,browser,proxy,pe`、`playwright install --with-deps chromium`
+  （与产品发货完全同源的自带 Chromium）。跑**整个** `tests/integration/` 目录而不是
+  白名单——新 Gate 落地当天即被覆盖，不需要有人记得回来改 CI；Windows 专属/IDA/
+  真机 Gate 按各自的 skip != pass 逻辑诚实跳过，`-rs` 把每条跳过理由晒在日志里。
+  另设 Tool sanity 步：安装半途而废会让下面所有 Gate 变成跳过，而"全跳过"读起来
+  和"全通过"一模一样，所以先按名逐一验工具，缺了在这里点名失败。
+- 已知例外：`test_agent_browser_smoke.py` 以 `--deselect` 显式排除并注明原因
+  （main 上它写死 Windows Chrome 路径，Linux 上不是跳过而是启动即崩；修复在
+  smoke 专属分支上，合入后应删掉这条 deselect 让 smoke 一并入列）。
+- 与既有分支的关系：`cursor/linux-nonpe-integration-ci-936a` 的白名单 job 是本通道的
+  真子集（其独有的 r2 ELF Gate 文件不受影响，合入后自动被目录扫描覆盖）；
+  `run-linux-integration-gates-in-ci-3986` 是 98 文件的大分支，其 CI 段服务于该分支
+  自带的众多新 Gate（Ghidra/mono/llvm/rcodesign 等），与本条各自独立评审。
+- 实测（ubuntu-24.04，与 job 完全相同的安装与命令）：14 个 Gate 真跑通过
+  （Android 元数据/分类 x2、proxy 生命周期 x4、web 生命周期 x5、web CDP、
+  webcrack deobfuscate、wasm2wat），72 个诚实跳过，0 失败，测试段约 10 秒；
+  工具核验 wabt 1.0.34 / radare2 5.5.0 / webcrack 2.16.0 / mitmproxy、androguard、
+  playwright 导入齐全。YAML 经 safe_load 校验。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
