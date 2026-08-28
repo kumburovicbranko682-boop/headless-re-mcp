@@ -3,6 +3,7 @@ capture, and the version/help probe."""
 
 from __future__ import annotations
 
+import os
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,14 @@ from headless_re_mcp.dotnet.de4dot import (
     De4dotErrorCode,
     probe_de4dot_version,
     run_de4dot,
+)
+
+# Most tests only need the fake tool to exist on disk: the guard under test
+# refuses before anything is launched, or _capture_process is monkeypatched.
+# The ones marked below actually execute it, and a "#!/bin/sh" script cannot
+# run on Windows (WinError 193).
+_EXECUTES_SH_SCRIPT = pytest.mark.skipif(
+    os.name == "nt", reason="the fake de4dot is a POSIX sh script"
 )
 
 
@@ -35,6 +44,7 @@ def _source(tmp_path: Path) -> Path:
 # --- run_de4dot guards --------------------------------------------------------
 
 
+@_EXECUTES_SH_SCRIPT
 def test_run_writes_the_output_and_reports_success(tmp_path: Path) -> None:
     source = _source(tmp_path)
     # argv is: exe -f <source> -o <destination>; $2=source, $4=destination.
@@ -215,6 +225,7 @@ def test_run_cleans_up_when_output_exceeds_the_bound(
 # --- real capture: the output limiter fires -----------------------------------
 
 
+@_EXECUTES_SH_SCRIPT
 def test_capture_enforces_the_output_ceiling_on_a_live_child(tmp_path: Path) -> None:
     source = _source(tmp_path)
     # Emit far more than the tiny ceiling, then linger so the limiter, not the
@@ -252,6 +263,7 @@ def test_probe_skips_unrunnable_argforms_then_gives_up(tmp_path: Path) -> None:
     assert text == ""
 
 
+@_EXECUTES_SH_SCRIPT
 def test_probe_recognises_a_de4dot_banner(tmp_path: Path) -> None:
     exe = _script(tmp_path / "de4dot.sh", 'echo "de4dot v3.1.41592"\nexit 0\n')
     ok, text = probe_de4dot_version(exe)

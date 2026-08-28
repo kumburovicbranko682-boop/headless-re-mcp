@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -16,6 +17,9 @@ from headless_re_mcp.backends.common.subprocess_rpc import (
 )
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="on Windows the kwargs are the real CREATE_NO_WINDOW"
+)
 def test_no_window_kwargs_are_inert_off_windows() -> None:
     kwargs = no_window_popen_kwargs()
     assert kwargs == {"creationflags": 0, "startupinfo": None}

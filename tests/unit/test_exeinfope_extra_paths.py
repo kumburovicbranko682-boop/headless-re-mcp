@@ -5,6 +5,7 @@ missing stdio pipes)."""
 
 from __future__ import annotations
 
+import os
 import stat
 import subprocess
 from pathlib import Path
@@ -34,6 +35,14 @@ def _script(path: Path, body: str) -> Path:
     path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
+
+
+# Most tests fake the capture or the process object outright. The ones marked
+# below launch a real child from a "#!/bin/sh" script, which cannot run on
+# Windows (WinError 193).
+_EXECUTES_SH_SCRIPT = pytest.mark.skipif(
+    os.name == "nt", reason="the fake tool is a POSIX sh script"
+)
 
 
 def _fake_capture(**kwargs: Any) -> adapter._ProcessCapture:
@@ -233,6 +242,7 @@ def test_read_log_wraps_an_os_error(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 # --- capture process arms via real child processes ---------------------------
 
 
+@_EXECUTES_SH_SCRIPT
 def test_capture_terminates_when_stdout_exceeds_the_limit_mid_run(tmp_path: Path) -> None:
     script = _script(tmp_path / "flood.sh", "head -c 200000 /dev/zero\nsleep 5\n")
     with pytest.raises(ExeinfopeOutputLimitError) as caught:
@@ -245,6 +255,7 @@ def test_capture_terminates_when_stdout_exceeds_the_limit_mid_run(tmp_path: Path
     assert caught.value.details["stream"] == "stdout"
 
 
+@_EXECUTES_SH_SCRIPT
 def test_capture_reports_a_stderr_overrun(tmp_path: Path) -> None:
     script = _script(tmp_path / "floode.sh", "head -c 200000 /dev/zero 1>&2\nexit 0\n")
     with pytest.raises(ExeinfopeOutputLimitError) as caught:
@@ -257,6 +268,7 @@ def test_capture_reports_a_stderr_overrun(tmp_path: Path) -> None:
     assert caught.value.details["stream"] == "stderr"
 
 
+@_EXECUTES_SH_SCRIPT
 def test_capture_raises_when_a_blocked_gui_form_appears(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -291,6 +303,7 @@ def test_capture_maps_launch_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     assert caught.value.code == ExeinfopeErrorCode.PROCESS_FAILED
 
 
+@_EXECUTES_SH_SCRIPT
 def test_capture_polls_windows_while_the_child_runs(tmp_path: Path) -> None:
     script = _script(tmp_path / "slow.sh", "sleep 0.3\nexit 0\n")
     seen: list[int] = []
@@ -308,6 +321,7 @@ def test_capture_polls_windows_while_the_child_runs(tmp_path: Path) -> None:
     assert seen
 
 
+@_EXECUTES_SH_SCRIPT
 def test_capture_honors_an_active_cancellation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

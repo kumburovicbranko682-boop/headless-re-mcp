@@ -3,6 +3,7 @@ the best-effort probe."""
 
 from __future__ import annotations
 
+import os
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,14 @@ from headless_re_mcp.dotnet.net_reactor_slayer import (
     NetReactorSlayerResult,
     probe_net_reactor_slayer,
     run_net_reactor_slayer,
+)
+
+# Most tests only need the fake tool to exist on disk: the guard under test
+# refuses before anything is launched, or _capture_process is monkeypatched.
+# The ones marked below actually execute it, and a "#!/bin/sh" script cannot
+# run on Windows (WinError 193).
+_EXECUTES_SH_SCRIPT = pytest.mark.skipif(
+    os.name == "nt", reason="the fake NETReactorSlayer is a POSIX sh script"
 )
 
 
@@ -53,6 +62,7 @@ def _fake_capture(**overrides: Any) -> Any:
 # --- run guards ---------------------------------------------------------------
 
 
+@_EXECUTES_SH_SCRIPT
 def test_run_publishes_the_exact_slayed_output(tmp_path: Path) -> None:
     source = _source(tmp_path)
     exe = _script(
@@ -69,6 +79,7 @@ def test_run_publishes_the_exact_slayed_output(tmp_path: Path) -> None:
     assert Path(result.output_path).is_file()
 
 
+@_EXECUTES_SH_SCRIPT
 def test_run_accepts_a_single_slayed_file_by_glob(tmp_path: Path) -> None:
     source = _source(tmp_path)
     exe = _script(
@@ -82,6 +93,7 @@ def test_run_accepts_a_single_slayed_file_by_glob(tmp_path: Path) -> None:
     assert Path(result.output_path).is_file()
 
 
+@_EXECUTES_SH_SCRIPT
 def test_run_fails_closed_when_no_slayed_output_appears(tmp_path: Path) -> None:
     source = _source(tmp_path)
     exe = _script(tmp_path / "nrs.sh", "exit 0\n")
@@ -255,6 +267,7 @@ def test_probe_reports_absent_for_an_unrunnable_file(tmp_path: Path) -> None:
     assert text == ""
 
 
+@_EXECUTES_SH_SCRIPT
 def test_probe_recognises_a_tool_banner(tmp_path: Path) -> None:
     exe = _script(tmp_path / "nrs.sh", 'echo "NETReactorSlayer 1.0"\nexit 1\n')
     ok, text = probe_net_reactor_slayer(exe)
@@ -262,6 +275,7 @@ def test_probe_recognises_a_tool_banner(tmp_path: Path) -> None:
     assert "NETReactorSlayer" in text
 
 
+@_EXECUTES_SH_SCRIPT
 def test_probe_accepts_usage_output_with_a_benign_return_code(tmp_path: Path) -> None:
     exe = _script(tmp_path / "nrs.sh", 'echo "Usage: give an assembly"\nexit 0\n')
     ok, text = probe_net_reactor_slayer(exe)

@@ -42,6 +42,15 @@ def _script(path: Path, body: str) -> Path:
     return path
 
 
+# Most tests only need the fake tool to exist on disk: the guard under test
+# refuses before anything is launched, or _capture_process is monkeypatched.
+# The ones marked below actually execute it, and a "#!/bin/sh" script cannot
+# run on Windows (WinError 193).
+_EXECUTES_SH_SCRIPT = pytest.mark.skipif(
+    os.name == "nt", reason="the fake xvlkc is a POSIX sh script"
+)
+
+
 # --- _is_pe_file --------------------------------------------------------------
 
 
@@ -193,6 +202,7 @@ def test_collect_newest_pe_refuses_ambiguous_outputs(tmp_path: Path) -> None:
 # --- run_xvlkc ----------------------------------------------------------------
 
 
+@_EXECUTES_SH_SCRIPT
 def test_run_publishes_the_newest_pe_output(tmp_path: Path) -> None:
     source = tmp_path / "sample.exe"
     _write_pe(source)
@@ -429,6 +439,7 @@ def test_probe_reports_absent_for_an_unrunnable_file(tmp_path: Path) -> None:
     assert text == ""
 
 
+@_EXECUTES_SH_SCRIPT
 def test_probe_recognises_a_usage_banner(tmp_path: Path) -> None:
     exe = _script(tmp_path / "xvlkc.sh", 'echo "Usage: xvlkc <input>"\nexit 1\n')
     ok, text = probe_xvlkc(exe)
@@ -436,6 +447,7 @@ def test_probe_recognises_a_usage_banner(tmp_path: Path) -> None:
     assert "Usage" in text
 
 
+@_EXECUTES_SH_SCRIPT
 def test_probe_accepts_benign_return_codes_with_output(tmp_path: Path) -> None:
     exe = _script(tmp_path / "xvlkc.sh", 'echo "hello world"\nexit 0\n')
     ok, text = probe_xvlkc(exe)

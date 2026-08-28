@@ -5,7 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
+### 修复（cover-next-low 批次落地前的 Windows 排雷：sh 假工具与 creationflags 钉死）
+
+- 该批次五个新测试文件里有两类落到 Windows 上必挂的前提，落地前先排掉。其一：
+  `test_subprocess_rpc_paths.py` 的 `test_no_window_kwargs_are_inert_off_windows`
+  无守卫断言 `no_window_popen_kwargs() == {"creationflags": 0, "startupinfo": None}`，
+  而 Windows 上真实返回 `CREATE_NO_WINDOW`（0x08000000）加真 STARTUPINFO——与此前
+  doctor probe 的同类修复一个模子；补 `skipif(os.name == "nt")`（Windows 分支已由
+  `test_provider_and_probe_guards.py` 以 monkeypatch os.name 的方式独立覆盖，不丢覆盖）。
+  其二：de4dot / NETReactorSlayer / xvlkc / exeinfope 四个文件用 `#!/bin/sh` 脚本
+  伪造 CLI 工具。仓库的既有惯例是 sh 假工具只允许"存在但从不执行"（守卫在启动前
+  拦截，或 `_capture_process` 被 monkeypatch），这批里有 13 个测试真的执行它——
+  Windows 上 Popen 一个 sh 脚本直接 WinError 193，成功路径、真实 capture 限流、
+  banner 探测全数炸裂。给真执行的测试加 `_EXECUTES_SH_SCRIPT` 守卫，惰性用途保持
+  原样在双平台照跑；静默失败类探测（launch 失败与 exit 2 殊途同归于 absent）
+  不加守卫，断言在两个平台都成立。
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
   `_ProxyInstance.start()/_run()` 的串行化 bring-up 改造（`_STARTUP_LOCK` +
