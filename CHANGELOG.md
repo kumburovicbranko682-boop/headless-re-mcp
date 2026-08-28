@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（原生 ELF 离线速览，无需 r2/Ghidra）
+
+- 新增 `elf.summary`：纯 stdlib 直接解析单个 ELF（Linux 可执行文件或 `.so`），**无需 r2/Ghidra**。
+  原生代码是货真价实的逆向目标——Android 应用的 `lib/**/*.so`、Linux 可执行文件、ELF 恶意样本——但此前
+  在工具面里只能经 r2 或 Ghidra 打开，而这两个外部工具并不总是装着。ELF 头、节表与 `.dynamic` 数组都是
+  精确且有文档的结构，`summarize_elf` 用 stdlib 读出：头部的位宽/字节序/OS ABI/类型/机器/入口/flags，节表
+  （名字、类型、`AX`/`WA` 等标志、地址、偏移、大小），以及从 `.dynamic`（经 `.dynstr` 解引用）得到的依赖库
+  `DT_NEEDED`、`SONAME`、运行时搜索路径 `DT_RUNPATH/RPATH`，外加是否 stripped（无 `.symtab`）。32/64 位两种
+  类与大小端两种字节序都支持；头部解析精确，节表与 dynamic 表逐条防御式跟随——越界偏移记 warning 而非
+  抛异常。已对真实系统二进制（`/bin/ls`、`python3`、`libc.so.6`）验证，结果与 `readelf` 一致。工具为
+  **核心、按路径、只读**（无会话/无 target kind），在每个工作方向（pe/android/web/full）都可见，经 assembly
+  目录与 mcp routes 两条注册路径一并挂上。非 ELF 报 `invalid_params`，超 128 MiB 报 `too_large`，缺文件报
+  `not_found`。新增可移植的手工汇编 ELF 单测（含 32 位与大端头部、stripped、坏节表偏移、非 ELF 拒绝、服务
+  四类信封，Windows CI 无真实 ELF 也能跑）与真实 MCP stdio Gate（始终执行）。
+
 ### 新增（独立 .dex 离线读取，无需 androguard）
 
 - 新增 `dex.methods`：纯 stdlib 走方法引用表（method_ids，每条 8 字节），逐条解析方法名、所属类
@@ -74,7 +89,7 @@ until 1.0 the tool surface may still change between minor versions.
   先例：去掉 POSIX-only 前置断言，只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **268（151 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **269（152 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
