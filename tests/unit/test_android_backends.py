@@ -1151,6 +1151,108 @@ def _apk_with_dex(tmp_path: Path, dex: bytes) -> dict:
     return describe_apk(path)["apk"]["dex"]
 
 
+def _seal_dex(dex: bytes) -> bytes:
+    """Stamp real integrity fields onto a synthetic DEX, as dx/d8 would.
+
+    file_size = the whole byte count, signature = SHA-1 over everything past
+    byte 32, checksum = adler32 over everything past byte 12 -- computed in
+    that order because the checksum covers the signature.
+    """
+    sealed = bytearray(dex)
+    struct.pack_into("<I", sealed, 32, len(sealed))
+    sealed[12:32] = hashlib.sha1(sealed[32:]).digest()
+    struct.pack_into("<I", sealed, 8, zlib.adler32(bytes(sealed[12:])) & 0xFFFFFFFF)
+    return bytes(sealed)
+
+
+class TestDexIntegrity:
+    """describe_apk verifies each DEX member's own integrity claims.
+
+    The header stamps a file_size, an adler32 checksum and a SHA-1 signature
+    over the file it heads. Recomputing them tells a clean build (dexlib-based
+    tooling refreshes the sums) from a raw hex patch (stale sums, which ART
+    refuses); bytes past the declared file_size are the DEX's own overlay --
+    the smuggling shape, since the member keeps reading normally around the
+    stowaway. Verdicts are None, never a guess, when the member was not read
+    in full or the declared size is implausible.
+    """
+
+    _SEALED = _seal_dex(
+        _dex_with_tables(
+            strings=["<init>", "Lcom/app/Main;"],
+            type_string_idx=[1],
+            method_rows=[(0, 0, 0)],
+            defined_type_idx=[0],
+        )
+    )
+
+    def test_a_sealed_dex_verifies_clean(self, tmp_path: Path) -> None:
+        (entry,) = _apk_with_dex(tmp_path, self._SEALED)["signatures"]
+        assert entry["checksum_ok"] is True
+        assert entry["signature_ok"] is True
+        assert entry["overlay"] is None
+        assert entry["sha1"] == hashlib.sha1(self._SEALED[32:]).hexdigest()
+
+    def test_a_byte_patch_leaves_both_sums_stale(self, tmp_path: Path) -> None:
+        # A raw hex patch far from the header: both recomputations diverge from
+        # the stamped values -- the tamper fingerprint ART would also refuse.
+        patched = bytearray(self._SEALED)
+        patched[-1] ^= 0xFF
+        (entry,) = _apk_with_dex(tmp_path, bytes(patched))["signatures"]
+        assert entry["checksum_ok"] is False
+        assert entry["signature_ok"] is False
+        assert entry["overlay"] is None
+
+    def test_bytes_past_the_declared_size_are_the_dex_overlay(self, tmp_path: Path) -> None:
+        # A stowaway appended after the declared file_size: the sums, taken
+        # over the file_size bytes the header describes, still verify -- that
+        # is what makes the shape a smuggle, not a corruption -- and the
+        # overlay pins the residue exactly.
+        (entry,) = _apk_with_dex(tmp_path, self._SEALED + b"STOWAWAY")["signatures"]
+        assert entry["checksum_ok"] is True
+        assert entry["signature_ok"] is True
+        assert entry["overlay"] == {"offset": len(self._SEALED), "size": 8}
+
+    def test_a_lying_file_size_is_unmeasured(self, tmp_path: Path) -> None:
+        # file_size claims more bytes than the member holds: nothing can be
+        # verified over a range that is not there -- None, not False, because
+        # the sums were never recomputed at all.
+        lying = bytearray(self._SEALED)
+        struct.pack_into("<I", lying, 32, len(lying) + 1000)
+        (entry,) = _apk_with_dex(tmp_path, bytes(lying))["signatures"]
+        assert entry["checksum_ok"] is None
+        assert entry["signature_ok"] is None
+        assert entry["overlay"] is None
+
+    def test_an_unsealed_header_is_unmeasured(self, tmp_path: Path) -> None:
+        # _dex_with_tables leaves file_size zero -- smaller than a header --
+        # so there is no declared file to verify.
+        unsealed = _dex_with_tables(
+            strings=["Lcom/app/Main;"],
+            type_string_idx=[0],
+            method_rows=[],
+            defined_type_idx=[0],
+        )
+        (entry,) = _apk_with_dex(tmp_path, unsealed)["signatures"]
+        assert entry["checksum_ok"] is None
+        assert entry["signature_ok"] is None
+        assert entry["overlay"] is None
+
+    def test_an_oversized_member_is_unmeasured(self, tmp_path: Path) -> None:
+        # Past the 32 MiB read cap only the header is read, so the sums cannot
+        # be recomputed and no overlay bound exists: every verdict is None --
+        # the fingerprint and counts still report.
+        from headless_re_mcp.core.session import _DEX_MAX_BYTES
+
+        huge = _seal_dex(_dex_header(b"035", 1, 1, 1)) + bytes(_DEX_MAX_BYTES)
+        dex = _apk_with_dex(tmp_path, huge)
+        (entry,) = dex["signatures"]
+        assert entry["checksum_ok"] is None
+        assert entry["signature_ok"] is None
+        assert entry["overlay"] is None
+        assert dex["class_count"] == 1
+
+
 class TestDexFactsWithoutAndroguard:
     """describe_apk sums the DEX header counts stdlib-only.
 
@@ -1177,9 +1279,17 @@ class TestDexFactsWithoutAndroguard:
         assert dex["external_method_count"] == 1
         # The DEX build fingerprint: the SHA-1 the builder stamps over the body,
         # per-member so a repackaged split is distinguishable. The fixture's dex
-        # is byte-identical across rebuilds, so this value is stable.
+        # is byte-identical across rebuilds, so this value is stable. Its own
+        # integrity claims verify -- the builder computes real sums -- and no
+        # byte hides past the declared file_size.
         assert dex["signatures"] == [
-            {"dex": "classes.dex", "sha1": "cbb95f554a0324c50aa49c33910b716b7fec5326"}
+            {
+                "dex": "classes.dex",
+                "sha1": "cbb95f554a0324c50aa49c33910b716b7fec5326",
+                "checksum_ok": True,
+                "signature_ok": True,
+                "overlay": None,
+            }
         ]
 
     def test_committed_dex_fingerprint_is_the_real_spec_hash(self) -> None:

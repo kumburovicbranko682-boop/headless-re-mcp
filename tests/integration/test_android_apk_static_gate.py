@@ -14,6 +14,7 @@ pass: it skips only when androguard is not installed, and says so.
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -331,3 +332,87 @@ def test_dex_external_api_surface_agrees_with_androguard() -> None:
     # up-call every javac constructor makes.
     assert dex_facts["external_classes"] == ["java.lang.Object"]
     assert dex_facts["external_method_count"] == 1
+
+
+@pytest.mark.integration
+def test_dex_integrity_verdicts_agree_with_androguard(tmp_path: Path) -> None:
+    """The DEX integrity verdicts, re-derived from androguard's header decode.
+
+    The session verifies each DEX member's own claims -- file_size, adler32
+    checksum, SHA-1 signature -- and reports bytes past the declared size as
+    the member's overlay. The reader's field offsets and its unit fixtures are
+    both ours, so androguard referees: its independent header decode supplies
+    the declared values, and recomputing the sums over androguard's file_size
+    must reproduce exactly the reader's True/False verdicts on a pristine, a
+    hex-patched and a stowaway-carrying copy of the same DEX.
+    """
+    if not _FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_FIXTURE}")
+    if not _androguard_available():
+        pytest.skip("androguard not installed — static gate not run (skip != pass)")
+
+    import hashlib
+    import zlib
+
+    from androguard.core.dex import DEX
+
+    with zipfile.ZipFile(_FIXTURE) as archive:
+        raw = archive.read("classes.dex")
+    header = DEX(raw).header
+
+    def _verdicts(apk: Path) -> dict:
+        service = AnalysisService()
+        try:
+            created = service.create_session(str(apk))
+            assert created.ok, created.error
+            (entry,) = created.data["session"]["metadata"]["apk"]["dex"]["signatures"]
+            return entry
+        finally:
+            service.close_all()
+
+    def _repack(name: str, dex: bytes) -> Path:
+        path = tmp_path / name
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("classes.dex", dex)
+        return path
+
+    # Pristine: the reader's fingerprint is byte for byte androguard's decoded
+    # signature field, the sums recomputed over androguard's file_size match
+    # the declared values, and the declared size covers the whole member.
+    entry = _verdicts(_FIXTURE)
+    assert entry["sha1"] == bytes(header.signature).hex()
+    assert header.file_size == len(raw)
+    assert entry["overlay"] is None
+    assert entry["checksum_ok"] is (
+        (zlib.adler32(raw[12 : header.file_size]) & 0xFFFFFFFF) == header.checksum
+    )
+    assert entry["signature_ok"] is (
+        hashlib.sha1(raw[32 : header.file_size]).hexdigest() == bytes(header.signature).hex()
+    )
+    assert entry["checksum_ok"] is True
+    assert entry["signature_ok"] is True
+
+    # A raw hex patch: androguard's own strict constructor refuses the member
+    # outright over the very same stale adler32 -- the independent verdict the
+    # reader states as checksum_ok False (and the SHA-1 goes stale with it).
+    patched = bytearray(raw)
+    patched[-1] ^= 0xFF
+    with pytest.raises(ValueError, match="[Aa]dler32"):
+        DEX(bytes(patched))
+    entry = _verdicts(_repack("tampered.apk", bytes(patched)))
+    assert entry["checksum_ok"] is False
+    assert entry["signature_ok"] is False
+    assert entry["overlay"] is None
+
+    # A stowaway appended past file_size: androguard, which sums to the end of
+    # the buffer, refuses this shape too -- proof the residue sits outside the
+    # DEX the sums vouch for. The reader instead verifies the file_size bytes
+    # the header describes (still clean: a smuggle, not a corruption) and pins
+    # the residue at exactly the boundary androguard decoded from the header.
+    with pytest.raises(ValueError, match="[Aa]dler32"):
+        DEX(raw + b"STOWAWAY")
+    entry = _verdicts(_repack("stowaway.apk", raw + b"STOWAWAY"))
+    assert entry["overlay"] == {"offset": header.file_size, "size": 8}
+    assert entry["checksum_ok"] is True
+    assert entry["signature_ok"] is True

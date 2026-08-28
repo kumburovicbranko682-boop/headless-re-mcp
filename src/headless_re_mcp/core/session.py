@@ -6,6 +6,7 @@ import io
 import json
 import re
 import zipfile
+import zlib
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from datetime import UTC, datetime
@@ -1084,7 +1085,12 @@ def _apk_dex_facts(path: Path) -> dict[str, Any]:
                 class_count += facts["class_count"]
                 # Per-member so a repackaged split can be told apart; each dex
                 # carries its own fingerprint even when the counts are summed.
-                signatures.append({"dex": name, "sha1": facts["signature"]})
+                # Alongside it, the verdict on the header's own integrity
+                # claims -- meaningful only when the whole member was read.
+                complete = read_cap == _DEX_MAX_BYTES and len(data) < _DEX_MAX_BYTES
+                entry: dict[str, Any] = {"dex": name, "sha1": facts["signature"]}
+                entry.update(_dex_integrity(data, facts, complete))
+                signatures.append(entry)
                 if len(data) > _DEX_HEADER_SIZE:
                     if len(class_names) < _DEX_MAX_TOTAL_NAMES:
                         for cname in _dex_class_names(data, facts):
@@ -1113,6 +1119,38 @@ def _apk_dex_facts(path: Path) -> dict[str, Any]:
     }
 
 
+def _dex_integrity(data: bytes, header: dict[str, Any], complete: bool) -> dict[str, Any]:
+    """Verify a DEX member's own integrity claims; locate any appended bytes.
+
+    The header stamps three claims about the file it heads: ``file_size`` (how
+    many bytes the DEX is), ``checksum`` (adler32 over everything past byte
+    12) and ``signature`` (SHA-1 over everything past byte 32) -- both sums
+    taken over the ``file_size`` bytes the header describes. Recomputing them
+    tells repack-and-patch tampering apart from a clean build: dexlib-based
+    tooling refreshes the sums, a raw hex patch leaves them stale, and ART
+    refuses a mismatch outright. Bytes beyond ``file_size`` are the DEX's own
+    overlay -- the member reads normally while carrying a stowaway, the same
+    smuggling shape as data appended to a PE or prepended to the APK itself.
+
+    Fail-closed: when the member was not read in full, or ``file_size`` is
+    smaller than a header or larger than the bytes present, every verdict is
+    None -- never a guessed pass, never an invented overlay.
+    """
+    unmeasured: dict[str, Any] = {"checksum_ok": None, "signature_ok": None, "overlay": None}
+    declared = header["file_size"]
+    if not complete or declared < _DEX_HEADER_SIZE or declared > len(data):
+        return unmeasured
+    body = data[:declared]
+    overlay = None
+    if declared < len(data):
+        overlay = {"offset": declared, "size": len(data) - declared}
+    return {
+        "checksum_ok": (zlib.adler32(body[12:]) & 0xFFFFFFFF) == header["checksum"],
+        "signature_ok": hashlib.sha1(body[32:]).hexdigest() == header["signature"],
+        "overlay": overlay,
+    }
+
+
 def _parse_dex_header(header: bytes) -> dict[str, Any] | None:
     if len(header) < _DEX_HEADER_SIZE or header[0:4] != _DEX_MAGIC:
         return None
@@ -1129,6 +1167,12 @@ def _parse_dex_header(header: bytes) -> dict[str, Any] | None:
         # the Android analogue of an ELF build-id / Mach-O uuid / .NET MVID. Two
         # APKs whose classes.dex share this carry byte-identical code.
         "signature": header[12:32].hex(),
+        # The header's own integrity claims: the adler32 over everything past
+        # byte 12, and how many bytes the file says it is. Verified (and any
+        # excess reported as overlay) by _dex_integrity when the whole member
+        # was read.
+        "checksum": int.from_bytes(header[8:12], "little"),
+        "file_size": int.from_bytes(header[32:36], "little"),
         "string_count": string_count,
         "string_ids_off": int.from_bytes(header[60:64], "little"),
         "type_count": int.from_bytes(header[64:68], "little"),

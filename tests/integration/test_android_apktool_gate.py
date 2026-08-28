@@ -365,6 +365,21 @@ def test_android_apktool_decode_and_repack(tmp_path: Path) -> None:
             names = set(archive.namelist())
         assert "AndroidManifest.xml" in names
         assert "classes.dex" in names
+
+        # The rebuilt classes.dex was assembled by smali -- an independent DEX
+        # producer, not our fixture builder -- so it is the real-world check on
+        # the integrity verdicts: a genuine toolchain stamps file_size and both
+        # sums the way the spec says, and the reader must verify them clean,
+        # with no bytes hiding past the declared size.
+        rebuilt = service.create_session(str(out_apk))
+        assert rebuilt.ok, rebuilt.error
+        try:
+            (entry,) = rebuilt.data["session"]["metadata"]["apk"]["dex"]["signatures"]
+            assert entry["checksum_ok"] is True
+            assert entry["signature_ok"] is True
+            assert entry["overlay"] is None
+        finally:
+            service.close_session(rebuilt.data["session"]["id"])
     finally:
         service.close_all()
 
