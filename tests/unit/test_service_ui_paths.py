@@ -127,14 +127,15 @@ class _FakeUiService(UiAutomationMixin):
         return dict(state)
 
 
-class _NtOsProxy:
-    """Report ``name == "nt"`` while forwarding everything else to the real os.
+class _OsProxy:
+    """Report a pinned ``name`` while forwarding everything else to the real os.
 
     Patching the global ``os.name`` would poison ``pathlib.Path`` on Python 3.11,
     where ``Path()`` picks WindowsPath (uninstantiable on POSIX) from ``os.name``.
     """
 
-    name = "nt"
+    def __init__(self, name: str) -> None:
+        self.name = name
 
     def __getattr__(self, attr: str) -> Any:
         return getattr(os, attr)
@@ -142,7 +143,15 @@ class _NtOsProxy:
 
 @pytest.fixture
 def _nt(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(svc_ui, "os", _NtOsProxy())
+    monkeypatch.setattr(svc_ui, "os", _OsProxy("nt"))
+
+
+@pytest.fixture
+def _posix(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Pinning the proxy to posix lets the *_is_unsupported_off_windows tests
+    # run (not skip) on a real Windows host: the guard arm they assert is
+    # selected by what service_ui reads, not by the ambient platform.
+    monkeypatch.setattr(svc_ui, "os", _OsProxy("posix"))
 
 
 def _install_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -357,8 +366,7 @@ def test_finalize_windows_non_list_becomes_empty() -> None:
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(os.name == "nt", reason="the platform guard only fires off Windows")
-def test_snapshot_is_unsupported_off_windows(tmp_path: Path) -> None:
+def test_snapshot_is_unsupported_off_windows(tmp_path: Path, _posix: None) -> None:
     service = _FakeUiService(
         _FakeWorker(capabilities={"debug.state"}, state=_RUNNING),
         artifact_root=tmp_path,
@@ -411,8 +419,7 @@ def test_snapshot_annotates_a_clean_result(
     assert result.data["capture_mode"] == "passive"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="the platform guard only fires off Windows")
-def test_capture_is_unsupported_off_windows(tmp_path: Path) -> None:
+def test_capture_is_unsupported_off_windows(tmp_path: Path, _posix: None) -> None:
     service = _FakeUiService(
         _FakeWorker(capabilities={"debug.state"}, state=_RUNNING),
         artifact_root=tmp_path,
@@ -520,8 +527,7 @@ def _service(
     return _FakeUiService(worker, artifact_root=tmp_path)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="the platform guard only fires off Windows")
-def test_ui_call_is_unsupported_off_windows(tmp_path: Path) -> None:
+def test_ui_call_is_unsupported_off_windows(tmp_path: Path, _posix: None) -> None:
     service = _FakeUiService(
         _FakeWorker(capabilities={"debug.state"}, state=_RUNNING),
         artifact_root=tmp_path,
@@ -921,8 +927,7 @@ def test_ui_screenshot_rejects_a_path_escaping_session(tmp_path: Path) -> None:
     assert result.error.code == "invalid_request"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="the platform guard only fires off Windows")
-def test_ui_screenshot_is_unsupported_off_windows(tmp_path: Path) -> None:
+def test_ui_screenshot_is_unsupported_off_windows(tmp_path: Path, _posix: None) -> None:
     service = _FakeUiService(
         _FakeWorker(capabilities={"debug.state"}, state=_RUNNING),
         artifact_root=tmp_path,
@@ -962,8 +967,7 @@ def test_ui_ocr_rejects_a_path_escaping_session(tmp_path: Path) -> None:
     assert result.error.code == "invalid_request"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="the platform guard only fires off Windows")
-def test_ui_ocr_is_unsupported_off_windows(tmp_path: Path) -> None:
+def test_ui_ocr_is_unsupported_off_windows(tmp_path: Path, _posix: None) -> None:
     service = _FakeUiService(
         _FakeWorker(capabilities={"debug.state"}, state=_RUNNING),
         artifact_root=tmp_path,

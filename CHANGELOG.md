@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 改进（off-windows 平台门禁用例在 Windows 上真跑而非跳过）
+
+- CI 修复把五个 `*_is_unsupported_off_windows` 用例改成了在 Windows 上
+  `skipif`——门禁臂在两个 Windows job 上就此失去断言(本仓库 skip 理由的措辞
+  一贯是 "skip != pass")。改为 `_posix` fixture:把 `service_ui` 模块视野内的
+  `os` 换成钉住 `name="posix"` 的代理(`_NtOsProxy` 相应泛化为带构造参数的
+  `_OsProxy`,与 `test_config_discovery_paths.py` 的既有惯例同形)。用例选中
+  哪条臂由被测模块读到的值决定,与宿主平台无关,五个用例在全矩阵上都执行。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
