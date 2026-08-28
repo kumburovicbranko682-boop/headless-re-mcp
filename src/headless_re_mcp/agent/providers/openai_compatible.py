@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Sequence
+from math import isfinite
 from threading import Lock
 from typing import Any
 
@@ -83,9 +84,16 @@ def _usage_output_tokens(usage: Any) -> int | None:
         return None
     for key in ("completion_tokens", "output_tokens", "completionTokens", "outputTokens"):
         value = usage.get(key)
+        if isinstance(value, bool):
+            continue
         if isinstance(value, int) and value >= 0:
             return value
-        if isinstance(value, float) and value >= 0:
+        # json.loads accepts the non-standard token Infinity as float('inf'),
+        # and int(inf) raises OverflowError -- uncaught in the stream loop, so a
+        # malformed provider's usage crashed the run as an internal error instead
+        # of just going uncounted. NaN was already skipped by the ``>= 0`` test
+        # (nan compares false); isfinite closes the infinity case the same way.
+        if isinstance(value, float) and isfinite(value) and value >= 0:
             return int(value)
     details = usage.get("completion_tokens_details")
     if isinstance(details, dict):

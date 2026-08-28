@@ -155,6 +155,23 @@ def test_usage_output_tokens_returns_none_when_nothing_is_present() -> None:
     assert oc._usage_output_tokens({"completion_tokens_details": {}}) is None
 
 
+def test_usage_output_tokens_skips_a_non_finite_count() -> None:
+    # json.loads accepts the non-standard tokens Infinity/NaN, so a malformed
+    # provider's usage can hold float inf/nan. int(inf) raises OverflowError,
+    # which is not caught in the stream loop and crashed the run as an internal
+    # error rather than leaving the turn simply uncounted. NaN was already
+    # skipped by the >= 0 test; infinity must be skipped the same way.
+    assert oc._usage_output_tokens({"completion_tokens": float("inf")}) is None
+    assert oc._usage_output_tokens({"completion_tokens": float("nan")}) is None
+    assert oc._usage_output_tokens({"output_tokens": float("-inf")}) is None
+
+
+def test_usage_output_tokens_ignores_a_boolean_count() -> None:
+    # bool is a subclass of int, so a JSON ``true`` in a token field would have
+    # been read as a count of 1; a boolean is not a token count.
+    assert oc._usage_output_tokens({"completion_tokens": True}) is None
+
+
 # ---------------------------------------------------------------------------
 # _normalize_chunk
 
@@ -401,6 +418,31 @@ async def test_completion_synthesizes_a_call_id_when_the_provider_omits_one() ->
     call = events[-1].tool_calls[0]
     assert call.id == "call_0", "a missing id becomes call_<index>"
     assert call.name == "doctor"
+
+
+@pytest.mark.asyncio
+async def test_completion_survives_a_non_finite_usage_token_count() -> None:
+    # A provider that puts the non-standard Infinity token in usage used to crash
+    # the stream: json.loads accepts it as float('inf') and _usage_output_tokens
+    # called int(inf), raising an OverflowError that escaped stream_chat as an
+    # internal error. The turn must complete instead, with the count dropped.
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        body = _sse_body(
+            {"choices": [{"delta": {"content": "hi"}}]},
+            {
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {"completion_tokens": float("inf")},
+            },
+        )
+        return httpx.Response(200, text=body)
+
+    events = [
+        event async for event in _provider(respond).stream_chat(messages=[], tools=[], model="m")
+    ]
+    assert any(event.type == "text_delta" and event.text == "hi" for event in events)
+    assert not any(event.type == "usage" for event in events)
+    assert events[-1].type == "completed"
 
 
 @pytest.mark.asyncio
