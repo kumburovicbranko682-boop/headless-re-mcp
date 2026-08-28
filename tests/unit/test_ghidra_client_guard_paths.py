@@ -282,3 +282,36 @@ def test_find_analyze_headless_accepts_a_non_bat_launcher(tmp_path: Path) -> Non
     launcher = support / "analyzeHeadless"
     launcher.write_text("#!/bin/sh\n", encoding="utf-8")
     assert _find_analyze_headless(home) == launcher
+
+
+def _home_with_both_launchers(tmp_path: Path) -> Path:
+    home = tmp_path / "ghidra"
+    support = home / "support"
+    support.mkdir(parents=True)
+    (support / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
+    (support / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+    return home
+
+
+def test_find_analyze_headless_prefers_the_shell_launcher_on_posix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real Ghidra ships both launchers; POSIX must pick the executable one.
+
+    The .bat is a Windows batch file, not marked +x on POSIX, so preferring it
+    made Popen raise PermissionError and the whole backend was unreachable off
+    Windows. A live analyzeHeadless is the only thing that hits this, which is
+    why the mocked suite never caught it.
+    """
+    home = _home_with_both_launchers(tmp_path)
+    monkeypatch.setattr("headless_re_mcp.backends.ghidra.client.os.name", "posix")
+    assert _find_analyze_headless(home) == home / "support" / "analyzeHeadless"
+
+
+def test_find_analyze_headless_prefers_the_bat_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With both present on Windows, the .bat launcher is the right one."""
+    home = _home_with_both_launchers(tmp_path)
+    monkeypatch.setattr("headless_re_mcp.backends.ghidra.client.os.name", "nt")
+    assert _find_analyze_headless(home) == home / "support" / "analyzeHeadless.bat"
