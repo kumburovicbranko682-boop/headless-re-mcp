@@ -27,6 +27,7 @@ from headless_re_mcp.backends.adb.client import (
     _accepts_timeout,
     _apk_package_name,
     _bind_open_transport,
+    _call,
     _check_forward_spec,
     _device_info_row,
     _device_shell,
@@ -902,6 +903,56 @@ class TestHelperErrorPaths:
         with pytest.raises(AdbError) as info:
             _device_shell(_Dev(), "getprop")
         assert info.value.code == "timeout"
+
+    def test_device_shell_wraps_any_other_error_as_backend_error(self) -> None:
+        # The third leg of _device_shell's contract: a non-AdbError, non-timeout
+        # failure becomes backend_error. This is *why* properties/packages/logcat
+        # can call _device_shell without their own except-Exception wrapper --
+        # the helper has already normalised everything. Pin it so that guarantee
+        # cannot quietly weaken into a raw exception leak.
+        class _Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                raise ValueError("shell blew up")
+
+        with pytest.raises(AdbError) as info:
+            _device_shell(_Dev(), "getprop")
+        assert info.value.code == "backend_error"
+
+    # _call and _device_shell deliberately diverge, and the whole backend's error
+    # hygiene rests on it: _device_shell normalises *every* failure to AdbError,
+    # while _call normalises *only* timeouts and re-raises anything else for the
+    # caller to wrap with its own context (path/package/remote). Confusing the two
+    # is what made launch/force_stop's except-Exception branch dead code; pin both
+    # halves so neither can drift toward the other.
+    def test_call_reraises_adb_error_unchanged(self) -> None:
+        def method() -> None:
+            raise AdbError("invalid_state", "already typed")
+
+        with pytest.raises(AdbError) as info:
+            _call(method, timeout=1.0)
+        assert info.value.code == "invalid_state"
+
+    def test_call_labels_a_timeout_as_adb_error(self) -> None:
+        def method() -> None:
+            raise _TimeoutError()
+
+        with pytest.raises(AdbError) as info:
+            _call(method, timeout=1.0)
+        assert info.value.code == "timeout"
+
+    def test_call_reraises_a_non_timeout_error_unchanged(self) -> None:
+        # The load-bearing divergence: a plain ValueError is re-raised as-is, not
+        # wrapped into backend_error. Every _call site relies on this to add its
+        # own operation-specific context; if _call started wrapping like
+        # _device_shell, those except-Exception branches would all go dead.
+        sentinel = ValueError("boom")
+
+        def method() -> None:
+            raise sentinel
+
+        with pytest.raises(ValueError) as info:
+            _call(method, timeout=1.0)
+        assert info.value is sentinel
 
     def test_info_timeout_from_get_state(self, monkeypatch: MP) -> None:
         dev = _FakeDev(get_state_error=_TimeoutError())
