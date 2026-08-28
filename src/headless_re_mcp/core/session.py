@@ -15,7 +15,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from threading import RLock
 from typing import Any, BinaryIO, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import unquote_to_bytes, urlsplit
 
 from headless_re_mcp.core.models import (
     Architecture,
@@ -2208,6 +2208,9 @@ _JS_SOURCEMAP_RE = re.compile(rb"[#@]\s*sourceMappingURL=(\S+)")
 # An external map reference is short; cap it so a pathological line cannot make
 # the identity facts large, and never store an inline (data:) map's payload.
 _JS_SOURCEMAP_MAX = 2048
+# Maps with embedded sources routinely run to tens of megabytes; read that much
+# and no more, and refuse (resolved=False) anything larger.
+_JS_MAP_MAX_BYTES = 32 * 1024 * 1024
 
 
 def describe_web_asset(path: Path) -> dict[str, Any]:
@@ -2254,6 +2257,7 @@ def describe_js(path: Path) -> dict[str, Any]:
     max_line_length = max((len(line) for line in data.split(b"\n")), default=0)
     source_map: str | None = None
     source_map_inline = False
+    source_map_facts: dict[str, Any] | None = None
     last = None
     for match in _JS_SOURCEMAP_RE.finditer(data):
         last = match
@@ -2263,6 +2267,7 @@ def describe_js(path: Path) -> dict[str, Any]:
             source_map_inline = True
         else:
             source_map = url[:_JS_SOURCEMAP_MAX]
+        source_map_facts = _js_source_map_facts(path.parent, url)
     return {
         "js": {
             "size": size,
@@ -2270,9 +2275,97 @@ def describe_js(path: Path) -> dict[str, Any]:
             "max_line_length": max_line_length,
             "source_map": source_map,
             "source_map_inline": source_map_inline,
+            # What the referenced map actually delivers -- above all whether
+            # the original sources ship inside it (the source-recovery prize).
+            "source_map_facts": source_map_facts,
             "truncated": truncated,
         }
     }
+
+
+def _js_source_map_facts(base: Path, url: str) -> dict[str, Any]:
+    """What the sourceMappingURL actually delivers, or resolved=False.
+
+    A map directive is only a claim; the prize is the map itself -- and above
+    all whether the original sources travel inside it (``sourcesContent``), the
+    difference between recovering the pre-minification codebase outright and
+    merely getting file names and line numbers. An inline ``data:`` URI is
+    decoded in place; an external reference is read next to the script under
+    the same containment rules the SRI verdict uses (plain relative path, no
+    escape from the directory tree, bounded size). Everything else -- a remote
+    URL, a missing or oversized file, malformed JSON -- is ``resolved: False``,
+    never a guess: the claim exists but nothing local backs it.
+    """
+    if url.startswith("data:"):
+        facts: dict[str, Any] = {"kind": "inline"}
+        payload = _js_data_uri_bytes(url)
+    else:
+        facts = {"kind": "external"}
+        payload = _js_local_map_bytes(base, url)
+    doc: Any = None
+    if payload is not None:
+        try:
+            doc = json.loads(payload)
+        except ValueError:
+            doc = None
+    if not isinstance(doc, dict):
+        facts["resolved"] = False
+        return facts
+    facts["resolved"] = True
+    version = doc.get("version")
+    facts["version"] = version if isinstance(version, int) else None
+    raw_sources = doc.get("sources")
+    sources = raw_sources if isinstance(raw_sources, list) else []
+    facts["sources_count"] = len(sources)
+    raw_contents = doc.get("sourcesContent")
+    contents = raw_contents if isinstance(raw_contents, list) else []
+    embedded = sum(1 for item in contents if isinstance(item, str))
+    if sources and embedded >= len(sources):
+        facts["sources_content"] = "embedded"
+    elif embedded:
+        facts["sources_content"] = "partial"
+    else:
+        facts["sources_content"] = "absent"
+    raw_names = doc.get("names")
+    facts["names_count"] = len(raw_names) if isinstance(raw_names, list) else 0
+    mappings = doc.get("mappings")
+    facts["mappings"] = isinstance(mappings, str) and bool(mappings)
+    return facts
+
+
+def _js_data_uri_bytes(url: str) -> bytes | None:
+    """Decode a data: URI's payload (base64 or percent-encoded), bounded."""
+    header, _, payload = url.partition(",")
+    if not payload or len(payload) > _JS_MAP_MAX_BYTES:
+        return None
+    if header.rsplit(";", 1)[-1].lower() == "base64":
+        try:
+            return base64.b64decode(payload, validate=True)
+        except ValueError:
+            return None
+    return unquote_to_bytes(payload)
+
+
+def _js_local_map_bytes(base: Path, url: str) -> bytes | None:
+    """Read the map file an external reference names, under containment rules.
+
+    Only a plain relative path into the script's own directory tree is read --
+    the layout a captured site or an extracted bundle has on disk. A query
+    string or fragment on the reference (cache busters) is ignored, the same
+    way a server would.
+    """
+    parts = urlsplit(url)
+    if parts.scheme or parts.netloc or not parts.path or parts.path.startswith("/"):
+        return None
+    try:
+        candidate = (base / parts.path).resolve()
+        if not candidate.is_relative_to(base.resolve()):
+            return None
+        if not candidate.is_file() or candidate.stat().st_size > _JS_MAP_MAX_BYTES:
+            return None
+        return candidate.read_bytes()
+    except OSError:
+        return None
 
 
 _HAR_MAX_BYTES = 64 * 1024 * 1024

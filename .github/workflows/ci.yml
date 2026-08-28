@@ -201,9 +201,11 @@ jobs:
       - name: Install chromium for the browser gates
         run: python -m playwright install --with-deps chromium
 
-      - name: Install webcrack and wabt for the JS/WASM gates
+      - name: Install webcrack, terser and wabt for the JS/WASM gates
+        # terser referees the source-map gate: it generates a production v3
+        # map and node --enable-source-maps proves the map actually resolves.
         run: |
-          npm install -g webcrack
+          npm install -g webcrack terser
           curl -fsSL -o /tmp/wabt.tar.gz \
             "https://github.com/WebAssembly/wabt/releases/download/${WABT_VERSION}/wabt-${WABT_VERSION}-ubuntu-20.04.tar.gz"
           tar -xzf /tmp/wabt.tar.gz -C /tmp
