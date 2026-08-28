@@ -71,6 +71,23 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
+    @tools.tool(name="device.routes")
+    def device_routes(serial: str) -> dict[str, Any]:
+        """List the IPv4 routing table (/proc/net/route).
+
+        The device's network topology -- per interface, which destination/mask
+        matches and which gateway it exits through; the default route
+        (destination 0.0.0.0) names the gateway actually in use. The routing
+        half of network recon that pairs with device.connections and
+        device.arp. Answers with routes (each carrying iface, destination,
+        gateway, mask decoded to dotted IPv4, and the raw flags hex), count, and
+        has_more. /proc/net/route is world-readable so no root is needed; an
+        empty table is an honest result (no configured routes), not an error,
+        while a read that never returns the header is; the list is capped with
+        has_more.
+        """
+        return _dump(analysis.device_routes(serial))
+
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import socket
 import stat
 import threading
 import zipfile
@@ -40,6 +41,7 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_ROUTES = 512
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -174,6 +176,22 @@ def _device_shell(dev: Any, args: str | list[str], *, timeout: float = _ADB_SHEL
             raise AdbError("timeout", f"adb timed out after {timeout:g}s") from exc
         raise AdbError("backend_error", f"adb shell failed: {exc}") from exc
     return str(raw)
+
+
+def _hex_le_ipv4(token: str) -> str | None:
+    """Decode a /proc/net/route address (little-endian hex word) to dotted IPv4.
+
+    The kernel writes each 32-bit address in host (little-endian) byte order as
+    8 hex chars, so reversing the bytes before inet_ntop is the exact
+    conversion: 0101A8C0 -> 192.168.1.1, 00000000 -> 0.0.0.0.
+    """
+    try:
+        raw = bytes.fromhex(token)
+    except ValueError:
+        return None
+    if len(raw) != 4:
+        return None
+    return socket.inet_ntop(socket.AF_INET, raw[::-1])
 
 
 def _is_host_error_output(text: str) -> bool:
@@ -525,6 +543,58 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def routes(self, serial: str) -> JsonObject:
+        """List the IPv4 routing table from /proc/net/route.
+
+        The device's network topology: per interface, which destination/mask a
+        packet matches and which gateway it leaves through. The default route
+        (destination 0.0.0.0) names the gateway the device actually uses -- the
+        routing half of network recon that pairs with device.connections
+        (sockets) and device.arp (neighbours). /proc/net/route is
+        world-readable, so no root is needed.
+
+        Each entry carries iface, destination, gateway and mask decoded to
+        dotted IPv4 (the kernel stores them little-endian, reversed here for the
+        exact address), plus the raw flags hex. Read success is keyed off the
+        kernel's Destination header, so an empty table is an honest result -- a
+        device with no configured routes -- rather than an error, while a read
+        that never returns the header (denied, missing) is. The list is capped
+        with has_more.
+        """
+        dev = self._device(serial)
+        raw = _device_shell(dev, "cat /proc/net/route")
+        text = str(raw)
+        if "Destination" not in text:
+            raise AdbError(
+                "backend_error", "reading /proc/net/route failed", output=text[:800]
+            )
+        routes: list[JsonObject] = []
+        has_more = False
+        for line in text.splitlines():
+            if "Destination" in line:
+                continue
+            fields = line.split()
+            if len(fields) < 8:
+                continue
+            destination = _hex_le_ipv4(fields[1])
+            gateway = _hex_le_ipv4(fields[2])
+            mask = _hex_le_ipv4(fields[7])
+            if destination is None or gateway is None:
+                continue
+            if len(routes) >= _MAX_ROUTES:
+                has_more = True
+                break
+            routes.append(
+                {
+                    "iface": fields[0],
+                    "destination": destination,
+                    "gateway": gateway,
+                    "mask": mask,
+                    "flags": fields[3],
+                }
+            )
+        return {"routes": routes, "count": len(routes), "has_more": has_more}
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a
