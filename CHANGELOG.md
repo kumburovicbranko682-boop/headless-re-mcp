@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（wasm.info 的 objdump 文本被截断却不报大小,和同族文本工具不一致)
+
+- `wasm.info`(wasm-objdump)与 `wasm.wat`、`js.deobfuscate`/`beautify` 共用 `_bounded_output` 把工具文本封顶到 400 KB 并置
+  `truncated`,但唯独 objdump 以 `include_bytes=False` 调用,于是截断时它连一个大小信号都没有——调用方拿到半截 section dump
+  却不知道究竟被切掉多少。而它的同族 `wat`/`code` 都回带 `bytes`(截断前的完整字节数),radare2 的 raw 输出截断时也回带
+  `output_bytes`/`returned_bytes`,同是"截断了就说清楚切掉多少"的信号。现在把 `_bounded_output` 里的 `include_bytes` 去掉、
+  一律回带 `bytes`,让三个文本工具口径统一;objdump 截断时也能让调用方据 `bytes` 判断缺了多大一块。`wasm.info` 工具文档同步
+  写明 `bytes`。新增测试:code/wat/objdump 干净运行时 `bytes` 等于完整输出字节数、objdump 在 `_MAX_INLINE` 调小后 `truncated`
+  为真且 `bytes` 报完整大小、返回文本短于 `bytes`,以及 `wasm.info` 文档点名 `bytes`。纯附加字段,不改任何既有字段含义。
+
 ### 修复（frida.java.methods 报 has_more 却无 offset:声明方法超过一页的部分永远够不着)
 
 - `frida.java.methods` 是 frida 这条线上最后一个仍是"无游标 top-N"的列表读取:它向目标进程要 `limit+1` 个声明方法、

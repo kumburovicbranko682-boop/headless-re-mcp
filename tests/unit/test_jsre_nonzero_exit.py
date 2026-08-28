@@ -181,3 +181,71 @@ def test_docstrings_name_the_nonzero_exit_fields() -> None:
         doc = _tool_docstring(name)
         assert "exit_code" in doc
         assert "tool_failed" in doc
+
+
+def test_text_tools_report_the_full_output_size_as_bytes(tmp_path: Path) -> None:
+    """code / wat / objdump all carry bytes so truncated is actionable.
+
+    wasm-objdump once omitted bytes while its siblings reported it, so a caller
+    that read a truncated section dump had no idea how much was cut. The three
+    text tools now report the full pre-truncation size uniformly.
+    """
+    webcrack = tmp_path / "webcrack.exe"
+    webcrack.write_bytes(b"")
+    wat_tool = tmp_path / "wasm2wat.exe"
+    wat_tool.write_bytes(b"")
+    objdump_tool = tmp_path / "wasm-objdump.exe"
+    objdump_tool.write_bytes(b"")
+    js_src = tmp_path / "app.js"
+    js_src.write_text("x", encoding="utf-8")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+    body = "abc def ghi"  # 11 bytes of UTF-8
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        code = JsClient(webcrack).deobfuscate(js_src)
+        wat = WasmClient(wat_tool).wat(module)
+        objdump = WasmClient(objdump_tool).info(module)
+
+    assert code["bytes"] == 11 and code["truncated"] is False
+    assert wat["bytes"] == 11 and wat["truncated"] is False
+    # The field that regressed: objdump now reports its size like the others.
+    assert objdump["bytes"] == 11 and objdump["truncated"] is False
+
+
+def test_objdump_reports_full_bytes_even_when_the_text_is_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cut objdump dump still says how large it really was.
+
+    Without bytes a truncated section dump gave no scale at all; bytes is the
+    full pre-truncation size, so a caller learns how much is missing and the
+    returned text is shorter than that size.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    monkeypatch.setattr(mod, "_MAX_INLINE", 8)
+    objdump_tool = tmp_path / "wasm-objdump.exe"
+    objdump_tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    full = "S" * 40
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, full.encode("utf-8"), b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = mod.WasmClient(objdump_tool).info(module)
+
+    assert payload["truncated"] is True
+    assert payload["bytes"] == 40
+    assert len(payload["objdump"]) == 8
+    assert len(payload["objdump"]) < payload["bytes"]
+
+
+def test_wasm_info_docstring_names_bytes() -> None:
+    assert "bytes" in _tool_docstring("wasm.info")

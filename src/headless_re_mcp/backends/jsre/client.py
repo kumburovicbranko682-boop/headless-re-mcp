@@ -124,15 +124,18 @@ def _run(
     return stdout, stderr, int(completed.returncode)
 
 
-def _bounded_output(text: str, key: str, *, include_bytes: bool) -> JsonObject:
+def _bounded_output(text: str, key: str) -> JsonObject:
+    # bytes is the full pre-truncation size, so truncated is actionable: a caller
+    # that sees it cut learns how much it is missing. wasm-objdump once omitted
+    # it (include_bytes=False), leaving a truncated section dump with no scale at
+    # all while wasm2wat/webcrack and r2's raw output all report their size --
+    # the same "say how much when you cut" signal, so it is reported uniformly.
     payload = text.encode("utf-8", errors="replace")
-    result: JsonObject = {
+    return {
         key: payload[:_MAX_INLINE].decode("utf-8", errors="ignore"),
         "truncated": len(payload) > _MAX_INLINE,
+        "bytes": len(payload),
     }
-    if include_bytes:
-        result["bytes"] = len(payload)
-    return result
 
 
 def _note_nonzero_exit(result: JsonObject, *, code: int, stderr: str) -> JsonObject:
@@ -182,7 +185,7 @@ class JsClient:
                 "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
         return _note_nonzero_exit(
-            _bounded_output(stdout, "code", include_bytes=True), code=code, stderr=stderr
+            _bounded_output(stdout, "code"), code=code, stderr=stderr
         )
 
     def beautify(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
@@ -263,7 +266,7 @@ class WasmClient:
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
         return _note_nonzero_exit(
-            _bounded_output(stdout, "wat", include_bytes=True), code=code, stderr=stderr
+            _bounded_output(stdout, "wat"), code=code, stderr=stderr
         )
 
     def info(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
@@ -277,7 +280,7 @@ class WasmClient:
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
         return _note_nonzero_exit(
-            _bounded_output(stdout, "objdump", include_bytes=False), code=code, stderr=stderr
+            _bounded_output(stdout, "objdump"), code=code, stderr=stderr
         )
 
 
