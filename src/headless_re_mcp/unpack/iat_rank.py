@@ -292,6 +292,13 @@ def _merge_overlaps(candidates: list[JsonObject]) -> list[JsonObject]:
                     str(existing.get("kind") or ""),
                     str(item.get("kind") or ""),
                 }
+                # Carry each side's already-merged alt_kinds forward, or a third
+                # candidate overlapping the same range drops the kinds recorded
+                # by the earlier merge.
+                for src in (existing, item):
+                    previous = src.get("alt_kinds")
+                    if isinstance(previous, list):
+                        kinds.update(str(k) for k in previous)
                 winner = (
                     item
                     if float(item.get("rank_score") or 0)

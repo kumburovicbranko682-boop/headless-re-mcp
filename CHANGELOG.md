@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（iat_rank 合并 3+ 个重叠候选时丢失 alt_kinds）
+
+- `unpack/iat_rank.py` 的 `_merge_overlaps` 把重叠的扫描命中折叠进得分最高的幸存者，并在
+  `alt_kinds` 里记录被并入者的 kind。但每次合并只用当前两个候选的 `kind` 重建 `kinds`
+  集合（`{existing.kind, item.kind}`），当第三个候选再次重叠同一区间时，会覆盖掉上一次合并
+  写入 `existing["alt_kinds"]` 的 kind——于是三段及以上重叠时，早先并入者的 kind 被悄悄丢弃，
+  `best.alt_kinds` 少报，误导调用方对该 IAT 区间性质的判断。改法：合并前把 `existing` 与
+  `item` 双方已累积的 `alt_kinds` 一并并入 `kinds` 集合，保证多段重叠也能保留全部 kind。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
