@@ -42,6 +42,8 @@ _ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
 _MAX_INTENT_COMPONENTS = 500
 _MAX_INTENT_ITEMS = 100
 _MAX_METHOD_OVERLOADS = 200
+_MAX_CLASS_FIELDS = 500
+_MAX_INTERFACES = 100
 
 
 class ApkError(RuntimeError):
@@ -692,6 +694,91 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    def class_info(self, path: Path, class_name: str) -> JsonObject:
+        """Report a class's superclass, interfaces, access flags and fields.
+
+        methods/method_info cover the behaviour; this covers the shape: what the
+        class extends and implements (a class extending a known base or
+        implementing a Parcelable/Serializable is a fast structural tell), its
+        declared fields with types, and its method count.
+        """
+        parsed = self._parsed(path)
+        target = class_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "class_name is required")
+
+        smali = _dotted_to_smali(target)
+        found = None
+        for klass in parsed.analysis.get_classes():
+            if klass.name == target or klass.name == smali:
+                found = klass
+                break
+        if found is None:
+            raise ApkError("not_found", "class not found", class_name=class_name)
+
+        superclass = getattr(found, "extends", None)
+        interfaces_raw = getattr(found, "implements", None) or []
+        interfaces: list[str] = []
+        interfaces_truncated = False
+        for iface in interfaces_raw:
+            if len(interfaces) >= _MAX_INTERFACES:
+                interfaces_truncated = True
+                break
+            interfaces.append(_dalvik_type_human(str(iface)))
+
+        access = ""
+        try:
+            vm_class = found.get_vm_class()
+            access = str(vm_class.get_access_flags_string()) if vm_class is not None else ""
+        except Exception:  # noqa: BLE001 - external/synthetic classes lack a vm class
+            access = ""
+
+        fields: list[JsonObject] = []
+        fields_truncated = False
+        try:
+            field_iter = list(found.get_fields())
+        except Exception:  # noqa: BLE001
+            field_iter = []
+        for fld in field_iter:
+            if len(fields) >= _MAX_CLASS_FIELDS:
+                fields_truncated = True
+                break
+            try:
+                encoded = fld.get_field()
+                fname = str(encoded.get_name())
+                descriptor = str(encoded.get_descriptor())
+                faccess = str(encoded.get_access_flags_string())
+            except Exception:  # noqa: BLE001
+                continue
+            field_entry: JsonObject = {
+                "name": fname,
+                "type": _dalvik_type_human(descriptor),
+                "descriptor": descriptor,
+                "access": faccess,
+            }
+            field_entry.update(_decode_field_access(faccess))
+            fields.append(field_entry)
+
+        try:
+            method_count = int(found.get_nb_methods())
+        except Exception:  # noqa: BLE001
+            method_count = 0
+
+        result: JsonObject = {
+            "class_name": found.name,
+            "superclass": _dalvik_type_human(str(superclass)) if superclass else None,
+            "interfaces": interfaces,
+            "interfaces_truncated": interfaces_truncated,
+            "access": access,
+            "fields": fields,
+            "field_count": len(fields),
+            "fields_truncated": fields_truncated,
+            "method_count": method_count,
+            "external": bool(found.is_external()),
+        }
+        result.update(_decode_class_access(access))
+        return result
+
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
         parsed = self._parsed(path)
         seen: set[str] = set()
@@ -855,6 +942,53 @@ def _parse_dalvik_proto(proto: str) -> JsonObject:
     result["return_type"] = return_type
     result["parsed"] = True
     return result
+
+
+def _dalvik_type_human(descriptor: str) -> str:
+    """Render one Dalvik type descriptor as a human type, or echo it on failure."""
+    human, _ = _read_dalvik_type(descriptor or "", 0)
+    return human if human is not None else (descriptor or "")
+
+
+def _decode_class_access(access: str) -> JsonObject:
+    """Decode a class's androguard access-flag string into booleans."""
+    tokens = (access or "").split()
+    flags = set(tokens)
+
+    def has(token: str) -> bool:
+        return token in flags
+
+    return {
+        "flags": tokens,
+        "is_public": has("public"),
+        "is_final": has("final"),
+        "is_abstract": has("abstract"),
+        "is_interface": has("interface"),
+        "is_enum": has("enum"),
+        "is_annotation": has("annotation"),
+        "is_synthetic": has("synthetic"),
+    }
+
+
+def _decode_field_access(access: str) -> JsonObject:
+    """Decode a field's androguard access-flag string into booleans."""
+    tokens = (access or "").split()
+    flags = set(tokens)
+
+    def has(token: str) -> bool:
+        return token in flags
+
+    return {
+        "is_public": has("public"),
+        "is_private": has("private"),
+        "is_protected": has("protected"),
+        "is_static": has("static"),
+        "is_final": has("final"),
+        "is_volatile": has("volatile"),
+        "is_transient": has("transient"),
+        "is_enum": has("enum"),
+        "is_synthetic": has("synthetic"),
+    }
 
 
 def _decode_method_access(access: str) -> JsonObject:

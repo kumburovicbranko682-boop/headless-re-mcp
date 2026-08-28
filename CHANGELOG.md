@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **289（171 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **290（172 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -455,6 +455,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   与布尔 is_public/is_private/is_protected/is_static/is_final/is_synchronized/is_native/is_abstract/
   is_synthetic/is_varargs/is_constructor,外加 `has_code`(native 或 abstract 时为 false)。类或方法找
   不到报 `not_found`;会话不是 APK 报 `target_mismatch`。
+- 新增 `apk.class_info`:报一个类的父类、接口、访问标志与字段。`apk.methods`/`apk.method_info` 管行为,
+  这个管形状(类名 dotted 或 Lsmali/ 皆可):继承已知基类、或实现 Parcelable/Serializable/Runnable
+  是很快的结构线索,而字段名常常直接点出类里握着的 key、URL 与配置。回 `class_name`、`superclass`
+  (人类可读类型,或 null)、`interfaces`(人类可读类型)、`interfaces_truncated`、`access`(原始标志串)、
+  类布尔 `flags`/is_public/is_final/is_abstract/is_interface/is_enum/is_annotation/is_synthetic、
+  `fields`、`field_count`、`fields_truncated`、`method_count` 与 `external`(引用但未定义的类型时为 true,
+  其字段与 method_count 读作空)。每个 fields 行带 `name`、`type`(人类可读,如 java.lang.String、byte[])、
+  `descriptor`(原始)、`access` 与字段布尔 is_public/is_private/is_protected/is_static/is_final/
+  is_volatile/is_transient/is_enum/is_synthetic。类找不到报 `not_found`;会话不是 APK 报 `target_mismatch`。
 
 ### 新增（Android 清单元数据）
 

@@ -268,6 +268,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "apk.classes",
         "apk.methods",
         "apk.method_info",
+        "apk.class_info",
         "apk.strings",
         "apk.xrefs",
         "apk.decompile",

@@ -217,6 +217,34 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_method_info(session_id, class_name, method_name))
 
+    @tools.tool(name="apk.class_info")
+    def apk_class_info(
+        session_id: str,
+        class_name: str,
+    ) -> dict[str, Any]:
+        """Report a class's superclass, interfaces, access flags and fields.
+
+        apk.methods/apk.method_info cover behaviour; this covers shape (class
+        dotted or Lsmali/form). A class extending a known base or implementing
+        Parcelable/Serializable/Runnable is a fast structural tell, and the
+        declared fields often name the keys, URLs and config a class holds.
+
+        Answers with class_name, superclass (human type, or null for
+        java.lang.Object-less roots), interfaces (human types),
+        interfaces_truncated, access (raw flag string), the class booleans
+        flags/is_public/is_final/is_abstract/is_interface/is_enum/is_annotation/
+        is_synthetic, fields, field_count, fields_truncated, method_count and
+        external (true when the class is a referenced-but-not-defined type, so
+        its fields and method_count read as empty). Each fields row carries name,
+        type (human, e.g. java.lang.String, byte[]), descriptor (raw), access and
+        the field booleans is_public/is_private/is_protected/is_static/is_final/
+        is_volatile/is_transient/is_enum/is_synthetic.
+
+        A missing class is reported not_found; a session that is not an APK is
+        refused target_mismatch.
+        """
+        return _dump(analysis.apk_class_info(session_id, class_name))
+
     @tools.tool(name="apk.strings")
     def apk_strings(
         session_id: str,
