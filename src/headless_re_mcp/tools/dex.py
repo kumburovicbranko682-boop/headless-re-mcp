@@ -45,4 +45,26 @@ def build_dex_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.dex_summary(path, offset=offset, limit=limit))
 
+    @tools.tool(name="dex.classes")
+    def dex_classes(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List the classes in a standalone Dalvik executable (.dex) with the stdlib.
+
+        Mirrors apk.classes for a lone .dex -- one dropped by malware, loaded at
+        runtime, or pulled out of an APK -- with no androguard and no CLI. It
+        walks the class-definition table and returns the class inventory an
+        analyst reads first.
+
+        Answers with classes (each: descriptor like Lcom/example/Foo;, dotted
+        name, superclass, access_flags such as public/final/abstract/interface,
+        access_flags_raw, and source_file) plus classes_count, classes_total,
+        offset, limit and has_more so a filled page is not read as the whole
+        table, and warnings for any table index that left the file. A file that
+        is not a DEX is invalid_params, one over 64 MiB too_large.
+        """
+        return _dump(analysis.dex_classes(path, offset=offset, limit=limit))
+
     return tools.bindings

@@ -14,7 +14,11 @@ from typing import Any
 
 from headless_re_mcp.backends.apk import ApkClient, ApkError
 from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
-from headless_re_mcp.backends.common.dex import DexParseError, summarize_dex
+from headless_re_mcp.backends.common.dex import (
+    DexParseError,
+    list_dex_classes,
+    summarize_dex,
+)
 from headless_re_mcp.backends.jadx import JadxClient, JadxError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
@@ -106,6 +110,37 @@ class ApkAnalysisMixin:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def _read_dex_bytes(self, path: str) -> bytes:
+        """A standalone .dex read into memory under the size cap, or an ApkError.
+
+        Shared by dex.summary and dex.classes so both refuse a missing file
+        (not_found), an unreadable one (backend_error) and one over the 64 MiB
+        cap (too_large) identically, before any parsing is attempted.
+        """
+        resolved = Path(path).expanduser()
+        if not resolved.is_file():
+            raise ApkError("not_found", "dex file not found", path=str(resolved))
+        try:
+            size = int(resolved.stat().st_size)
+        except OSError as exc:
+            raise ApkError(
+                "backend_error", f"dex unreadable: {exc}", path=str(resolved)
+            ) from exc
+        if size > DEX_SUMMARY_MAX_BYTES:
+            raise ApkError(
+                "too_large",
+                f"dex is {size} bytes, over the {DEX_SUMMARY_MAX_BYTES}-byte limit",
+                path=str(resolved),
+                size=size,
+                cap=DEX_SUMMARY_MAX_BYTES,
+            )
+        try:
+            return resolved.read_bytes()
+        except OSError as exc:
+            raise ApkError(
+                "backend_error", f"dex unreadable: {exc}", path=str(resolved)
+            ) from exc
+
     def dex_summary(self, path: str, *, offset: int = 0, limit: int = 200) -> Result[JsonObject]:
         """Summarise a standalone .dex with the stdlib -- no androguard needed.
 
@@ -117,25 +152,28 @@ class ApkAnalysisMixin:
         invalid_params, one over the 64 MiB cap too_large.
         """
         try:
-            resolved = Path(path).expanduser()
-            if not resolved.is_file():
-                raise ApkError("not_found", "dex file not found", path=str(resolved))
-            try:
-                size = int(resolved.stat().st_size)
-            except OSError as exc:
-                raise ApkError(
-                    "backend_error", f"dex unreadable: {exc}", path=str(resolved)
-                ) from exc
-            if size > DEX_SUMMARY_MAX_BYTES:
-                raise ApkError(
-                    "too_large",
-                    f"dex is {size} bytes, over the {DEX_SUMMARY_MAX_BYTES}-byte limit",
-                    path=str(resolved),
-                    size=size,
-                    cap=DEX_SUMMARY_MAX_BYTES,
-                )
-            summary = summarize_dex(resolved.read_bytes(), offset=offset, limit=limit)
+            summary = summarize_dex(self._read_dex_bytes(path), offset=offset, limit=limit)
             return _success(summary, backend="dex")
+        except DexParseError as exc:
+            return _failure(_as_rpc(ApkError("invalid_params", str(exc))))
+        except ApkError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def dex_classes(self, path: str, *, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
+        """List a standalone .dex's classes with the stdlib -- no androguard needed.
+
+        Mirrors apk.classes for a lone .dex: it walks the class-definition table
+        and returns, per class, the type descriptor and dotted name, the
+        superclass, the named access flags and the source file, honestly
+        paginated (classes_total / has_more). A corrupt table index yields a
+        warning and a partial row, not a fault. A file that is not a DEX is
+        invalid_params, one over the 64 MiB cap too_large.
+        """
+        try:
+            listing = list_dex_classes(self._read_dex_bytes(path), offset=offset, limit=limit)
+            return _success(listing, backend="dex")
         except DexParseError as exc:
             return _failure(_as_rpc(ApkError("invalid_params", str(exc))))
         except ApkError as exc:
