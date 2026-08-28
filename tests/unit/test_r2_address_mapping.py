@@ -14,6 +14,8 @@ import pytest
 import headless_re_mcp.backends.r2.client as r2_client
 from headless_re_mcp.backends.common.bounded_run import Completed
 from headless_re_mcp.backends.r2.mapping import (
+    _MAX_HEADER,
+    _PT_LOAD,
     address_dict,
     elf_preferred_base,
     enrich_r2_payload,
@@ -157,6 +159,111 @@ def test_elf_preferred_base_degrades_on_a_non_elf(tmp_path: Path) -> None:
     plain.write_bytes(b"not an elf at all" * 8)
     assert elf_preferred_base(plain) == (None, None)
     assert elf_preferred_base(tmp_path / "missing.elf") == (None, None)
+
+
+def _elf_with_program_headers(
+    tmp_path: Path,
+    phdrs: list[tuple[int, int]],
+    *,
+    name: str = "multi.elf",
+    machine: int = 62,
+    declared_phnum: int | None = None,
+    phentsize: int = 56,
+) -> Path:
+    """A 64-bit little-endian ELF with an arbitrary program header table.
+
+    ``_minimal_elf`` writes exactly one PT_LOAD header, so it cannot reach the
+    table's own edges. Each ``(p_type, p_vaddr)`` here becomes one 64-bit
+    program header; ``declared_phnum`` overrides ``e_phnum`` so the header can
+    claim more entries than the bytes actually hold (a truncated table), and
+    ``phentsize`` overrides ``e_phentsize`` so the declared table size can be
+    driven past the sanity ceiling.
+    """
+    order = "little"
+    phoff = 64
+    vaddr_off = 16
+    count = len(phdrs)
+    data = bytearray(phoff + count * phentsize)
+    data[0:4] = b"\x7fELF"
+    data[4] = 2  # 64-bit
+    data[5] = 1  # little-endian
+    data[6] = 1
+    data[0x10:0x12] = (2).to_bytes(2, order)  # e_type = ET_EXEC
+    data[0x12:0x14] = machine.to_bytes(2, order)
+    data[0x20:0x28] = phoff.to_bytes(8, order)
+    data[0x36:0x38] = phentsize.to_bytes(2, order)
+    data[0x38:0x3A] = (declared_phnum if declared_phnum is not None else count).to_bytes(
+        2, order
+    )
+    for index, (p_type, p_vaddr) in enumerate(phdrs):
+        entry = phoff + index * phentsize
+        data[entry : entry + 4] = p_type.to_bytes(4, order)
+        data[entry + vaddr_off : entry + vaddr_off + 8] = p_vaddr.to_bytes(8, order)
+    path = tmp_path / name
+    path.write_bytes(bytes(data))
+    return path
+
+
+def test_elf_preferred_base_skips_non_load_and_keeps_the_lowest_of_several_loads(
+    tmp_path: Path,
+) -> None:
+    """The base is the lowest PT_LOAD vaddr; non-load segments are ignored.
+
+    A real ELF interleaves PT_INTERP/PT_DYNAMIC/PT_PHDR with the PT_LOADs and
+    lists the load segments in ascending vaddr, so the reader has to skip the
+    non-load types and, having taken the first (lowest) load as the base, not
+    let a later higher load overwrite it. A single-segment fixture never
+    exercises either path.
+    """
+    elf = _elf_with_program_headers(
+        tmp_path,
+        # PT_INTERP (3) is skipped; the first PT_LOAD wins and the higher second
+        # PT_LOAD leaves the base unchanged.
+        [(3, 0x1000), (_PT_LOAD, 0x400000), (_PT_LOAD, 0x401000)],
+    )
+    assert elf_preferred_base(elf) == (Architecture.X64, 0x400000)
+
+
+def test_elf_preferred_base_stops_at_a_truncated_program_header(tmp_path: Path) -> None:
+    """A phnum that outruns the file stops mid-entry, not reading a partial vaddr.
+
+    A corrupt e_phnum or a truncated upload can leave the last program header cut
+    off partway through. The reader must break at the first entry it cannot fully
+    slice -- reading a partial entry's leftover bytes as a p_vaddr would invent a
+    bogus (here zero) base and discard the real one -- and return the base from
+    the whole entries it did read.
+    """
+    elf = _elf_with_program_headers(
+        tmp_path,
+        [(_PT_LOAD, 0x400000), (_PT_LOAD, 0x400000)],
+        name="trunc.elf",
+    )
+    # Keep the whole first header (bytes 64..120) and only the p_type field of
+    # the second (120..124), cutting it off before its p_vaddr: a partial entry
+    # whose leftover 4 bytes still read as PT_LOAD.
+    raw = elf.read_bytes()
+    elf.write_bytes(raw[:124])
+    assert elf_preferred_base(elf) == (Architecture.X64, 0x400000)
+
+
+def test_elf_preferred_base_gives_up_on_a_program_header_table_over_the_ceiling(
+    tmp_path: Path,
+) -> None:
+    """A PN_XNUM-sized declared table is bounded, not read into memory.
+
+    e_phnum can be the PN_XNUM sentinel 0xffff (the real count lives in the
+    section header) or simply corrupt; either way phentsize*phnum runs past the
+    header ceiling. The reader must give up with the arch it already knows and a
+    null base rather than trying to read a multi-megabyte table.
+    """
+    # PN_XNUM at a normal entry size must clear the ceiling for this test to bite.
+    assert _MAX_HEADER < 56 * 0xFFFF
+    elf = _elf_with_program_headers(
+        tmp_path,
+        [(_PT_LOAD, 0x400000)],
+        declared_phnum=0xFFFF,
+    )
+    assert elf_preferred_base(elf) == (Architecture.X64, None)
 
 
 def test_enrich_maps_elf_addresses_through_the_load_base(tmp_path: Path) -> None:
