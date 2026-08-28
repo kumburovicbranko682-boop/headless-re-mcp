@@ -6,6 +6,7 @@ happy paths (which need a real device and live in the integration gates).
 
 from __future__ import annotations
 
+import sys
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -71,10 +72,17 @@ class TestAdbArgumentValidation:
     def test_valid_package_names_pass(self, package: str) -> None:
         assert _check_package(package) == package
 
-    def test_missing_adbutils_degrades_instead_of_raising_import_error(self) -> None:
+    def test_missing_adbutils_degrades_instead_of_raising_import_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Force adbutils absent so the degradation path is exercised even when
+        # the [android] extra is installed: a None entry in sys.modules makes the
+        # backend's lazy ``import adbutils`` raise ImportError. Relying on the
+        # ambient environment skipped this whole path in a full install, so the
+        # "degrade, don't raise ImportError" contract went unasserted there.
+        monkeypatch.setitem(sys.modules, "adbutils", None)
         backend = AdbBackend()
-        if backend.available:
-            pytest.skip("adbutils installed — degradation path not exercised (skip != pass)")
+        assert backend.available is False
         with pytest.raises(AdbError) as info:
             backend.list_devices()
         assert info.value.code == "capability_unavailable"

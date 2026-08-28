@@ -454,12 +454,17 @@ def test_instance_run_falls_back_when_the_constructor_signature_differs(
     assert calls["dumpmaster"] == 2
 
 
-def test_instance_run_records_an_import_failure() -> None:
+def test_instance_run_records_an_import_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """With mitmproxy absent, the run thread records the import error."""
-    assert "mitmproxy" not in sys.modules
+    # Pin absence: a None entry makes _run's `from mitmproxy import options`
+    # raise ImportError even when the [proxy] extra is installed. The old
+    # `assert "mitmproxy" not in sys.modules` guard hard-failed the moment
+    # anything imported mitmproxy (the extra itself, or a sibling test that
+    # injected a fake), instead of covering the import-failure arm it names.
+    monkeypatch.setitem(sys.modules, "mitmproxy", None)
     inst = _free_instance()
     _run_in_thread(inst)
-    assert inst._error is not None
+    assert isinstance(inst._error, ImportError)
 
 
 # --------------------------------------------------------------------------

@@ -411,8 +411,13 @@ def test_instance_start_refuses_an_unbindable_port(monkeypatch: pytest.MonkeyPat
 def test_instance_start_reports_a_thread_that_fails_to_launch_mitmproxy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # mitmproxy is absent, so the real _run raises ImportError, sets _error, and
-    # start() surfaces it as backend_error -- exercising _run's except/finally.
+    # Pin mitmproxy absent so the real _run's `from mitmproxy import options`
+    # raises ImportError, sets _error, and start() surfaces it as backend_error
+    # -- exercising _run's except/finally. Relying on ambient absence let this
+    # test, once the [proxy] extra was installed, run _run for real: with
+    # _port_bindable forced True it could bind an actual DumpMaster on 8080
+    # instead of taking the import-failure arm.
+    monkeypatch.setitem(sys.modules, "mitmproxy", None)
     monkeypatch.setattr(proxy_client, "_port_accepts", lambda host, port, timeout=0.25: False)
     monkeypatch.setattr(proxy_client, "_port_bindable", lambda host, port: True)
     inst = _ProxyInstance("127.0.0.1", 8080)
@@ -604,7 +609,13 @@ def test_instance_stop_drains_while_the_proxy_thread_is_alive() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_backend_check_available_reports_and_caches() -> None:
+def test_backend_check_available_reports_and_caches(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Pin mitmproxy absent rather than assuming CI lacks it: a None entry in
+    # sys.modules makes _check_available's `import mitmproxy` raise, so the
+    # capability_unavailable branch runs even with the [proxy] extra installed.
+    # Without this the first assertion silently DID NOT RAISE once mitmproxy was
+    # present -- and start() would have gone on to attempt a real bring-up.
+    monkeypatch.setitem(sys.modules, "mitmproxy", None)
     backend = ProxyBackend()
     with pytest.raises(ProxyError) as exc:
         backend.start("s")  # mitmproxy absent -> capability_unavailable

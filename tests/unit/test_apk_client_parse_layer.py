@@ -68,6 +68,20 @@ def _install_androguard(
     monkeypatch.setitem(sys.modules, "androguard.misc", misc)
 
 
+def _force_androguard_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the client's lazy ``import androguard`` fail regardless of install state.
+
+    A ``None`` entry in ``sys.modules`` makes ``import androguard`` raise
+    ImportError -- Python's documented "known absent" marker. Without it these
+    degradation tests only held when androguard happened not to be installed:
+    true under CI's ``.[test,dev,web]`` but not with the ``[android]`` extra, so
+    running the suite on a machine with android deps present flipped them from
+    pass to failure. Pinning absence keeps the test measuring the degradation
+    path everywhere instead of drifting with ambient install state.
+    """
+    monkeypatch.setitem(sys.modules, "androguard", None)
+
+
 def _apk_file(tmp_path: Path, name: str = "app.apk") -> Path:
     path = tmp_path / name
     path.write_bytes(b"PK\x03\x04")
@@ -82,15 +96,18 @@ def test_available_is_true_when_androguard_imports(monkeypatch: pytest.MonkeyPat
     assert ApkClient().available is True
 
 
-def test_available_is_false_when_androguard_is_absent() -> None:
-    # androguard is not installed in this environment; no fake is set up here.
+def test_available_is_false_when_androguard_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    _force_androguard_absent(monkeypatch)
     assert ApkClient().available is False
 
 
 # --- _require ----------------------------------------------------------------
 
 
-def test_require_reports_capability_unavailable_without_androguard(tmp_path: Path) -> None:
+def test_require_reports_capability_unavailable_without_androguard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_androguard_absent(monkeypatch)
     client = ApkClient()  # available False
     with pytest.raises(ApkError) as caught:
         client.open(_apk_file(tmp_path))

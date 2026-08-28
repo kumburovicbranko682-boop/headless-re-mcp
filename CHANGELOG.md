@@ -5,6 +5,29 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（可选依赖缺席弧钉死 sys.modules，不再信赖宿主环境）
+
+- 五个文件里共七个"可选依赖缺席时优雅降级"的测试此前直接实例化客户端就断言
+  不可用（或用 `assert "mitmproxy" not in sys.modules` 之类的前置守卫），语义是
+  "宿主恰好没装这个包"。在装了 `[android]`/`[proxy]` extra 的机器上（本轮真机
+  复现：androguard 4.1.4 在场时 `test_apk_client_parse_layer.py` 两例与
+  `test_apk_client_paths.py` 一例当场翻车，客户端 available=True、报
+  backend_error 而非 capability_unavailable），这些测试测的是环境而不是代码。
+- 改法统一为 `monkeypatch.setitem(sys.modules, "<dep>", None)`：None 条目让客户端
+  懒 `import` 抛 ImportError——这正是缺席降级弧的触发条件——且 monkeypatch 在
+  用例结束后自动还原，不污染同进程其他测试。覆盖面：
+  `test_apk_client_parse_layer.py`（androguard，两例）、`test_apk_client_paths.py`
+  （androguard，一例）、`test_android_backends.py`（adbutils，一例）、
+  `test_proxy_client_guard_paths.py`（mitmproxy，一例，并去掉硬失败的前置
+  assert）、`test_proxy_client_paths.py`（mitmproxy，两例）。
+- 验证：装齐 `[test,dev,web,android]` + mitmproxy 后全量单测通过（修前 3 失败），
+  不装 extras 的环境行为不变（钉 None 与真缺席走同一条 ImportError 弧）。
+- 本条整合并取代六个内容重叠的历史分支（fix-apk-parse-layer-env-assumption /
+  force-optional-dep-absent-tests / tests-force-optional-dep-absence /
+  apk-proxy-paths-force-dep-absence / nonpe-unit-hardening /
+  pin-androguard-absence-in-apk-tests，均为 -4586 系），它们对同一批测试做了
+  语义相同的修改，只保留这一份以免合并互相冲突。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
