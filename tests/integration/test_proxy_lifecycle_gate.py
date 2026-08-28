@@ -518,6 +518,84 @@ def test_proxy_search_finds_content_in_a_live_capture(tmp_path: Path) -> None:
         backend.close_all()
 
 
+def _b64url_json(obj: dict[str, Any]) -> str:
+    raw = json.dumps(obj, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+@pytest.mark.integration
+def test_proxy_secrets_extracts_credentials_from_a_live_capture(tmp_path: Path) -> None:
+    """proxy.secrets must enumerate credentials from flows mitmproxy recorded.
+
+    The unit tests pin the extraction over a hand-built recorder; this proves it
+    holds over a real capture. Route one GET carrying an Authorization bearer
+    (a JWT), an X-API-Key header, a request Cookie and a secret query param
+    through the running proxy; the origin answers with a Set-Cookie. Then assert
+    proxy.secrets recovers all five categories -- decoding the JWT's issuer,
+    flagging the session cookies, reading the Set-Cookie's HttpOnly attribute and
+    redacting values until reveal is set. skip != pass without mitmproxy.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy secrets Gate not run (skip != pass)")
+    jwt = ".".join(
+        (
+            _b64url_json({"alg": "HS256", "typ": "JWT"}),
+            _b64url_json({"iss": "idp-9449", "exp": 2000000000}),
+            "c2ln",
+        )
+    )
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    backend.start("secrets", host="127.0.0.1", port=proxy_port)
+    try:
+        with _origin_site() as origin:
+            handler = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
+            opener = urllib.request.build_opener(handler)
+            request = urllib.request.Request(
+                f"{origin}/api/data?access_token=qtoken-9449",
+                headers={
+                    "Authorization": f"Bearer {jwt}",
+                    "X-API-Key": "apikey-9449-secret",
+                    "Cookie": "sid=reqsess-9449",
+                },
+            )
+            with opener.open(request, timeout=15.0) as response:
+                response.read()
+
+            _poll(
+                lambda: backend.flows("secrets", limit=100),
+                lambda r: r["captured"] >= 1,
+            )
+
+            out = backend.secrets("secrets")
+            by_key = {(s["kind"], s["name"]): s for s in out["secrets"]}
+            # Authorization bearer, with the JWT decoded to its issuer.
+            auth = by_key[("authorization", "Authorization")]
+            assert auth["scheme"] == "Bearer", auth
+            assert auth["jwt"]["claims"]["iss"] == "idp-9449", auth
+            # The API-key header (urllib normalises the on-wire name casing).
+            assert ("api_key_header", "X-Api-Key") in by_key, by_key
+            # The request cookie, session-flagged by its name.
+            assert by_key[("cookie", "sid")]["session"] is True, by_key
+            # The response Set-Cookie the origin issued, with its HttpOnly attribute.
+            setck = by_key[("set_cookie", _ORIGIN_COOKIE_NAME)]
+            assert setck["location"] == "response", setck
+            assert setck["cookie_attributes"].get("httponly") is True, setck
+            # The secret query parameter.
+            assert ("query_param", "access_token") in by_key, by_key
+            # Values are redacted by default; reveal returns the real token.
+            assert by_key[("query_param", "access_token")]["value"] != "qtoken-9449"
+            revealed = backend.secrets("secrets", reveal=True)
+            rv = {(s["kind"], s["name"]): s for s in revealed["secrets"]}
+            assert rv[("query_param", "access_token")]["value"] == "qtoken-9449", rv
+            # The kind filter narrows to a single category.
+            only_auth = backend.secrets("secrets", kind="authorization")
+            assert {s["kind"] for s in only_auth["secrets"]} == {"authorization"}, only_auth
+            assert only_auth["kind"] == "authorization", only_auth
+    finally:
+        backend.close_all()
+
+
 @pytest.mark.integration
 def test_proxy_export_har_writes_only_the_filtered_subset(tmp_path: Path) -> None:
     """HAR export must be able to write just the flows a filter selects.
