@@ -73,8 +73,38 @@ class _ExtendedLimits(ctypes.Structure):
     ]
 
 
+def _configure_prototypes(kernel32: Any) -> None:
+    """Pin argument and return widths so 64-bit HANDLEs are not truncated.
+
+    A WinDLL function defaults to a 32-bit ``c_int`` return and marshals int
+    arguments the same width. A HANDLE is pointer-width, so on 64-bit Windows
+    CreateJobObjectW/OpenProcess would hand back a truncated handle and passing
+    it on to Assign/SetInformation/CloseHandle would push a 32-bit value into a
+    64-bit register. The job then binds KILL_ON_JOB_CLOSE to the wrong handle or
+    to nothing -- the net is quietly missing, exactly the failure this module
+    exists to make loud. Declaring the prototypes keeps every handle full width.
+    """
+    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        wintypes.INT,
+        ctypes.POINTER(_ExtendedLimits),
+        wintypes.DWORD,
+    ]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+
 def _kernel32() -> Any:
-    return ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _configure_prototypes(kernel32)
+    return kernel32
 
 
 def _ensure_job() -> int | None:
