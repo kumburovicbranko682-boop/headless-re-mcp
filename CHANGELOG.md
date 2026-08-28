@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **283（165 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **284（166 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -294,6 +294,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **`wasm.summary` 给结构、`wasm.names` 给符号，唯独读不到模块的内容——rodata 里的 URL、报错文案、格式串、内嵌 key 没有工具能捞**。
+  这些常量字符串是 wasm 逆向 triage 最先 grep 的东西，都住在 data 段，但此前要么装 wabt 跑 `wasm.wat` 在满屏文本里翻、要么无从下手。
+  新增只读工具 `wasm.strings`：同样在进程内解析（不调 wabt），把 data（id 11）段当二进制做 `strings`——扫出 ≥`min_length` 的可打印
+  ASCII（0x20–0x7e）连续段，按模块内偏移升序返回。答复带 `strings`（每行 `{offset（模块绝对字节偏移）, text, size}`，单段超文本上限时置
+  `text_truncated`）、`count`/`total`/`offset`/`has_more`、`has_data_section`，以及段内字符串超采集上限时的 `scan_capped`。没有 data 段
+  的模块 `has_data_section` 为 false、`strings` 为空——这是答案而非报错。`min_length` 默认 4（像 `strings` 一样把二进制噪声滤掉），调高可
+  在大模块上进一步降噪。`name_filter` 对文本做大小写不敏感子串匹配（data 字符串是文案/URL 而非符号）、在分页前应用，故 `total` 是命中数——
+  在上千条里找 "https" 或某 api host 的办法。于是 `wasm.summary`（结构）/`wasm.names`（符号）/`wasm.strings`（内容）凑齐了免 wabt 的
+  三件套。非 wasm 文件 `invalid_params`、超 16 MiB `too_large`。只读，工具总数 283→284（166 只读 / 118 写）。
 - **`wasm.summary` 给出的都是裸下标（导出下标 3、`start_function` 3），没有名字，逆向时得对着 WAT 反查**。wasm 模块常带一个
   名为 `name` 的 custom 段，把函数下标映射到可读名字（emscripten `-g`、debug/dev 构建都会保留），这是「func 42」和
   「`_ZN4core...`」之间的差别，也是 wasm 逆向在拿到导入/导出之后最想要的一样东西。新增只读工具 `wasm.names`：同样在进程内解析

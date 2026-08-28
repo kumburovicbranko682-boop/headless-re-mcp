@@ -19,6 +19,7 @@ raises WasmParseError rather than looping, over-reading, or over-allocating.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from contextlib import suppress
 from typing import Any
@@ -60,6 +61,17 @@ _MAX_LEB_BYTES = 10
 # real module names one entry per function; a hostile name section could declare
 # a huge namemap, so bound what is materialised (scan_capped when hit).
 _MAX_NAMES_COLLECT = 50000
+# Printable strings pulled from the data section before the scan stops. A real
+# module's rodata holds thousands; bound what is materialised (scan_capped when
+# hit) so an all-data module cannot grow the answer without bound.
+_MAX_DATA_STRINGS_COLLECT = 100000
+# One extracted string's on-disk run can be an embedded JSON/base64 blob; clip
+# the returned text (size still reports the full run) so one string cannot bloat
+# the page.
+_MAX_STRING_TEXT = 4096
+# A caller-supplied minimum run length is clamped to this so a value of 0 does
+# not turn every byte into a "string".
+_MIN_STRING_LEN_MAX = 256
 
 
 class WasmParseError(ValueError):
@@ -278,6 +290,147 @@ def _parse_namemap(
             break
         collected.append({"index": index, "name": name})
     return collected, capped
+
+
+def _skip_leb(data: bytes, pos: int) -> int:
+    """Advance past one LEB128 integer (the continuation scheme is sign-agnostic)."""
+    read = 0
+    while pos < len(data):
+        byte = data[pos]
+        pos += 1
+        read += 1
+        if not byte & 0x80:
+            return pos
+        if read >= _MAX_LEB_BYTES:
+            raise WasmParseError("LEB128 integer too long")
+    raise WasmParseError("truncated LEB128 integer")
+
+
+def _skip_const_expr(data: bytes, pos: int, end: int) -> int:
+    """Advance past a data segment's offset init-expr, up to and past its end (0x0b).
+
+    Data offsets are constant expressions -- in practice a single i32/i64.const,
+    a global.get, or a ref.* -- terminated by the end opcode. Only those forms
+    are modelled; anything else raises so the caller can stop rather than
+    misread the byte stream.
+    """
+    while pos < end:
+        op = data[pos]
+        pos += 1
+        if op == 0x0B:  # end
+            return pos
+        if op in (0x41, 0x42):  # i32.const / i64.const: signed LEB operand
+            pos = _skip_leb(data, pos)
+        elif op == 0x43:  # f32.const: 4 raw bytes
+            pos += 4
+        elif op == 0x44:  # f64.const: 8 raw bytes
+            pos += 8
+        elif op in (0x23, 0xD2):  # global.get / ref.func: index LEB operand
+            pos = _skip_leb(data, pos)
+        elif op == 0xD0:  # ref.null: a reftype byte
+            pos += 1
+        else:
+            raise WasmParseError(f"unsupported const-expr opcode {op:#x}")
+    raise WasmParseError("const expr not terminated")
+
+
+def _collect_runs(
+    payload: bytes,
+    base: int,
+    pattern: re.Pattern[bytes],
+    needle: str,
+    results: list[JsonObject],
+) -> bool:
+    """Append printable runs from ``payload`` to ``results``; True when capped."""
+    for match in pattern.finditer(payload):
+        raw = match.group()
+        text = raw.decode("ascii", "replace")
+        if needle and needle not in text.lower():
+            continue
+        if len(results) >= _MAX_DATA_STRINGS_COLLECT:
+            return True
+        offset = base + match.start()
+        if len(text) > _MAX_STRING_TEXT:
+            results.append(
+                {
+                    "offset": offset,
+                    "text": text[:_MAX_STRING_TEXT],
+                    "size": len(raw),
+                    "text_truncated": True,
+                }
+            )
+        else:
+            results.append({"offset": offset, "text": text, "size": len(raw)})
+    return False
+
+
+def parse_data_strings(
+    data: bytes, *, min_length: int = 4, name_filter: str = ""
+) -> tuple[list[JsonObject], bool, bool]:
+    """Extract printable ASCII strings from the module's data section.
+
+    Returns ``(strings, has_data_section, scan_capped)``. The data (id 11)
+    section is where a wasm module's rodata lives -- the URLs, error messages,
+    format strings and embedded symbols a triage pass greps for -- and this is
+    the ``strings`` of that section: runs of printable ASCII (0x20-0x7e) at least
+    ``min_length`` long, in scan order (ascending module offset). Each data
+    segment is parsed so only its payload bytes are scanned (the segment's flags,
+    offset init-expr and length prefix are skipped), which keeps a length byte
+    that happens to be printable from being glued onto the front of the first
+    string. When the module has no data section -- a module that ships no
+    initialised memory -- has_data_section is False and the list is empty, which
+    is the answer, not an error. Each row is ``{offset (module-absolute byte
+    offset), text, size}`` plus text_truncated when a single run exceeded the
+    text clip. ``name_filter`` keeps only runs whose text contains that substring
+    (case-insensitive: data strings are prose and URLs, not symbols); total is
+    then the match count. Collection stops at the ceiling (scan_capped True) so an
+    all-data module cannot materialise without bound. A segment whose framing the
+    parser cannot follow ends the scan best-effort with what was collected, rather
+    than discarding every string over one unexpected byte.
+    """
+    length = min_length if isinstance(min_length, int) and not isinstance(min_length, bool) else 4
+    length = max(1, min(length, _MIN_STRING_LEN_MAX))
+    needle = name_filter.lower() if isinstance(name_filter, str) else ""
+    pattern = re.compile(b"[\x20-\x7e]{%d,}" % length)
+    results: list[JsonObject] = []
+    has_data = False
+    scan_capped = False
+    for sec_id, body, end in _iter_sections(data):
+        if sec_id != 11:
+            continue
+        has_data = True
+        try:
+            count, pos = _uleb(data, body)
+            parsed = 0
+            while parsed < count and pos < end:
+                flags, pos = _uleb(data, pos)
+                if flags == 0:  # active, memory 0: offset expr then bytes
+                    pos = _skip_const_expr(data, pos, end)
+                elif flags == 1:  # passive: bytes only
+                    pass
+                elif flags == 2:  # active, explicit memidx: memidx, expr, bytes
+                    _memidx, pos = _uleb(data, pos)
+                    pos = _skip_const_expr(data, pos, end)
+                else:
+                    # An encoding we do not model; stop rather than misread.
+                    break
+                nbytes, pos = _uleb(data, pos)
+                payload_end = pos + nbytes
+                if payload_end > end:
+                    break
+                if _collect_runs(data[pos:payload_end], pos, pattern, needle, results):
+                    scan_capped = True
+                    break
+                pos = payload_end
+                parsed += 1
+        except WasmParseError:
+            # Best-effort: keep the strings collected before the anomaly. The
+            # module framing itself was already validated by _iter_sections; this
+            # only guards the segment-internal walk.
+            pass
+        # The data section is unique in a module; no need to walk further.
+        break
+    return results, has_data, scan_capped
 
 
 def parse_function_names(

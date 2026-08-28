@@ -128,6 +128,45 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.wasm_names(path, offset=offset, limit=limit, name_filter=name_filter)
         )
 
+    @tools.tool(name="wasm.strings")
+    def wasm_strings(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        min_length: Annotated[int, Field(ge=1, le=256)] = 4,
+        name_filter: str = "",
+    ) -> dict[str, Any]:
+        """Pull printable strings from a .wasm module's data section, no wabt.
+
+        The content companion to wasm.summary (structure) and wasm.names
+        (symbols): a module's rodata -- the URLs, endpoints, error messages,
+        format strings and embedded keys a triage pass greps for -- lives in the
+        data section, and this is ``strings`` of that section, parsed in-process
+        (no wabt). Answers with strings (each {offset (module-absolute byte
+        offset), text, size}, plus text_truncated when one run exceeded the text
+        clip), count, total, offset, has_more, scan_capped when the section held
+        more runs than the collect ceiling, and has_data_section. When
+        has_data_section is false the module ships no initialised memory and
+        strings is empty -- that is the answer, not an error. min_length is the
+        shortest run kept (default 4, so binary noise is dropped the way strings
+        does); raising it cuts the noise on a large module. name_filter keeps
+        only runs whose text contains that substring (case-insensitive, since
+        these are prose and URLs not symbols), applied before paging so total is
+        the match count -- the way to find "https" or an api host among
+        thousands. The list field is strings; use wasm.names for symbol names.
+        A file that is not a readable wasm module is invalid_params; one over
+        16 MiB is too_large.
+        """
+        return _dump(
+            analysis.wasm_strings(
+                path,
+                offset=offset,
+                limit=limit,
+                min_length=min_length,
+                name_filter=name_filter,
+            )
+        )
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0

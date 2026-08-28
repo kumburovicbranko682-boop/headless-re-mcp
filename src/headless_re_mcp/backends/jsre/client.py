@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.jsre.wasm_summary import WasmParseError
+from headless_re_mcp.backends.jsre.wasm_summary import parse_data_strings as parse_wasm_strings
 from headless_re_mcp.backends.jsre.wasm_summary import parse_function_names as parse_wasm_names
 from headless_re_mcp.backends.jsre.wasm_summary import summarize as summarize_wasm
 
@@ -45,6 +46,8 @@ _MAX_UNPACK_TIMEOUT_S = 1200.0
 # transport (which reaches the handler without pydantic validation) is bounded
 # here too, exactly like the apk/web/proxy backends.
 _MAX_WASM_NAMES_PAGE = 2000
+# Same rationale for wasm.strings.
+_MAX_WASM_STRINGS_PAGE = 2000
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -367,6 +370,51 @@ class WasmClient:
             "total": len(entries),
             "offset": start,
             "has_more": start + len(window) < len(entries),
+            "scan_capped": scan_capped,
+        }
+
+    def strings(
+        self,
+        path: Path,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        min_length: int = 4,
+        name_filter: str = "",
+    ) -> JsonObject:
+        """Printable strings from the module's data (rodata) section, no wabt.
+
+        The content companion to summary()/names(): rodata is where a module's
+        URLs, error messages and format strings live. Dependency-free, paged;
+        total is the count that matched the filter, has_data_section is False
+        when the module ships no data section (the answer, not an error), and
+        scan_capped marks a section with more strings than the collect ceiling.
+        """
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        try:
+            data = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        try:
+            rows, has_data, scan_capped = parse_wasm_strings(
+                data, min_length=min_length, name_filter=name_filter
+            )
+        except WasmParseError as exc:
+            raise JsReError(
+                "invalid_params", f"not a readable wasm module: {exc}", path=str(resolved)
+            ) from exc
+        start = max(0, int(offset))
+        capped = max(1, min(int(limit), _MAX_WASM_STRINGS_PAGE))
+        window = rows[start : start + capped]
+        return {
+            "has_data_section": has_data,
+            "strings": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
             "scan_capped": scan_capped,
         }
 
