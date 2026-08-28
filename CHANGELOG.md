@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（Ghidra 工程锁的键规范化与可重入性）
+
+- `backends/ghidra/client.py` 的 `_project_lock` 用 `expanduser().resolve()` 规范化路径后
+  再分配锁条带，这是"两个 JVM 不并发打开同一 Ghidra 工程"的关键：既有的串行化测试
+  （`test_ghidra_serializes_clients_using_the_same_project`）两个线程用同一个 `Path`
+  对象，拼写完全一致，删掉规范化后 38 个 ghidra 测试照常全绿——而 `..`、符号链接或
+  `~` 拼写的同一工程会静默拿到不同的锁并发运行。新增
+  `tests/unit/test_ghidra_project_lock_key_and_reentrancy.py`：三种等价拼写
+  （`..`／符号链接／`~`，符号链接用例在 Windows 上带因由跳过）必须按对象同一性
+  （`is`）返回同一把锁；另外钉住可重入契约——`_export` 持锁期间 `_run_headless`
+  在同一线程再次取锁，把 `RLock` 变异成普通 `Lock` 时既有套件只会无限挂起
+  （30 秒封顶验证无任何判定输出），新测试则在 0.13 秒内给出具名失败。变异验证：
+  去掉规范化后三个拼写用例失败、既有套件全绿；换成不可重入锁后可重入用例快速失败。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
