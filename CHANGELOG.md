@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（provider 敌意 tool_call index 让整条流崩成事故）
+
+- `agent/providers/openai_compatible.py` 的 `_ingest_tool_calls` 用无守卫的
+  `int(raw_call.get("index", 0))` 读取 provider 完全可控的 `index` 字段。非整数 index——
+  字符串、null,或裸 `1e999` 解析成的 `float('inf')`——会从这里抛异常:字符串抛
+  `ValueError`,而 inf 抛 `OverflowError`,直接逃出 tool-call 组装、经 orchestrator 的
+  `except BaseException` 记成 run 级 incident。现把该 `int()` 包进 try,`TypeError`/
+  `ValueError`/`OverflowError` 均视为畸形调用并 fail-closed 跳过(不折叠到某个真实调用的
+  槽位),同一 delta 里的合法调用照常落地。此改动只针对崩溃安全,与「合法缺失 index 如何
+  分配槽位」的语义正交。新增「修复前必失败」回归(手写含标准 JSON `1e999` index 的
+  tool_calls delta,断言流干净完成且仅保留合法调用)。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、

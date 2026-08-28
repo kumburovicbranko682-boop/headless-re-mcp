@@ -626,6 +626,43 @@ async def test_tool_call_stream_caps_distinct_calls(
             pass
 
 
+@pytest.mark.asyncio
+async def test_a_hostile_tool_call_index_does_not_end_the_stream() -> None:
+    """The provider controls ``index``; a non-integer one must not raise int().
+
+    A bare ``1e999`` is standard JSON that parses to float inf, and ``int(inf)``
+    raises OverflowError -- not the ValueError a string would -- straight out of
+    tool-call assembly, ending the run as an incident. A malformed index is
+    skipped fail-closed so a valid call in the same delta still lands.
+    """
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        # Hand-built so the index stays the standard-JSON literal 1e999 (inf),
+        # alongside a well-formed call that must survive.
+        line = (
+            '{"choices":[{"delta":{"tool_calls":['
+            '{"index":1e999,"id":"bad","function":{"name":"evil","arguments":"{}"}},'
+            '{"index":0,"id":"good","function":{"name":"doctor","arguments":"{}"}}'
+            ']},"finish_reason":"tool_calls"}]}'
+        )
+        body = f"data: {line}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(respond),
+    )
+    events = [
+        event async for event in provider.stream_chat(messages=[], tools=[], model="m")
+    ]
+    completed = events[-1]
+    assert completed.type == "completed"
+    assert [(call.name, call.arguments) for call in completed.tool_calls] == [
+        ("doctor", {})
+    ]
+
+
 def test_protecting_provider_config_does_not_hang_when_icacls_is_a_launcher(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
