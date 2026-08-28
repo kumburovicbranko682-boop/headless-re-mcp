@@ -580,6 +580,53 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
             _assert_mapped(row.get("from_address"))
             _assert_mapped(row.get("to_address"))
             assert row["to_address"].get("architecture") == expect_arch, row
+
+        # r2.callgraph is the function-level view the single-address xref cannot
+        # give: it collapses a function to its resolved callees and callers in one
+        # aa; aflj pass. main calls re_mcp_triple, so that must come back as a
+        # resolved callee edge whose target is the function's own start, with a
+        # mapped call site; and querying re_mcp_triple from the other side must
+        # name main among its callers -- the two ends of one edge, reached either
+        # way, where r2.xrefs only answers one address at a time.
+        cg_main = service.r2_callgraph(session_id, entry, direction="both", timeout=60.0)
+        assert cg_main.ok and cg_main.data is not None, cg_main.error
+        assert cg_main.data.get("parsed") is True
+        assert cg_main.data.get("architecture") == expect_arch
+        node = cg_main.data.get("function")
+        assert node is not None and (node.get("name") or "").endswith("main"), node
+        callees = [e for e in cg_main.data.get("edges", []) if e["direction"] == "callee"]
+        assert callees, "main has no callees in its call graph"
+        triple_edge = next(
+            (e for e in callees if "re_mcp_triple" in (e.get("name") or "")), None
+        )
+        assert triple_edge is not None, [e.get("name") for e in callees]
+        assert triple_edge.get("resolved") is True, triple_edge
+        assert int(triple_edge["addr"]) == target, (triple_edge, target)
+        _assert_mapped(triple_edge.get("address"))
+        assert triple_edge["address"].get("architecture") == expect_arch, triple_edge
+        _assert_mapped(triple_edge.get("call_site"))
+
+        cg_triple = service.r2_callgraph(
+            session_id, target, direction="callers", timeout=60.0
+        )
+        assert cg_triple.ok and cg_triple.data is not None, cg_triple.error
+        tnode = cg_triple.data.get("function")
+        assert tnode is not None and "re_mcp_triple" in (tnode.get("name") or ""), tnode
+        callers = [e for e in cg_triple.data.get("edges", []) if e["direction"] == "caller"]
+        assert any((e.get("name") or "").endswith("main") for e in callers), [
+            e.get("name") for e in callers
+        ]
+        assert cg_triple.data.get("callers_total", 0) >= 1, cg_triple.data
+        # The back edge is directional: re_mcp_triple does not call main, so main
+        # never shows up on the callee side even though the two share an edge.
+        triple_callees = service.r2_callgraph(
+            session_id, target, direction="callees", timeout=60.0
+        )
+        assert triple_callees.ok and triple_callees.data is not None, triple_callees.error
+        assert not any(
+            (e.get("name") or "").endswith("main")
+            for e in triple_callees.data.get("edges", [])
+        ), triple_callees.data
     finally:
         service.close_session(session_id)
 
