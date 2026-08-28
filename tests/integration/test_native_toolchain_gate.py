@@ -59,7 +59,10 @@ Two triage themes the other native gates cannot cover from system binaries:
   from libc. gcc compiles the same source at -D_FORTIFY_SOURCE=2 and at =0,
   and the reader's fortify_source / fortified_functions must match the
   __*_chk set readelf --dyn-syms shows in each build -- present in the
-  fortified one, empty in the plain one.
+  fortified one, empty in the plain one. The Mach-O side is the same fact off
+  the mangled ___*_chk imports: a synthetic image carrying them reads
+  fortified against llvm-nm's undefined-extern set, and the committed fixture
+  (canaried, imports end in _fail/_guard) reads a definitive False.
 - The weak imports (ELF .dynsym STB_WEAK + SHN_UNDEF) -- optional capability
   the loader leaves null when unresolved rather than failing to start, the
   ELF pair to a Mach-O weak dylib and a PE delay import. A library with a
@@ -1187,6 +1190,81 @@ def _llvm_nm_names(nm: str, binary: Path, *selectors: str) -> set[str]:
         for line in result.stdout.splitlines()
         if line.strip() and not line.rstrip().endswith(":")
     }
+
+
+def _macho_with_undefined_symbols(names: list[str]) -> bytes:
+    """A 64-bit MH_EXECUTE whose LC_SYMTAB holds the given undefined externals.
+
+    Built here independently of the reader's unit builder: each name becomes an
+    N_EXT|N_UNDF nlist entry (n_sect 0, n_value 0), the shape dyld resolves at
+    load. llvm-nm's decode doubles as the well-formedness check, so a zero exit
+    certifies the synthetic image, not just the reader's read of it.
+    """
+    strtab = bytearray(b"\x00")
+    nlists = bytearray()
+    for name in names:
+        strx = len(strtab)
+        strtab += name.encode() + b"\x00"
+        nlists += struct.pack("<IBBHQ", strx, 0x01, 0, 0, 0)  # n_type N_EXT|N_UNDF
+    symoff = 32 + 24  # header + one LC_SYMTAB command
+    stroff = symoff + len(nlists)
+    command = struct.pack("<IIIIII", 0x02, 24, symoff, len(names), stroff, len(strtab))
+    header = struct.pack(
+        "<IIIIIIII", 0xFEEDFACF, 0x01000007, 0, 2, 1, len(command), 0, 0
+    )  # x86_64 MH_EXECUTE
+    return header + command + bytes(nlists) + bytes(strtab)
+
+
+@pytest.mark.integration
+def test_macho_fortify_source_agrees_with_llvm_nm(tmp_path: Path) -> None:
+    """The Mach-O FORTIFY posture against llvm-nm, both directions.
+
+    A synthetic image importing ___strcpy_chk / ___memcpy_chk (the mangled
+    fortified wrappers) alongside a plain _printf must read fortify_source
+    True with exactly the two wrappers, matching the __*_chk subset of
+    llvm-nm's undefined externs; the committed fixture (canaried, its imports
+    end in _fail/_guard) must read a definitive False in both views.
+    """
+    nm = shutil.which("llvm-nm")
+    if nm is None:
+        pytest.skip("llvm-nm not installed — Mach-O fortify gate not run (skip != pass)")
+
+    binary = tmp_path / "fortify.macho"
+    binary.write_bytes(
+        _macho_with_undefined_symbols(["___strcpy_chk", "___memcpy_chk", "_printf"])
+    )
+    llvm_imports = _llvm_nm_names(nm, binary, "--undefined-only", "--extern-only")
+    truth_fortified = {
+        name for name in llvm_imports if name.startswith("__") and name.endswith("_chk")
+    }
+    # llvm-nm really sees the two wrappers (and only those), so it is a genuine
+    # second opinion on the synthetic image.
+    assert truth_fortified == {"___strcpy_chk", "___memcpy_chk"}
+
+    service = AnalysisService()
+    sessions: list[str] = []
+    try:
+        session_id, native = _session_native(service, binary)
+        sessions.append(session_id)
+        assert native["fortify_source"] is True
+        assert set(native["fortified_functions"]) == truth_fortified
+
+        # Negative agreement on the real fixture: its imports are the canary
+        # pair, which end in _fail/_guard, so no fortify in either view.
+        if _MACHO_FIXTURE.is_file():
+            fixture_imports = _llvm_nm_names(
+                nm, _MACHO_FIXTURE, "--undefined-only", "--extern-only"
+            )
+            assert not {
+                n for n in fixture_imports if n.startswith("__") and n.endswith("_chk")
+            }
+            session_id, fixture_facts = _session_native(service, _MACHO_FIXTURE)
+            sessions.append(session_id)
+            assert fixture_facts["fortify_source"] is False
+            assert fixture_facts["fortified_functions"] == []
+    finally:
+        for session_id in sessions:
+            service.close_session(session_id)
 
 
 @pytest.mark.integration
