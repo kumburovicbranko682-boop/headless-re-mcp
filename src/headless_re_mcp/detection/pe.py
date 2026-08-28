@@ -823,7 +823,9 @@ def _rva_raw_span(layout: _Layout, rva: int, *, size: int) -> tuple[int, int]:
     if rva < 0 or size <= 0:
         raise PeFormatError("RVA mapping requires a non-negative RVA and positive size")
     end = rva + size
-    if end < rva:  # defensive guard for callers that may pass untrusted integers
+    # Python integers do not overflow, so with rva >= 0 and size > 0 this sum is
+    # always greater than rva; the guard only documents the invariant.
+    if end < rva:  # pragma: no cover - unreachable defensive guard
         raise PeFormatError("RVA mapping overflows")
     if rva < layout.size_of_headers:
         if end > layout.size_of_headers:
