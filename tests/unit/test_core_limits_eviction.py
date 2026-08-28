@@ -234,6 +234,45 @@ def test_prune_sizes_and_evicts_subdirectories(tmp_path: Path) -> None:
     assert new_sub.exists()
 
 
+def test_prune_uses_the_full_subdir_size_not_the_file_capped_partial(
+    tmp_path: Path,
+) -> None:
+    """A subdir with more files than _dir_size counts must not defeat the byte cap.
+
+    prune_capped_dir is the only bound on the jsre spill root, whose children are
+    js.unpack_bundle's unpack-<uuid>/ trees. webcrack splits a large bundle into
+    one file per module -- thousands of them -- so one tree can hold far more
+    files than _dir_size's 4096-file cap. _dir_size returned only that many files'
+    bytes, so a big tree of small files read as smaller than the byte cap and the
+    cap silently stopped reclaiming: the fail-open dir_size_over_cap was written
+    to close, and that prune_capped_dir now measures subdirectories with. Here the
+    old tree holds more one-byte files than the cap, so its true size clears
+    max_bytes only because the files past the 4096th count; the entry cap is set
+    high so only the byte cap can act, and the old tree (oldest) must be evicted
+    while the newer file survives. With the old _dir_size the tree measured at the
+    cap, total stayed under max_bytes, and nothing was removed.
+    """
+    file_cap = limits._DIR_SIZE_FILE_CAP
+    root = tmp_path / "jsre"
+    root.mkdir()
+    old_tree = root / "unpack-old"
+    old_tree.mkdir()
+    for index in range(file_cap + 500):
+        (old_tree / f"m{index}.js").write_bytes(b"x")
+    newer = root / "spill.txt"
+    newer.write_bytes(b"x")
+    # Oldest tree, newer file, so the byte-cap eviction takes the tree first.
+    _age(old_tree, 700)
+    _age(newer, 701)
+    # Between the file-capped partial (file_cap bytes) and the true size
+    # (file_cap + 500 bytes): the old _dir_size reads under it, a full walk over.
+    max_bytes = file_cap + 200
+    removed = limits.prune_capped_dir(root, max_entries=100, max_bytes=max_bytes)
+    assert removed == 1
+    assert not old_tree.exists()
+    assert newer.exists()
+
+
 # --------------------------------------------------------------------------- #
 # _dir_size and _remove_entry                                                 #
 # --------------------------------------------------------------------------- #

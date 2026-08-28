@@ -24,6 +24,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（`prune_capped_dir` 用 `_dir_size` 测量子目录,后者过 4096 文件即停,jsre 拆包树文件数超过后被低估,256 MiB 字节上限对其失效）
+
+- `prune_capped_dir` 是 jsre 溢出根目录(`artifact_root/jsre/`)唯一的界限,其子项正是 `js.unpack_bundle` 写下的 `unpack-<uuid>/` 拆包树;webcrack 会把大 bundle 拆成一个模块一个文件,动辄数千。测量子目录时它用的是 `_dir_size`——该函数数满 `_DIR_SIZE_FILE_CAP`(4096)个文件就停,返回部分和,于是文件数超过 4096 的拆包树被读成远小于真实体积,`total` 因此长期低于 `max_bytes`,256 MiB 字节上限静默不再回收(正是上一轮为 APK backstop 写 `dir_size_over_cap` 要堵的失败面)。改用 `dir_size_over_cap(child, max_bytes)`:未过上限的树完整走完(准确计数),某个子项单独越过 `max_bytes` 时短路(有 200 万文件天花板兜底,空文件洪水也无法把测量变成 stat 风暴),越限返回一个 > `max_bytes` 的下限值,足以触发回收。device 端调用传的是文件子项(截图/pull),走 `st_size` 分支,不受影响。`_dir_size` 现无生产调用方,保留作为 `dir_size_over_cap` docstring 与本处注释所述失败面的对照(仍有直接单测覆盖)。带外验证:把测量换回 `_dir_size` → 新用例失败(旧树按上限计数、`total` 不越界、`removed==0`),复原后全绿。补 `test_prune_uses_the_full_subdir_size_not_the_file_capped_partial`:旧树放 `_DIR_SIZE_FILE_CAP+500` 个一字节文件、entry 上限设高使仅字节上限起作用,断言最旧的树被逐出而较新文件留存。
+
 ### 修复（Agent 工作台会话存储 `list_threads` 只按非唯一的 `updated_at DESC` 排序,时间列打平时线程列表次序不确定、边界线程会闪进闪出）
 
 - `agent/store.py` 的 `threads` 表以 `id TEXT PRIMARY KEY` 为唯一键,`updated_at` 则是墙钟 isoformat 字符串:同批创建或同一瞬间被触达的线程会打平。该存储里其余读取(`list_missions`、以及 `OFFSET` 翻页的线程列表)一律以 `... DESC, id DESC` 收尾唯一次键,唯独 `list_threads` 只写 `ORDER BY updated_at DESC`——SQLite 对并列组次序不保证,于是同样的刷新之间线程列表会重排,恰卡在 `LIMIT` 边界上的线程还会在结果里闪进闪出。补上 `, id DESC` 使其与兄弟读取一致,次序确定。带外验证:去掉 `, id DESC` → 新用例失败(冻结时钟令 12 行全并列、受控自增 id 使插入序恰为 `id DESC` 的反序,读取退化成升序插入序 `00,01,...` 而非应有的 `11,10,...`),复原后全绿。补 `test_list_threads_breaks_a_tied_updated_at_by_id_for_a_stable_order`。

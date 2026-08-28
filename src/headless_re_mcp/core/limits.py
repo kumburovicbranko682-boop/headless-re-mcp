@@ -138,7 +138,21 @@ def prune_capped_dir(
     for child in children:
         try:
             stat = child.stat()
-            size = int(stat.st_size) if child.is_file() else _dir_size(child)
+            # A subdirectory child is measured with dir_size_over_cap, not _dir_size.
+            # This helper's whole job is to keep the byte ceiling sound, and _dir_size
+            # bails after _DIR_SIZE_FILE_CAP (4096) files and returns that partial sum
+            # -- so a child tree with more files than that reads as far smaller than it
+            # is. The jsre spill root's children are js.unpack_bundle's unpack-<uuid>/
+            # trees, and webcrack splits a large bundle into one file per module,
+            # thousands of them; the partial sum kept ``total`` under max_bytes and the
+            # byte cap silently stopped reclaiming, exactly the fail-open
+            # dir_size_over_cap was written to close. It walks a tree under the cap in
+            # full (accurate) and short-circuits once a single child alone crosses
+            # max_bytes (bounded, with a file-count ceiling so an empty-file flood
+            # cannot turn the measurement into a stat() storm); over-cap it returns a
+            # floor > max_bytes, which still forces a prune. Device callers pass file
+            # children, so the subdir branch is jsre-only.
+            size = int(stat.st_size) if child.is_file() else dir_size_over_cap(child, max_bytes)[0]
             entries.append((float(stat.st_mtime), child, size))
             total += size
         except OSError:
