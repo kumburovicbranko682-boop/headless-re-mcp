@@ -216,6 +216,50 @@ def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:
     assert "has_more" in _tool_docstring("js.unpack_bundle")
 
 
+def test_the_unpack_bundle_docstring_names_every_field_it_returns(tmp_path: Path) -> None:
+    """js.unpack_bundle always returns listing_truncated, yet the docstring
+
+    named only output_dir/file_count/files/count/total/offset/has_more -- the
+    same omission class as the web.har.read mimeType gap, where the agent's one
+    map of the answer shape silently dropped a field the backend always sends.
+    listing_truncated is not cosmetic: it says total was itself capped, so an
+    unattended pass that trusts total as exact under-reads a huge bundle. Pin
+    that every key a live unpack returns -- both the clean-exit shape and the
+    non-zero-exit shape that adds exit_code/tool_failed/stderr -- is named in
+    the docstring, read from the live payload rather than a hardcoded list so a
+    newly added field cannot slip in unnamed.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "m0.js").write_text("1", encoding="utf-8")
+
+    doc = _tool_docstring("js.unpack_bundle")
+
+    def _assert_every_key_is_named(payload: dict[str, Any]) -> None:
+        for key in payload:
+            assert key in doc, f"unpack_bundle returns {key!r} but the docstring never names it"
+
+    def _clean(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, b"", b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", _clean):
+        _assert_every_key_is_named(mod.JsClient(tool).unpack_bundle(src, out, offset=0, limit=10))
+
+    def _nonzero(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(3, b"", b"boom")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", _nonzero):
+        payload = mod.JsClient(tool).unpack_bundle(src, out, offset=0, limit=10)
+    assert payload["tool_failed"] is True  # the non-zero path really was taken
+    _assert_every_key_is_named(payload)
+
+
 def test_js_deobfuscate_refuses_an_oversized_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

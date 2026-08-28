@@ -58,12 +58,16 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Unpack a webpack/browserify bundle into module files via webcrack.
 
-        Answers with output_dir, file_count, files, count, total, offset and
-        has_more. The file list is paged: read total and has_more rather than
-        assuming files is complete. If webcrack exits non-zero but still wrote
-        files, they are returned with exit_code, tool_failed and stderr set so
-        a partial unpack is not read as complete. An input over 16 MiB is
-        refused as too_large rather than handed to webcrack.
+        Answers with output_dir, file_count, files, count, total, offset,
+        has_more and listing_truncated. The file list is paged: read total and
+        has_more rather than assuming files is complete. listing_truncated is a
+        separate warning that the tree held more than the 50,000-file counting
+        cap, so total and file_count are a floor rather than an exact count
+        (has_more, by contrast, only means this page stopped short of total).
+        If webcrack exits non-zero but still wrote files, they are returned
+        with exit_code, tool_failed and stderr set so a partial unpack is not
+        read as complete. An input over 16 MiB is refused as too_large rather
+        than handed to webcrack.
         """
         return _dump(
             analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
