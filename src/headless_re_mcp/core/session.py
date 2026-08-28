@@ -156,8 +156,11 @@ class SessionRegistry:
                 # surface, the pair to an ELF/Mach-O's imported/exported
                 # symbols. Always reported: empty lists are a real answer (a
                 # static EXE with no imports, a non-DLL with no exports).
-                imports, exports = _pe_capability_surface(path)
+                # Delay imports are the lazy channel a scan of the regular
+                # table misses: those DLLs bind on first call, not at load.
+                imports, delay_imports, exports = _pe_capability_surface(path)
                 metadata["pe"]["imports"] = imports
+                metadata["pe"]["delay_imports"] = delay_imports
                 metadata["pe"]["exports"] = exports
                 # Subsystem, loader mitigations and entry VA off the optional
                 # header -- the native PE build posture, the pair to the ELF
@@ -3938,6 +3941,11 @@ _PE_RESOURCE_KINDS: tuple[tuple[bytes, str], ...] = (
 # malformed table degrades to shorter lists rather than an unbounded read.
 _PE_IMPORT_DIR = 1
 _PE_EXPORT_DIR = 0
+# Directory 13 is the delay-load import table -- the lazy binding channel
+# (bind on first call, not at load), where droppers park the capability a
+# regular import scan misses. dumpbin /DEPENDENTS and pefile list it apart
+# from the load-time imports for the same reason this reader does.
+_PE_DELAY_IMPORT_DIR = 13
 _PE_MAX_IMPORT_DLLS = 256
 _PE_MAX_IMPORTS_PER_DLL = 4096
 _PE_MAX_EXPORTS = 8192
@@ -4652,12 +4660,14 @@ def _clr_stream_map(raw: bytes, meta_off: int) -> dict[str, tuple[int, int]]:
 
 def _pe_header_view(
     raw: bytes,
-) -> tuple[int, int, int, list[tuple[int, int, int, int]]] | None:
-    """``(magic, dir_count, dir_array_off, sections)`` for a PE, or None.
+) -> tuple[int, int, int, list[tuple[int, int, int, int]], int] | None:
+    """``(magic, dir_count, dir_array_off, sections, image_base)`` for a PE.
 
     ``dir_array_off`` is the offset in ``raw`` where the data-directory array
-    begins; ``sections`` is the parsed section table for RVA->offset mapping.
-    Shared by the import/export walk; fail-closed on any malformed header.
+    begins; ``sections`` is the parsed section table for RVA->offset mapping;
+    ``image_base`` is the preferred load address (the delay-import walk needs
+    it to rebase VC6-era VA-based descriptors). Shared by the import/export
+    walk; fail-closed on any malformed header.
     """
     if len(raw) < 0x40 or raw[:2] != b"MZ":
         return None
@@ -4672,17 +4682,22 @@ def _pe_header_view(
     magic = int.from_bytes(optional[0:2], "little") if len(optional) >= 2 else 0
     if magic == 0x10B:
         dir_count_off = 92
+        base_off, base_len = 28, 4  # ImageBase is a u32 in the PE32 layout
     elif magic == 0x20B:
         dir_count_off = 108
+        base_off, base_len = 24, 8  # ... and a u64 in PE32+
     else:
         return None
     if dir_count_off + 4 > len(optional):
         return None
+    image_base = 0
+    if base_off + base_len <= len(optional):
+        image_base = int.from_bytes(optional[base_off : base_off + base_len], "little")
     dir_count = int.from_bytes(optional[dir_count_off : dir_count_off + 4], "little")
     dir_array_off = opt_start + dir_count_off + 4
     sect_start = opt_start + opt_size
     sections = _pe_sections(raw[sect_start : sect_start + num_sections * 40])
-    return magic, dir_count, dir_array_off, sections
+    return magic, dir_count, dir_array_off, sections, image_base
 
 
 def _pe_read_cstr(raw: bytes, off: int | None, cap: int) -> str:
@@ -4695,35 +4710,78 @@ def _pe_read_cstr(raw: bytes, off: int | None, cap: int) -> str:
     return raw[off:end].decode("ascii", errors="replace")
 
 
-def _pe_capability_surface(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
-    """``(imports, exports)`` read straight off the PE import/export directories.
+def _pe_capability_surface(
+    path: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    """``(imports, delay_imports, exports)`` off the PE import/export directories.
 
     The native PE capability surface -- the pair to an ELF/Mach-O's imported and
     exported symbols, and the strongest triage signal after arch: which native
     functions from which DLLs the loader must bind (what the binary can actually
-    do), and, for a DLL, what it offers back. ``imports`` is a list of
-    ``{"dll", "functions"}`` in import-table order (the shape pefile and dumpbin
-    render); ``exports`` is the sorted export-name table. Ordinal-only imports
-    read as ``#N``.
+    do), and, for a DLL, what it offers back. ``imports`` and ``delay_imports``
+    are lists of ``{"dll", "functions"}`` in table order (the shape pefile and
+    dumpbin render); ``exports`` is the sorted export-name table. Ordinal-only
+    imports read as ``#N``. Delay imports are the lazy channel (directory 13):
+    the DLLs bind on first call rather than at load, so a scan that stops at
+    the regular import table understates what the binary can reach.
 
-    Bounded and fail-closed: the whole read is capped, the descriptor walk, the
-    per-DLL thunk walk and both reported lists are bounded, and any structural
+    Bounded and fail-closed: the whole read is capped, the descriptor walks, the
+    per-DLL thunk walk and all reported lists are bounded, and any structural
     surprise yields whatever parsed cleanly rather than raising.
     """
     try:
         if path.stat().st_size > _PE_MAX_IMPORT_FILE:
-            return [], []
+            return [], [], []
         with path.open("rb") as stream:
             raw = stream.read(_PE_MAX_IMPORT_FILE)
     except OSError:
-        return [], []
+        return [], [], []
     view = _pe_header_view(raw)
     if view is None:
-        return [], []
-    magic, dir_count, dir_off, sections = view
+        return [], [], []
+    magic, dir_count, dir_off, sections, image_base = view
     imports = _pe_imports(raw, magic, dir_count, dir_off, sections)
+    delay = _pe_delay_imports(raw, magic, dir_count, dir_off, sections, image_base)
     exports = _pe_exports(raw, dir_count, dir_off, sections)
-    return imports, exports
+    return imports, delay, exports
+
+
+def _pe_import_thunks(
+    raw: bytes,
+    magic: int,
+    sections: list[tuple[int, int, int, int]],
+    thunk_rva: int,
+) -> list[str]:
+    """The function names one import-thunk chain binds, ordinals as ``#N``.
+
+    The zero thunk terminates the chain; each non-ordinal entry points at an
+    IMAGE_IMPORT_BY_NAME (a 2-byte hint then the ASCII name). Shared by the
+    regular and delay-load import walks, whose name tables use the same shape.
+    """
+    thunk_size = 8 if magic == 0x20B else 4
+    ordinal_flag = (1 << 63) if magic == 0x20B else (1 << 31)
+    rva_mask = 0x7FFFFFFFFFFFFFFF if magic == 0x20B else 0x7FFFFFFF
+    thunk_off = _pe_rva_to_offset(sections, thunk_rva) if thunk_rva else None
+    functions: list[str] = []
+    if thunk_off is None:
+        return functions
+    for j in range(_PE_MAX_IMPORTS_PER_DLL):
+        thunk = thunk_off + j * thunk_size
+        if thunk + thunk_size > len(raw):
+            break
+        value = int.from_bytes(raw[thunk : thunk + thunk_size], "little")
+        if value == 0:
+            break  # the zero thunk terminates this DLL's list
+        if value & ordinal_flag:
+            functions.append(f"#{value & 0xFFFF}")  # import by ordinal
+            continue
+        hint_off = _pe_rva_to_offset(sections, value & rva_mask)
+        name = _pe_read_cstr(
+            raw, hint_off + 2 if hint_off is not None else None, _PE_MAX_SYMBOL_NAME
+        )
+        if name:
+            functions.append(name)
+    return functions
 
 
 def _pe_imports(
@@ -4745,9 +4803,6 @@ def _pe_imports(
     desc_off = _pe_rva_to_offset(sections, imp_rva)
     if desc_off is None:
         return []
-    thunk_size = 8 if magic == 0x20B else 4
-    ordinal_flag = (1 << 63) if magic == 0x20B else (1 << 31)
-    rva_mask = 0x7FFFFFFFFFFFFFFF if magic == 0x20B else 0x7FFFFFFF
     imports: list[dict[str, Any]] = []
     for i in range(_PE_MAX_IMPORT_DLLS):
         desc = desc_off + i * 20  # IMAGE_IMPORT_DESCRIPTOR is 20 bytes
@@ -4761,29 +4816,60 @@ def _pe_imports(
         dll = _pe_read_cstr(raw, _pe_rva_to_offset(sections, name_rva), _PE_MAX_SYMBOL_NAME)
         # Prefer the import lookup table (import names survive here even after
         # the loader overwrites the IAT with addresses); fall back to the IAT.
-        thunk_rva = oft or first_thunk
-        thunk_off = _pe_rva_to_offset(sections, thunk_rva) if thunk_rva else None
-        functions: list[str] = []
-        if thunk_off is not None:
-            for j in range(_PE_MAX_IMPORTS_PER_DLL):
-                thunk = thunk_off + j * thunk_size
-                if thunk + thunk_size > len(raw):
-                    break
-                value = int.from_bytes(raw[thunk : thunk + thunk_size], "little")
-                if value == 0:
-                    break  # the zero thunk terminates this DLL's list
-                if value & ordinal_flag:
-                    functions.append(f"#{value & 0xFFFF}")  # import by ordinal
-                    continue
-                hint_off = _pe_rva_to_offset(sections, value & rva_mask)
-                # IMAGE_IMPORT_BY_NAME: a 2-byte hint then the ASCII name.
-                name = _pe_read_cstr(
-                    raw, hint_off + 2 if hint_off is not None else None, _PE_MAX_SYMBOL_NAME
-                )
-                if name:
-                    functions.append(name)
+        functions = _pe_import_thunks(raw, magic, sections, oft or first_thunk)
         imports.append({"dll": dll, "functions": functions})
     return imports
+
+
+def _pe_delay_imports(
+    raw: bytes,
+    magic: int,
+    dir_count: int,
+    dir_off: int,
+    sections: list[tuple[int, int, int, int]],
+    image_base: int,
+) -> list[dict[str, Any]]:
+    """The delay-load directory (index 13) as ``[{"dll", "functions"}, ...]``.
+
+    IMAGE_DELAYLOAD_DESCRIPTOR is 32 bytes: attributes, then the DLL-name,
+    module-handle, IAT, import-name-table, bound-IAT and unload-table fields
+    plus a timestamp, terminated by an all-zero record. Attribute bit 0 says
+    the fields are RVAs (every modern linker); clear means VC6-era absolute
+    VAs, which are rebased off ``image_base`` the same way pefile does.
+    """
+    if dir_count <= _PE_DELAY_IMPORT_DIR:
+        return []
+    entry = dir_off + _PE_DELAY_IMPORT_DIR * 8
+    if entry + 8 > len(raw):
+        return []
+    delay_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    if delay_rva == 0:
+        return []
+    desc_off = _pe_rva_to_offset(sections, delay_rva)
+    if desc_off is None:
+        return []
+    results: list[dict[str, Any]] = []
+    for i in range(_PE_MAX_IMPORT_DLLS):
+        desc = desc_off + i * 32
+        if desc + 32 > len(raw):
+            break
+        attrs = int.from_bytes(raw[desc : desc + 4], "little")
+        name_field = int.from_bytes(raw[desc + 4 : desc + 8], "little")
+        iat_field = int.from_bytes(raw[desc + 12 : desc + 16], "little")
+        int_field = int.from_bytes(raw[desc + 16 : desc + 20], "little")
+        if name_field == 0 and iat_field == 0 and int_field == 0:
+            break  # the all-zero descriptor terminates the array
+        if not attrs & 1:
+            # VA-based fields: rebase to RVAs, dropping any field below base.
+            name_field = name_field - image_base if name_field >= image_base else 0
+            iat_field = iat_field - image_base if iat_field >= image_base else 0
+            int_field = int_field - image_base if int_field >= image_base else 0
+        dll = _pe_read_cstr(raw, _pe_rva_to_offset(sections, name_field), _PE_MAX_SYMBOL_NAME)
+        # Prefer the import name table (names survive there after binding);
+        # fall back to the delay IAT.
+        functions = _pe_import_thunks(raw, magic, sections, int_field or iat_field)
+        results.append({"dll": dll, "functions": functions})
+    return results
 
 
 def _pe_exports(
@@ -4933,7 +5019,7 @@ def _pe_tls_facts(path: Path) -> dict[str, Any]:
     view = _pe_header_view(raw)
     if view is None:
         return {}
-    magic, dir_count, dir_off, sections = view
+    magic, dir_count, dir_off, sections, _base = view
     facts: dict[str, Any] = {"present": False, "callbacks": 0}
     entry = dir_off + _PE_TLS_DIR * 8
     if dir_count <= _PE_TLS_DIR or entry + 8 > len(raw):
@@ -4994,7 +5080,7 @@ def _pe_debug_fingerprint(path: Path) -> dict[str, Any]:
     view = _pe_header_view(raw)
     if view is None:
         return {}
-    _magic, dir_count, dir_off, sections = view
+    _magic, dir_count, dir_off, sections, _base = view
     entry = dir_off + _PE_DEBUG_DIR * 8
     if dir_count <= _PE_DEBUG_DIR or entry + 8 > len(raw):
         return {}
@@ -5205,7 +5291,7 @@ def _pe_version_info(path: Path) -> dict[str, Any]:
     view = _pe_header_view(raw)
     if view is None:
         return {}
-    _magic, dir_count, dir_off, sections = view
+    _magic, dir_count, dir_off, sections, _base = view
     blob = _pe_version_blob(raw, dir_count, dir_off, sections)
     if blob is None:
         return {}

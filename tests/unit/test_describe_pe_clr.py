@@ -511,13 +511,19 @@ def _pe_with_imports_exports(
     exports: list[str],
     *,
     magic: int = 0x20B,
+    delay: list[tuple[str, list[object]]] | None = None,
+    delay_va_based: bool = False,
+    image_base: int = 0,
 ) -> bytes:
     """A minimal PE whose import (index 1) and export (index 0) directories hold
     the given tables, all in one section, the shape pefile and dumpbin parse.
 
     Each import is ``(dll, functions)`` where a function is a name (by name) or
     an int (by ordinal). ``magic`` selects PE32+ (0x20B) or PE32 (0x10B), which
-    sets the thunk width and the ordinal flag the reader must key off.
+    sets the thunk width and the ordinal flag the reader must key off. ``delay``
+    adds a delay-load directory (index 13) of the same shape; with
+    ``delay_va_based`` its descriptors carry VC6-era absolute VAs (attribute
+    bit 0 clear, fields biased by ``image_base``) instead of RVAs.
     """
     sect_rva = 0x1000
     sec = bytearray()
@@ -561,6 +567,45 @@ def _pe_with_imports_exports(
         struct.pack_into("<IIIII", sec, desc_off + i * 20, ilt_rva, 0, 0, dll_rva, ilt_rva)
     imp_dir_rva, imp_dir_size = rva(desc_off), 20 * (n + 1)
 
+    dly_dir_rva = dly_dir_size = 0
+    if delay:
+        dly_n = len(delay)
+        dly_desc_off = emit(b"\x00" * (32 * (dly_n + 1)))  # descriptors + terminator
+        dly_descriptors: list[tuple[int, int]] = []
+        for dll, funcs in delay:
+            thunks = []
+            for fn in funcs:
+                if isinstance(fn, int):
+                    thunks.append(ordinal_flag | fn)
+                    continue
+                align(2)
+                hint_name = emit(struct.pack("<H", 0) + fn.encode() + b"\x00")
+                thunks.append(rva(hint_name))
+            align(thunk_size)
+            int_off = len(sec)
+            for value in thunks:
+                emit(struct.pack(thunk_fmt, value))
+            emit(struct.pack(thunk_fmt, 0))
+            dll_off = emit(dll.encode() + b"\x00")
+            dly_descriptors.append((rva(int_off), rva(dll_off)))
+        bias = image_base if delay_va_based else 0
+        attrs = 0 if delay_va_based else 1  # bit 0: fields are RVAs
+        for i, (int_rva, dll_rva) in enumerate(dly_descriptors):
+            struct.pack_into(
+                "<IIIIIIII",
+                sec,
+                dly_desc_off + i * 32,
+                attrs,
+                dll_rva + bias,
+                0,  # module handle
+                0,  # delay IAT (name table is enough for the reader)
+                int_rva + bias,
+                0,  # bound IAT
+                0,  # unload table
+                0,  # timestamp
+            )
+        dly_dir_rva, dly_dir_size = rva(dly_desc_off), 32 * (dly_n + 1)
+
     exp_dir_rva = exp_dir_size = 0
     if exports:
         name_rvas = [rva(emit(name.encode() + b"\x00")) for name in exports]
@@ -598,9 +643,15 @@ def _pe_with_imports_exports(
     struct.pack_into("<I", opt, 32, 0x1000)  # SectionAlignment
     struct.pack_into("<I", opt, 36, 0x200)  # FileAlignment
     struct.pack_into("<I", opt, dir_count_off, 16)  # NumberOfRvaAndSizes
+    if image_base:
+        if magic == 0x20B:
+            struct.pack_into("<Q", opt, 24, image_base)
+        else:
+            struct.pack_into("<I", opt, 28, image_base)
     dir_arr = dir_count_off + 4
     struct.pack_into("<II", opt, dir_arr + 0 * 8, exp_dir_rva, exp_dir_size)
     struct.pack_into("<II", opt, dir_arr + 1 * 8, imp_dir_rva, imp_dir_size)
+    struct.pack_into("<II", opt, dir_arr + 13 * 8, dly_dir_rva, dly_dir_size)
 
     raw_off = 0x40 + len(coff) + opt_size
     if raw_off % 0x200:
@@ -651,8 +702,9 @@ class TestPeCapabilitySurface:
                 [],
             )
         )
-        imports, exports = _pe_capability_surface(path)
+        imports, delay, exports = _pe_capability_surface(path)
         assert exports == []
+        assert delay == []
         assert imports == [
             {"dll": "KERNEL32.dll", "functions": ["CreateFileA", "ExitProcess"]},
             {"dll": "USER32.dll", "functions": ["MessageBoxW"]},
@@ -661,13 +713,13 @@ class TestPeCapabilitySurface:
     def test_ordinal_only_imports_read_as_hash_n(self, tmp_path: Path) -> None:
         path = tmp_path / "ordinal.exe"
         path.write_bytes(_pe_with_imports_exports([("WS2_32.dll", [115, 116])], []))
-        imports, _ = _pe_capability_surface(path)
+        imports, _, _ = _pe_capability_surface(path)
         assert imports == [{"dll": "WS2_32.dll", "functions": ["#115", "#116"]}]
 
     def test_exports_come_back_name_sorted(self, tmp_path: Path) -> None:
         path = tmp_path / "exports.dll"
         path.write_bytes(_pe_with_imports_exports([], ["ZetaFunc", "AlphaFunc", "MidFunc"]))
-        _, exports = _pe_capability_surface(path)
+        _, _, exports = _pe_capability_surface(path)
         assert exports == ["AlphaFunc", "MidFunc", "ZetaFunc"]
 
     def test_a_pe32_import_table_reads_at_the_narrow_thunk_width(self, tmp_path: Path) -> None:
@@ -677,24 +729,24 @@ class TestPeCapabilitySurface:
         path.write_bytes(
             _pe_with_imports_exports([("msvcrt.dll", ["printf"])], [], magic=0x10B)
         )
-        imports, _ = _pe_capability_surface(path)
+        imports, _, _ = _pe_capability_surface(path)
         assert imports == [{"dll": "msvcrt.dll", "functions": ["printf"]}]
 
     def test_a_pe_without_either_directory_reads_empty(self, tmp_path: Path) -> None:
         path = tmp_path / "bare.exe"
         path.write_bytes(_native_pe())
-        assert _pe_capability_surface(path) == ([], [])
+        assert _pe_capability_surface(path) == ([], [], [])
 
     def test_a_non_pe_reads_empty(self, tmp_path: Path) -> None:
         path = tmp_path / "nope.bin"
         path.write_bytes(b"not a pe at all")
-        assert _pe_capability_surface(path) == ([], [])
+        assert _pe_capability_surface(path) == ([], [], [])
 
     def test_the_import_list_is_bounded(self, tmp_path: Path) -> None:
         many = [(f"lib{i:03d}.dll", ["Fn"]) for i in range(300)]
         path = tmp_path / "many.exe"
         path.write_bytes(_pe_with_imports_exports(many, []))
-        imports, _ = _pe_capability_surface(path)
+        imports, _, _ = _pe_capability_surface(path)
         assert len(imports) == 256  # _PE_MAX_IMPORT_DLLS
 
     def test_session_over_a_pe_carries_the_capability_surface(self, tmp_path: Path) -> None:
@@ -707,6 +759,78 @@ class TestPeCapabilitySurface:
             {"dll": "KERNEL32.dll", "functions": ["ExitProcess"]}
         ]
         assert session.metadata["pe"]["exports"] == ["Start"]
+        assert session.metadata["pe"]["delay_imports"] == []
+
+
+class TestPeDelayImports:
+    """_pe_capability_surface also reads the delay-load directory (index 13).
+
+    The lazy binding channel: a delay-loaded DLL binds on first call rather
+    than at load, so it never appears in the regular import table -- which is
+    exactly where evasive binaries park the capability a naive import scan
+    must not miss. Same {dll, functions} shape as the regular table, and the
+    reader must honour both descriptor dialects (RVA-based, and VC6's
+    VA-based fields rebased off ImageBase).
+    """
+
+    def test_delay_imports_read_apart_from_the_regular_table(self, tmp_path: Path) -> None:
+        path = tmp_path / "lazy.exe"
+        path.write_bytes(
+            _pe_with_imports_exports(
+                [("KERNEL32.dll", ["ExitProcess"])],
+                [],
+                delay=[("WINHTTP.dll", ["WinHttpOpen", "WinHttpConnect"])],
+            )
+        )
+        imports, delay, _ = _pe_capability_surface(path)
+        # The lazy DLL lives only in the delay table; neither list leaks into
+        # the other.
+        assert imports == [{"dll": "KERNEL32.dll", "functions": ["ExitProcess"]}]
+        assert delay == [
+            {"dll": "WINHTTP.dll", "functions": ["WinHttpOpen", "WinHttpConnect"]}
+        ]
+
+    def test_ordinal_delay_imports_read_as_hash_n(self, tmp_path: Path) -> None:
+        path = tmp_path / "lazyord.exe"
+        path.write_bytes(_pe_with_imports_exports([], [], delay=[("WS2_32.dll", [115])]))
+        _, delay, _ = _pe_capability_surface(path)
+        assert delay == [{"dll": "WS2_32.dll", "functions": ["#115"]}]
+
+    def test_va_based_descriptors_rebase_off_image_base(self, tmp_path: Path) -> None:
+        # VC6-era descriptors (attribute bit 0 clear) hold absolute VAs in
+        # DWORD fields -- a PE32-only dialect; the reader must subtract
+        # ImageBase before mapping them, as pefile does.
+        path = tmp_path / "vc6.exe"
+        path.write_bytes(
+            _pe_with_imports_exports(
+                [],
+                [],
+                delay=[("OLD32.dll", ["LegacyFn"])],
+                delay_va_based=True,
+                image_base=0x400000,
+                magic=0x10B,
+            )
+        )
+        _, delay, _ = _pe_capability_surface(path)
+        assert delay == [{"dll": "OLD32.dll", "functions": ["LegacyFn"]}]
+
+    def test_a_pe32_delay_table_reads_at_the_narrow_thunk_width(self, tmp_path: Path) -> None:
+        path = tmp_path / "x86lazy.exe"
+        path.write_bytes(
+            _pe_with_imports_exports([], [], delay=[("msvcrt.dll", ["printf"])], magic=0x10B)
+        )
+        _, delay, _ = _pe_capability_surface(path)
+        assert delay == [{"dll": "msvcrt.dll", "functions": ["printf"]}]
+
+    def test_session_over_a_pe_carries_the_delay_imports(self, tmp_path: Path) -> None:
+        path = tmp_path / "lazyapp.exe"
+        path.write_bytes(
+            _pe_with_imports_exports([], [], delay=[("BCRYPT.dll", ["BCryptEncrypt"])])
+        )
+        session = SessionRegistry().create(str(path))
+        assert session.metadata["pe"]["delay_imports"] == [
+            {"dll": "BCRYPT.dll", "functions": ["BCryptEncrypt"]}
+        ]
 
 
 def _pe_with_posture(
@@ -1853,6 +1977,7 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
             "resource_payloads": [],
             "resource_payload_count": 0,
             "imports": [],
+            "delay_imports": [],
             "exports": [],
             "subsystem": "unknown",
             "os_version": "0.0",

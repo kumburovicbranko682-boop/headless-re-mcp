@@ -2,12 +2,15 @@
 
 A session over a PE now lists its import directory (which native functions from
 which DLLs the loader must bind -- the strongest triage signal after arch, and
-the PE pair to an ELF/Mach-O's imported symbols) and its export name table
-(what a DLL offers -- the pair to exported symbols). The descriptor walk, the
-PE32/PE32+ thunk-width switch, the ordinal decode and the export-name walk are
-all ours, so pefile referees them: it parses the same import and export
-directories independently and hands back the DLL/function pairs and export
-names, which this compares against the reader's fact byte for byte.
+the PE pair to an ELF/Mach-O's imported symbols), its delay-load directory
+(the lazy channel: DLLs that bind on first call rather than at load, exactly
+where evasive binaries park the capability a scan of the regular table misses)
+and its export name table (what a DLL offers -- the pair to exported symbols).
+The descriptor walks, the PE32/PE32+ thunk-width switch, the ordinal decode,
+the VC6 VA-based delay-descriptor rebase and the export-name walk are all
+ours, so pefile referees them: it parses the same directories independently
+and hands back the DLL/function pairs and export names, which this compares
+against the reader's facts byte for byte.
 
 pefile ships in the project's ``pe`` extra, so this needs no system tool. skip
 != pass: it skips only when pefile is unavailable.
@@ -36,11 +39,17 @@ def _pe_with_imports_exports(
     exports: list[str],
     *,
     magic: int = 0x20B,
+    delay: list[tuple[str, list[object]]] | None = None,
+    delay_va_based: bool = False,
+    image_base: int = 0,
 ) -> bytes:
     """A minimal PE carrying the given import (index 1) and export (index 0)
     directories in one section -- the shape pefile parses. A function entry is a
-    name or an int (an ordinal import). Built here independently of the reader's
-    own test builder so the two implementations cannot share a blind spot.
+    name or an int (an ordinal import). ``delay`` adds a delay-load directory
+    (index 13); ``delay_va_based`` writes its descriptors in VC6's VA dialect
+    (attribute bit 0 clear, DWORD fields biased by ``image_base``). Built here
+    independently of the reader's own test builder so the two implementations
+    cannot share a blind spot.
     """
     sect_rva = 0x1000
     sec = bytearray()
@@ -84,6 +93,51 @@ def _pe_with_imports_exports(
         struct.pack_into("<IIIII", sec, desc_off + i * 20, ilt_rva, 0, 0, dll_rva, ilt_rva)
     imp_dir_rva, imp_dir_size = rva(desc_off), 20 * (n + 1)
 
+    dly_dir_rva = dly_dir_size = 0
+    if delay:
+        dly_n = len(delay)
+        dly_desc_off = emit(b"\x00" * (32 * (dly_n + 1)))
+        dly_descriptors: list[tuple[int, int, int]] = []
+        for dll, funcs in delay:
+            thunks = []
+            for fn in funcs:
+                if isinstance(fn, int):
+                    thunks.append(ordinal_flag | fn)
+                    continue
+                align(2)
+                hint_name = emit(struct.pack("<H", 0) + fn.encode() + b"\x00")
+                thunks.append(rva(hint_name))
+            align(thunk_size)
+            int_off = len(sec)
+            for value in thunks:
+                emit(struct.pack(thunk_fmt, value))
+            emit(struct.pack(thunk_fmt, 0))
+            # A distinct delay IAT chain (same thunks): pefile requires pIAT.
+            align(thunk_size)
+            iat_off = len(sec)
+            for value in thunks:
+                emit(struct.pack(thunk_fmt, value))
+            emit(struct.pack(thunk_fmt, 0))
+            dll_off = emit(dll.encode() + b"\x00")
+            dly_descriptors.append((rva(int_off), rva(iat_off), rva(dll_off)))
+        bias = image_base if delay_va_based else 0
+        attrs = 0 if delay_va_based else 1  # bit 0: fields are RVAs
+        for i, (int_rva, iat_rva, dll_rva) in enumerate(dly_descriptors):
+            struct.pack_into(
+                "<IIIIIIII",
+                sec,
+                dly_desc_off + i * 32,
+                attrs,
+                dll_rva + bias,
+                0,
+                iat_rva + bias,
+                int_rva + bias,
+                0,
+                0,
+                0,
+            )
+        dly_dir_rva, dly_dir_size = rva(dly_desc_off), 32 * (dly_n + 1)
+
     exp_dir_rva = exp_dir_size = 0
     if exports:
         name_rvas = [rva(emit(name.encode() + b"\x00")) for name in exports]
@@ -121,9 +175,15 @@ def _pe_with_imports_exports(
     struct.pack_into("<I", opt, 32, 0x1000)
     struct.pack_into("<I", opt, 36, 0x200)
     struct.pack_into("<I", opt, dir_count_off, 16)
+    if image_base:
+        if magic == 0x20B:
+            struct.pack_into("<Q", opt, 24, image_base)
+        else:
+            struct.pack_into("<I", opt, 28, image_base)
     dir_arr = dir_count_off + 4
     struct.pack_into("<II", opt, dir_arr + 0 * 8, exp_dir_rva, exp_dir_size)
     struct.pack_into("<II", opt, dir_arr + 1 * 8, imp_dir_rva, imp_dir_size)
+    struct.pack_into("<II", opt, dir_arr + 13 * 8, dly_dir_rva, dly_dir_size)
 
     raw_off = 0x40 + len(coff) + opt_size
     if raw_off % 0x200:
@@ -167,13 +227,26 @@ def _pefile_exports(pefile_mod: object, data: bytes) -> list[str]:
     return sorted(s.name.decode() for s in pe.DIRECTORY_ENTRY_EXPORT.symbols if s.name)
 
 
-def _session_surface(path: Path) -> tuple[list[dict], list[str]]:
+def _pefile_delay_imports(pefile_mod: object, data: bytes) -> list[tuple[str, list[str]]]:
+    pe = pefile_mod.PE(data=data)  # type: ignore[attr-defined]
+    if not hasattr(pe, "DIRECTORY_ENTRY_DELAY_IMPORT"):
+        return []
+    out: list[tuple[str, list[str]]] = []
+    for entry in pe.DIRECTORY_ENTRY_DELAY_IMPORT:
+        funcs = [
+            imp.name.decode() if imp.name else f"#{imp.ordinal}" for imp in entry.imports
+        ]
+        out.append((entry.dll.decode(), funcs))
+    return out
+
+
+def _session_surface(path: Path) -> tuple[list[dict], list[dict], list[str]]:
     service = AnalysisService()
     try:
         created = service.create_session(str(path))
         assert created.ok, created.error
         pe = created.data["session"]["metadata"]["pe"]
-        return pe["imports"], pe["exports"]
+        return pe["imports"], pe["delay_imports"], pe["exports"]
     finally:
         service.close_all()
 
@@ -211,7 +284,7 @@ def test_capability_surface_agrees_with_pefile(tmp_path: Path, magic: int) -> No
     }
     assert expected_exports == ["AlphaExport", "MidExport", "ZetaExport"]
 
-    reader_imports, reader_exports = _session_surface(binary)
+    reader_imports, reader_delay, reader_exports = _session_surface(binary)
 
     # DLL for DLL, function for function: the reader's import table matches
     # pefile's, including the ordinal-only DLL rendered as #N on both sides.
@@ -219,3 +292,65 @@ def test_capability_surface_agrees_with_pefile(tmp_path: Path, magic: int) -> No
     pefile_map = {dll: funcs for dll, funcs in expected_imports}
     assert reader_map == pefile_map
     assert reader_exports == expected_exports
+    # No delay directory was planted, and neither view invents one.
+    assert reader_delay == []
+    assert _pefile_delay_imports(pefile_mod, data) == []
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("magic", [0x20B, 0x10B], ids=["pe32+", "pe32"])
+def test_delay_imports_agree_with_pefile(tmp_path: Path, magic: int) -> None:
+    pefile_mod = _pefile()
+    if pefile_mod is None:
+        pytest.skip("pefile not installed — PE delay-import gate not run (skip != pass)")
+
+    # The lazy channel next to a small regular table: the reader must keep the
+    # two apart (a delay-loaded DLL never appears among load-time imports).
+    imports = [("KERNEL32.dll", ["ExitProcess"])]
+    delay = [
+        ("WINHTTP.dll", ["WinHttpOpen", "WinHttpConnect"]),
+        ("lazyengine.dll", [9]),  # ordinal into an unknown DLL: #9 on both sides
+    ]
+    data = _pe_with_imports_exports(imports, [], magic=magic, delay=delay)
+    binary = tmp_path / f"delay_{magic:x}.exe"
+    binary.write_bytes(data)
+
+    expected_delay = _pefile_delay_imports(pefile_mod, data)
+    # pefile really sees the planted lazy table, so it is a genuine referee.
+    assert {dll for dll, _ in expected_delay} == {"WINHTTP.dll", "lazyengine.dll"}
+
+    reader_imports, reader_delay, _ = _session_surface(binary)
+    reader_map = {entry["dll"]: entry["functions"] for entry in reader_delay}
+    assert reader_map == {dll: funcs for dll, funcs in expected_delay}
+    # The regular table stays the regular table: no leak in either direction.
+    assert {entry["dll"] for entry in reader_imports} == {"KERNEL32.dll"}
+
+
+@pytest.mark.integration
+def test_va_based_delay_descriptors_agree_with_pefile(tmp_path: Path) -> None:
+    """VC6's VA dialect: DWORD fields biased by ImageBase, attribute bit clear.
+
+    The rebase is the delay walk's one non-obvious branch, so it gets its own
+    gate: pefile applies the same ImageBase subtraction, and both views must
+    name the same DLL and functions off the same biased descriptor.
+    """
+    pefile_mod = _pefile()
+    if pefile_mod is None:
+        pytest.skip("pefile not installed — PE delay-import gate not run (skip != pass)")
+
+    data = _pe_with_imports_exports(
+        [],
+        [],
+        magic=0x10B,
+        delay=[("OLD32.dll", ["LegacyInit", "LegacyRun"])],
+        delay_va_based=True,
+        image_base=0x400000,
+    )
+    binary = tmp_path / "delay_va.exe"
+    binary.write_bytes(data)
+
+    expected_delay = _pefile_delay_imports(pefile_mod, data)
+    assert expected_delay == [("OLD32.dll", ["LegacyInit", "LegacyRun"])]
+
+    _, reader_delay, _ = _session_surface(binary)
+    assert reader_delay == [{"dll": "OLD32.dll", "functions": ["LegacyInit", "LegacyRun"]}]
