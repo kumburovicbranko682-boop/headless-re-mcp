@@ -5,6 +5,26 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（Android 重打包线 live gate：apktool 解码/重建 + apksigner 重签名端到端）
+
+- Android 重打包线（`apk.decode` → `apk.repack` → `apk.sign`）此前只有把 JVM mock 掉的
+  单测覆盖（`test_apktool_client_run_and_sign.py`、`test_apk_{decode,repack,sign}_fields.py`
+  等），信封与守卫都验到了，却从没用真实 apktool/apksigner 把整条链跑通过一次。顺带用真实
+  apktool 2.10.0 验证了服务里的 `apk_repack`（`apktool b` 不带 `-a aapt2`）能正常出包，
+  仓库自带的构建助手显式传 `-a aapt2` 只是防某些版本的坑，服务路径本身没有此缺陷。
+- 新增 `tests/integration/test_android_repackaging_gate.py`：目标 APK 在测试期用 stock 工具
+  现装（javac → d8 → aapt，不落任何被跟踪的二进制），断言内容而非仅 `ok`：decode 出真实
+  smali（`MainActivity` 的 `compute(II)I` / `mul-int`）与可编辑文本 manifest；在解码树里把一个
+  `CAMERA` 权限注入到 `<application>` 之前，重打包 + 重签名后依然存在——通过再次 decode
+  已签名产物、在其 manifest 里找到该权限来证明整条 编辑/重建/重签 循环无损（androguard 在场时
+  再用 `apk.open`/`apk.permissions` 交叉核对包名与两个权限）。重打包产物是合法 zip，签名产物
+  独立通过 `apksigner verify`，签名 keystore 放在会话工件树内以过路径包含守卫、不动
+  `$HOME/.android`。
+- 另加一条无需任何工具链的用例：`apk.repack` 的 `decoded_dir` 与 `apk.sign` 的 `keystore`
+  指向会话工件树之外时必须以 `invalid_params` 拒绝（守卫在启动任何 JVM 前就触发），把这条
+  路径包含契约钉在一条总能运行的集成用例里。
+- apktool/apksigner 未配置或 SDK 构建工具/JDK 缺失时干净跳过（skip≠pass）。只加测试、不改源码。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
