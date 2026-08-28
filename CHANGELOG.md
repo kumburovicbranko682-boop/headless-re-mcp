@@ -24,6 +24,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（adb 设备 shell 命令注入漂移守卫：`adb/client.py` 无原始 shell 工具、每条命令的动态片段都靠“先按严格模式校验/数值化”才能安全到达 `device.shell`，但这条防注入纪律此前只写在模块注释与代码评审里，没有机器校验——一条列表参数其实**并非**天然安全，adbutils 用 `list2cmdline`(Windows 式引用)拼接，压根不中和设备 `/system/bin/sh` 会解释的 `;`|`&`|`$(...)`，所以只要有人给某条命令加一个未校验的 `{app_id}` 就是设备侧命令注入，且无一现有测试会红）
+
+- 逐一核对了 `_device_shell` 的每处调用点:命令要么是字符串/列表**常量**(`ps -A`、`getprop ...`、`pm list packages[-3]`)、要么是数值化(`str(capped)`、`int(port)`)、要么是校验过的标识符——`{package}` 经 `_check_package` 或 `_apk_package_name` 里的 `_PACKAGE_RE`、`{pkg}` 是 `_check_package(...)` 返回值、`{remote_path}` 过 `re.match(r"^/[\w./\-]+$", ...)`、`{bind_host}` 过 `_BIND_HOST_RE`、`{int(port)}` 校验 1..65535。当下不变式成立,但仅由纪律守护。
+- 新增 `test_adb_shell_command_injection_guard.py`,与分页/错误码分类守卫同门的“冻结面”AST 守卫,三向钉死:①`device.shell` 只能经唯一的 `_device_shell` 隘口触达(任何绕过隘口的 `.shell(...)` 直连会被拦,否则其命令永不受下述审查);②把每条命令渲染成**模板**(常量原样、动态槽渲染为 `{expr}`,能解 `args = "a" if flag else "b"` 三元与 `su -c '...'` f-string),其集合必须等于经评审的 `_EXPECTED_SHELL_TEMPLATES` 冻结清单——任何新增/改动的 shell 命令都会红,逼人回到注入可能进入的那一点、确认每个 `{...}` 槽是校验值后再登记;③每个插值槽必须是裸名或 `int(...)`/`str(...)` 数值化,绝不允许拼接/下标/嵌套 f-string 这类即便落在清单内也能夹带未审子串的形态。
+- 非空性以三段合成样例带外验证:新命令(`run-as {app_id}`)被清单拦下、拼接槽(`a + b`)被形态检查拦下、绕隘口的 `dev.shell(f"cmd {x}")` 被隘口扫描拦下,证明三道检查既非恒真也非恒假。
+
 ### 非 PE 后端 `timeout` 现在如实上报为 `retryable=True`：六个 `_as_rpc` 转换器此前都用 `XdbgRpcError` 的构造默认 `retryable=False`，把每一类非 PE 失败(含 timeout)拍平为“永久失败”，与 `_failure` 对 TimedOut / TimeoutError / DIE·Exeinfo 扫描 timeout 一律判 retryable 的全局约定相悖
 
 - `RpcError.retryable` 是与 `code` 并列的机器契约:无人值守的调用方据此决定是否重试(见 `test_result_failure_mapping`
