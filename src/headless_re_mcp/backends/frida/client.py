@@ -77,12 +77,27 @@ Java.perform(function () {
 rpc.exports = { ping: function () { return 'crypto_monitor_loaded'; } };
 """,
     "android_root_bypass": """
+function headlessReIsRootPath(p) {
+  // The su *binary* is a path component named 'su' (/system/bin/su, /sbin/su,
+  // /su/bin/su), so match it as a component. A bare "contains the letters su"
+  // test also fires on any path that merely includes those two letters:
+  // /data/app/com.example.measure/base.apk, .../resume/..., "issue.txt",
+  // com.sudoku.game, every /usr path. Hiding those from File.exists() breaks
+  // the very app under analysis, the opposite of a transparent root bypass.
+  // 'magisk' stays a substring: it is specific enough that its appearance is
+  // itself the root indicator this hook is meant to conceal.
+  var comps = p.split('/');
+  for (var i = 0; i < comps.length; i++) {
+    if (comps[i] === 'su') { return true; }
+  }
+  return p.indexOf('magisk') !== -1;
+}
 Java.perform(function () {
   try {
     var File = Java.use('java.io.File');
     File.exists.implementation = function () {
       var p = this.getAbsolutePath();
-      if (p.indexOf('su') !== -1 || p.indexOf('magisk') !== -1) return false;
+      if (headlessReIsRootPath(p)) { return false; }
       return this.exists();
     };
   } catch (e) {}
