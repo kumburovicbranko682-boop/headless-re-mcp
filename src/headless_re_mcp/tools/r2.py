@@ -151,6 +151,28 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_entrypoints(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.relocations")
+    def r2_relocations(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Relocations: the addresses patched at load time, and by what.
+
+        Runs ``irj``. A relocation is where the loader writes an address the
+        linker could not fix statically -- a GOT/PLT slot bound to an imported
+        function, an absolute pointer rebased for ASLR, an ifunc resolved at
+        startup. This is what turns a bare ``call [rip+off]`` into ``call
+        printf``, so it is the map an agent needs to read indirect calls, find
+        the patch/hook points, and see which import lands at which slot. Answers
+        with items, each carrying type (r2's reloc kind, e.g. SET_64 for a
+        pointer set, ADD_64 for a relative rebase), vaddr, paddr, is_ifunc,
+        address (va/rva/module), and name when the relocation resolves a named
+        symbol (an import such as ``printf`` or a runtime helper) -- a relative
+        rebase carries no name. There is no integer address field. Read
+        items_truncated, items_total and items_limit when the list filled the
+        cap (4096). There is no relocations, truncated or has_more field.
+        """
+        return _dump(analysis.r2_relocations(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,

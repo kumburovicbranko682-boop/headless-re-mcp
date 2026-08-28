@@ -448,6 +448,27 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
         assert all(set(item) == {"name"} for item in libs.data.get("items", [])), lib_names
         assert any("libc" in (n or "") for n in lib_names), lib_names
 
+        # r2.relocations names where the loader patches addresses in. A
+        # dynamically linked ELF binds its imported calls through GOT/PLT
+        # relocations, so the printf import must appear as a named relocation,
+        # every row must carry a mapped address, and the relocation kind (type)
+        # must be present -- this is the map from an indirect call to its named
+        # target.
+        relocs = service.r2_relocations(session_id, timeout=60.0)
+        assert relocs.ok and relocs.data is not None, relocs.error
+        assert relocs.data.get("parsed") is True
+        assert relocs.data.get("architecture") == expect_arch
+        reloc_rows = relocs.data.get("items") or []
+        assert reloc_rows, "a dynamically linked ELF has relocations"
+        for row in reloc_rows:
+            assert isinstance(row.get("type"), str) and row["type"], row
+            _assert_mapped(row.get("address"))
+            assert row["address"].get("architecture") == expect_arch, row
+        printf_reloc = next(
+            (row for row in reloc_rows if "printf" in (row.get("name") or "")), None
+        )
+        assert printf_reloc is not None, [r.get("name") for r in reloc_rows]
+
         exports = service.r2_exports(session_id, timeout=60.0)
         assert exports.ok and exports.data is not None, exports.error
         assert exports.data.get("parsed") is True
