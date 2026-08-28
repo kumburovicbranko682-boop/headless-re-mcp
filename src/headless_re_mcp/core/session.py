@@ -945,6 +945,9 @@ def describe_apk(path: Path) -> dict[str, Any]:
             # Bytes glued on before the ZIP container (the Janus smuggling
             # shape): 0 for a clean archive, None when unmeasurable.
             "prepended_size": _apk_prepended_size(path),
+            # Bytes glued on after the EOCD record and its comment: Android's
+            # own parser rejects them, naive extractors read right past them.
+            "appended_size": _apk_appended_size(path),
             "manifest": _apk_manifest_facts_from_apk(path),
             "dex": _apk_dex_facts(path),
             # The JNI surface of each bundled .so, parsed with the same ELF
@@ -1412,6 +1415,54 @@ def _apk_prepended_size(path: Path) -> int | None:
     if actual_cd < 0 or actual_cd < cd_offset:
         return None
     return actual_cd - cd_offset
+
+
+def _apk_appended_size(path: Path) -> int | None:
+    """Bytes glued on after the EOCD record and its comment, or None.
+
+    The mirror image of _apk_prepended_size: a ZIP ends where its end-of-
+    central-directory record's declared comment ends, so bytes past that point
+    belong to no member, no directory, and no signature -- a stash appended
+    with `cat`. The asymmetry that makes this worth reporting: Android's own
+    parser (apksigner, libziparchive) requires the comment to reach exactly to
+    EOF and rejects such a file as "not a ZIP archive", while Info-ZIP's unzip
+    and Python's zipfile scan backwards for the EOCD magic and silently read
+    right past the stash. One artifact, two parsers, two verdicts.
+
+    The scan walks EOCD candidates from the end of the file backwards and
+    takes the first whose record is self-consistent (comment fits inside the
+    file, central directory size/offset arithmetic holds), so stash bytes that
+    happen to contain the magic cannot spoof the record. 0 means the container
+    ends where it claims to; None means no credible EOCD was found.
+    """
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            tail_len = min(size, _ZIP_EOCD_MIN + 2 * _ZIP_MAX_COMMENT)
+            handle.seek(size - tail_len)
+            tail = handle.read(tail_len)
+    except OSError:
+        return None
+    eocd = len(tail)
+    while (eocd := tail.rfind(_ZIP_EOCD_SIGNATURE, 0, eocd)) >= 0:
+        if eocd + _ZIP_EOCD_MIN > len(tail):
+            continue
+        comment_len = int.from_bytes(tail[eocd + 20 : eocd + 22], "little")
+        declared_end = eocd + _ZIP_EOCD_MIN + comment_len
+        if declared_end > len(tail):
+            # The comment would run past EOF: not a credible record.
+            continue
+        cd_size = int.from_bytes(tail[eocd + 12 : eocd + 16], "little")
+        cd_offset = int.from_bytes(tail[eocd + 16 : eocd + 20], "little")
+        if _ZIP64_SENTINEL in (cd_size, cd_offset):
+            return None
+        actual_cd = (size - tail_len + eocd) - cd_size
+        if actual_cd < 0 or actual_cd < cd_offset:
+            # The directory cannot fit in front of this record: magic bytes
+            # inside the stash, not the real EOCD. Keep walking backwards.
+            continue
+        return len(tail) - declared_end
+    return None
 
 
 def _apk_signature_schemes(path: Path) -> tuple[bool, bool, list[dict[str, Any]]]:

@@ -1538,6 +1538,75 @@ class TestApkContainerSlack:
         assert _apk_prepended_size(blob) is None
 
 
+class TestApkAppendedStash:
+    """describe_apk measures data glued on after the EOCD record and comment.
+
+    A ZIP ends where its EOCD's declared comment ends; bytes past that belong
+    to no member and no signature. Android's own parser rejects such a file as
+    "not a ZIP archive" while unzip and Python's zipfile silently read past
+    the stash -- one artifact, two verdicts, which is what makes the byte
+    count worth surfacing. 0 is a container that ends where it claims to;
+    None means no credible EOCD anchored the measurement.
+    """
+
+    def test_the_committed_fixture_ends_where_it_claims(self) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        assert describe_apk(_APK_FIXTURE)["apk"]["appended_size"] == 0
+
+    def test_appended_bytes_are_measured_exactly(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        stash = b"config-blob-the-app-reads-back" * 3
+        path = tmp_path / "stashed.apk"
+        path.write_bytes(_APK_FIXTURE.read_bytes() + stash)
+        facts = describe_apk(path)["apk"]
+        assert facts["appended_size"] == len(stash)
+        # The archive itself still reads normally -- the smuggling property --
+        # so the other identity facts survive.
+        assert facts["manifest"]["package"] == "com.example.headless"
+
+    def test_a_stash_containing_the_eocd_magic_cannot_spoof(self, tmp_path: Path) -> None:
+        from headless_re_mcp.core.session import _apk_appended_size
+
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        # The stash embeds the EOCD magic followed by an impossible record
+        # (comment running past EOF): the scan must reject the decoy and
+        # anchor on the real record in front of it. Python's zipfile takes the
+        # decoy at face value and reads an empty archive, so this is measured
+        # at the function level -- the reader out-scans the stdlib here.
+        decoy = b"PK\x05\x06" + b"\x00" * 16 + b"\xff\xff" + b"payload"
+        path = tmp_path / "decoy.apk"
+        path.write_bytes(_APK_FIXTURE.read_bytes() + decoy)
+        assert _apk_appended_size(path) == len(decoy)
+
+    def test_an_eocd_comment_is_not_a_stash(self, tmp_path: Path) -> None:
+        path = tmp_path / "commented.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.comment = b"release notes live here"
+        assert describe_apk(path)["apk"]["appended_size"] == 0
+
+    def test_a_janus_shape_has_no_appended_stash(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        # Prepended data shifts every offset but the file still ends at the
+        # comment's end: the two slack measurements stay independent.
+        path = tmp_path / "janus.apk"
+        path.write_bytes(b"dex\n035\x00" + b"\x00" * 92 + _APK_FIXTURE.read_bytes())
+        facts = describe_apk(path)["apk"]
+        assert facts["prepended_size"] == 100
+        assert facts["appended_size"] == 0
+
+    def test_no_credible_eocd_reads_as_none(self, tmp_path: Path) -> None:
+        from headless_re_mcp.core.session import _apk_appended_size
+
+        blob = tmp_path / "notazip.bin"
+        blob.write_bytes(b"just bytes, no zip structure")
+        assert _apk_appended_size(blob) is None
+
+
 class TestApkNativeLibFacts:
     """describe_apk parses each bundled lib/<abi>/*.so with the ELF reader.
 
