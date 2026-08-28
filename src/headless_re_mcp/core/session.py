@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import io
@@ -2318,6 +2319,13 @@ _HTML_MAX_TITLE = 256
 # The tags that contribute a named field to the form they sit in. <button>
 # is excluded: it submits, it is not data the page collects.
 _HTML_FIELD_TAGS = frozenset({"input", "textarea", "select"})
+# The digest algorithms Subresource Integrity defines (W3C SRI); anything else
+# in an integrity token is unknown to browsers too and stays unverified.
+_SRI_ALGORITHMS: dict[str, Callable[..., Any]] = {
+    "sha256": hashlib.sha256,
+    "sha384": hashlib.sha384,
+    "sha512": hashlib.sha512,
+}
 
 
 class _HtmlFactsParser(HTMLParser):
@@ -2337,6 +2345,8 @@ class _HtmlFactsParser(HTMLParser):
         self.form_total = 0
         self.forms: list[dict[str, Any]] = []
         self._form: dict[str, Any] | None = None
+        self.sri_total = 0
+        self.sri: list[dict[str, Any]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr = dict(attrs)
@@ -2348,12 +2358,16 @@ class _HtmlFactsParser(HTMLParser):
                 if len(self.external_scripts) < _HTML_MAX_ITEMS:
                     self.external_scripts.append(src)
                 self._add_host(src)
+                self._add_sri("script", src, attr.get("integrity"))
             else:
                 self.inline_script_total += 1
         elif tag == "link":
             if "stylesheet" in (attr.get("rel") or "").lower():
                 self.stylesheet_total += 1
-                self._add_host(attr.get("href"))
+                href = attr.get("href")
+                self._add_host(href)
+                if href:
+                    self._add_sri("stylesheet", href, attr.get("integrity"))
         elif tag == "iframe":
             self.iframe_total += 1
             self._add_host(attr.get("src"))
@@ -2400,6 +2414,20 @@ class _HtmlFactsParser(HTMLParser):
         if host:
             self.hosts.add(host)
 
+    def _add_sri(self, tag: str, url: str, integrity: str | None) -> None:
+        """Record each Subresource Integrity token pinned on a loaded resource.
+
+        The attribute is a whitespace-separated token list (a browser accepts
+        the resource if any token of the strongest algorithm matches); one
+        entry per token keeps every pin auditable on its own.
+        """
+        if not integrity:
+            return
+        for token in integrity.split():
+            self.sri_total += 1
+            if len(self.sri) < _HTML_MAX_ITEMS:
+                self.sri.append({"tag": tag, "url": url, "integrity": token})
+
 
 def describe_html(path: Path) -> dict[str, Any]:
     """Cheap, stdlib-only facts about an HTML page (no browser).
@@ -2429,6 +2457,8 @@ def describe_html(path: Path) -> dict[str, Any]:
         parser.close()
     except Exception:  # noqa: BLE001 - a hostile page must not break session creation
         pass
+    for entry in parser.sri:
+        entry["ok"] = _sri_verdict(path.parent, entry["url"], entry["integrity"])
     return {
         "html": {
             "title": parser.title,
@@ -2440,11 +2470,60 @@ def describe_html(path: Path) -> dict[str, Any]:
             "iframe_count": parser.iframe_total,
             "form_count": parser.form_total,
             "forms": parser.forms,
+            # The page's integrity pins: one entry per SRI token on a script
+            # or stylesheet, with the verdict of recomputing the digest over
+            # the local file the URL names -- True (the pin matches, the
+            # browser would load it), False (it would refuse: the asset was
+            # modified after the pin, or vice versa), or None when the asset
+            # is not a file next to the page (a remote URL, a missing or
+            # out-of-tree path) or the token is not one a browser accepts.
+            "sri_count": parser.sri_total,
+            "sri": parser.sri,
             "external_host_count": len(parser.hosts),
             "external_hosts": sorted(parser.hosts)[:_HTML_MAX_ITEMS],
             "truncated": size > _HTML_MAX_BYTES,
         }
     }
+
+
+def _sri_verdict(base: Path, url: str, token: str) -> bool | None:
+    """Recompute one Subresource Integrity pin against the file it names.
+
+    A True/False verdict needs the same two things a browser needs: a token it
+    understands (a W3C SRI algorithm, a well-formed base64 digest of that
+    algorithm's size) and the resource bytes. The bytes are only at hand when
+    the URL is a plain relative path naming a file inside the page's own
+    directory tree -- the captured-site layout. Anything else (an absolute or
+    root-relative URL, a traversal escaping the tree, a missing or oversized
+    file, an alien token) is None: unverified, never guessed. False is the
+    load a browser would block -- the asset next to the page no longer matches
+    the hash the page pins.
+    """
+    algorithm, _, encoded = token.partition("-")
+    digest_fn = _SRI_ALGORITHMS.get(algorithm.lower())
+    if digest_fn is None or not encoded:
+        return None
+    try:
+        # A token may carry ?options after the digest, per the SRI grammar.
+        expected = base64.b64decode(encoded.split("?", 1)[0], validate=True)
+    except ValueError:
+        return None
+    if len(expected) != digest_fn().digest_size:
+        return None
+    parts = urlsplit(url)
+    if parts.scheme or parts.netloc or not parts.path or parts.path.startswith("/"):
+        return None
+    try:
+        candidate = (base / parts.path).resolve()
+        if not candidate.is_relative_to(base.resolve()):
+            return None
+        if not candidate.is_file() or candidate.stat().st_size > _HTML_MAX_BYTES:
+            return None
+        data = candidate.read_bytes()
+    except OSError:
+        return None
+    digest: bytes = digest_fn(data).digest()
+    return digest == expected
 
 
 def _read_wasm_name(data: bytes, pos: int) -> tuple[str | None, int]:

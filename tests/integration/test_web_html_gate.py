@@ -118,6 +118,95 @@ def _origin() -> Iterator[_HtmlOrigin]:
 
 
 @pytest.mark.integration
+def test_sri_verdicts_match_the_browsers_enforcement(tmp_path: Path) -> None:
+    """The reader's SRI verdicts must be the loads chromium allows and blocks.
+
+    describe_html recomputes each integrity pin against the file next to the
+    page and says True (a browser would load it) or False (it would refuse).
+    That arithmetic and its unit fixtures are both ours; the browser is the
+    ground truth for what the attribute actually does. One page, two scripts
+    served from the same bytes sitting next to it on disk: one pinned with the
+    real digest, one with a digest of different bytes. The reader must say
+    True/False, and chromium must prove it behaviorally -- both scripts fetch
+    with HTTP 200 (so the block is integrity, not a missing file), yet only
+    the truthfully pinned one executes its DOM side effect.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — SRI cross-check not run (skip != pass)")
+
+    import base64
+    import hashlib
+
+    good = b"document.title = document.title + ' sri-good-ran';\n"
+    bad = b"document.title = document.title + ' sri-bad-ran';\n"
+    good_pin = "sha384-" + base64.b64encode(hashlib.sha384(good).digest()).decode()
+    stale_pin = "sha384-" + base64.b64encode(hashlib.sha384(b"an older build").digest()).decode()
+    page = (
+        "<html><head><title>sri-gate</title>"
+        f'<script src="good.js" integrity="{good_pin}"></script>'
+        f'<script src="bad.js" integrity="{stale_pin}"></script>'
+        "</head><body>x</body></html>"
+    ).encode()
+
+    # The captured-site layout: page and assets side by side on disk. The
+    # reader pins good.js True and bad.js False from these very bytes.
+    (tmp_path / "page.html").write_bytes(page)
+    (tmp_path / "good.js").write_bytes(good)
+    (tmp_path / "bad.js").write_bytes(bad)
+    facts = describe_html(tmp_path / "page.html")["html"]
+    assert facts["sri_count"] == 2
+    verdicts = {entry["url"]: entry["ok"] for entry in facts["sri"]}
+    assert verdicts == {"good.js": True, "bad.js": False}
+
+    with _origin() as origin:
+        origin.routes = {
+            "/": ("text/html", page),
+            "/good.js": ("application/javascript", good),
+            "/bad.js": ("application/javascript", bad),
+        }
+        service = AnalysisService()
+        try:
+            created = service.create_session(f"{origin.base}/", target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+            opened = service.web_open(session_id, headless=True, timeout=30.0)
+            if not opened.ok:
+                pytest.skip(
+                    "chromium could not launch (browser build missing?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+            try:
+                # Both scripts must be fetched with 200: the difference in what
+                # follows is enforcement, not availability.
+                def _statuses() -> dict[str, Any]:
+                    listing = service.web_network_list(session_id, limit=1000)
+                    assert listing.ok, listing.error
+                    rows = cast(list[dict[str, Any]], listing.data["requests"])
+                    return {str(r["url"]): r.get("status") for r in rows}
+
+                expected = {f"{origin.base}/good.js", f"{origin.base}/bad.js"}
+                _wait_until(
+                    lambda: all(_statuses().get(url) == 200 for url in expected),
+                    f"browser to fetch both pinned scripts; expected {sorted(expected)}",
+                )
+
+                # The browser's verdict, as behavior: the True-pinned script
+                # ran its side effect, the False-pinned one was blocked before
+                # executing -- exactly the reader's True/False.
+                def _title() -> str:
+                    dom = service.web_dom_snapshot(session_id)
+                    assert dom.ok, dom.error
+                    return cast(str, dom.data["title"])
+
+                _wait_until(lambda: "sri-good-ran" in _title(), "the pinned script to run")
+                assert "sri-bad-ran" not in _title()
+            finally:
+                service.web_close(session_id)
+        finally:
+            service.close_all()
+
+
+@pytest.mark.integration
 def test_html_reader_matches_the_browsers_resource_graph(tmp_path: Path) -> None:
     if not _browser_available():
         pytest.skip("playwright not installed — HTML cross-check not run (skip != pass)")
