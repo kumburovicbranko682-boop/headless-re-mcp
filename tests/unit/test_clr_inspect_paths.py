@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -258,7 +259,7 @@ def test_metadata_root_stops_at_an_unterminated_stream_name() -> None:
 def test_metadata_root_swallows_a_table_parser_crash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def exploding(meta: bytes, stream_map: dict) -> tuple:
+    def exploding(meta: bytes, stream_map: dict[str, Any]) -> tuple[Any, ...]:
         raise RuntimeError("hostile tables")
 
     monkeypatch.setattr(clr_inspect, "_parse_tables_and_names", exploding)
