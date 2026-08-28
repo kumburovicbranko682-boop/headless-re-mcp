@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（native GUI 在没装 native extra 时把"缺 PySide6"当 internal_error 记 incident）
+
+- `python -m headless_re_mcp.native_app`（默认进 GUI）会 `from headless_re_mcp.native_app.gui
+  import run_native_gui`，而 gui.py 依赖可选 `native` extra 的 PySide6。基础安装（没装 native）
+  一跑就抛 `ModuleNotFoundError: PySide6`，`main()` 又把它交给 `run_cli_safely` 当**意外**异常：
+  stderr 吐 `internal_error` 信封、铸一个 incident id 写进 incidents.log、exit 1。这跟 serve-web
+  那条是同一类——启动 GUI 却没装桌面依赖是完全可预期的用户状况，真正该说的"装
+  `pip install "headless-re-mcp[native]"`"被 incident 语言埋掉。改法：`native_app/__main__.py` 就地
+  接住 GUI import 的 `ModuleNotFoundError`，按 serve-web 同形输出 `backend_unavailable` + 缺失
+  模块名 + 安装命令，exit 2，不铸 incident（`--cli` 首次设置向导路径不受影响）。新增单测用
+  `monkeypatch.setitem(sys.modules, "headless_re_mcp.native_app.gui", None)` 确定性触发——装没装
+  PySide6 都跑同一条路径，断言 exit 2、错误码、安装提示、且不含 incident。ruff 与 mypy（223 文件）
+  全绿；全仓分支无一改过 native_app 的这条缺依赖处理。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
