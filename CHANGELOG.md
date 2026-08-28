@@ -101,6 +101,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（ghidra 客户端未夹取调用方超时，与同类 CLI 适配器不一致）
+
+- `backends/ghidra/client.py` 把调用方给的 `timeout` 直接交给 `run_bounded`，没有像
+  r2/jadx/apktool/jsre 那样先过 `clamp_cli_timeout`。各 ghidra 工具 schema 都声明
+  `0 < timeout <= 600`，但 agent 传输层是从模型参数直接调处理器
+  （`CommandCatalog.invoke -> spec.handler(**arguments)`），根本不走 schema 校验。于是
+  非正数/NaN 的 timeout 会让 `run_bounded` 先把 JVM 拉起来、第一轮循环就杀掉，回报一个
+  误导性的 `timeout`（其实是坏参数）；而一个超大值又让卡死的 analyzeHeadless 按调用方给的
+  时长一直占着一个 worker 和一个核。现在在唯一的 `_run_headless` 收口处夹取，让
+  analyze/functions/symbols/xrefs/decompile 各公开方法统一到同一上限，并把坏值映射成
+  `invalid_params`，与同类适配器一致。新增三条直测：超大 timeout 被夹到 600、0/负/NaN 在拉起
+  JVM 前即报 `invalid_params`、发现后无法 exec 的 analyzeHeadless（OSError）映射成 `backend_error`。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
