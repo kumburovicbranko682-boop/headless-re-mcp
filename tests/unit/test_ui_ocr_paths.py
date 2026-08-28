@@ -360,6 +360,25 @@ def test_ocr_bmp_windows_rejects_a_non_object_payload(
         ocr_bmp_windows(_bmp(tmp_path))
 
 
+def test_ocr_bmp_windows_maps_a_non_json_last_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker prints its JSON result, but a WinRT/COM subprocess can print a
+    trailing warning to stdout after it, leaving a non-JSON last line. json.loads
+    raises JSONDecodeError there; before the guard that escaped as a bare
+    ValueError the service maps to invalid_request, blaming the caller for a
+    backend fault instead of the backend_error the rest of the function uses."""
+    monkeypatch.setattr(
+        ocr,
+        "_run_ocr",
+        lambda *a, **k: _OcrOutput(0, '{"backend": "windows_ocr"}\nWARN: com noise\n', ""),
+    )
+    with pytest.raises(UiPidBoundaryError) as info:
+        ocr_bmp_windows(_bmp(tmp_path))
+    assert info.value.code == "backend_error"
+    assert "non-JSON" in str(info.value)
+
+
 def test_ocr_bmp_windows_returns_the_worker_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

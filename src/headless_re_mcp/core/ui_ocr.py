@@ -187,7 +187,22 @@ def ocr_bmp_windows(path: str | Path, *, language: str = "en-US") -> JsonObject:
     lines_out = [ln for ln in (completed.stdout or "").splitlines() if ln.strip()]
     if not lines_out:
         raise UiPidBoundaryError("backend_error", "Windows OCR subprocess produced no output")
-    payload = json.loads(lines_out[-1])
+    try:
+        payload = json.loads(lines_out[-1])
+    except ValueError as exc:
+        # Every other failure here is a UiPidBoundaryError; this last-line parse
+        # was the one that was not. The worker prints its JSON result on one line
+        # (taking the last line already tolerates noise printed before it), but a
+        # WinRT/COM subprocess can also print a trailing warning to stdout after
+        # it, leaving a non-JSON last line. json.loads then raises
+        # JSONDecodeError -- a ValueError the service maps to invalid_request,
+        # blaming the caller for a backend fault -- so name it backend_error like
+        # the non-zero-exit and non-object arms around it.
+        raise UiPidBoundaryError(
+            "backend_error",
+            "Windows OCR subprocess returned non-JSON output",
+            stdout=lines_out[-1][:200],
+        ) from exc
     if not isinstance(payload, dict):
         raise UiPidBoundaryError("backend_error", "Windows OCR returned non-object")
     return payload
