@@ -182,4 +182,30 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_functions(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.globals")
+    def wasm_globals(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 100,
+    ) -> dict[str, Any]:
+        """List a .wasm module's defined globals (section 6). Pure Python, no wabt.
+
+        summary only counts globals; this names each one. Answers with globals
+        (paged), count, total, offset, has_more, plus imported_count (imported
+        globals precede defined ones in the index space, so it is added as an
+        offset) and resolved (false when the section could not be parsed).
+
+        Each row carries index (its position in the global index space),
+        value_type (i32/i64/f32/f64/v128/funcref/externref), mutable (a mutable
+        global is where a packer often keeps a stack pointer or a decode key),
+        and init -- the decoded leading instruction of the initializer: {op}
+        plus value for i32.const/i64.const or index for global.get/ref.func;
+        op is "complex" for a multi-instruction initializer. scan_capped marks a
+        module whose global count hit the collect cap.
+
+        A file that is not a WebAssembly module is refused as invalid_params and
+        one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_globals(path, offset=offset, limit=limit))
+
     return tools.bindings

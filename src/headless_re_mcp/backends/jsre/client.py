@@ -22,6 +22,7 @@ from headless_re_mcp.backends.common.bounded_run import (
 from headless_re_mcp.backends.jsre.wasm_summary import (
     extract_wasm_strings,
     list_wasm_functions,
+    list_wasm_globals,
     summarize_wasm,
 )
 
@@ -345,6 +346,23 @@ class WasmClient:
                 "backend_error", f"input unreadable: {exc}", path=str(resolved)
             ) from exc
         return list_wasm_functions(data, offset=offset, limit=limit)
+
+    def globals(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """List defined globals with type/mutability/init (no wabt). Same guards as summary."""
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        if not _looks_like_wasm(resolved):
+            raise JsReError(
+                "invalid_params",
+                "not a WebAssembly module: missing the \\0asm magic",
+                path=str(resolved),
+            )
+        try:
+            data = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        return list_wasm_globals(data, offset=offset, limit=limit)
 
 
 def _discover_webcrack() -> Path | None:

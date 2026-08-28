@@ -796,3 +796,138 @@ def list_wasm_functions(
     result["offset"] = start
     result["has_more"] = start + len(window) < len(functions)
     return result
+
+
+_MAX_GLOBALS_COLLECT = 10_000
+_MAX_GLOBALS_PAGE = 2000
+
+
+def _read_const_init(data: bytes, pos: int) -> tuple[JsonObject, int]:
+    """Decode a global's init expression: the leading instruction plus its end.
+
+    Reads the first instruction for display, then defers to _skip_const_expr for
+    the authoritative end position so a rare multi-instruction expression still
+    leaves the vector aligned. An expression whose first opcode we do not model
+    raises, which the caller turns into resolved=false.
+    """
+    op, after = _u8(data, pos)
+    init: JsonObject | None = None
+    if op == 0x41:  # i32.const
+        value, _ = _sleb(data, after)
+        init = {"op": "i32.const", "value": value}
+    elif op == 0x42:  # i64.const
+        value, _ = _sleb(data, after)
+        init = {"op": "i64.const", "value": value}
+    elif op == 0x43:  # f32.const
+        init = {"op": "f32.const"}
+    elif op == 0x44:  # f64.const
+        init = {"op": "f64.const"}
+    elif op == 0x23:  # global.get
+        index, _ = _uleb(data, after)
+        init = {"op": "global.get", "index": index}
+    elif op == 0xD0:  # ref.null
+        init = {"op": "ref.null"}
+    elif op == 0xD2:  # ref.func
+        index, _ = _uleb(data, after)
+        init = {"op": "ref.func", "index": index}
+    end_pos = _skip_const_expr(data, pos)
+    if init is None:
+        init = {"op": "complex"}
+    return init, end_pos
+
+
+def _parse_globals(payload: bytes) -> tuple[list[JsonObject], bool]:
+    """Decode the global section (id 6): value type, mutability, init expression."""
+    count, pos = _uleb(payload, 0)
+    out: list[JsonObject] = []
+    capped = False
+    for _ in range(count):
+        if len(out) >= _MAX_GLOBALS_COLLECT:
+            capped = True
+            break
+        vt, pos = _u8(payload, pos)
+        mut, pos = _u8(payload, pos)
+        init, pos = _read_const_init(payload, pos)
+        out.append(
+            {
+                "value_type": _valtype(vt),
+                "mutable": mut == 0x01,
+                "init": init,
+            }
+        )
+    return out, capped
+
+
+def _count_imported_globals(payload: bytes | None) -> int:
+    """How many globals the import section brings in (they precede defined ones)."""
+    if payload is None:
+        return 0
+    try:
+        count, pos = _uleb(payload, 0)
+        imported = 0
+        for _ in range(count):
+            _, pos = _name(payload, pos)
+            _, pos = _name(payload, pos)
+            kind, pos = _u8(payload, pos)
+            if kind == 0:
+                _, pos = _uleb(payload, pos)
+            elif kind == 1:
+                _, pos = _u8(payload, pos)
+                _, pos = _limits(payload, pos)
+            elif kind == 2:
+                _, pos = _limits(payload, pos)
+            elif kind == 3:
+                _, pos = _u8(payload, pos)
+                _, pos = _u8(payload, pos)
+                imported += 1
+            else:
+                break
+        return imported
+    except (_WasmTruncated, _WasmMalformed):
+        return 0
+
+
+def list_wasm_globals(data: bytes, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """List a module's defined globals (section 6) with type, mutability, init.
+
+    summary only counts them. Each row carries its index in the global index
+    space (imported globals come first, so the count is added as an offset),
+    value_type, mutable, and init -- the decoded leading instruction of the
+    initializer (i32.const/f64.const/global.get/ref.func, with value or index
+    where it applies). Never raises: an unmodellable section sets resolved false
+    and yields no rows.
+    """
+    result: JsonObject = {
+        "globals": [],
+        "count": 0,
+        "total": 0,
+        "offset": max(0, int(offset)),
+        "has_more": False,
+        "imported_count": 0,
+        "resolved": True,
+        "scan_capped": False,
+    }
+    sections, _ = _collect_sections(data)
+    imported = _count_imported_globals(sections.get(2))
+    result["imported_count"] = imported
+    if 6 not in sections:
+        return result
+    try:
+        parsed, capped = _parse_globals(sections[6])
+    except (_WasmTruncated, _WasmMalformed):
+        result["resolved"] = False
+        return result
+
+    for local_index, row in enumerate(parsed):
+        row["index"] = imported + local_index
+    result["total"] = len(parsed)
+    result["scan_capped"] = capped
+
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_GLOBALS_PAGE))
+    window = parsed[start : start + cap]
+    result["globals"] = window
+    result["count"] = len(window)
+    result["offset"] = start
+    result["has_more"] = start + len(window) < len(parsed)
+    return result
