@@ -1044,3 +1044,69 @@ def list_wasm_exports(data: bytes, *, offset: int = 0, limit: int = 100) -> Json
     result["offset"] = start
     result["has_more"] = start + len(window) < len(entries)
     return result
+
+
+_MAX_IMPORTS_PAGE = 2000
+
+
+def list_wasm_imports(data: bytes, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """List a module's imports with full descriptors, resolving func signatures.
+
+    summary caps the import list and does not resolve function types; this pages
+    the whole import section and, for each function import, resolves its
+    type_index to params/results and assigns func_index (its slot in the
+    function index space, which imports occupy first). Table/memory/global
+    imports carry their descriptors (element_type+limits, limits, value_type+
+    mutable). Never raises: an unmodellable type section drops params/results and
+    sets types_resolved false.
+    """
+    result: JsonObject = {
+        "imports": [],
+        "count": 0,
+        "total": 0,
+        "offset": max(0, int(offset)),
+        "has_more": False,
+        "imported_func_count": 0,
+        "types_resolved": True,
+        "scan_capped": False,
+    }
+    sections, _ = _collect_sections(data)
+
+    types: list[tuple[list[str], list[str]]] | None = None
+    if 1 in sections:
+        try:
+            types = _parse_types(sections[1])
+        except (_WasmTruncated, _WasmMalformed):
+            types = None
+            result["types_resolved"] = False
+
+    if 2 not in sections:
+        return result
+    try:
+        items, _kinds, capped = _parse_imports(sections[2])
+    except (_WasmTruncated, _WasmMalformed):
+        return result
+    result["scan_capped"] = capped
+
+    func_index = 0
+    for item in items:
+        if item.get("kind") != "func":
+            continue
+        item["func_index"] = func_index
+        func_index += 1
+        type_index = item.get("type_index")
+        if types is not None and isinstance(type_index, int) and 0 <= type_index < len(types):
+            params, results = types[type_index]
+            item["params"] = list(params)
+            item["results"] = list(results)
+    result["imported_func_count"] = func_index
+
+    result["total"] = len(items)
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_IMPORTS_PAGE))
+    window = items[start : start + cap]
+    result["imports"] = window
+    result["count"] = len(window)
+    result["offset"] = start
+    result["has_more"] = start + len(window) < len(items)
+    return result

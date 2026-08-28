@@ -234,4 +234,33 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_exports(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.imports")
+    def wasm_imports(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 100,
+    ) -> dict[str, Any]:
+        """List a .wasm module's imports with descriptors and resolved signatures.
+
+        summary caps the import list and does not resolve function types; this
+        pages the whole import section and, for each function import, resolves
+        params/results. It names the host surface a stripped module reaches for
+        (wasi_snapshot_preview1.*, env.emscripten_*), the single most useful
+        thing for triage. Pure Python, no wabt.
+
+        Answers with imports (paged), count, total, offset, has_more, plus
+        imported_func_count and types_resolved (false when the type section
+        could not be parsed). Each row carries module, name and kind (func/table/
+        memory/global). A func row also carries type_index, func_index (its slot
+        in the function index space, which imports occupy first) and, when types
+        resolved, params and results. A table row carries element_type and
+        limits; a memory row carries limits; a global row carries value_type and
+        mutable. scan_capped marks a module whose import count hit the collect
+        cap.
+
+        A file that is not a WebAssembly module is refused as invalid_params and
+        one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_imports(path, offset=offset, limit=limit))
+
     return tools.bindings

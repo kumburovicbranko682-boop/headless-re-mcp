@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **282（165 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **283（166 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -390,6 +390,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (func/table/memory/global)/`index`;函数导出另带 `origin`(re-export 导入函数则 imported,否则
   defined)、`type_index`、`params`/`results`(类型未解析时缺省)与 `internal_name`(名字段命名了目标时)。
   导出数触顶置 `scan_capped`。
+- 新增 `wasm.imports`:纯 Python 列出模块导入并解析函数导入的签名。summary 会截断导入列表且不解析
+  函数类型;这里分页整段导入节,给每个函数导入解析 `params`/`results` 并标 `func_index`(它在函数
+  索引空间里的位置,导入占前列)。命名被裁模块伸手要的宿主面(wasi_snapshot_preview1.*、
+  env.emscripten_*)——分诊时最有用的一项。回 `imports`(分页)、`count`/`total`/`offset`/`has_more`,
+  加 `imported_func_count` 与 `types_resolved`(类型节解析不了时为 false)。每行带 `module`/`name`/
+  `kind`;table 行带 `element_type`/`limits`,memory 行带 `limits`,global 行带 `value_type`/`mutable`。
+  导入数触顶置 `scan_capped`。
 - 新增 `wasm.globals`:纯 Python 列出模块定义的全局变量(节 6)。summary 只给计数,这里逐个命名:
   每行带 `index`(全局索引空间里的位置,导入全局在前故作为偏移加上)、`value_type`、`mutable`
   (可变全局常是加壳器藏栈指针/解密 key 的地方),与 `init`——初始化表达式首指令的解码:`{op}` 加
