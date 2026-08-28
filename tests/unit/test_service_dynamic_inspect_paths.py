@@ -9,19 +9,29 @@ the handful whose commands the in-process fake worker implements
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.service import AnalysisService
+from headless_re_mcp.core.service_dynamic_inspect import (
+    _atomic_write_bytes,
+    _module_base_present,
+)
 from tests.unit.test_dynamic_service import (
     FakeDynamicWorker,
     FakeStaticWorker,
     _create,
+    _NoNativePeHeadersWorker,
     _service,
     _settings,
     _write_minimal_pe,
 )
 
+JsonObject = dict[str, Any]
 JsonResult = Result[dict[str, object]]
 _BASE = 0x140000000
 
@@ -189,3 +199,316 @@ def test_memory_regions_and_protect_query_reach_the_backend(tmp_path: Path) -> N
 
     protect = service.memory_protect_query(session_id, _BASE)
     assert protect.ok and protect.data is not None
+
+
+# ---------------------------------------------------------------------------
+# module-level helpers
+# ---------------------------------------------------------------------------
+
+
+def test_module_base_present_rejects_malformed_payloads() -> None:
+    assert _module_base_present(None, _BASE) is False
+    assert _module_base_present({"modules": "not-a-list"}, _BASE) is False
+    assert _module_base_present({"modules": [{"base": _BASE}]}, _BASE) is True
+
+
+def test_atomic_write_bytes_cleans_up_when_replace_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(os, "replace", refuse)
+
+    with pytest.raises(OSError):
+        _atomic_write_bytes(tmp_path / "out.bin", b"payload")
+
+    assert list(tmp_path.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# delegation with valid params (commands the fake does not implement)
+# ---------------------------------------------------------------------------
+
+
+def test_thin_wrappers_delegate_valid_params_to_the_backend(tmp_path: Path) -> None:
+    service, session_id = _dynamic_session(tmp_path)
+
+    for result in (
+        service.memory_protection(session_id, _BASE, rights="erw-"),
+        service.threads_context_read(session_id, 1),
+        service.threads_context_write(session_id, 1, "rax", 0),
+        service.stack_read(session_id, address=_BASE),
+        service.symbols_list(session_id, _BASE),
+    ):
+        assert not result.ok and result.error is not None
+        assert result.error.code == "capability_unavailable"
+
+
+# ---------------------------------------------------------------------------
+# modules_dump error arms
+# ---------------------------------------------------------------------------
+
+
+class _CapabilitySubsetWorker(FakeDynamicWorker):
+    """Fake worker advertising everything except the listed capabilities."""
+
+    _removed: frozenset[str] = frozenset()
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        return frozenset(c for c in super().capabilities if c not in self._removed)
+
+
+class _NoDumpCapWorker(_CapabilitySubsetWorker):
+    _removed = frozenset({"modules.dump"})
+
+
+class _NoListCapWorker(_CapabilitySubsetWorker):
+    _removed = frozenset({"modules.list"})
+
+
+class _UnloadDuringDumpWorker(FakeDynamicWorker):
+    """Report the module gone from modules.list once the dump has run."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._dumped = False
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        if command == "modules.dump":
+            self._dumped = True
+        if command == "modules.list" and self._dumped:
+            return {"modules": []}
+        return super().request(command, params, timeout=timeout)
+
+
+class _NulPathDumpWorker(FakeDynamicWorker):
+    """Return an unparseable artifact path from modules.dump."""
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        if command == "modules.dump":
+            super().request(command, params, timeout=timeout)
+            return {"output_path": "bad\x00path"}
+        return super().request(command, params, timeout=timeout)
+
+
+class _NoFileDumpWorker(FakeDynamicWorker):
+    """Acknowledge modules.dump without writing the artifact file."""
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        if command == "modules.dump":
+            return {"output_path": str((params or {})["output_path"])}
+        return super().request(command, params, timeout=timeout)
+
+
+def _dump_dir(service: AnalysisService, session_id: str) -> Path:
+    return service.settings.artifact_root.expanduser().resolve() / "dump" / session_id
+
+
+def _worker_session(tmp_path: Path, worker: FakeDynamicWorker) -> tuple[AnalysisService, str]:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    service = _service(tmp_path, worker, FakeStaticWorker())
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    return service, session_id
+
+
+def test_modules_dump_requires_the_dump_capability(tmp_path: Path) -> None:
+    service, session_id = _worker_session(tmp_path, _NoDumpCapWorker())
+
+    result = service.modules_dump(session_id, _BASE, size=0x100)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "capability_unavailable"
+
+
+def test_modules_dump_rejects_a_base_that_is_not_loaded(tmp_path: Path) -> None:
+    service, session_id = _dynamic_session(tmp_path)
+
+    result = service.modules_dump(session_id, 0x9990000, size=0x100)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "module_not_found"
+    assert result.error.details["race"] == "pre_dump"
+
+
+def test_modules_dump_detects_an_unload_during_the_dump(tmp_path: Path) -> None:
+    service, session_id = _worker_session(tmp_path, _UnloadDuringDumpWorker())
+
+    result = service.modules_dump(session_id, _BASE, size=0x100)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "module_unloaded_during_dump"
+    assert list(_dump_dir(service, session_id).iterdir()) == []
+
+
+def test_modules_dump_without_modules_list_skips_presence_checks(tmp_path: Path) -> None:
+    service, session_id = _worker_session(tmp_path, _NoListCapWorker())
+
+    result = service.modules_dump(session_id, _BASE, size=0x100)
+
+    assert result.ok and result.data is not None
+    assert result.data["actual_size"] == 0x100
+
+
+def test_modules_dump_rejects_an_unparseable_returned_path(tmp_path: Path) -> None:
+    service, session_id = _worker_session(tmp_path, _NulPathDumpWorker())
+
+    result = service.modules_dump(session_id, _BASE, size=0x100)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "rpc_protocol_error"
+    assert list(_dump_dir(service, session_id).iterdir()) == []
+
+
+def test_modules_dump_reports_a_missing_artifact_file(tmp_path: Path) -> None:
+    service, session_id = _worker_session(tmp_path, _NoFileDumpWorker())
+
+    result = service.modules_dump(session_id, _BASE, size=0x100)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "artifact_missing"
+
+
+def test_modules_dump_cleans_up_when_registration_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, session_id = _dynamic_session(tmp_path)
+
+    def explode(*args: object, **kwargs: object) -> JsonObject:
+        raise RuntimeError("repository offline")
+
+    monkeypatch.setattr(type(service), "record_artifact", explode)
+
+    result = service.modules_dump(session_id, _BASE, size=0x100)
+
+    assert not result.ok and result.error is not None
+    assert list(_dump_dir(service, session_id).iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# pe_headers_runtime arms
+# ---------------------------------------------------------------------------
+
+
+class _HeaderNoFileWorker(FakeDynamicWorker):
+    """Answer pe.headers.runtime without producing the header artifact."""
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        if command == "pe.headers.runtime":
+            return {"base": (params or {}).get("base"), "machine": 0x8664}
+        return super().request(command, params, timeout=timeout)
+
+
+class _NoHeadersCapWorker(_CapabilitySubsetWorker):
+    _removed = frozenset({"pe.headers.runtime"})
+
+
+class _NoHeadersNoReadWorker(_CapabilitySubsetWorker):
+    _removed = frozenset({"pe.headers.runtime", "memory.read"})
+
+
+def test_pe_headers_runtime_rejects_a_bad_session_id(tmp_path: Path) -> None:
+    service, _ = _plain_session(tmp_path)
+
+    result = service.pe_headers_runtime("a/b", _BASE)
+
+    assert not result.ok and result.error is not None
+
+
+def test_pe_headers_runtime_tolerates_a_worker_that_skips_the_artifact(tmp_path: Path) -> None:
+    service, session_id = _worker_session(tmp_path, _HeaderNoFileWorker())
+
+    result = service.pe_headers_runtime(session_id, _BASE)
+
+    assert result.ok and result.data is not None
+    assert "header_artifact" not in result.data
+
+
+def test_pe_headers_fallback_rejects_bytes_that_are_not_a_pe(tmp_path: Path) -> None:
+    service, session_id = _worker_session(tmp_path, _NoHeadersCapWorker())
+
+    result = service.pe_headers_runtime(session_id, _BASE)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_pe"
+
+
+def test_pe_headers_fallback_returns_the_original_error_when_read_fails(tmp_path: Path) -> None:
+    service, session_id = _worker_session(tmp_path, _NoHeadersNoReadWorker())
+
+    result = service.pe_headers_runtime(session_id, _BASE)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "capability_unavailable"
+
+
+def test_pe_headers_fallback_can_skip_the_artifact(tmp_path: Path) -> None:
+    service, session_id = _worker_session(tmp_path, _NoNativePeHeadersWorker())
+
+    result = service.pe_headers_runtime(session_id, _BASE, save_artifact=False)
+
+    assert result.ok and result.data is not None
+    assert result.data["source"] == "memory.read_fallback"
+    assert "header_artifact" not in result.data
+
+
+# ---------------------------------------------------------------------------
+# imports_scan and module_catalog arms
+# ---------------------------------------------------------------------------
+
+
+def test_imports_scan_passes_search_bounds(tmp_path: Path) -> None:
+    service, session_id = _dynamic_session(tmp_path)
+
+    result = service.imports_scan(
+        session_id,
+        _BASE,
+        search_start=_BASE + 0x1000,
+        search_size=0x1000,
+    )
+
+    assert result.ok and result.data is not None
+
+
+def test_imports_scan_fails_closed_without_a_dynamic_backend(tmp_path: Path) -> None:
+    service, session_id = _plain_session(tmp_path)
+
+    result = service.imports_scan(session_id, _BASE)
+
+    assert not result.ok and result.error is not None
+
+
+def test_module_catalog_requires_the_modules_list_capability(tmp_path: Path) -> None:
+    service, session_id = _worker_session(tmp_path, _NoListCapWorker())
+
+    result = service.module_catalog(session_id)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "capability_unavailable"
