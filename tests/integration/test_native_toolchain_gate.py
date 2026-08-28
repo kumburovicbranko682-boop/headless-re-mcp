@@ -1031,6 +1031,99 @@ def test_macho_rpath_agrees_with_llvm_objdump() -> None:
 
 
 @pytest.mark.integration
+def test_macho_dylib_versions_agree_with_llvm_objdump() -> None:
+    """Each dependency's version contract, verbatim against LLVM's decode.
+
+    dylib_command carries the current/compatibility pair the image was linked
+    against -- the Mach-O pair to ELF version_needs. llvm-objdump
+    --dylibs-used decodes and renders the same pair per dependency, so the
+    reader's strings must match name for name, field for field.
+    """
+    objdump = shutil.which("llvm-objdump")
+    if objdump is None:
+        pytest.skip("llvm-objdump not installed — dylib-version gate not run (skip != pass)")
+    if not _MACHO_FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_MACHO_FIXTURE}")
+
+    result = subprocess.run(
+        [objdump, "--macho", "--dylibs-used", str(_MACHO_FIXTURE)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    # One line per dependency: "\t<name> (compatibility version X, current version Y)".
+    printed = {
+        match.group(1): {"compat": match.group(2), "current": match.group(3)}
+        for match in re.finditer(
+            r"^\s*(\S+) \(compatibility version (\S+), current version (\S+)\)",
+            result.stdout,
+            re.M,
+        )
+    }
+    assert printed, result.stdout
+
+    service = AnalysisService()
+    session_id = None
+    try:
+        session_id, native = _session_native(service, _MACHO_FIXTURE)
+        assert native["dylib_versions"] == printed
+        assert printed["/usr/lib/libSystem.B.dylib"] == {"compat": "1.0.0", "current": "1.0.0"}
+    finally:
+        if session_id is not None:
+            service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_macho_source_version_agrees_with_llvm_objdump(tmp_path: Path) -> None:
+    """The self-declared source stamp, refereed by LLVM's strict decoder.
+
+    The committed fixture carries no LC_SOURCE_VERSION (absence must read
+    absent), so the positive case appends one into a copy -- the fixture's
+    load-command region has headroom before the first section's bytes -- and
+    llvm-objdump both revalidates the patched image (it rejects malformed
+    commands outright) and prints the stamp the reader must reproduce,
+    including the drop-trailing-zeros-to-three-fields rendering.
+    """
+    objdump = shutil.which("llvm-objdump")
+    if objdump is None:
+        pytest.skip("llvm-objdump not installed — source-version gate not run (skip != pass)")
+    if not _MACHO_FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_MACHO_FIXTURE}")
+
+    raw = bytearray(_MACHO_FIXTURE.read_bytes())
+    ncmds, sizeofcmds = struct.unpack_from("<II", raw, 16)
+    stamp = (61040 << 40) | (5 << 30) | (17 << 20)  # 61040.5.17: d and e drop off
+    struct.pack_into("<IIQ", raw, 32 + sizeofcmds, 0x2A, 16, stamp)
+    struct.pack_into("<II", raw, 16, ncmds + 1, sizeofcmds + 16)
+    stamped = tmp_path / "stamped.macho"
+    stamped.write_bytes(raw)
+
+    result = subprocess.run(
+        [objdump, "--macho", "--private-headers", str(stamped)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr  # LLVM accepted the patched image
+    match = re.search(r"cmd LC_SOURCE_VERSION\n\s*cmdsize \d+\n\s*version (\S+)", result.stdout)
+    assert match, result.stdout
+
+    service = AnalysisService()
+    session_id = None
+    try:
+        session_id, native = _session_native(service, stamped)
+        assert native["source_version"] == match.group(1) == "61040.5.17"
+        service.close_session(session_id)
+        # The unpatched fixture: no command, no stamp -- on either side.
+        session_id, plain = _session_native(service, _MACHO_FIXTURE)
+        assert "source_version" not in plain
+    finally:
+        if session_id is not None:
+            service.close_session(session_id)
+
+
+@pytest.mark.integration
 def test_macho_build_version_agrees_with_llvm_objdump() -> None:
     objdump = shutil.which("llvm-objdump")
     if objdump is None:

@@ -76,17 +76,32 @@ def _macho64_full(filetype: int, flags: int, load_cmds: bytes = b"", ncmds: int 
     )
 
 
-def _lc_load_dylib(name: str, *, cmd_kind: int = 0x0C) -> bytes:
+def _lc_load_dylib(
+    name: str, *, cmd_kind: int = 0x0C, current: int = 0, compat: int = 0
+) -> bytes:
     # dylib_command: LC_LOAD_DYLIB by default; cmd_kind selects the weak
     # (0x80000018) or reexport (0x8000001F) variant of the same layout.
+    # current/compat are the xxxx.yy.zz nibble-packed version pair at +16/+20.
     raw = name.encode() + b"\x00"
     total = (24 + len(raw) + 3) & ~3  # dylib_command struct is 24 bytes, then the name
     cmd = bytearray(total)
     cmd[0:4] = cmd_kind.to_bytes(4, "little")
     cmd[4:8] = total.to_bytes(4, "little")  # cmdsize
     cmd[8:12] = (24).to_bytes(4, "little")  # name offset
+    cmd[16:20] = current.to_bytes(4, "little")
+    cmd[20:24] = compat.to_bytes(4, "little")
     cmd[24 : 24 + len(raw)] = raw
     return bytes(cmd)
+
+
+def _lc_source_version(a: int, b: int = 0, c: int = 0, d: int = 0, e: int = 0) -> bytes:
+    # source_version_command: cmd, cmdsize, then the a24.b10.c10.d10.e10 stamp.
+    packed = (a << 40) | (b << 30) | (c << 20) | (d << 10) | e
+    return (
+        (0x2A).to_bytes(4, "little")
+        + (16).to_bytes(4, "little")
+        + packed.to_bytes(8, "little")
+    )
 
 
 def _lc_load_dylinker(path: str) -> bytes:
@@ -1720,6 +1735,84 @@ class TestMachoDylibClasses:
         assert "dylibs" not in facts
         assert "weak_dylibs" not in facts
         assert "reexported_dylibs" not in facts
+
+
+class TestMachoDylibVersionsAndSourceVersion:
+    """The dependency version contract and the self-declared source stamp.
+
+    dylib_command carries the current/compatibility version pair the image was
+    linked against -- the Mach-O pair to ELF version_needs -- and
+    LC_SOURCE_VERSION carries the producer's own A.B.C.D.E source stamp, the
+    pair to a PE FileVersion. Both render exactly the way llvm-objdump
+    --private-headers prints them, so the gate compares verbatim.
+    """
+
+    def test_each_dependency_reads_its_version_pair(self, tmp_path: Path) -> None:
+        cmds = _lc_load_dylib(
+            "/usr/lib/libSystem.B.dylib", current=0x052C0105, compat=0x00010000
+        ) + _lc_load_dylib(
+            "/usr/lib/libz.1.dylib", cmd_kind=0x80000018, current=0x00010208, compat=0x00010000
+        )
+        data = _macho64_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=2)
+        facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+        # 0x052C0105 -> 1324.1.5; three fields always, llvm-objdump style --
+        # and the weak variant carries the same layout, so it reads the same.
+        assert facts["dylib_versions"] == {
+            "/usr/lib/libSystem.B.dylib": {"current": "1324.1.5", "compat": "1.0.0"},
+            "/usr/lib/libz.1.dylib": {"current": "1.2.8", "compat": "1.0.0"},
+        }
+
+    def test_a_zero_version_reads_zero_not_absent(self, tmp_path: Path) -> None:
+        # Zero versions are what ad-hoc linkers write; "0.0.0" is the honest
+        # rendering, and the fact rides whenever the dylib walk ran.
+        data = _macho64_full(
+            filetype=2, flags=0x4, load_cmds=_lc_load_dylib("/usr/lib/libc.dylib"), ncmds=1
+        )
+        facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+        assert facts["dylib_versions"] == {
+            "/usr/lib/libc.dylib": {"current": "0.0.0", "compat": "0.0.0"}
+        }
+
+    def test_a_duplicate_dependency_keeps_the_first_version(self, tmp_path: Path) -> None:
+        # Two commands naming the same dylib: the loader resolves the first,
+        # so the first version pair wins.
+        cmds = _lc_load_dylib("/usr/lib/libc.dylib", current=0x00010000) + _lc_load_dylib(
+            "/usr/lib/libc.dylib", current=0x00020000
+        )
+        data = _macho64_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=2)
+        facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+        assert facts["dylib_versions"]["/usr/lib/libc.dylib"]["current"] == "1.0.0"
+
+    def test_the_source_version_renders_llvm_style(self, tmp_path: Path) -> None:
+        # Trailing zero fields drop off, but never below three -- the exact
+        # shapes llvm-objdump prints.
+        for parts, rendered in (
+            ((61040, 0, 5, 0, 0), "61040.0.5"),
+            ((1, 2, 3, 4, 0), "1.2.3.4"),
+            ((1, 2, 3, 4, 5), "1.2.3.4.5"),
+            ((0, 0, 0, 0, 0), "0.0.0"),
+        ):
+            data = _macho64_full(
+                filetype=2, flags=0, load_cmds=_lc_source_version(*parts), ncmds=1
+            )
+            facts = describe_native(_write(tmp_path, "s.bin", data))["native"]
+            assert facts["source_version"] == rendered, parts
+
+    def test_without_the_command_the_stamp_stays_absent(self, tmp_path: Path) -> None:
+        data = _macho64_full(filetype=2, flags=0, load_cmds=_lc_uuid(), ncmds=1)
+        facts = describe_native(_write(tmp_path, "n.bin", data))["native"]
+        assert "source_version" not in facts
+
+    def test_the_committed_fixture_names_libsystem_1_0_0(self) -> None:
+        # The fixture's single LC_LOAD_DYLIB was written with both versions
+        # 1.0.0 -- the same strings llvm-objdump prints for it.
+        fixture = Path(__file__).resolve().parents[2] / "fixtures" / "native" / "minimal.macho"
+        if not fixture.is_file():
+            pytest.skip(f"fixture missing: {fixture}")
+        facts = describe_native(fixture)["native"]
+        assert facts["dylib_versions"] == {
+            "/usr/lib/libSystem.B.dylib": {"current": "1.0.0", "compat": "1.0.0"}
+        }
 
 
 def test_macho_dylib_is_dynamic_but_not_pie(tmp_path: Path) -> None:

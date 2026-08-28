@@ -904,6 +904,11 @@ _LC_MAIN = 0x80000028  # entry point as a file offset of main() -- the Mach-O e_
 # Same hijack-triage weight as on ELF: a writable or relative entry lets an
 # attacker plant a dylib that @rpath resolution picks up first.
 _LC_RPATH = 0x8000001C
+# The version stamp of the sources the image was built from (A.B.C.D.E,
+# packed a24.b10.c10.d10.e10): the producer's self-declared source identity,
+# the Mach-O pair to a PE VS_VERSIONINFO FileVersion and a .NET
+# assembly_version. llvm-objdump --private-headers prints the same stamp.
+_LC_SOURCE_VERSION = 0x2A
 # Which Apple platform the image targets and the minimum OS / SDK it was built
 # against -- the first question asked of an Apple binary (macOS or iOS? how
 # old?). Modern linkers emit LC_BUILD_VERSION (platform + minos + sdk); older
@@ -8966,6 +8971,10 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
             # real "no optional deps, fronts for nothing" answer.
             facts["weak_dylibs"] = lc["weak_dylibs"]
             facts["reexported_dylibs"] = lc["reexported_dylibs"]
+            # The version contract each dependency was linked against -- the
+            # Mach-O pair to ELF version_needs, reported whenever the dylib
+            # walk ran (keyed by install name, {current, compat} per entry).
+            facts["dylib_versions"] = lc["dylib_versions"]
         # LC_RPATH entries, the ELF rpath/runpath analogue; absent stays absent.
         if lc["rpaths"]:
             facts["rpath"] = lc["rpaths"]
@@ -8977,6 +8986,9 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
             "min_os",
             "sdk",
             "build_tools",
+            # LC_SOURCE_VERSION's self-declared source stamp -- the Mach-O
+            # pair to a PE FileVersion and a .NET assembly_version.
+            "source_version",
         ):
             if lc[key] is not None:
                 facts[key] = lc[key]
@@ -9553,13 +9565,45 @@ def _macho_version(packed: int) -> str:
     return f"{major}.{minor}.{patch}" if patch else f"{major}.{minor}"
 
 
+def _macho_dylib_version(packed: int) -> str:
+    """Decode a dylib current/compatibility version, always three fields.
+
+    Same xxxx.yy.zz packing as _macho_version, but llvm-objdump prints dylib
+    versions with the patch level always present ("1.0.0", never "1.0"), so
+    the dependency-version gate can compare verbatim.
+    """
+    return f"{packed >> 16}.{(packed >> 8) & 0xFF}.{packed & 0xFF}"
+
+
+def _macho_source_version(packed: int) -> str:
+    """Decode LC_SOURCE_VERSION's a24.b10.c10.d10.e10 stamp, llvm-objdump style.
+
+    At least three fields, the trailing two only when nonzero -- the exact
+    rendering llvm-objdump --private-headers uses, so the gate can compare
+    the strings directly.
+    """
+    a = (packed >> 40) & 0xFFFFFF
+    b = (packed >> 30) & 0x3FF
+    c = (packed >> 20) & 0x3FF
+    d = (packed >> 10) & 0x3FF
+    e = packed & 0x3FF
+    if e:
+        return f"{a}.{b}.{c}.{d}.{e}"
+    if d:
+        return f"{a}.{b}.{c}.{d}"
+    return f"{a}.{b}.{c}"
+
+
 def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
     """Walk the load commands for the image's identity and dependency facts.
 
     Returns ``dylibs`` (the LC_LOAD_DYLIB / weak / reexport names, or None when
     the command count is out of range), with ``weak_dylibs`` and
     ``reexported_dylibs`` naming those two subsets apart (optional runtime
-    capability vs API forwarding), ``interpreter`` (LC_LOAD_DYLINKER),
+    capability vs API forwarding), ``dylib_versions`` (each dependency's
+    current/compatibility version pair off the same dylib_command -- the
+    version_needs analogue), ``source_version`` (LC_SOURCE_VERSION's
+    self-declared source stamp, or None), ``interpreter`` (LC_LOAD_DYLINKER),
     ``install_name`` (LC_ID_DYLIB, a dylib's own name -- the DT_SONAME analogue),
     ``uuid`` (LC_UUID, the build id), ``entryoff`` (LC_MAIN's file offset of
     main, or None),     ``segments`` ((vmaddr, fileoff, filesize) per LC_SEGMENT
@@ -9587,6 +9631,12 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
         # probes for at runtime vs what it merely fronts for.
         "weak_dylibs": [],
         "reexported_dylibs": [],
+        # name -> {current, compat}: the version pair every dylib_command
+        # carries -- the Mach-O pair to ELF version_needs (which GLIBC_x.y a
+        # binary demands), at library rather than symbol granularity.
+        "dylib_versions": {},
+        # LC_SOURCE_VERSION's A.B.C.D.E stamp, or None when absent.
+        "source_version": None,
         "interpreter": None,
         "install_name": None,
         "uuid": None,
@@ -9644,6 +9694,19 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
                     result["weak_dylibs"].append(name)
                 elif cmd == _LC_REEXPORT_DYLIB:
                     result["reexported_dylibs"].append(name)
+                # dylib_command carries the dependency's version contract
+                # right after the name offset and timestamp: current_version
+                # at +16, compatibility_version at +20. First command wins on
+                # a duplicate name, matching the loader's resolution order.
+                if cmdsize >= 24 and name not in result["dylib_versions"]:
+                    result["dylib_versions"][name] = {
+                        "current": _macho_dylib_version(
+                            int.from_bytes(cmds[pos + 16 : pos + 20], order)  # type: ignore[arg-type]
+                        ),
+                        "compat": _macho_dylib_version(
+                            int.from_bytes(cmds[pos + 20 : pos + 24], order)  # type: ignore[arg-type]
+                        ),
+                    }
         elif cmd == _LC_BUILD_VERSION and result["platform"] is None and cmdsize >= 24:
             # platform/minos/sdk as u32s after cmd/cmdsize, then ntools
             # build_tool_version entries -- the toolchain provenance, the pair
@@ -9696,6 +9759,10 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
             result["uuid"] = _macho_uuid(cmds[pos + 8 : pos + 24])
         elif cmd == _LC_MAIN and result["entryoff"] is None and cmdsize >= 24:
             result["entryoff"] = int.from_bytes(cmds[pos + 8 : pos + 16], order)  # type: ignore[arg-type]
+        elif cmd == _LC_SOURCE_VERSION and result["source_version"] is None and cmdsize >= 16:
+            result["source_version"] = _macho_source_version(
+                int.from_bytes(cmds[pos + 8 : pos + 16], order)  # type: ignore[arg-type]
+            )
         elif cmd == _LC_SYMTAB and result["symtab"] is None and cmdsize >= 24:
             # symoff, nsyms, stroff, strsize: the symbol table locates the
             # exported symbols and the string table both names them and is what
