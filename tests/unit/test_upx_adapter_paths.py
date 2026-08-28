@@ -16,6 +16,7 @@ from typing import Any, BinaryIO, cast
 import pytest
 
 import headless_re_mcp.unpack.upx as upx
+from headless_re_mcp.backends.common.bounded_run import BoundedCancelled
 from headless_re_mcp.core.session import file_sha256
 from headless_re_mcp.unpack.upx import (
     UpxExecutableNotFoundError,
@@ -157,7 +158,7 @@ def test_capture_process_honours_a_preset_cancel(
     cancel.set()
     monkeypatch.setattr(upx, "active_bound_cancel", lambda: cancel)
     sleeper = _fake_upx(tmp_path, body="sleep 5", name="sleeper.sh")
-    with pytest.raises(upx.BoundedCancelled):
+    with pytest.raises(BoundedCancelled):
         upx._capture_process([str(sleeper)], timeout=5.0, max_output_size=1024)
 
 
@@ -211,9 +212,7 @@ def test_capture_process_defaults_an_unknown_exit_code(
 
 
 def test_capture_process_kills_a_stderr_flooder(tmp_path: Path) -> None:
-    flooder = _fake_upx(
-        tmp_path, body="head -c 200000 /dev/zero 1>&2; sleep 2", name="flood.sh"
-    )
+    flooder = _fake_upx(tmp_path, body="head -c 200000 /dev/zero 1>&2; sleep 2", name="flood.sh")
     with pytest.raises(upx.UpxOutputLimitError) as excinfo:
         upx._capture_process([str(flooder)], timeout=5.0, max_output_size=1024)
     assert excinfo.value.details["stream"] == "stderr"
@@ -258,6 +257,21 @@ def test_unpack_upx_cleans_up_a_failed_decompression(tmp_path: Path) -> None:
     with pytest.raises(UpxProcessError, match="exit status 2"):
         unpack_upx(exe, packed, out, input_sha256=sha)
     assert not out.exists()
+
+
+def test_unpack_upx_mutation_check_skips_a_missing_output(tmp_path: Path) -> None:
+    exe = _fake_upx(tmp_path, body='echo tampered >> "$4"; exit 0')
+    packed, sha = _packed(tmp_path)
+    with pytest.raises(UpxScanError) as excinfo:
+        unpack_upx(exe, packed, tmp_path / "out.exe", input_sha256=sha)
+    assert excinfo.value.code == "input_mutated"
+
+
+def test_unpack_upx_failure_check_skips_a_missing_output(tmp_path: Path) -> None:
+    exe = _fake_upx(tmp_path, body="exit 3")
+    packed, sha = _packed(tmp_path)
+    with pytest.raises(UpxProcessError, match="exit status 3"):
+        unpack_upx(exe, packed, tmp_path / "out.exe", input_sha256=sha)
 
 
 def test_unpack_upx_requires_the_output_to_appear(tmp_path: Path) -> None:
