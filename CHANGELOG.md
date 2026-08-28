@@ -14,9 +14,11 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
 
-CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建；真实 Windows 后端 gate 继续留在 Windows job，Linux 收集时给 Windows-only 集成测试明确 skip 原因。另加 `linux-ghidra-live` job：装 JDK 21 与 Ghidra（带缓存）后在 Ubuntu 上真机跑 `analyzeHeadless`，对一份现编的 ELF 断言真实的函数/符号/反编译/交叉引用，并在 Ghidra 已装却 skip 时判失败——这是本项目第一个真正执行 `analyzeHeadless` 的 CI。
+CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建；真实 Windows 后端 gate 继续留在 Windows job，Linux 收集时给 Windows-only 集成测试明确 skip 原因。另加 `linux-ghidra-live` job：装 JDK 21 与 Ghidra（带缓存）后在 Ubuntu 上真机跑 `analyzeHeadless`，对一份现编的 ELF 断言真实的函数/符号/反编译/交叉引用，并在 Ghidra 已装却 skip 时判失败——这是本项目第一个真正执行 `analyzeHeadless` 的 CI。该 job 以矩阵同时跑 Ghidra 11.3.2（最后一个默认捆绑 Jython 的版本线）与 12.1.3（当前版本线，默认不带 Jython），两个脚本运行时都必须真机通过。
 
 Ghidra 反编译线此前在 Linux 上根本跑不起来，因为从来没有任何测试真跑过 `analyzeHeadless`（只断言"缺失时优雅降级"），两个 bug 一直藏着：(1) `_find_analyze_headless` 把 Windows 的 `analyzeHeadless.bat` 排在 POSIX 脚本之前，Linux 于是挑中批处理文件、以 `PermissionError` 启动失败（`doctor` 探针还照样报 ready，指向一个根本跑不了的启动器）；(2) `ExportJson.py` 读的是未定义的全局 `ARGS` 而非 `getScriptArgs()`，分析成功之后每次导出都以 `NameError` 失败。现在启动器发现按平台排序、导出脚本从 `getScriptArgs()` 取参，Ghidra 的 functions/symbols/xrefs/decompile 在 Linux 真机可用；两处都补了不依赖真机 Ghidra 的单元测试守回归。
+
+上述 gate 跑通后又暴露了第三个、也是最致命的一个：导出脚本 `ExportJson.py` 声明 `@runtime Jython`，而 Ghidra 12 已把 Jython 从默认安装里移除（改为可选扩展），于是在当前版 Ghidra（12.1.3）上分析照常成功、postScript 却从不执行，每次 `ghidra.functions/symbols/xrefs/decompile` 都以 `analyzeHeadless export failed` 告终——整条 Ghidra 线对新装的 Ghidra 完全不可用。导出脚本已整体移植为 Java GhidraScript（`ExportJson.java`，参数与 JSON 输出逐字段等价），由 `analyzeHeadless` 用 Ghidra 自带编译器现场编译，11.x 与 12.x 均无需任何额外组件；已在 Ghidra 11.3.2 与 12.1.3 双真机各自跑通完整 live gate 验证，单元测试守住"postScript 必须是 Java 且从 `getScriptArgs()` 取参"。
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 

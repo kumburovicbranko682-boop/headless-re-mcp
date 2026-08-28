@@ -91,23 +91,33 @@ def test_find_analyze_headless_falls_back_when_only_one_launcher_exists(
     assert ghidra_client._find_analyze_headless(tmp_path) == posix_launcher
 
 
-def test_export_script_reads_args_from_get_script_args() -> None:
-    """analyzeHeadless passes -postScript args via getScriptArgs(), not ARGS.
+def test_export_script_is_java_and_reads_get_script_args() -> None:
+    """The export postScript must be a Java GhidraScript that consumes getScriptArgs().
 
-    Referencing an undefined ARGS made every export fail with NameError after
-    analysis had already succeeded -- invisible until Ghidra ran for real. Guard
-    the source so the regression cannot return without a live install.
+    Two regressions hide here, both invisible without a live install. A Jython
+    postScript stops running on Ghidra 12, which removed the bundled Jython from
+    the default install: analysis succeeds, the export JSON is never written,
+    and every functions/symbols/xrefs/decompile call fails. And the original
+    script read an undefined global ARGS instead of getScriptArgs(), failing
+    with NameError after analysis had already succeeded. Guard the source so
+    neither can return silently.
     """
+    assert ghidra_client._EXPORT_SCRIPT.endswith(".java"), (
+        "postScript must be Java: Ghidra 12 ships no Jython by default, so a "
+        "Python postScript never runs there"
+    )
     script = (
-        Path(ghidra_client.__file__).resolve().parent / "scripts" / "ExportJson.py"
+        Path(ghidra_client.__file__).resolve().parent
+        / "scripts"
+        / ghidra_client._EXPORT_SCRIPT
     )
     source = script.read_text(encoding="utf-8")
+    # Ghidra requires the public class name to match the file name, and only a
+    # GhidraScript subclass is runnable via -postScript.
+    assert f"public class {script.stem} extends GhidraScript" in source
+    # analyzeHeadless passes -postScript args via getScriptArgs(); nothing else
+    # carries them.
     assert "getScriptArgs()" in source
-    # ARGS must be assigned from getScriptArgs() before it is ever read.
-    assign_at = source.find("ARGS = ")
-    first_use = source.find("ARGS[")
-    assert assign_at != -1, "ExportJson.py must define ARGS from getScriptArgs()"
-    assert first_use == -1 or assign_at < first_use
 
 
 def test_ghidra_analyze_deletes_the_project_other_tools_cannot_read(
@@ -241,10 +251,10 @@ def _tool_docstring(name: str) -> str:
 def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     """The catalog said address/size; a 5000-function export had neither.
 
-    Measured against ExportJson.py: 256 of 5000 functions, 0 items had address
-    or size, all 256 had entry and body_size. Looking for address after a
-    successful list reads as Ghidra finding no addresses. Symbols have type,
-    not namespace. Xrefs are getReferencesTo only.
+    Measured against the ExportJson postScript: 256 of 5000 functions, 0 items
+    had address or size, all 256 had entry and body_size. Looking for address
+    after a successful list reads as Ghidra finding no addresses. Symbols have
+    type, not namespace. Xrefs are getReferencesTo only.
     """
     functions = _tool_docstring("ghidra.functions")
     assert "entry" in functions

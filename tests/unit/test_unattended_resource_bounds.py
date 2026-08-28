@@ -3444,10 +3444,13 @@ class TestGhidraExportDisclosesTruncation:
 
         from headless_re_mcp.backends.ghidra import client as ghidra
 
-        script = Path(ghidra.__file__).resolve().parent / "scripts" / "ExportJson.py"
+        script = (
+            Path(ghidra.__file__).resolve().parent / "scripts" / ghidra._EXPORT_SCRIPT
+        )
         text = script.read_text(encoding="utf-8")
-        assert 'payload["has_more"] = True' in text
-        assert 'payload["truncated"] = len(text) > 200000' in text
+        assert "hasMore = true;" in text
+        assert "MAX_DECOMPILED_CHARS = 200000" in text
+        assert "text.length() > MAX_DECOMPILED_CHARS" in text
 
 
 class TestAdbShellCallsAreBounded:
