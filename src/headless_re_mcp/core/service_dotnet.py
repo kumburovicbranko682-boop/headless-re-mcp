@@ -16,6 +16,8 @@ from headless_re_mcp.dotnet.metadata_enum import (
     disassemble_method_il,
     enumerate_metadata,
     enumerate_user_strings,
+    extract_user_string_endpoints,
+    extract_user_string_secrets,
     list_memberref_xrefs,
 )
 from headless_re_mcp.dotnet.net_reactor_slayer import NetReactorSlayerError
@@ -360,6 +362,66 @@ class DotnetAnalysisMixin:
                 limit=limit,
                 name_filter=name_filter,
                 min_length=min_length,
+                require_verified=require_verified,
+            )
+            return _success(payload, session_id=session_id, backend="dotnet")
+        except DotnetInspectError as exc:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(code=exc.code, message=str(exc), details=exc.details),
+            )
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id, backend="dotnet")
+
+    def dotnet_endpoints(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 64,
+        name_filter: str = "",
+        include_paths: bool = True,
+        require_verified: bool = True,
+    ) -> Result[JsonObject]:
+        """Aggregate network endpoints from the #US user-string literals."""
+        try:
+            session = self.registry.get(session_id)
+            payload = extract_user_string_endpoints(
+                session.require_pe(),
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_paths=include_paths,
+                require_verified=require_verified,
+            )
+            return _success(payload, session_id=session_id, backend="dotnet")
+        except DotnetInspectError as exc:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(code=exc.code, message=str(exc), details=exc.details),
+            )
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id, backend="dotnet")
+
+    def dotnet_secrets(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 64,
+        name_filter: str = "",
+        include_generic: bool = False,
+        require_verified: bool = True,
+    ) -> Result[JsonObject]:
+        """Detect embedded credentials in the #US user-string literals."""
+        try:
+            session = self.registry.get(session_id)
+            payload = extract_user_string_secrets(
+                session.require_pe(),
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_generic=include_generic,
                 require_verified=require_verified,
             )
             return _success(payload, session_id=session_id, backend="dotnet")

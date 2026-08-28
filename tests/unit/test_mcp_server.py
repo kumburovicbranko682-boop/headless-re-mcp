@@ -61,6 +61,8 @@ async def test_minimal_mcp_tool_surface() -> None:
         "dotnet.reactor.unpack",
         "dotnet.enumerate",
         "dotnet.strings",
+        "dotnet.endpoints",
+        "dotnet.secrets",
         "dotnet.il",
         "dotnet.xrefs",
         "dotnet.verify",

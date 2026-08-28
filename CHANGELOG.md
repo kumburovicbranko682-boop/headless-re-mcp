@@ -294,6 +294,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **.NET 静态线补齐 strings→endpoints→secrets 三件套（与 js/apk/wasm 对齐）**：在 `dotnet.strings` 之上新增两个
+  只读工具，都跑在同一批 #US ldstr 字面量上、复用共享的 `endpoint_scan.py` / `secret_scan.py`。`dotnet.endpoints`
+  抽取 URL/host/请求路径（回答「这个程序集与哪些后端通信」），返回 endpoints（每项 {value、kind(url|path)、
+  scheme、host、source（所在字面量）、token（0x70xxxxxx 用户字符串 token，可经 dotnet.il 回溯到加载它的方法）、
+  count}）加 hosts 去重集/hosts_truncated、offset/limit/total/has_more、scan_capped、has_us_heap；include_paths
+  可关掉相对路径只留 URL。`dotnet.secrets` 用同一套高精度检测器（AWS/Google/GitHub/Slack/Stripe/JWT/私钥/
+  basic-auth-URL，外加 include_generic 开启的高熵兜底）在这些字面量上找硬编码凭据，返回 secrets（每项
+  {detector、value、source、token、count}）加 detectors、scan_capped、has_us_heap。两者都支持 name_filter（分页前
+  子串过滤、total 即命中数）与分页；无 #US 堆时 has_us_heap=false、列表为空（这是答案而非报错），非 .NET 为
+  not_dotnet/clr_unverified。都只读，工具总数 308→310（190 只读 / 120 写）。
 - **.NET 这条线（inspect/enumerate/il/xrefs/deobfuscate）没有真正的「字符串」能力**：`dotnet.enumerate
   kind="strings"` 走的是 #Strings 堆（元数据标识符——类型/方法/字段名），而程序真正用 `ldstr` 加载的字符串常量
   （URL、端点、提示语、格式串、内嵌密钥）存在另一个 #US 用户字符串堆里，无工具可读。新增只读工具 `dotnet.strings`：

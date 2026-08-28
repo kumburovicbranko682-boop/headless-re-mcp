@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
+from headless_re_mcp.backends.common.endpoint_scan import iter_endpoint_matches
+from headless_re_mcp.backends.common.secret_scan import iter_secret_matches
 from headless_re_mcp.detection import pe as pe_mod
 from headless_re_mcp.detection.pe import PeFormatError, scan_pe
 from headless_re_mcp.dotnet.clr_inspect import DotnetInspectError, inspect_dotnet
@@ -27,6 +29,16 @@ CAPABILITY: Final[str] = "dotnet_metadata"
 # each string's kept length, the way apk.strings / wasm.strings bound their scans.
 MAX_US_STRINGS: Final[int] = 20000
 MAX_US_STRING_CHARS: Final[int] = 4096
+# dotnet.endpoints / dotnet.secrets aggregate over the (already-bounded) #US
+# literals with the shared scanners; these bound the distinct-finding sets and
+# the per-finding value/source kept, mirroring the apk analogues.
+_MAX_DN_ENDPOINT_FINDINGS: Final[int] = 20000
+_MAX_DN_ENDPOINT_VALUE: Final[int] = 512
+_MAX_DN_ENDPOINT_SOURCE: Final[int] = 512
+_MAX_DN_ENDPOINT_HOSTS: Final[int] = 512
+_MAX_DN_SECRET_FINDINGS: Final[int] = 20000
+_MAX_DN_SECRET_VALUE: Final[int] = 512
+_MAX_DN_SECRET_SOURCE: Final[int] = 512
 
 _TBL_TYPEDEF: Final[int] = 0x02
 _TBL_FIELD: Final[int] = 0x04
@@ -279,6 +291,168 @@ def _collect_user_strings(meta: _MetaCtx) -> tuple[list[JsonObject], bool]:
             scan_capped = i < len(data)
             break
     return rows, scan_capped
+
+
+def extract_user_string_endpoints(
+    path: Path | str,
+    *,
+    offset: int = 0,
+    limit: int = DEFAULT_LIMIT,
+    require_verified: bool = True,
+    name_filter: str = "",
+    include_paths: bool = True,
+) -> JsonObject:
+    """Network endpoints (URLs, hosts, request paths) in the #US ldstr literals.
+
+    The .NET analogue of apk.endpoints / js.endpoints: the shared URL/path
+    recogniser run over the same #US user-string literals dotnet.strings lists.
+    Each finding echoes the containing literal as ``source`` and its ``token`` (a
+    #US user-string token) so dotnet.il can pivot to the method that loads it.
+    """
+    offset, limit = _clamp_page(offset, limit)
+    inspect_dotnet(path, require_verified=require_verified)
+    meta = _load_metadata_context(Path(path))
+    rows, scan_capped = _collect_user_strings(meta)
+    has_us_heap = "#US" in meta.stream_map
+    aggregates: dict[str, JsonObject] = {}
+    stop = False
+    for row in rows:
+        source = str(row["value"])
+        token = int(row["token"])
+        for value, kind, scheme, host in iter_endpoint_matches(
+            source, include_paths=include_paths
+        ):
+            current = aggregates.get(value)
+            if current is None:
+                if len(aggregates) >= _MAX_DN_ENDPOINT_FINDINGS:
+                    scan_capped = True
+                    stop = True
+                    break
+                entry: JsonObject = {
+                    "value": value[:_MAX_DN_ENDPOINT_VALUE],
+                    "kind": kind,
+                    "scheme": scheme,
+                    "host": host,
+                    "source": source[:_MAX_DN_ENDPOINT_SOURCE],
+                    "token": token,
+                    "count": 1,
+                }
+                if len(value) > _MAX_DN_ENDPOINT_VALUE:
+                    entry["value_truncated"] = True
+                if len(source) > _MAX_DN_ENDPOINT_SOURCE:
+                    entry["source_truncated"] = True
+                aggregates[value] = entry
+            else:
+                current["count"] = int(current["count"]) + 1
+        if stop:
+            break
+    endpoints = list(aggregates.values())
+    needle = name_filter.strip().casefold() if isinstance(name_filter, str) else ""
+    if needle:
+        endpoints = [
+            e
+            for e in endpoints
+            if needle in str(e["value"]).casefold() or needle in str(e["host"]).casefold()
+        ]
+    endpoints.sort(key=lambda e: (-int(e["count"]), str(e["value"])))
+    host_set = sorted({str(e["host"]) for e in endpoints if e["kind"] == "url" and e["host"]})
+    window = endpoints[offset : offset + limit]
+    return {
+        "kind": "endpoints",
+        "endpoints": window,
+        "count": len(window),
+        "total": len(endpoints),
+        "offset": offset,
+        "has_more": offset + len(window) < len(endpoints),
+        "hosts": host_set[:_MAX_DN_ENDPOINT_HOSTS],
+        "hosts_truncated": len(host_set) > _MAX_DN_ENDPOINT_HOSTS,
+        "scan_capped": scan_capped,
+        "has_us_heap": has_us_heap,
+        "capability": CAPABILITY,
+        "backend": "dotnet_metadata",
+        "not_ida_idalib": True,
+        "claims_universal_unpack": False,
+        "note": "endpoints over #US ldstr literals; token pivots via dotnet.il",
+    }
+
+
+def extract_user_string_secrets(
+    path: Path | str,
+    *,
+    offset: int = 0,
+    limit: int = DEFAULT_LIMIT,
+    require_verified: bool = True,
+    name_filter: str = "",
+    include_generic: bool = False,
+) -> JsonObject:
+    """Embedded credentials in the #US ldstr literals.
+
+    The .NET analogue of apk.secrets / js.secrets: the shared detector table run
+    over the same #US user-string literals dotnet.strings lists. Each finding
+    echoes the containing literal as ``source`` and its ``token`` (a #US
+    user-string token) so dotnet.il can pivot to the loading method.
+    """
+    offset, limit = _clamp_page(offset, limit)
+    inspect_dotnet(path, require_verified=require_verified)
+    meta = _load_metadata_context(Path(path))
+    rows, scan_capped = _collect_user_strings(meta)
+    has_us_heap = "#US" in meta.stream_map
+    aggregates: dict[tuple[str, str], JsonObject] = {}
+    stop = False
+    for row in rows:
+        source = str(row["value"])
+        token = int(row["token"])
+        for detector, matched in iter_secret_matches(source, include_generic=include_generic):
+            key = (detector, matched)
+            current = aggregates.get(key)
+            if current is None:
+                if len(aggregates) >= _MAX_DN_SECRET_FINDINGS:
+                    scan_capped = True
+                    stop = True
+                    break
+                entry: JsonObject = {
+                    "detector": detector,
+                    "value": matched[:_MAX_DN_SECRET_VALUE],
+                    "source": source[:_MAX_DN_SECRET_SOURCE],
+                    "token": token,
+                    "count": 1,
+                }
+                if len(matched) > _MAX_DN_SECRET_VALUE:
+                    entry["value_truncated"] = True
+                if len(source) > _MAX_DN_SECRET_SOURCE:
+                    entry["source_truncated"] = True
+                aggregates[key] = entry
+            else:
+                current["count"] = int(current["count"]) + 1
+        if stop:
+            break
+    secrets = list(aggregates.values())
+    needle = name_filter.strip().casefold() if isinstance(name_filter, str) else ""
+    if needle:
+        secrets = [
+            s
+            for s in secrets
+            if needle in str(s["detector"]).casefold() or needle in str(s["value"]).casefold()
+        ]
+    secrets.sort(key=lambda s: (str(s["detector"]), -int(s["count"]), str(s["value"])))
+    detectors = sorted({str(s["detector"]) for s in secrets})
+    window = secrets[offset : offset + limit]
+    return {
+        "kind": "secrets",
+        "secrets": window,
+        "count": len(window),
+        "total": len(secrets),
+        "offset": offset,
+        "has_more": offset + len(window) < len(secrets),
+        "detectors": detectors,
+        "scan_capped": scan_capped,
+        "has_us_heap": has_us_heap,
+        "capability": CAPABILITY,
+        "backend": "dotnet_metadata",
+        "not_ida_idalib": True,
+        "claims_universal_unpack": False,
+        "note": "secrets over #US ldstr literals; token pivots via dotnet.il",
+    }
 
 
 def disassemble_method_il(

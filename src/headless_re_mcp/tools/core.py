@@ -1100,6 +1100,88 @@ def build_dotnet_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    def dotnet_endpoints(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=256)] = 64,
+        name_filter: str = "",
+        include_paths: bool = True,
+        require_verified: bool = True,
+    ) -> dict[str, Any]:
+        """Extract network endpoints (URLs, hosts, paths) from #US ldstr literals.
+
+        The .NET counterpart to apk.endpoints / js.endpoints / wasm.endpoints:
+        the shared URL/path recogniser run over the same #US user-string literals
+        dotnet.strings lists (a program's ldstr constants), answering "what
+        backends does this assembly talk to". Deduplicated and aggregated by
+        occurrence. Answers with endpoints (each {value, kind (url|path), scheme,
+        host, source (the containing literal, truncated with source_truncated
+        when cut), token (the 0x70xxxxxx user-string token, so dotnet.il can
+        pivot to the loading method), count}), plus count, total, offset,
+        has_more, hosts (the distinct URL host set, hosts_truncated when over the
+        cap), scan_capped (the #US heap exceeded the 20000-entry collect
+        ceiling), has_us_heap, capability, backend, not_ida_idalib and
+        claims_universal_unpack false. include_paths (default true) also surfaces
+        whole-string request paths (/api/..., /v1/users); set false for URLs
+        only. name_filter keeps only endpoints whose value or host contains that
+        substring (case-insensitive), applied before paging so total is the match
+        count. An assembly with no #US heap answers has_us_heap false with an
+        empty endpoints list -- that is the answer, not an error. The list field
+        is endpoints. A non-.NET input is not_dotnet / clr_unverified.
+        """
+        return _dump(
+            analysis.dotnet_endpoints(
+                session_id,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_paths=include_paths,
+                require_verified=require_verified,
+            )
+        )
+
+    def dotnet_secrets(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=256)] = 64,
+        name_filter: str = "",
+        include_generic: bool = False,
+        require_verified: bool = True,
+    ) -> dict[str, Any]:
+        """Detect embedded credentials in the #US ldstr literals.
+
+        The .NET counterpart to apk.secrets / js.secrets / wasm.secrets: the same
+        shared high-precision detector table (AWS/Google/GitHub/Slack/Stripe/JWT/
+        private-key/basic-auth-URL, plus an opt-in high-entropy catch-all) run
+        over the #US user-string literals dotnet.strings lists. Returns only the
+        credential hits, deduplicated by (detector, value). Answers with secrets
+        (each {detector, value (truncated with value_truncated when cut), source
+        (the containing literal, source_truncated when cut), token (the
+        0x70xxxxxx user-string token, so dotnet.il can pivot to the loading
+        method), count}), plus count, total, offset, has_more, detectors (the
+        distinct detector names present), scan_capped (the #US heap exceeded the
+        20000-entry collect ceiling), has_us_heap, capability, backend,
+        not_ida_idalib and claims_universal_unpack false. include_generic adds a
+        single generic_high_entropy match for a whole-literal base64/hex token
+        above the entropy floor when no specific detector claimed it (off by
+        default to keep precision high). name_filter keeps only findings whose
+        detector or value contains that substring (case-insensitive), before
+        paging so total is the match count. An assembly with no #US heap answers
+        has_us_heap false with an empty secrets list -- that is the answer, not an
+        error. The list field is secrets. A non-.NET input is not_dotnet /
+        clr_unverified.
+        """
+        return _dump(
+            analysis.dotnet_secrets(
+                session_id,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_generic=include_generic,
+                require_verified=require_verified,
+            )
+        )
+
     def dotnet_il(
         session_id: str,
         method_token: Annotated[int, Field(ge=0)],
@@ -1151,6 +1233,8 @@ def build_dotnet_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         ("dotnet.reactor.unpack", dotnet_reactor_unpack),
         ("dotnet.enumerate", dotnet_enumerate),
         ("dotnet.strings", dotnet_strings),
+        ("dotnet.endpoints", dotnet_endpoints),
+        ("dotnet.secrets", dotnet_secrets),
         ("dotnet.il", dotnet_il),
         ("dotnet.xrefs", dotnet_xrefs),
         ("dotnet.verify", dotnet_verify),
