@@ -58,6 +58,14 @@ _MAX_JS_ENDPOINTS_PAGE = 1000
 _MAX_JS_IMPORTS_COLLECT = 10000
 _MAX_JS_IMPORTS_PAGE = 1000
 _MAX_JS_TOKENS = 4_000_000
+# js.comments collects the // and /* */ runs the other scanners skip. Banner
+# and license headers repeat per module in a bundle, so dedup is by body and
+# the per-comment clip is generous (a license header runs long).
+_JS_DEFAULT_MIN_COMMENT = 1
+_JS_MAX_MIN_COMMENT = 256
+_MAX_JS_COMMENTS_COLLECT = 50000
+_MAX_JS_COMMENTS_PAGE = 1000
+_MAX_JS_COMMENT_LEN = 4096
 # Every WebAssembly binary opens with these four bytes. Checking them before
 # launching wasm2wat / wasm-objdump turns a cryptic tool failure and a wasted
 # subprocess into a precise invalid_params -- the same reason the size cap
@@ -2730,6 +2738,149 @@ def scan_js_imports(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObj
     return {
         "imports": window,
         "input_bytes": len(raw),
+        "count": len(window),
+        "total": len(found),
+        "offset": start,
+        "has_more": start + len(window) < len(found),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def _scan_js_comments(
+    text: str, *, min_len: int, collect_cap: int, str_cap: int
+) -> tuple[list[JsonObject], bool, bool]:
+    """Extract distinct JS comments in first-seen order (best-effort).
+
+    A single left-to-right pass that consumes ``'``/``"``/``` `` ``` literals
+    whole -- so a ``//`` or ``/*`` inside a string is not mistaken for a comment
+    -- and collects the body of every ``//`` line and ``/* */`` block comment,
+    stripped of surrounding whitespace and clipped to str_cap. It does not track
+    regex literals, so a divide/regex ambiguity can misread a ``/.../`` holding a
+    ``//`` or ``/*`` -- the accepted cost of not lexing JS fully. Bodies shorter
+    than min_len (after stripping, so empty ``//`` and ``/**/`` drop) are
+    skipped and the list is de-duplicated by body, since banner/license headers
+    repeat per module in a bundle; the first occurrence keeps its kind and 1-based
+    start line. Returns (rows, scan_more, truncated): each row is text, kind
+    (``line``/``block``) and line; scan_more is True once collect_cap distinct
+    bodies are held and another is seen; truncated is True when the text ended
+    inside an open string or block comment.
+    """
+    result: dict[str, JsonObject] = {}
+    scan_more = False
+    truncated = False
+    n = len(text)
+    i = 0
+    line = 1
+
+    def _record(body: str, kind: str, start_line: int) -> bool:
+        nonlocal scan_more
+        if len(body) < min_len or body in result:
+            return True
+        if len(result) >= collect_cap:
+            scan_more = True
+            return False
+        result[body] = {"text": body, "kind": kind, "line": start_line}
+        return True
+
+    while i < n:
+        char = text[i]
+        if char in "'\"`":
+            quote = char
+            j = i + 1
+            closed = False
+            while j < n:
+                cur = text[j]
+                if cur == "\\":
+                    if j + 1 < n and text[j + 1] == "\n":
+                        line += 1
+                    j += 2
+                    continue
+                if cur == "\n":
+                    line += 1
+                elif cur == quote:
+                    closed = True
+                    j += 1
+                    break
+                j += 1
+            if not closed:
+                truncated = True
+                break
+            i = j
+            continue
+        if char == "/" and i + 1 < n and text[i + 1] == "/":
+            nl = text.find("\n", i + 2)
+            end = n if nl == -1 else nl
+            if not _record(text[i + 2 : end].strip(), "line", line):
+                break
+            i = end
+            continue
+        if char == "/" and i + 1 < n and text[i + 1] == "*":
+            close = text.find("*/", i + 2)
+            if close == -1:
+                truncated = True
+                break
+            inner = text[i + 2 : close]
+            if not _record(inner.strip()[:str_cap], "block", line):
+                break
+            line += inner.count("\n")
+            i = close + 2
+            continue
+        if char == "\n":
+            line += 1
+        i += 1
+
+    return list(result.values()), scan_more, truncated
+
+
+def scan_js_comments(
+    path: Path,
+    *,
+    offset: int = 0,
+    limit: int = 100,
+    min_length: int = _JS_DEFAULT_MIN_COMMENT,
+) -> JsonObject:
+    """Extract the comments from a JavaScript file, node-free.
+
+    The comment counterpart to js.strings: it surfaces the ``//`` and ``/* */``
+    text the other scanners skip -- the ``//# sourceMappingURL=`` pointer to an
+    unminified original, the license/banner headers that fingerprint which
+    libraries a bundle vendored, and the TODO/FIXME notes, dead code and URLs
+    developers leave behind. It reads the source as text and makes one pass that
+    consumes string literals whole, so a ``//`` inside a string is never mistaken
+    for a comment, and needs no webcrack or Node. It does not fully lex JS: regex
+    literals are not tracked, so a divide/regex ambiguity can occasionally
+    misread one (the accepted cost of a robust best-effort scan). Each comment is
+    reported with its body (stripped, clipped to 4096 chars), kind (line or
+    block) and 1-based start line; bodies shorter than min_length (default 1, so
+    empty comments drop) are skipped and results are de-duplicated by body -- a
+    banner repeated per module in a bundle collapses to one row -- in
+    first-appearance order. Answers with input_bytes, min_length, and comments
+    with count, total, offset and has_more so a filled page is not read as every
+    comment; total is capped at 50000 with scan_capped when more may exist, and
+    truncated is true when the text ended inside an open string or block comment.
+    A missing file is not_found, one over 16 MiB too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
+    text = raw.decode("utf-8", errors="replace")
+    min_len = max(1, min(int(min_length), _JS_MAX_MIN_COMMENT))
+    found, scan_more, truncated = _scan_js_comments(
+        text,
+        min_len=min_len,
+        collect_cap=_MAX_JS_COMMENTS_COLLECT,
+        str_cap=_MAX_JS_COMMENT_LEN,
+    )
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_JS_COMMENTS_PAGE))
+    window = found[start : start + cap]
+    return {
+        "comments": window,
+        "input_bytes": len(raw),
+        "min_length": min_len,
         "count": len(window),
         "total": len(found),
         "offset": start,

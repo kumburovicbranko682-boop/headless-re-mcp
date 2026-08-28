@@ -151,6 +151,36 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.js_imports(path, offset=offset, limit=limit))
 
+    @tools.tool(name="js.comments")
+    def js_comments(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        min_length: Annotated[int, Field(ge=1, le=256)] = 1,
+    ) -> dict[str, Any]:
+        """Extract the comments from a JavaScript file, node-free.
+
+        The comment counterpart to js.strings: it surfaces the // and /* */ text
+        the other scanners skip -- the //# sourceMappingURL= pointer to an
+        unminified original, the license/banner headers that fingerprint which
+        libraries a bundle vendored, and the TODO/FIXME notes, dead code and
+        URLs developers leave behind. It reads the source as text and makes one
+        pass that consumes string literals whole, so a // inside a string is
+        never mistaken for a comment, and needs no webcrack or Node. It does not
+        fully lex JS: regex literals are not tracked, so a divide/regex ambiguity
+        can occasionally misread one. Each comment is reported with its text
+        (stripped, clipped to 4096 chars), kind (line or block) and 1-based start
+        line; bodies shorter than min_length (default 1, so empty comments drop)
+        are skipped and results are de-duplicated by body -- a banner repeated
+        per module in a bundle collapses to one row -- in first-appearance order.
+        Answers with input_bytes, min_length, and comments with count, total,
+        offset and has_more so a filled page is not read as every comment; total
+        is capped at 50000 with scan_capped when more may exist, and truncated is
+        true when the text ended inside an open string or block comment. A
+        missing file is not_found, one over 16 MiB too_large.
+        """
+        return _dump(analysis.js_comments(path, offset=offset, limit=limit, min_length=min_length))
+
     @tools.tool(name="wasm.callers")
     def wasm_callers(
         path: str,
