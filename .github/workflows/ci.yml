@@ -3,7 +3,7 @@ name: ci
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, "cursor/ci-checkpoint-installghidra-aea7c5ef-82ce"]
   pull_request:
 
 concurrency:
