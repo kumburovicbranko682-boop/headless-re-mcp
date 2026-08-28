@@ -131,6 +131,9 @@ class WebAnalysisMixin:
     ) -> Result[JsonObject]:
         return self._web_wrap(session_id, "network_list", session_id, offset=offset, limit=limit)
 
+    def web_network_stats(self, session_id: str, top: int = 10) -> Result[JsonObject]:
+        return self._web_wrap(session_id, "network_stats", session_id, top=top)
+
     def web_network_get(self, session_id: str, request_id: str) -> Result[JsonObject]:
         try:
             data = self._web.network_get(session_id, request_id, self._web_artifact_dir(session_id))

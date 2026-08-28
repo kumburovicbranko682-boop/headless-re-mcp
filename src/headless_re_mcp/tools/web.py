@@ -82,6 +82,27 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="web.network.stats")
+    def web_network_stats(
+        session_id: str,
+        top: Annotated[int, Field(ge=1, le=50)] = 10,
+    ) -> dict[str, Any]:
+        """Aggregate the captured network requests into a one-look summary.
+
+        Folds the same rows web.network.list pages, so it needs no export.
+        Answers with total and dropped (how many the ring already evicted -- a
+        nonzero dropped means the tallies cover only the retained window),
+        pending (requests still awaiting a response, with a null status),
+        methods (a method->count map, busiest first), status_classes
+        (2xx/3xx/4xx/5xx and pending), resource_types (document/script/xhr/
+        image/... -> count), top_hosts and top_mime_types (each a ranked list
+        capped at top, default 10) with host_count and mime_type_count behind
+        them. host is parsed from each url; mime_type is the bare media type
+        (the charset tail is dropped). There is no requests or items field here
+        -- use web.network.list to read individual rows.
+        """
+        return _dump(analysis.web_network_stats(session_id, top=top))
+
     @tools.tool(name="web.network.get")
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:
         """Fetch one request's response body (large or binary bodies spill).

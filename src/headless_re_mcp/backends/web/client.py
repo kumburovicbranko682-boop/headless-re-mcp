@@ -19,12 +19,13 @@ import binascii
 import contextlib
 import queue
 import threading
-from collections import OrderedDict, deque
+from collections import Counter, OrderedDict, deque
 from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, TypeVar
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from headless_re_mcp.backends.common.har import har_entry, serialize_har
@@ -41,6 +42,9 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# web.network.stats top-N ceiling: a page can touch hundreds of hosts, so the
+# ranked host/mime lists are capped even when the caller asks for more.
+_MAX_TOP_STATS = 50
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -84,6 +88,67 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def summarize_requests(
+    items: list[JsonObject], *, dropped: int = 0, top: int = 10
+) -> JsonObject:
+    """Fold captured network requests into a one-look triage summary.
+
+    Pure over the rows the CDP event wiring records (url/method/resourceType/
+    status/mimeType), so it needs no live page and stays testable in isolation.
+    host is parsed from each url; a row still awaiting its response carries a
+    null status and is counted as pending. Both ranked lists are capped at
+    ``top``.
+    """
+    top = max(1, min(int(top), _MAX_TOP_STATS))
+    methods: Counter[str] = Counter()
+    status_classes: Counter[str] = Counter()
+    resource_types: Counter[str] = Counter()
+    hosts: Counter[str] = Counter()
+    mime_types: Counter[str] = Counter()
+    pending = 0
+    for row in items:
+        methods[str(row.get("method") or "").upper() or "?"] += 1
+        status = row.get("status")
+        if isinstance(status, int):
+            status_classes[f"{status // 100}xx"] += 1
+        else:
+            status_classes["pending"] += 1
+            pending += 1
+        rtype = str(row.get("resourceType") or "").strip().lower()
+        if rtype:
+            resource_types[rtype] += 1
+        host = ""
+        try:
+            host = urlsplit(str(row.get("url") or "")).hostname or ""
+        except ValueError:
+            host = ""
+        if host:
+            hosts[host] += 1
+        mime = str(row.get("mimeType") or "").split(";", 1)[0].strip().lower()
+        if mime:
+            mime_types[mime] += 1
+
+    def _ranked(counter: Counter[str]) -> list[tuple[str, int]]:
+        return sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[:top]
+
+    return {
+        "total": len(items),
+        "dropped": dropped,
+        "pending": pending,
+        "methods": dict(sorted(methods.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "status_classes": dict(sorted(status_classes.items())),
+        "resource_types": dict(
+            sorted(resource_types.items(), key=lambda kv: (-kv[1], kv[0]))
+        ),
+        "top_hosts": [{"host": h, "count": c} for h, c in _ranked(hosts)],
+        "host_count": len(hosts),
+        "top_mime_types": [
+            {"mime_type": m, "count": c} for m, c in _ranked(mime_types)
+        ],
+        "mime_type_count": len(mime_types),
+    }
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -606,6 +671,13 @@ class WebBackend:
             "has_more": start + len(window) < len(items),
             "dropped": dropped,
         }
+
+    def network_stats(self, session_id: str, *, top: int = 10) -> JsonObject:
+        handle = self._get(session_id)
+        with handle.lock:
+            items = list(handle.requests.values())
+            dropped = handle.requests_dropped
+        return summarize_requests(items, dropped=dropped, top=top)
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)

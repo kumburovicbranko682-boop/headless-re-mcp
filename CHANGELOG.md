@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **269（152 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **270（153 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -399,6 +399,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   抢先执行的落点)以及 `min_sdk` / `target_sdk`。清单里未声明的布尔位回 `null`(「未设置」,
   不等于 false),调用方据此套用对应目标 SDK 的平台默认,而不是想当然;androguard 版本差异
   以逐属性 `try` 兜底,`is_debuggable()` 不可用时退回读 `debuggable` 属性。
+
+### 新增（浏览器网络聚合）
+
+- 新增 `web.network.stats`:与 `proxy.stats` 同形,把 `web.network.list` 分页读取的同一批
+  CDP 请求折叠成一眼可读的三角。回 `total`、`dropped`(环已淘汰多少)、`pending`(仍在等响应、
+  状态为空的请求数)、`methods`(方法→计数,按热度排序)、`status_classes`(2xx/3xx/4xx/5xx 与
+  `pending`)、`resource_types`(document/script/xhr/image/...→计数)、`top_hosts` 与
+  `top_mime_types`(排序后各取前 `top` 条,默认 10,上限 50)及其背后的 `host_count` /
+  `mime_type_count`。host 由每条 url 解析,`mime_type` 剥掉 `; charset=...` 只留裸媒体类型;
+  聚合逻辑抽成纯函数 `summarize_requests`,不依赖运行中的浏览器,可独立单测。
 
 ### 新增（抓包聚合）
 
