@@ -12,9 +12,11 @@ fake frida module; no target process.
 from __future__ import annotations
 
 import math
+import time
 
 import pytest
 
+import headless_re_mcp.backends.frida.client as frida_client
 from headless_re_mcp.backends.frida.client import (
     MAX_WORKFLOW_TIMEOUT,
     FridaClient,
@@ -116,6 +118,89 @@ def test_memory_read_bounds_the_requested_size() -> None:
         assert info.value.code == "invalid_params"
         assert "1..262144" in info.value.message
     assert frida.attached_pids == []
+
+
+def test_local_ops_bound_a_wedged_rpc_and_detach(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A frozen target must time out each local op, not wedge the worker forever.
+
+    _attach_local already bounds the attach, but modules/exports/memory_read then
+    ran create_script/load and the exports_sync round-trip unbounded on the
+    caller's thread -- and these ops drive a debuggee the session controls, a
+    process that can be sitting paused at a breakpoint. The device java/hook
+    paths already share _run_deadline for exactly this; the local ops now route
+    their load+RPC through _script_rpc too. Drive a session whose RPC never
+    returns and assert each op raises timeout and detaches (no leaked session),
+    the same contract test_frida_java_perform_times_out already pins for the
+    device side. The timeout is shrunk by patching the module-level _script_rpc
+    (which the methods resolve at call time) because the local ops expose no
+    timeout parameter.
+    """
+    original = frida_client._script_rpc
+    monkeypatch.setattr(
+        frida_client,
+        "_script_rpc",
+        lambda session, call, *, timeout=0.2: original(session, call, timeout=timeout),
+    )
+
+    class _HangExports:
+        def modules(self, limit: int) -> dict:  # type: ignore[type-arg]
+            del limit
+            time.sleep(10)
+            return {}
+
+        def exports(self, name: str, count: int) -> dict:  # type: ignore[type-arg]
+            del name, count
+            time.sleep(10)
+            return {}
+
+        def read(self, address: int, size: int) -> list:  # type: ignore[type-arg]
+            del address, size
+            time.sleep(10)
+            return []
+
+    class _HangScript:
+        exports_sync = _HangExports()
+
+        def load(self) -> None:
+            return None
+
+    class _HangSession:
+        def __init__(self) -> None:
+            self.detached = False
+
+        def create_script(self, source: str) -> _HangScript:
+            del source
+            return _HangScript()
+
+        def detach(self) -> None:
+            self.detached = True
+
+    class _HangFrida:
+        def __init__(self) -> None:
+            self.session = _HangSession()
+
+        def attach(self, pid: int) -> _HangSession:
+            del pid
+            return self.session
+
+    client = FridaClient()
+    client._available = True
+    frida = _HangFrida()
+    client._frida = frida
+
+    ops = [
+        lambda: client.modules(1, allowed_pid=1),
+        lambda: client.exports(1, "libc.so", allowed_pid=1),
+        lambda: client.memory_read(1, 0x1000, 16, allowed_pid=1),
+    ]
+    for run in ops:
+        frida.session.detached = False
+        started = time.monotonic()
+        with pytest.raises(FridaError) as caught:
+            run()
+        assert time.monotonic() - started < 2.0
+        assert caught.value.code == "timeout"
+        assert frida.session.detached is True
 
 
 def test_bound_timeout_rejects_nonpositive_and_caps_the_rest() -> None:

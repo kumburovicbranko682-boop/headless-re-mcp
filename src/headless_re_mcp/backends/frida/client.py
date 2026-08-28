@@ -305,6 +305,31 @@ def _invoke(method: Any, *args: Any, timeout: float, **kwargs: Any) -> Any:
     return method(*args, **extra)
 
 
+def _script_rpc(
+    session: Any,
+    call: Callable[[Any], T],
+    *,
+    timeout: float = _PROBE_TIMEOUT_S,
+) -> T:
+    """Bound a local enum script's load + RPC, detaching the session on timeout.
+
+    ``_attach_local`` already bounds the attach, but the ``create_script``/``load``
+    and the ``exports_sync`` round-trip that follow ran unbounded on the caller's
+    thread. The local ops drive a debuggee the owning session controls -- a
+    process that can be sitting paused at a breakpoint -- so a frozen target
+    blocked the worker with no ceiling, the same wedge the device java/hook paths
+    already close with ``_run_deadline``. Share that deadline here and detach on
+    timeout so a wedged RPC cannot leave the session attached.
+    """
+
+    def work() -> T:
+        script = session.create_script(_ENUM_SCRIPT)
+        script.load()
+        return call(script.exports_sync)
+
+    return _run_deadline(work, timeout=timeout, on_timeout=session.detach)
+
+
 class FridaClient:
     def __init__(self) -> None:
         self._frida: Any = None
@@ -353,12 +378,10 @@ class FridaClient:
 
     def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
         self._require(pid, allowed_pid)
+        capped = max(1, min(int(limit), 256))
         session = self._attach_local(pid)
         try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            capped = max(1, min(int(limit), 256))
-            raw = script.exports_sync.modules(capped)
+            raw = _script_rpc(session, lambda exports: exports.modules(capped))
             if isinstance(raw, dict):
                 held = list(raw.get("modules") or [])
                 total = int(raw.get("total") or len(held))
@@ -403,9 +426,9 @@ class FridaClient:
         capped = max(1, min(int(limit), 512))
         session = self._attach_local(pid)
         try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            raw = script.exports_sync.exports(module_name.strip(), capped + 1)
+            raw = _script_rpc(
+                session, lambda exports: exports.exports(module_name.strip(), capped + 1)
+            )
             if not isinstance(raw, dict):
                 raise FridaError("backend_error", "unexpected frida exports payload")
             page, has_more = _page(list(raw.get("exports") or []), capped)
@@ -446,9 +469,9 @@ class FridaClient:
             raise FridaError("invalid_params", "size must be 1..262144")
         session = self._attach_local(pid)
         try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            data = bytes(script.exports_sync.read(int(address), int(size)))
+            data = bytes(
+                _script_rpc(session, lambda exports: exports.read(int(address), int(size)))
+            )
             return {
                 "address": address,
                 "size": size,
