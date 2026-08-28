@@ -40,7 +40,10 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_UNIX_SOCKETS = 1024
 _MAX_DEVICES = 64
+# /proc/net/unix socket types (linux/net.h SOCK_* constants, hex as printed).
+_UNIX_SOCK_TYPES = {"0001": "STREAM", "0002": "DGRAM", "0005": "SEQPACKET"}
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
@@ -525,6 +528,60 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def unix_sockets(self, serial: str) -> JsonObject:
+        """List named Unix domain sockets from /proc/net/unix.
+
+        The device's local IPC surface: the named endpoints processes bind for
+        on-device communication -- filesystem sockets under /dev/socket and
+        abstract-namespace names (printed with a leading @, such as
+        @jdwp-control). This is what an RE session inspects to find the services
+        an app or the system exposes to other processes, distinct from the TCP
+        sockets in device.connections. /proc/net/unix is world-readable, so no
+        root is needed.
+
+        Only named sockets are returned: an anonymous socket carries no path and
+        so nothing to identify it, and those are the bulk of the table, so
+        omitting them keeps the result the actual IPC surface rather than noise
+        (the omission is deliberate, not a silent drop). Each entry carries
+        path, type (STREAM/DGRAM/SEQPACKET or the raw hex), the raw state hex,
+        and inode. The list is capped with has_more, and a read that never
+        returns the kernel's header (denied, missing) is an error.
+        """
+        dev = self._device(serial)
+        raw = _device_shell(dev, "cat /proc/net/unix")
+        text = str(raw)
+        if "Path" not in text:
+            raise AdbError(
+                "backend_error", "reading /proc/net/unix failed", output=text[:800]
+            )
+        sockets: list[JsonObject] = []
+        has_more = False
+        for line in text.splitlines():
+            if "Path" in line and "Inode" in line:
+                continue
+            parts = line.split(None, 7)
+            if len(parts) < 8:
+                continue
+            path = parts[7].strip()
+            if not path:
+                continue
+            if len(sockets) >= _MAX_UNIX_SOCKETS:
+                has_more = True
+                break
+            try:
+                inode: int | None = int(parts[6])
+            except ValueError:
+                inode = None
+            sockets.append(
+                {
+                    "path": path,
+                    "type": _UNIX_SOCK_TYPES.get(parts[4], parts[4]),
+                    "state": parts[5],
+                    "inode": inode,
+                }
+            )
+        return {"unix_sockets": sockets, "count": len(sockets), "has_more": has_more}
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a

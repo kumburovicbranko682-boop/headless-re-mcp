@@ -71,6 +71,25 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
+    @tools.tool(name="device.unix_sockets")
+    def device_unix_sockets(serial: str) -> dict[str, Any]:
+        """List named Unix domain sockets (/proc/net/unix).
+
+        The device's local IPC surface -- the named endpoints processes bind
+        for on-device communication, both filesystem sockets under /dev/socket
+        and abstract-namespace names (printed with a leading @, e.g.
+        @jdwp-control). What an RE session inspects to find the services an app
+        or the system exposes, distinct from the TCP sockets in
+        device.connections. Answers with unix_sockets (each carrying path, type,
+        the raw state hex, and inode), count, and has_more. Only named sockets
+        are returned -- anonymous ones carry no identifying path and are the
+        bulk of the table, so they are deliberately omitted to keep the result
+        the real IPC surface; /proc/net/unix is world-readable so no root is
+        needed, the list is capped with has_more, and a read missing the header
+        is an error.
+        """
+        return _dump(analysis.device_unix_sockets(serial))
+
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,
