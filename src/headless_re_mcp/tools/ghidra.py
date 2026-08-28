@@ -81,6 +81,26 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.ghidra_imports(session_id, limit=limit, timeout=timeout))
 
+    @tools.tool(name="ghidra.exports")
+    def ghidra_exports(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
+    ) -> dict[str, Any]:
+        """External entry points (exports) Ghidra resolved.
+
+        The complement to ghidra.imports: the symbols this binary offers to the
+        outside -- a shared library's exported functions, an executable's entry
+        point -- read from Ghidra's external-entry-point set so it reflects the
+        analysed program, not a raw symbol dump. Answers with items, each
+        carrying name, address and is_function (an exported function versus an
+        exported data symbol), plus count and has_more so a page that filled the
+        limit is not read as the whole list. A failed export is an error, not a
+        binary with no exports. Minutes on a large binary; requires
+        HEADLESS_RE_GHIDRA_HOME.
+        """
+        return _dump(analysis.ghidra_exports(session_id, limit=limit, timeout=timeout))
+
     @tools.tool(name="ghidra.strings")
     def ghidra_strings(
         session_id: str,

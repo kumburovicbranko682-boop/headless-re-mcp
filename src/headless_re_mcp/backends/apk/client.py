@@ -8,10 +8,13 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 
 from __future__ import annotations
 
+import re
 import threading
-from collections import OrderedDict
+from collections import Counter, OrderedDict
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import urlsplit
 
 JsonObject = dict[str, Any]
 
@@ -44,6 +47,63 @@ _MAX_INTENT_ITEMS = 100
 _MAX_METHOD_OVERLOADS = 200
 _MAX_CLASS_FIELDS = 500
 _MAX_INTERFACES = 100
+# apk.urls caps: a big app carries thousands of string constants; bound the
+# distinct-URL set, the per-host and IP roll-ups, and each captured URL length.
+_MAX_URLS_COLLECT = 5000
+_MAX_URL_VALUE_LEN = 2000
+_MAX_HOST_ROLLUP = 500
+_MAX_IP_ROLLUP = 500
+_MAX_URLS_PAGE = 2000
+# Trailing punctuation to strip off a URL matched inside prose or a quoted string.
+_URL_TRAILING = ".,;:!?'\")]}>"
+_URL_RE = re.compile(r"(?:https?|wss?|ftp)://[^\s\"'<>\\)\]}(]+", re.IGNORECASE)
+_IPV4_RE = re.compile(
+    r"(?<![\w.])"
+    r"(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)"
+    r"(?![\w.])"
+)
+
+
+def _extract_url_indicators(
+    values: Iterable[Any],
+) -> tuple[dict[str, JsonObject], Counter[str], set[str], bool]:
+    """Pull network indicators out of a stream of string constants.
+
+    Pure over the raw string values so it can be unit-tested without androguard.
+    Collects distinct absolute URLs (http/https/ws/wss/ftp) with their scheme and
+    host, a per-host tally, and bare IPv4 literals. Bounded on every axis so a
+    hostile app packed with generated strings cannot blow memory.
+    """
+    urls: dict[str, JsonObject] = {}
+    hosts: Counter[str] = Counter()
+    ips: set[str] = set()
+    scanned = 0
+    scan_capped = False
+    for raw in values:
+        if scanned >= _MAX_STRINGS_COLLECT:
+            scan_capped = True
+            break
+        scanned += 1
+        text = str(raw)
+        for match in _URL_RE.finditer(text):
+            url = match.group(0).rstrip(_URL_TRAILING)[:_MAX_URL_VALUE_LEN]
+            if not url:
+                continue
+            if url not in urls:
+                if len(urls) >= _MAX_URLS_COLLECT:
+                    scan_capped = True
+                    continue
+                parts = urlsplit(url)
+                host = (parts.hostname or "").lower()
+                urls[url] = {"url": url, "scheme": parts.scheme.lower(), "host": host}
+                if host:
+                    hosts[host] += 1
+        for match in _IPV4_RE.finditer(text):
+            if len(ips) < _MAX_IP_ROLLUP:
+                ips.add(match.group(0))
+            else:
+                scan_capped = True
+    return urls, hosts, ips, scan_capped
 
 
 class ApkError(RuntimeError):
@@ -905,6 +965,39 @@ class ApkClient:
             "offset": start,
             "has_more": start + len(window) < len(values),
             "scan_capped": scan_more,
+        }
+
+    def urls(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        """Extract network indicators (URLs, hosts, IPs) from DEX string constants.
+
+        apk.strings lists every constant; this distils the network-relevant ones
+        -- the C2 endpoints, API bases, tracking beacons and hard-coded IPs a
+        triage wants first -- into a deduped, classified inventory.
+        """
+        parsed = self._parsed(path)
+        url_map, hosts, ips, scan_capped = _extract_url_indicators(
+            item.get_value() for item in parsed.analysis.get_strings()
+        )
+        url_list = sorted(url_map.values(), key=lambda row: str(row["url"]))
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_URLS_PAGE)
+        window = url_list[start : start + cap]
+        host_rollup = [
+            {"host": host, "count": count}
+            for host, count in hosts.most_common(_MAX_HOST_ROLLUP)
+        ]
+        ip_list = sorted(ips)
+        return {
+            "urls": window,
+            "count": len(window),
+            "total": len(url_list),
+            "offset": start,
+            "has_more": start + len(window) < len(url_list),
+            "hosts": host_rollup,
+            "host_count": len(host_rollup),
+            "hosts_truncated": len(hosts) > len(host_rollup),
+            "ips": ip_list,
+            "ip_count": len(ip_list),
+            "scan_capped": scan_capped,
         }
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:

@@ -511,6 +511,28 @@ def test_ghidra_strings_passes_the_strings_mode_to_the_post_script(
     assert row["data_type"] == "string"
 
 
+def test_ghidra_exports_passes_the_exports_mode_to_the_post_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = (
+        '{"mode": "exports", "items": ['
+        '{"name": "JNI_OnLoad", "address": "00108000", "is_function": true},'
+        '{"name": "g_config", "address": "00402000", "is_function": false}'
+        '], "count": 2, "has_more": false}'
+    )
+    calls = _capture_mode_run(monkeypatch, payload)
+    client = _client(tmp_path)
+
+    listed = client.exports(_binary(tmp_path), tmp_path / "project")
+
+    assert "exports" in calls[0]
+    fn = listed["items"][0]
+    assert fn["name"] == "JNI_OnLoad"
+    assert fn["is_function"] is True
+    assert listed["items"][1]["is_function"] is False
+    assert listed["export_path"]
+
+
 def test_ghidra_imports_and_strings_descriptions_name_their_fields() -> None:
     imports = _tool_docstring("ghidra.imports")
     assert "library" in imports
@@ -521,3 +543,8 @@ def test_ghidra_imports_and_strings_descriptions_name_their_fields() -> None:
     assert "data_type" in strings
     assert "truncated" in strings
     assert "has_more" in strings
+
+    exports = _tool_docstring("ghidra.exports")
+    assert "is_function" in exports
+    assert "address" in exports
+    assert "has_more" in exports

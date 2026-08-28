@@ -97,6 +97,7 @@ _READ_ONLY_NAMES = frozenset((
     'frida.memory.read',
     'frida.modules',
     'ghidra.decompile',
+    'ghidra.exports',
     'ghidra.functions',
     'ghidra.imports',
     'ghidra.strings',
@@ -200,6 +201,7 @@ _READ_ONLY_NAMES = frozenset((
     'apk.permissions',
     'apk.security',
     'apk.strings',
+    'apk.urls',
     'apk.xrefs',
     'device.current_activity',
     'device.info',
@@ -228,6 +230,7 @@ _READ_ONLY_NAMES = frozenset((
     'wasm.globals',
     'wasm.imports',
     'wasm.info',
+    'wasm.names',
     'wasm.strings',
     'wasm.summary',
     'wasm.wat',
@@ -235,6 +238,7 @@ _READ_ONLY_NAMES = frozenset((
     'web.cookies',
     'web.dom.snapshot',
     'web.forms',
+    'web.frames',
     'web.links',
     'web.meta',
     'web.network.get',
@@ -371,7 +375,7 @@ _FILE_WRITE_NAMES = frozenset((
     'web.screenshot',
 ))
 _ALL_TOOL_NAMES = _READ_ONLY_NAMES | _STATE_CHANGE_NAMES | _FILE_WRITE_NAMES
-if len(_ALL_TOOL_NAMES) != 294:
+if len(_ALL_TOOL_NAMES) != 298:
     raise RuntimeError("tool effect policy contains duplicates or omissions")
 
 _WEB_NAMES = frozenset(['artifacts.describe', 'artifacts.gc', 'artifacts.list', 'audit.list', 'dynamic.breakpoints', 'dynamic.modules', 'dynamic.registers.read', 'dynamic.state', 'session.close', 'session.get', 'session.list', 'static.decompile', 'static.functions', 'static.strings', 'timeline.list', 'unpack.artifacts', 'unpack.cancel', 'unpack.status', 'workflow.cancel', 'workflow.status'])

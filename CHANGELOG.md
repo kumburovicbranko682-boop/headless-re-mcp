@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **294（176 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **298（180 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -381,6 +381,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   了字符串的每个节。回 `items`(每条带 `address`、`value`——解码后的文本、`length`——字节数、
   `data_type`——Ghidra 的字符串类型如 string/unicode、`truncated`——值被裁)、`count`、`has_more`。
   导出失败是错误,不是"没有字符串"。大二进制耗时以分钟计;需 `HEADLESS_RE_GHIDRA_HOME`。
+- 新增 `ghidra.exports`:`ghidra.imports` 的对偶——这个二进制对外提供的符号:共享库导出的函数、可执行
+  文件的入口点,读 Ghidra 的外部入口点集合,反映被分析的程序而非裸符号转储。回 `items`(每条带 `name`、
+  `address`、`is_function`——导出的是函数还是数据符号)、`count`、`has_more`。导出失败是错误,不是"没有
+  导出"。大二进制耗时以分钟计;需 `HEADLESS_RE_GHIDRA_HOME`。
 
 ### 新增（WASM 结构摘要）
 
@@ -425,6 +429,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (active/passive)、`memory_index`(目标线性内存,passive 为 null)、`offset`(基址的常量初始化解码,如
   `{op:i32.const,value:1024}`,passive 为 null)、`size`(字节)、`hex` 与 `text`(64 字节有界预览,不可打印
   字节渲染为 '.')与 `preview_truncated`(blob 大于预览)。非模块报 `invalid_params`,超 16 MiB 报 `too_large`。
+- 新增 `wasm.names`:纯 Python 从 `name` 自定义节还原符号表——保留名字的模块上最有价值的一读。
+  `wasm.functions` 只借用函数名,这里把整个 name 节倒出来:模块名、函数名映射,以及(别处都不给的)
+  每函数的局部/参数名——正是它们让反编译可读。回 `has_name_section`(stripped 模块为 false)、`module`
+  (模块名或 null)、`functions`(按索引排序的 index->name,分页)、`function_count`/`function_total`/
+  `offset`/`has_more`,再加 `locals`、`local_function_count` 与 `locals_truncated`。每个 locals 行带
+  `function`(函数索引)、`names`(其局部/参数的 `{index,name}` 列表)、`name_count` 与 `names_truncated`。
+  offset/limit 翻函数名列表;locals 列表封顶 200 个函数、每个 100 名。非模块报 `invalid_params`,超
+  16 MiB 报 `too_large`。
 - 新增 `wasm.globals`:纯 Python 列出模块定义的全局变量(节 6)。summary 只给计数,这里逐个命名:
   每行带 `index`(全局索引空间里的位置,导入全局在前故作为偏移加上)、`value_type`、`mutable`
   (可变全局常是加壳器藏栈指针/解密 key 的地方),与 `init`——初始化表达式首指令的解码:`{op}` 加
@@ -481,6 +493,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   显式属性时为 true)、`has_intent_filter`、`permission`、`read_permission`/`write_permission`(provider 读写
   守卫,否则 null)、`guarded`(任一权限已设)、`launcher`(MAIN/LAUNCHER 入口)与 `deep_link`+`schemes`
   (自定义 scheme 处理器)。无守卫的导出组件正是经典 Android 攻击面。会话不是 APK 报 `target_mismatch`。
+- 新增 `apk.urls`:从 DEX 字符串常量里蒸馏网络指标(URL/主机/IP)。`apk.strings` 列出所有常量,这个
+  只留网络相关的——分诊最先想看的 C2 端点、API base、追踪信标与硬编码 IP——去重并分类成一份清单。
+  URL 按 http/https/ws/wss/ftp 匹配,剥掉尾部标点,拆成 scheme 与 host。回 `urls`(分页排序)、`count`/
+  `total`/`offset`/`has_more`;`hosts`(按有多少条不同 URL 指向它排名的每主机计数)加 `host_count` 与
+  `hosts_truncated`;`ips`(去重的裸 IPv4)加 `ip_count`;以及 `scan_capped`(DEX 字符串池或某项清单触
+  了收集上限,可能还有更多)。每个 url 行带 `url`、`scheme`、`host`。裸 IPv4 匹配尽力而为,也会误收
+  版本号一类数字,故 `ips` 当线索而非证据。会话不是 APK 报 `target_mismatch`。
 
 ### 新增（Android 清单元数据）
 
@@ -532,6 +551,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (script/link/img/iframe/source/video/audio/embed/object)/`host`/`external`。`origins` 把锚点与子资源
   折成去重的 `scheme://host` 并按 count 排序,每条带 `origin`/`host`/`count`/`external`,于是从陌生
   origin 加载脚本的页面一眼可见。内容密集的页按 500 封顶,读两个 truncated。
+- 新增 `web.frames`:列出页面的 frame 树——主文档与每个 iframe。嵌入内容视图:广告框、第三方支付
+  iframe、隐藏的点击劫持覆盖层、沙箱小组件,每一个都加载并运行顶层页面没写的代码。回 `url`(主 frame)、
+  `frames`、`count`、`total`、`truncated` 与 `cross_origin_count`(host 与主文档不同的子 frame——值得看的
+  第三方嵌入)。每个 frame 带 `url`、`name`(frame/iframe 的 name 属性)、`is_main`(顶层文档)、`parent_url`
+  (承载它的 frame,主 frame 为 null)、`depth`(主 frame 为 0,嵌套 iframe 更深)、`host` 与 `external`(host
+  与主文档不同)。列表有界;广告密集的页读 `truncated`。
 
 ### 新增（浏览器 Cookie 罐）
 

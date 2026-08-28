@@ -109,6 +109,31 @@ elif mode == "imports":
             }
         )
     payload["items"] = items
+elif mode == "exports":
+    items = []
+    for addr in st.getExternalEntryPointIterator():
+        if len(items) >= limit:
+            payload["has_more"] = True
+            break
+        name = ""
+        try:
+            sym = st.getPrimarySymbol(addr)
+            if sym is not None:
+                name = sym.getName()
+        except Exception:
+            name = ""
+        fn = fm.getFunctionAt(addr)
+        is_function = fn is not None
+        if is_function and not name:
+            name = fn.getName()
+        items.append(
+            {
+                "name": name,
+                "address": str(addr),
+                "is_function": bool(is_function),
+            }
+        )
+    payload["items"] = items
 elif mode == "strings":
     items = []
     for data in listing.getDefinedData(True):

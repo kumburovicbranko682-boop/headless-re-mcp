@@ -133,6 +133,24 @@ class GhidraClient:
             max_heap=max_heap,
         )
 
+    def exports(
+        self,
+        binary: Path,
+        project_dir: Path,
+        *,
+        limit: int = 256,
+        timeout: float = 180.0,
+        max_heap: str = "2G",
+    ) -> JsonObject:
+        return self._export(
+            binary,
+            project_dir,
+            mode="exports",
+            limit=limit,
+            timeout=timeout,
+            max_heap=max_heap,
+        )
+
     def strings(
         self,
         binary: Path,

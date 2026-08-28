@@ -68,6 +68,8 @@ _MAX_META_CONTENT_CHARS = 2048
 _MAX_ANCHORS = 500
 _MAX_SUB_RESOURCES = 500
 _MAX_LINK_ORIGINS = 200
+# web.frames cap: an ad-heavy page can nest hundreds of iframes; bound the list.
+_MAX_FRAMES = 200
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -516,6 +518,49 @@ def _fold_links(raw: object, page_url: str) -> JsonObject:
         "origins": ranked,
         "origin_count": len(ranked),
         "external_origin_count": sum(1 for row in ranked if row["external"]),
+    }
+
+
+def _fold_frames(rows: list[JsonObject], main_url: str) -> JsonObject:
+    """Fold a page-side frame dump into a bounded, host-classified frame list."""
+    main_host = _link_host(main_url)
+    frames: list[JsonObject] = []
+    truncated = False
+    cross_origin = 0
+    for raw in rows:
+        if len(frames) >= _MAX_FRAMES:
+            truncated = True
+            break
+        url = _bounded_metadata(raw.get("url"), _MAX_URL_BYTES)[0]
+        host = _link_host(url)
+        is_main = bool(raw.get("is_main"))
+        external = bool(host) and host != main_host
+        if external and not is_main:
+            cross_origin += 1
+        parent_raw = raw.get("parent_url")
+        parent_url = (
+            _bounded_metadata(parent_raw, _MAX_URL_BYTES)[0]
+            if parent_raw is not None
+            else None
+        )
+        frames.append(
+            {
+                "url": url,
+                "name": _bounded_metadata(raw.get("name"), _MAX_METADATA_BYTES)[0],
+                "is_main": is_main,
+                "parent_url": parent_url,
+                "depth": int(raw.get("depth") or 0),
+                "host": host,
+                "external": external,
+            }
+        )
+    return {
+        "url": main_url,
+        "frames": frames,
+        "count": len(frames),
+        "total": len(rows),
+        "truncated": truncated,
+        "cross_origin_count": cross_origin,
     }
 
 
@@ -1474,6 +1519,37 @@ class WebBackend:
                 raise WebError("backend_error", "link read returned no data")
             page_url = _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0]
             return _fold_links(raw, page_url)
+
+        return self._runner(handle).call(work)
+
+    def frames(self, session_id: str) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            try:
+                page_frames = list(handle.page.frames)
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"frame read failed: {exc}") from exc
+            rows: list[JsonObject] = []
+            for frame in page_frames:
+                parent = getattr(frame, "parent_frame", None)
+                depth = 0
+                walk = parent
+                while walk is not None and depth < 64:
+                    depth += 1
+                    walk = getattr(walk, "parent_frame", None)
+                parent_url = (getattr(parent, "url", "") or "") if parent is not None else None
+                rows.append(
+                    {
+                        "url": getattr(frame, "url", "") or "",
+                        "name": getattr(frame, "name", "") or "",
+                        "is_main": parent is None,
+                        "parent_url": parent_url,
+                        "depth": depth,
+                    }
+                )
+            main_url = _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0]
+            return _fold_frames(rows, main_url)
 
         return self._runner(handle).call(work)
 

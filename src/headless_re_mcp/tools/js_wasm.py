@@ -319,4 +319,32 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_data(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.names")
+    def wasm_names(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Recover a .wasm module's symbol table from its name custom section.
+
+        The single most valuable read on a module that kept its names, and pure
+        Python -- no wabt. Where wasm.functions borrows only function names, this
+        dumps the whole name section: the module name, the function name map, and
+        (the part nothing else surfaces) the per-function local and argument
+        names that make a decompilation readable.
+
+        Answers with has_name_section (false on a stripped module), module (the
+        module name or null), functions (paged index->name entries sorted by
+        index), function_count, function_total, offset, has_more, then locals,
+        local_function_count and locals_truncated. Each locals row carries
+        function (the function index), names (a list of {index, name} for its
+        locals/arguments), name_count and names_truncated. The offset/limit page
+        the function-name list; the locals list is bounded to 200 functions and
+        100 names each.
+
+        A file that is not a WebAssembly module is refused as invalid_params and
+        one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_names(path, offset=offset, limit=limit))
+
     return tools.bindings

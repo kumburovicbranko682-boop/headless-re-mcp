@@ -289,6 +289,32 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.urls")
+    def apk_urls(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Extract network indicators (URLs, hosts, IPs) from DEX string constants.
+
+        apk.strings lists every constant; this distils the network-relevant ones
+        -- the C2 endpoints, API bases, tracking beacons and hard-coded IPs a
+        triage wants first -- into a deduped, classified inventory. URLs are
+        matched for the http/https/ws/wss/ftp schemes, trimmed of trailing
+        punctuation, and split into scheme and host.
+
+        Answers with urls (paged, sorted), count, total, offset and has_more;
+        hosts (a per-host tally ranked by how many distinct URLs point at it) with
+        host_count and hosts_truncated; ips (distinct bare IPv4 literals) with
+        ip_count; and scan_capped (the DEX string pool or an inventory hit its
+        collection cap, so more may exist). Each url row carries url, scheme and
+        host. Bare IPv4 matching is best-effort and can also catch version-like
+        numbers, so treat ips as leads, not proof.
+
+        A session that is not an APK is refused target_mismatch.
+        """
+        return _dump(analysis.apk_urls(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.xrefs")
     def apk_xrefs(
         session_id: str,

@@ -283,6 +283,23 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_links(session_id))
 
+    @tools.tool(name="web.frames")
+    def web_frames(session_id: str) -> dict[str, Any]:
+        """List the page's frame tree: the main document and every iframe.
+
+        The embedded-content view -- an ad frame, a third-party payment iframe, a
+        hidden clickjacking overlay, a sandboxed widget -- each of which loads and
+        runs code the top page did not write. Answers with url (the main frame),
+        frames, count, total, truncated and cross_origin_count (child frames whose
+        host differs from the main document -- the third-party embeds worth a
+        look). Each frame carries url, name (the frame/iframe name attribute),
+        is_main (the top document), parent_url (the frame that hosts it, or null
+        for the main frame), depth (0 for the main frame, deeper for nested
+        iframes), host and external (its host differs from the main document's).
+        The list is bounded; read truncated on an ad-heavy page.
+        """
+        return _dump(analysis.web_frames(session_id))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.

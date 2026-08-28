@@ -686,6 +686,38 @@ def _parse_function_names(payload: bytes) -> dict[int, str]:
     return names
 
 
+def _parse_local_names(payload: bytes) -> dict[int, list[tuple[int, str]]]:
+    """Decode subsection 2 (local names) of the name custom section.
+
+    An indirect name map: for each function index, a name map of local-variable
+    index to name. These are the argument and local names a decompiler shows,
+    and are not recovered by the function listing.
+    """
+    out: dict[int, list[tuple[int, str]]] = {}
+    pos = 0
+    while pos < len(payload):
+        sub_id, pos = _u8(payload, pos)
+        size, pos = _uleb(payload, pos)
+        end = pos + size
+        if end > len(payload):
+            raise _WasmTruncated
+        if sub_id == 2:  # local name subsection: an indirect namemap
+            body = payload[pos:end]
+            bpos = 0
+            func_count, bpos = _uleb(body, bpos)
+            for _ in range(func_count):
+                func_index, bpos = _uleb(body, bpos)
+                local_count, bpos = _uleb(body, bpos)
+                locals_list: list[tuple[int, str]] = []
+                for _ in range(local_count):
+                    local_index, bpos = _uleb(body, bpos)
+                    local_name, bpos = _name(body, bpos)
+                    locals_list.append((local_index, local_name))
+                out[func_index] = locals_list
+        pos = end
+    return out
+
+
 def list_wasm_functions(
     data: bytes, *, offset: int = 0, limit: int = 100
 ) -> JsonObject:
@@ -1323,4 +1355,82 @@ def list_wasm_data(data: bytes, *, offset: int = 0, limit: int = 100) -> JsonObj
     result["count"] = len(rows)
     result["offset"] = start
     result["has_more"] = start + len(rows) < len(segments)
+    return result
+
+
+_MAX_NAMES_PAGE = 1000
+_MAX_LOCAL_FUNCS = 200
+_MAX_LOCALS_PER_FUNC = 100
+
+
+def list_wasm_names(data: bytes, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """Recover the symbol table from a module's ``name`` custom section.
+
+    The single most valuable thing on a module that kept its names: the module
+    name, the function names (subsection 1 -- the same names the function
+    listing borrows, here as a direct index->name map) and, crucially, the local
+    and argument names per function (subsection 2), which the function listing
+    does not surface and which make a decompilation readable. has_name_section
+    is false on a stripped module. Never raises: a malformed subsection is
+    skipped and its portion of the table comes back empty.
+    """
+    result: JsonObject = {
+        "has_name_section": False,
+        "module": None,
+        "functions": [],
+        "function_count": 0,
+        "function_total": 0,
+        "offset": max(0, int(offset)),
+        "has_more": False,
+        "locals": [],
+        "local_function_count": 0,
+        "locals_truncated": False,
+    }
+    _, name_payload = _collect_sections(data)
+    if name_payload is None:
+        return result
+    result["has_name_section"] = True
+    try:
+        result["module"] = _module_name(name_payload)
+    except (_WasmTruncated, _WasmMalformed):
+        result["module"] = None
+    try:
+        func_names = _parse_function_names(name_payload)
+    except (_WasmTruncated, _WasmMalformed):
+        func_names = {}
+    entries = [{"index": index, "name": name} for index, name in sorted(func_names.items())]
+    result["function_total"] = len(entries)
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_NAMES_PAGE))
+    window = entries[start : start + cap]
+    result["functions"] = window
+    result["function_count"] = len(window)
+    result["offset"] = start
+    result["has_more"] = start + len(window) < len(entries)
+    try:
+        local_names = _parse_local_names(name_payload)
+    except (_WasmTruncated, _WasmMalformed):
+        local_names = {}
+    locals_out: list[JsonObject] = []
+    locals_truncated = False
+    for func_index in sorted(local_names):
+        if len(locals_out) >= _MAX_LOCAL_FUNCS:
+            locals_truncated = True
+            break
+        pairs = local_names[func_index]
+        names = [
+            {"index": local_index, "name": local_name}
+            for local_index, local_name in pairs[:_MAX_LOCALS_PER_FUNC]
+        ]
+        locals_out.append(
+            {
+                "function": func_index,
+                "names": names,
+                "name_count": len(names),
+                "names_truncated": len(pairs) > _MAX_LOCALS_PER_FUNC,
+            }
+        )
+    result["locals"] = locals_out
+    result["local_function_count"] = len(locals_out)
+    result["locals_truncated"] = locals_truncated
     return result
