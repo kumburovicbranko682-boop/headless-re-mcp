@@ -9447,6 +9447,13 @@ _GO_MAX_FILE = 128 * 1024 * 1024
 _GO_MAX_STRING = 64 * 1024
 _GO_MAX_SETTINGS = 64
 _GO_MAX_FIELD = 256
+# Setting *values* are not identifiers and can be long: DefaultGODEBUG alone
+# lists every GODEBUG default and already exceeds 256 chars on go1.24, growing
+# with each release. Capping a value at _GO_MAX_FIELD truncated it below what
+# ``go version -m`` prints, so the value cap is the whole-blob bound instead
+# (the mod text is already read within _GO_MAX_STRING, so this never truncates
+# a real value while staying bounded against a hostile stamp).
+_GO_MAX_SETTING_VALUE = _GO_MAX_STRING
 
 
 def _go_uvarint(data: bytes, off: int, end: int) -> tuple[int | None, int]:
@@ -9525,7 +9532,7 @@ def _go_build_info(path: Path) -> dict[str, Any]:
         elif len(parts) >= 2 and parts[0] == "build" and len(settings) < _GO_MAX_SETTINGS:
             key, sep, value = parts[1].partition("=")
             if sep:
-                settings[key[:_GO_MAX_FIELD]] = value[:_GO_MAX_FIELD]
+                settings[key[:_GO_MAX_FIELD]] = value[:_GO_MAX_SETTING_VALUE]
     if settings:
         info["settings"] = settings
     return {"go": info}
