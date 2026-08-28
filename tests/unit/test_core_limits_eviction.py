@@ -13,11 +13,25 @@ from __future__ import annotations
 
 import os
 import sys
+import types
 from pathlib import Path
 
 import pytest
 
 from headless_re_mcp.core import limits
+
+
+def _fake_win32_ctypes(query: object) -> types.SimpleNamespace:
+    """A ctypes stand-in whose GlobalMemoryStatusEx is the given callable.
+
+    byref hands the structure straight to the fake so it can fill ullAvailPhys
+    the way the real kernel32 call would.
+    """
+    return types.SimpleNamespace(
+        sizeof=lambda _cls: 64,
+        byref=lambda status: status,
+        windll=types.SimpleNamespace(kernel32=types.SimpleNamespace(GlobalMemoryStatusEx=query)),
+    )
 
 
 def _try_symlink(src: Path, dst: Path) -> bool:
@@ -63,6 +77,29 @@ def test_available_memory_returns_none_on_a_negative_reading(
 ) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(os, "sysconf", lambda name: -1, raising=False)
+    assert limits.available_memory_bytes() is None
+
+
+def test_available_memory_on_windows_reads_global_memory_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The win32 arm trusts kernel32's available-physical figure verbatim."""
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    def query_ok(status: limits._MemoryStatusEx) -> int:
+        status.ullAvailPhys = 12345 * 4096
+        return 1
+
+    monkeypatch.setattr(limits, "ctypes", _fake_win32_ctypes(query_ok))
+    assert limits.available_memory_bytes() == 12345 * 4096
+
+
+def test_available_memory_on_windows_returns_none_when_the_query_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed GlobalMemoryStatusEx means "do not guess", the same as POSIX."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(limits, "ctypes", _fake_win32_ctypes(lambda _status: 0))
     assert limits.available_memory_bytes() is None
 
 
@@ -195,6 +232,20 @@ def test_prune_terminates_when_a_deletion_keeps_failing(
     assert len(list(root.iterdir())) == 3
 
 
+def test_prune_reports_nothing_when_the_directory_cannot_be_listed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directory whose listing fails (EMFILE, permissions) prunes nothing."""
+    root = tmp_path / "captures"
+    root.mkdir()
+
+    def refuse(self: Path) -> object:
+        raise OSError("too many open files")
+
+    monkeypatch.setattr(type(root), "iterdir", refuse)
+    assert limits.prune_capped_dir(root, max_entries=1, max_bytes=1) == 0
+
+
 def test_prune_sizes_and_evicts_subdirectories(tmp_path: Path) -> None:
     root = tmp_path / "captures"
     root.mkdir()
@@ -240,6 +291,48 @@ def test_dir_size_sums_files_and_skips_nested_directories(tmp_path: Path) -> Non
     # Below the file cap, so the walk visits every entry: the two top-level
     # files and the nested one sum to 60, while the directory entries add zero.
     assert limits._dir_size(sub) == 60
+
+
+class _StatlessChild:
+    """A walk entry that looks like a file but whose stat has stopped working."""
+
+    def is_file(self) -> bool:
+        return True
+
+    def stat(self) -> os.stat_result:
+        raise OSError("stale handle")
+
+
+class _SizedChild:
+    def __init__(self, size: int) -> None:
+        self._size = size
+
+    def is_file(self) -> bool:
+        return True
+
+    def stat(self) -> types.SimpleNamespace:
+        return types.SimpleNamespace(st_size=self._size)
+
+
+def test_dir_size_skips_a_child_whose_stat_fails_mid_walk() -> None:
+    """A file deleted between listing and stat contributes zero, not a crash."""
+
+    class _Tree:
+        def rglob(self, pattern: str) -> list[object]:
+            return [_StatlessChild(), _SizedChild(10)]
+
+    assert limits._dir_size(_Tree()) == 10  # type: ignore[arg-type]
+
+
+def test_dir_size_returns_the_partial_total_when_the_walk_itself_dies() -> None:
+    """A directory removed mid-walk yields the bytes counted so far."""
+
+    class _Tree:
+        def rglob(self, pattern: str) -> object:
+            yield _SizedChild(10)
+            raise OSError("directory vanished mid-walk")
+
+    assert limits._dir_size(_Tree()) == 10  # type: ignore[arg-type]
 
 
 def test_remove_entry_deletes_a_file(tmp_path: Path) -> None:
