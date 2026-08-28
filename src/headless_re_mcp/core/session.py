@@ -3130,6 +3130,11 @@ _WASM_COUNTED_SECTIONS = frozenset({1, 2, 3, 4, 5, 6, 7, 9, 10, 11})
 # we surface so a hostile module cannot make session creation allocate freely.
 _WASM_MAX_NAMES = 1024
 _WASM_EXTERNAL_KINDS = {0: "func", 1: "table", 2: "memory", 3: "global"}
+# A table's element type: the reference kind its slots hold. funcref is the
+# call_indirect target table (the classic one), externref the host-reference
+# table reference-types added. Any other byte reads as ref_0x%02x -- named,
+# never guessed.
+_WASM_REFTYPES = {0x70: "funcref", 0x6F: "externref"}
 # The "producers" custom section (a tool-conventions standard) records which
 # language and toolchain built the module. A real section carries a handful of
 # fields (language / processed-by / sdk) with a few entries each, so small caps
@@ -3222,6 +3227,7 @@ def describe_wasm(path: Path) -> dict[str, Any]:
     exports: list[dict[str, Any]] = []
     imports: list[dict[str, Any]] = []
     defined_memories: list[dict[str, Any]] = []
+    defined_tables: list[dict[str, Any]] = []
     data_payloads: list[dict[str, Any]] = []
     data_payload_count = 0
     entropy_flags: list[dict[str, Any]] = []
@@ -3257,6 +3263,8 @@ def describe_wasm(path: Path) -> dict[str, Any]:
                 exports = _wasm_exports(data, body_start, body_end)
             elif section_id == 2:
                 imports = _wasm_imports(data, body_start, body_end)
+            elif section_id == 4:
+                defined_tables = _wasm_tables(data, body_start, body_end)
             elif section_id == 5:
                 defined_memories = _wasm_memories(data, body_start, body_end)
             elif section_id == 11:
@@ -3329,6 +3337,22 @@ def describe_wasm(path: Path) -> dict[str, Any]:
         if imp["kind"] == "memory"
     ]
     memories += defined_memories
+    # The module's whole table footprint, imported tables first (they lead the
+    # index space, the way call_indirect numbers them) then the Table section's
+    # own. Each is an element ref type and min/max slot count -- and the funcref
+    # table's size is the reach of every indirect call, so it is the
+    # control-flow pair to a memory's page bound.
+    tables: list[dict[str, Any]] = [
+        {
+            "element_type": imp.get("element_type", "funcref"),
+            "min": imp["min"],
+            "max": imp["max"],
+            "imported": True,
+        }
+        for imp in imports
+        if imp["kind"] == "table"
+    ]
+    tables += defined_tables
     # The start function: the module's entry point, run automatically at
     # instantiation before any export is callable -- the WASM analogue of an
     # ELF e_entry or a .NET entry-point token. Reported by index (the only
@@ -3366,6 +3390,7 @@ def describe_wasm(path: Path) -> dict[str, Any]:
             "has_start": has_start,
             "start_function": start_function,
             "memories": memories,
+            "tables": tables,
             "custom_sections": custom_sections,
             "producers": producers,
             # The engine features the module requires (target_features custom
@@ -4343,6 +4368,13 @@ def _wasm_imports(data: bytes, body_start: int, body_end: int) -> list[dict[str,
             entry["min"] = minimum
             entry["max"] = maximum
             entry["shared"] = shared
+        elif kind == 1:  # an imported table: element ref type, then its limits
+            desc = pos + 1
+            elem = data[desc] if desc < body_end else 0
+            entry["element_type"] = _WASM_REFTYPES.get(elem, f"ref_0x{elem:02x}")
+            minimum, maximum, _shared, pos, ok = _read_wasm_limits(data, desc + 1, body_end)
+            entry["min"] = minimum
+            entry["max"] = maximum
         else:
             pos, ok = _skip_wasm_import_desc(data, pos + 1, kind, body_end)
         out.append(entry)
@@ -4379,6 +4411,38 @@ def _wasm_memories(data: bytes, body_start: int, body_end: int) -> list[dict[str
         if not ok or pos > body_end:
             break
         out.append({"min": minimum, "max": maximum, "shared": shared, "imported": False})
+    return out
+
+
+def _wasm_tables(data: bytes, body_start: int, body_end: int) -> list[dict[str, Any]]:
+    """Element type and limits of each table the Table section (id 4) defines.
+
+    A tabletype is a reference type byte then a limits: the funcref table is
+    call_indirect's dispatch table, so its size is the count of slots an
+    indirect call can reach -- a control-flow-relevant bound the way a
+    memory's pages bound its address space. Symmetric to ``_wasm_memories``:
+    bounded by the same name cap, and a malformed entry stops the walk with
+    whatever parsed cleanly rather than raising.
+    """
+    count, pos, ok = _read_leb_u32(data, body_start)
+    if not ok:
+        return []
+    out: list[dict[str, Any]] = []
+    for _ in range(min(count, _WASM_MAX_NAMES)):
+        if pos >= body_end:
+            break
+        elem = data[pos]
+        minimum, maximum, _shared, pos, ok = _read_wasm_limits(data, pos + 1, body_end)
+        if not ok or pos > body_end:
+            break
+        out.append(
+            {
+                "element_type": _WASM_REFTYPES.get(elem, f"ref_0x{elem:02x}"),
+                "min": minimum,
+                "max": maximum,
+                "imported": False,
+            }
+        )
     return out
 
 

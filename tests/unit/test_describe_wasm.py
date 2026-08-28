@@ -169,6 +169,83 @@ def test_a_truncated_memory_limit_stops_the_walk(tmp_path: Path) -> None:
     assert info["memories"] == []
 
 
+def test_defined_tables_report_element_type_and_limits(tmp_path: Path) -> None:
+    # A Table section (id 4) with two tables: a bounded funcref (call_indirect's
+    # dispatch table) and an unbounded externref. Each reads its element ref
+    # type and min/max slot count -- the control-flow pair to a memory's pages.
+    tables = _leb(2)
+    tables += bytes([0x70]) + bytes([0x01]) + _leb(2) + _leb(10)  # funcref min 2 max 10
+    tables += bytes([0x6F]) + bytes([0x00]) + _leb(0)  # externref min 0, no max
+    module = _module([_section(4, tables)])
+    path = tmp_path / "tables.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["table_count"] == 2
+    assert info["tables"] == [
+        {"element_type": "funcref", "min": 2, "max": 10, "imported": False},
+        {"element_type": "externref", "min": 0, "max": None, "imported": False},
+    ]
+
+
+def test_imported_and_defined_tables_are_both_reported(tmp_path: Path) -> None:
+    # Imported tables lead the index space call_indirect numbers against, so
+    # they lead the footprint list too; the import entry is enriched with the
+    # same element_type/min/max shape, each row tagged by origin.
+    imports = _leb(1)
+    imports += _name("env") + _name("tbl") + bytes([1]) + bytes([0x70]) + bytes([0x01])
+    imports += _leb(3) + _leb(9)  # imported funcref table min 3 max 9
+    defined = _leb(1) + bytes([0x70]) + bytes([0x00]) + _leb(1)  # funcref min 1, no max
+    module = _module([_section(2, imports), _section(4, defined)])
+    path = tmp_path / "both_tables.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["imports"] == [
+        {
+            "module": "env",
+            "name": "tbl",
+            "kind": "table",
+            "element_type": "funcref",
+            "min": 3,
+            "max": 9,
+        }
+    ]
+    assert info["tables"] == [
+        {"element_type": "funcref", "min": 3, "max": 9, "imported": True},
+        {"element_type": "funcref", "min": 1, "max": None, "imported": False},
+    ]
+
+
+def test_module_without_a_table_reports_an_empty_footprint(tmp_path: Path) -> None:
+    path = tmp_path / "add.wasm"
+    path.write_bytes(_ADD_WASM)
+    info = describe_wasm(path)["wasm"]
+    assert info["tables"] == []
+
+
+def test_an_unknown_table_element_type_is_named_by_byte(tmp_path: Path) -> None:
+    # A reference type the table map does not know is named ref_0x%02x -- read
+    # honestly, never guessed, the same rule the arch/machine facts follow.
+    tables = _leb(1) + bytes([0x6D]) + bytes([0x01]) + _leb(1) + _leb(2)
+    module = _module([_section(4, tables)])
+    path = tmp_path / "exotic.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["tables"] == [
+        {"element_type": "ref_0x6d", "min": 1, "max": 2, "imported": False}
+    ]
+
+
+def test_a_truncated_table_limit_stops_the_walk(tmp_path: Path) -> None:
+    # The flag promises a maximum but the bytes end before it: no entry with a
+    # guessed max, and the reader stays inside the section.
+    tables = _leb(1) + bytes([0x70]) + bytes([0x01]) + _leb(2)  # max missing
+    module = _module([_section(4, tables)])
+    path = tmp_path / "bad_table.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["tables"] == []
+
+
 def test_start_function_reports_the_entry_index(tmp_path: Path) -> None:
     # The start section names the function run automatically at instantiation
     # -- the WASM entry point, e_entry's analogue. With no name section only
