@@ -13,6 +13,7 @@ where the real error handling lives.
 from __future__ import annotations
 
 import stat
+import sys
 import zipfile
 from pathlib import Path
 from typing import Any, cast
@@ -308,11 +309,24 @@ def _backend_with_adbutils(client_cls: type, *, adb_path: Path | None = None) ->
 
 
 def test_client_is_unavailable_without_adbutils() -> None:
-    backend = AdbBackend()  # real import failed: not installed
+    backend = AdbBackend()
     backend._available = False
     with pytest.raises(AdbError) as exc:
         backend._client()
     assert exc.value.code == "capability_unavailable"
+
+
+def test_construction_degrades_when_the_adbutils_import_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Force the lazy ``import adbutils`` in ``__init__`` to fail so the
+    # module-absent degradation arm runs whether or not adbutils is installed.
+    # In CI adbutils is genuinely absent; the android extra (a supported
+    # config) ships it, so forcing the import keeps this branch covered too.
+    monkeypatch.setitem(sys.modules, "adbutils", None)
+    backend = AdbBackend()
+    assert backend.available is False
+    assert backend._adbutils is None
 
 
 def test_client_sets_the_adb_path_env_and_falls_back_on_typeerror(

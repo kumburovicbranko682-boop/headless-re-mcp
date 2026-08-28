@@ -11,6 +11,7 @@ devices/sessions/scripts so those arms execute without a frida runtime.
 
 from __future__ import annotations
 
+import sys
 import threading
 from types import SimpleNamespace
 from typing import Any
@@ -363,6 +364,17 @@ def test_available_property_reflects_the_flag() -> None:
     assert client.available is True
     client._available = False
     assert client.available is False
+
+
+def test_available_is_false_when_the_frida_import_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Force the lazy ``import frida`` in ``__init__`` to fail so the
+    # module-absent degradation arm runs whether or not frida is installed. In
+    # CI frida is genuinely absent; the android extra (a supported config)
+    # ships it, so forcing the import keeps this branch covered there too.
+    monkeypatch.setitem(sys.modules, "frida", None)
+    client = FridaClient()
+    assert client.available is False
+    assert client._frida is None
 
 
 # --------------------------------------------------------------------------- #
