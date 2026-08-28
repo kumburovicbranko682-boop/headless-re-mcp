@@ -366,6 +366,13 @@ def _load_metadata_context(path: Path) -> _MetaCtx:
                 break
             row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
             cursor += 4
+    # HeapSizes bit 0x40 (ExtraData) inserts a 4-byte value between the row-count
+    # array and the first table row. Uncompressed "#-" streams (Edit-and-Continue
+    # deltas, and obfuscators that choose that stream precisely to derail naive
+    # parsers) set it; without skipping it every table start lands 4 bytes early
+    # and the whole enumeration reads rows from the wrong offset.
+    if heap_sizes & 0x40:
+        cursor += 4
     return _MetaCtx(
         path=path,
         pe_data=data,

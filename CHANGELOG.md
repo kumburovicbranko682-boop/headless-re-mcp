@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（`.NET` 元数据表流 HeapSizes 位 0x40 ExtraData 未跳过,整表枚举偏移 4 字节）
+
+- `_load_metadata_context`（`dotnet/metadata_enum.py`）与 `_parse_tables_and_names`
+  （`dotnet/clr_inspect.py`）读完行计数数组后直接把 `cursor` 当作首行表数据的起点,漏了
+  HeapSizes 里的 ExtraData 位(0x40)。该位置位时,行计数与首行之间会插入一个 4 字节
+  ExtraData 字段——未压缩的 `#-` 流(Edit-and-Continue 增量)以及故意选用该流来绊倒朴素
+  解析器的混淆器都会置位它。不跳过这 4 字节,则每张表的起点都前移 4 字节,Module/Assembly
+  名读到 ExtraData 里的垃圾索引、整表枚举全程读到错位的行——自信却错误。改为读完行计数后
+  `if heap_sizes & 0x40: cursor += 4`,两处一致。新增
+  `tests/unit/test_metadata_extradata_stream_offset.py`:手搓置位 0x40 且塞入 0xFFFFFFFF
+  ExtraData 的 `#~`+`#Strings`,钉住 Module 名只有在跳过这 4 字节后才解析得到(否则读到
+  0xFFFF 索引返回 None);已验证去掉修复后用例即失败。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
