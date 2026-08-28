@@ -182,35 +182,59 @@ export function useWorkbench() {
   }, []);
 
   const selectThread = async (id: string) => {
-    const result = await api<ThreadResponse>(`/api/agent/threads/${encodeURIComponent(id)}`);
-    dispatch({ type: "select", threadId: id, messages: result.messages, events: result.events ?? [] });
-    const bound = result.thread.session_id ?? "";
-    let listed = sessionsRef.current;
-    if (bound && !listed.some((session) => session.id === bound)) {
-      listed = await loadSessions();
-    }
-    if (bound && !listed.some((session) => session.id === bound)) {
+    // Leaving the current thread orphans its run's SSE stream. consume() keeps
+    // pushing that run's events, but the reducer's select just repointed
+    // state.events at the thread being opened -- so the old run's events, and
+    // worse its terminal run.failed banner and approval clearing, would land in
+    // a thread that never started it. Stop the stream on a real switch. (Same
+    // thread stays live: re-selecting must not kill an in-flight run.)
+    if (id !== selectedThreadRef.current) abortRef.current?.abort();
+    try {
+      const result = await api<ThreadResponse>(`/api/agent/threads/${encodeURIComponent(id)}`);
+      dispatch({ type: "select", threadId: id, messages: result.messages, events: result.events ?? [] });
+      const bound = result.thread.session_id ?? "";
+      let listed = sessionsRef.current;
+      if (bound && !listed.some((session) => session.id === bound)) {
+        listed = await loadSessions();
+      }
+      if (bound && !listed.some((session) => session.id === bound)) {
+        setSessionId(bound);
+        await markLost(bound, id);
+        return;
+      }
+      setLost(null);
+      lostRef.current = null;
       setSessionId(bound);
-      await markLost(bound, id);
-      return;
+    } catch (reason) {
+      dispatch({ type: "error", message: String(reason) });
     }
-    setLost(null);
-    lostRef.current = null;
-    setSessionId(bound);
   };
 
   const createThread = async () => {
-    const result = await api<{ thread: Thread }>("/api/agent/threads", {
-      method: "POST",
-      body: JSON.stringify({ title: "分析对话", session_id: lost ? null : (sessionId || null) }),
-    });
-    await loadThreads();
-    await selectThread(result.thread.id);
-    setNav("threads");
+    try {
+      const result = await api<{ thread: Thread }>("/api/agent/threads", {
+        method: "POST",
+        body: JSON.stringify({ title: "分析对话", session_id: lost ? null : (sessionId || null) }),
+      });
+      await loadThreads();
+      await selectThread(result.thread.id);
+      setNav("threads");
+    } catch (reason) {
+      dispatch({ type: "error", message: String(reason) });
+    }
   };
 
   const removeThread = async (id: string) => {
-    await api(`/api/agent/threads/${encodeURIComponent(id)}`, { method: "DELETE" });
+    try {
+      await api(`/api/agent/threads/${encodeURIComponent(id)}`, { method: "DELETE" });
+    } catch (reason) {
+      dispatch({ type: "error", message: String(reason) });
+      return;
+    }
+    // Deleting the last thread while its run streams leaves no thread for
+    // selectThread to abort through, so tear the stream down here before the
+    // reducer clears the selection and its events out from under it.
+    abortRef.current?.abort();
     const remaining = (Array.isArray(state.threads) ? state.threads : []).filter((thread) => thread.id !== id);
     dispatch({ type: "threads", threads: remaining });
     if (state.selectedThread !== id) return;
@@ -227,40 +251,61 @@ export function useWorkbench() {
 
   const send = async () => {
     if (!draft.trim()) return;
-    let selected = state.selectedThread;
-    if (!selected) {
-      const created = await api<{ thread: Thread }>("/api/agent/threads", {
-        method: "POST",
-        body: JSON.stringify({ title: draft.slice(0, 60), session_id: lost ? null : (sessionId || null) }),
-      });
-      selected = created.thread.id;
-      await loadThreads();
-      dispatch({ type: "select", threadId: selected, messages: [] });
-    }
     const text = draft;
-    setDraft("");
-    const result = await api<{ run_id: string }>("/api/agent/runs", {
-      method: "POST",
-      body: JSON.stringify({ thread_id: selected, message: text }),
-    });
-    window.history.replaceState({ ...(window.history.state ?? {}), activeRun: result.run_id, runSeq: 0 }, "");
-    dispatch({ type: "run", runId: result.run_id, userMessage: text });
-    void consume(result.run_id);
+    try {
+      let selected = state.selectedThread;
+      if (!selected) {
+        const created = await api<{ thread: Thread }>("/api/agent/threads", {
+          method: "POST",
+          body: JSON.stringify({ title: text.slice(0, 60), session_id: lost ? null : (sessionId || null) }),
+        });
+        selected = created.thread.id;
+        await loadThreads();
+        dispatch({ type: "select", threadId: selected, messages: [] });
+      }
+      setDraft("");
+      const result = await api<{ run_id: string }>("/api/agent/runs", {
+        method: "POST",
+        body: JSON.stringify({ thread_id: selected, message: text }),
+      });
+      window.history.replaceState({ ...(window.history.state ?? {}), activeRun: result.run_id, runSeq: 0 }, "");
+      dispatch({ type: "run", runId: result.run_id, userMessage: text });
+      void consume(result.run_id);
+    } catch (reason) {
+      // The run POST can be refused (oversized message is a 413, a deleted
+      // thread a 404) or die in transit while the backend restarts. The draft
+      // was already cleared for the happy path, so put the message back --
+      // unless the user typed something new while the request was in flight.
+      setDraft((current) => (current.trim() ? current : text));
+      dispatch({ type: "error", message: String(reason) });
+    }
   };
 
   const cancelRun = async () => {
     if (!state.activeRun) return;
-    await api(`/api/agent/runs/${state.activeRun}/cancel`, { method: "POST" });
+    try {
+      await api(`/api/agent/runs/${state.activeRun}/cancel`, { method: "POST" });
+    } catch (reason) {
+      dispatch({ type: "error", message: String(reason) });
+    }
   };
 
   const decide = async (toolCallId: string, argsHash: string, approved: boolean, remember?: "tool" | "effect") => {
     if (!state.activeRun) return;
-    const result = await api<AutonomyResponse>(
-      `/api/agent/runs/${state.activeRun}/tool-calls/${toolCallId}/${approved ? "approve" : "reject"}`,
-      { method: "POST", body: JSON.stringify({ args_sha256: argsHash, remember }) },
-    );
-    if (result.policy) setApprovalMode(readApprovalMode(result));
-    dispatch({ type: "approval_done", toolCallId });
+    try {
+      const result = await api<AutonomyResponse>(
+        `/api/agent/runs/${state.activeRun}/tool-calls/${toolCallId}/${approved ? "approve" : "reject"}`,
+        { method: "POST", body: JSON.stringify({ args_sha256: argsHash, remember }) },
+      );
+      if (result.policy) setApprovalMode(readApprovalMode(result));
+      dispatch({ type: "approval_done", toolCallId });
+    } catch (reason) {
+      // Keep the card so the decision can be retried; the run's terminal event
+      // clears stale approvals anyway. Swallowing (not rethrowing) also keeps
+      // changeApprovalMode from reverting the mode toggle over one failed
+      // backlog approval after the PUT itself already succeeded.
+      dispatch({ type: "error", message: String(reason) });
+    }
   };
 
   const changeApprovalMode = async (mode: ApprovalMode) => {
@@ -286,6 +331,8 @@ export function useWorkbench() {
   };
 
   const changeSession = async (next: string) => {
+    const previousSession = sessionIdRef.current;
+    const previousLost = lostRef.current;
     setLost(null);
     lostRef.current = null;
     setSessionId(next);
@@ -293,6 +340,15 @@ export function useWorkbench() {
       try {
         await bindSession(state.selectedThread, next);
       } catch (reason) {
+        // The PATCH failed, so the server still has the old binding and the
+        // agent's tools keep operating it. Keeping the optimistic value would
+        // point the header/inspector at `next` instead — roll back to what the
+        // server actually has, unless the user already picked something newer.
+        setSessionId((current) => (current === next ? previousSession : current));
+        if (previousLost && lostRef.current === null) {
+          setLost(previousLost);
+          lostRef.current = previousLost;
+        }
         dispatch({ type: "error", message: String(reason) });
       }
     }
@@ -309,8 +365,13 @@ export function useWorkbench() {
     lostRef.current = null;
     setSessionId((current) => (current === id ? "" : current));
     const threadId = selectedThreadRef.current;
-    if (threadId) void bindSession(threadId, "", true);
-    void loadSessions();
+    // Best-effort cleanup after a session closes; both calls run as fire-and-
+    // forget. If the backend is restarting or the thread was already deleted
+    // (404), a bare void here becomes an unhandled rejection. Swallow it: the
+    // unbind self-heals (selectThread flags a gone session next time it opens)
+    // and the list refreshes on the next /healthz tick, so a banner here is noise.
+    if (threadId) void bindSession(threadId, "", true).catch(() => undefined);
+    void loadSessions().catch(() => undefined);
   }, [bindSession, loadSessions]);
 
   useEffect(() => {

@@ -91,6 +91,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（监控台工作台 useWorkbench 四处前端诚实性/正确性）
+
+- 发送/新建/删除/取消/审批等写动作失败时如实报错、且不丢草稿：`selectThread`、`createThread`、
+  `removeThread`、`send`、`cancelRun`、`decideApproval` 过去把 `api()` 的失败（413 过大、404 线程已删、
+  后端重启期的中断等）当作永不发生，异常直接逃逸、动作静默失败。现统一包 try/catch 并
+  `dispatch({type:"error"})` 出面；`send` 在失败时把已清掉的草稿放回（除非用户在请求在途时又输入了新内容）。
+- 切换线程时中止旧 run 的 SSE 流：离开当前线程会遗弃其 run 的流，`consume()` 仍在推该 run 的事件，而
+  reducer 的 select 刚把 `state.events` 指向正在打开的线程——旧 run 的事件、乃至其终态 `run.failed` 横幅与
+  清批准动作会落进一个从未启动它的线程。现仅在真正切换线程时 `abortRef.current?.abort()`（同线程重选不杀在途 run）；
+  删除末个线程时也先拆流再让 reducer 清选择。
+- 绑定会话的 PATCH 失败时回滚显示的会话绑定：PATCH 失败意味着服务端仍是旧绑定、agent 工具仍操作它，保留乐观值
+  会让头部/检查器指向 `next`。现回滚到服务端实际持有的会话（除非用户已另选更新的），并恢复此前的 lost 状态。
+- `noteClosedSession` 的兜底清理不再泄漏未处理的 promise 拒绝：会话关闭后的 `bindSession`/`loadSessions`
+  是即发即忘，后端重启或线程已被删（404）时裸 `void` 会变成 unhandled rejection。现 `.catch(()=>undefined)` 吞掉——
+  解绑会自愈（下次打开时 `selectThread` 标记会话已失效），列表也会在下个 `/healthz` tick 刷新。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
