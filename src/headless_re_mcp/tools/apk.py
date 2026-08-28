@@ -345,6 +345,50 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="apk.method_xrefs")
+    def apk_method_xrefs(
+        session_id: str,
+        class_name: str,
+        method_name: str,
+        descriptor: str = "",
+        direction: Literal["callers", "callees"] = "callers",
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Precise per-method cross references with call-site offsets.
+
+        apk.xrefs sweeps by bare method name and returns only {class, method},
+        so it cannot separate overloads or say where a call sits. This pins one
+        exact method -- class_name (dotted or Lsmali/form) plus method_name, and
+        an optional descriptor (e.g. "(I)Z") to pick one overload, else the first
+        is used and overloads reports how many share the name -- and walks its
+        call graph one hop, keeping androguard's descriptor and bytecode offset
+        for each edge. It is the Android analogue of a native xref-to with call
+        sites, and the precise counterpart to apk.xrefs' quick name-wide sweep.
+
+        direction "callers" (default) answers who invokes this method: each edge
+        is the calling method and the offset within it where the invoke sits, so
+        you can jump straight there with apk.method_bytecode. direction "callees"
+        answers what this method invokes (framework APIs included), the offset
+        being the site inside this method. Answers with class_name, method,
+        descriptor (of the resolved target), direction, overloads, and xrefs --
+        each {class, method, descriptor, offset}, deduplicated and sorted -- plus
+        count, total, offset, has_more for paging and scan_capped once the
+        20000-edge ceiling was hit. The list field is xrefs, named after neither
+        direction; a native method resolves with an empty xrefs.
+        """
+        return _dump(
+            analysis.apk_method_xrefs(
+                session_id,
+                class_name,
+                method_name,
+                descriptor=descriptor,
+                direction=direction,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
     @tools.tool(name="apk.strings")
     def apk_strings(
         session_id: str,

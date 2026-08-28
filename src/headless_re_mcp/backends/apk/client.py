@@ -49,6 +49,12 @@ _MAX_SUBTYPES_PAGE = 1000
 # reply hold an unbounded edge list, and page at the tool-schema maximum.
 _MAX_CLASS_XREFS_COLLECT = 20_000
 _MAX_CLASS_XREFS_PAGE = 1000
+# apk.method_xrefs dedups precise call-site edges (class, method, descriptor,
+# offset) into a set before paging; cap the set so a hot method (a logger, a
+# framework API) cannot make one reply hold an unbounded edge list, and page at
+# the tool-schema maximum.
+_MAX_METHOD_XREFS_COLLECT = 20_000
+_MAX_METHOD_XREFS_PAGE = 1000
 
 
 class ApkError(RuntimeError):
@@ -1186,6 +1192,83 @@ class ApkClient:
             # A caller deciding "these are all the refs" has to know whether the
             # enumeration ended or merely stopped.
             "has_more": has_more,
+        }
+
+    def method_xrefs(
+        self,
+        path: Path,
+        class_name: str,
+        method_name: str,
+        *,
+        descriptor: str | None = None,
+        direction: str = "callers",
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        """Precise per-method cross references with call-site offsets.
+
+        apk.xrefs sweeps by bare method name and returns only ``{class, method}``;
+        this pins one exact method (class + name + optional ``descriptor``) and
+        walks its call graph one hop, keeping androguard's descriptor and
+        call-site offset for each edge. ``direction="callers"`` (the default,
+        xref_from) answers who invokes this method -- each edge is the calling
+        method and the bytecode offset within it where the invoke sits, so a
+        caller can jump straight there with apk.method_bytecode.
+        ``direction="callees"`` (xref_to) answers what this method invokes,
+        framework APIs included, the offset being the site inside this method. It
+        is the Android analogue of a native xref-to with call sites, and the
+        precise, offset-bearing counterpart to apk.xrefs' name-wide sweep.
+        """
+        if direction not in ("callers", "callees"):
+            raise ApkError(
+                "invalid_params",
+                "direction must be callers or callees",
+                direction=direction,
+            )
+        class_display, chosen, matches = self._resolve_method(
+            path, class_name, method_name, descriptor
+        )
+        walk = chosen.get_xref_from() if direction == "callers" else chosen.get_xref_to()
+        edges: set[tuple[str, str, str, int]] = set()
+        scan_capped = False
+        for ref in walk:
+            if not isinstance(ref, tuple) or len(ref) < 3:
+                continue
+            other_class, other_method, ref_offset = ref[0], ref[1], ref[2]
+            edge_class = str(
+                getattr(other_method, "class_name", "") or getattr(other_class, "name", "")
+            )
+            edge_method = str(getattr(other_method, "name", ""))
+            edge_desc = str(getattr(other_method, "descriptor", ""))
+            try:
+                off = int(ref_offset)
+            except (TypeError, ValueError):
+                off = -1
+            if len(edges) >= _MAX_METHOD_XREFS_COLLECT:
+                scan_capped = True
+                break
+            edges.add((edge_class, edge_method, edge_desc, off))
+        ordered = sorted(edges)
+        start = max(0, int(offset))
+        cap = min(max(1, int(limit)), _MAX_METHOD_XREFS_PAGE)
+        window = ordered[start : start + cap]
+        return {
+            "class_name": class_display,
+            "method": method_name.strip(),
+            "descriptor": str(getattr(chosen, "descriptor", "")),
+            "direction": direction,
+            # More than one method shares this name; when no descriptor was pinned
+            # the first overload was resolved, so the caller knows to disambiguate.
+            "overloads": len(matches),
+            "xrefs": [
+                {"class": cls, "method": m, "descriptor": d, "offset": off}
+                for cls, m, d, off in window
+            ],
+            "count": len(window),
+            "total": len(ordered),
+            "offset": start,
+            "has_more": start + len(window) < len(ordered),
+            "scan_capped": scan_capped,
         }
 
     def class_xrefs(
