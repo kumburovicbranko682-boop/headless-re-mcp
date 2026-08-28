@@ -53,6 +53,10 @@ _MITM_WS_TAIL = 4
 # point of the summary is triage, not a second full listing.
 _MAX_STATS_HOSTS = 50
 _MAX_STATS_CONTENT_TYPES = 50
+# proxy.endpoints folds the capture into distinct method+host+path rows. One
+# endpoint realistically returns a handful of distinct status codes; cap the set
+# so a pathological capture cannot grow one endpoint's status list without bound.
+_MAX_ENDPOINT_STATUSES = 32
 
 
 class ProxyError(RuntimeError):
@@ -1027,6 +1031,81 @@ class ProxyBackend:
             "websockets": websockets,
             "with_request_body": with_request_body,
             "no_status": no_status,
+        }
+
+    def endpoints(self, session_id: str, *, limit: int = 200) -> JsonObject:
+        """Fold the capture into distinct endpoints -- the app's API surface.
+
+        proxy.flows is a per-request listing (every hit to ``/api/user`` is its
+        own row) and proxy.stats aggregates only to the host level; neither
+        answers "which distinct endpoints did this app talk to?" -- the site map
+        an analyst reversing a backend actually wants. This folds the ring into
+        distinct method+host+path keys (the query string is stripped, so
+        ``/api/user?id=1`` and ``?id=2`` are one endpoint), each with how many
+        times it was hit, the distinct status codes seen, how many hits failed,
+        and whether any hit was a WebSocket upgrade.
+        """
+        inst = self._get(session_id)
+        items = inst.recorder.snapshot()
+        flows_folded = len(items)
+        dropped = 0
+        if items:
+            dropped = max(0, int(items[-1].get("seq") or 0) - flows_folded)
+        cap = max(1, min(int(limit), 1000))
+
+        agg: dict[tuple[str, str, str], JsonObject] = {}
+        for summary in items:
+            method = (str(summary.get("method", "") or "").upper()) or "UNKNOWN"
+            host = str(summary.get("host", "") or "")
+            # Strip the query so the same endpoint hit with different params folds
+            # to one row -- the whole point of an endpoint (site-map) view.
+            path = urlsplit(str(summary.get("url", "") or "")).path or "/"
+            key = (method, host, path)
+            entry = agg.get(key)
+            if entry is None:
+                entry = {
+                    "method": method,
+                    "host": host,
+                    "path": path,
+                    "count": 0,
+                    "_statuses": set(),
+                    "failed": 0,
+                    "websocket": False,
+                }
+                agg[key] = entry
+            entry["count"] += 1
+            status = summary.get("status")
+            if isinstance(status, int) and len(entry["_statuses"]) < _MAX_ENDPOINT_STATUSES:
+                entry["_statuses"].add(status)
+            if summary.get("failed"):
+                entry["failed"] += 1
+            if summary.get("is_websocket"):
+                entry["websocket"] = True
+
+        # Busiest endpoints first; ties broken by the key for a stable listing.
+        ranked = sorted(
+            agg.values(),
+            key=lambda e: (-int(e["count"]), e["method"], e["host"], e["path"]),
+        )
+        endpoints: list[JsonObject] = [
+            {
+                "method": entry["method"],
+                "host": entry["host"],
+                "path": entry["path"],
+                "count": entry["count"],
+                "statuses": sorted(entry["_statuses"]),
+                "failed": entry["failed"],
+                "websocket": entry["websocket"],
+            }
+            for entry in ranked[:cap]
+        ]
+        return {
+            "endpoints": endpoints,
+            "count": len(endpoints),
+            "total": len(ranked),
+            "has_more": len(ranked) > len(endpoints),
+            "flows_folded": flows_folded,
+            "dropped": dropped,
         }
 
     def search(

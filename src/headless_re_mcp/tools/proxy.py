@@ -98,6 +98,33 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_stats(session_id))
 
+    @tools.tool(name="proxy.endpoints")
+    def proxy_endpoints(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+    ) -> dict[str, Any]:
+        """Fold the capture into distinct endpoints -- the app's API surface.
+
+        proxy.flows is a per-request listing (every hit to /api/user is its own
+        row) and proxy.stats aggregates only to the host level; neither answers
+        "which distinct endpoints did this app talk to?" -- the site map you
+        want when reversing a backend. This folds the ring into distinct
+        method+host+path keys, with the query string stripped so /api/user?id=1
+        and ?id=2 are one endpoint.
+
+        Answers with endpoints, each carrying method, host, path, count (how many
+        times it was hit), statuses (the distinct status codes seen, sorted;
+        empty when every hit failed or is in flight), failed (how many hits had
+        no response) and websocket (true when any hit was a WebSocket upgrade).
+        Ranked by count, busiest first. Also count (endpoints returned), total
+        (distinct endpoints), has_more (more than the limit exist), flows_folded
+        (how many flows were folded) and dropped (ring evictions). There is no
+        url or query field on a row -- the path is query-stripped by design; use
+        proxy.flows or proxy.search to reach a specific request. It errors
+        invalid_state when no proxy is running for the session.
+        """
+        return _dump(analysis.proxy_endpoints(session_id, limit=limit))
+
     @tools.tool(name="proxy.search")
     def proxy_search(
         session_id: str,

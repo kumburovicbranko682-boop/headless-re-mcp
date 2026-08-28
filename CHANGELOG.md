@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **293（173 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **294（174 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -666,6 +666,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不移动函数索引空间，故转导出的导入在索引 0 仍解析为导入函数类型）、内部名挂接与非函数导出无签名字段，并另有 wat2wasm
   交叉校验（缺 wabt 时 skip≠pass）；单测另覆盖过滤、`signature_unknown`、空导出、4096 截断与非模块拒绝。该工具计入读效果，
   工具面因此 292→293。
+- **抓包看不到「这个 app 到底打了哪些端点」——只有逐请求的流和主机级的聚合**。`proxy.flows` 是逐请求列表（每次打
+  `/api/user` 都是单独一行），`proxy.stats` 只聚合到主机级；要拿逆向后端时真正想要的那张站点图（distinct 端点），两者都答不了。
+  新增只读的 `proxy.endpoints`：把整条 ring 折叠成 distinct 的 method+host+path 键（query 串被剥掉，故 `/api/user?id=1` 与
+  `?id=2` 归并为一个端点），每个端点带命中次数、见过的状态码集合、失败次数与是否有 WebSocket 升级。回 `endpoints`，每条带
+  `method`、`host`、`path`、`count`、`statuses`（去重并排序的状态码；全失败或在途时为空）、`failed`（无响应的命中数）与
+  `websocket`（任一命中是 WS 升级则为真），按 `count` 降序（最忙的在前）。外加 `count`（返回的端点数）、`total`（distinct
+  端点总数）、`has_more`（超过 limit）、`flows_folded`（折叠了多少条流）与 `dropped`（ring 驱逐数）。行上没有 url/query
+  字段——path 按设计剥了 query，要具体请求去 `proxy.flows`/`proxy.search`。无代理运行时报 `invalid_state`。活体门经真
+  mitmproxy 起本地源站，打两次带不同 query 的 GET 加一次 POST，断言两次 GET 折叠成一个 query-stripped 端点（count 2、
+  statuses [200]）、POST 单列且 statuses [201]；单测另覆盖 method/host/path 折叠、失败/WebSocket 标记、limit 截断与
+  docstring 形状。该工具计入读效果，工具面因此 293→294。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`

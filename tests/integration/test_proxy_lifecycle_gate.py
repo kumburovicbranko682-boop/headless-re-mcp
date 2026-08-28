@@ -21,6 +21,7 @@ import struct
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -426,6 +427,60 @@ def test_proxy_stats_summarizes_a_live_capture() -> None:
             assert "flows" not in stats
         finally:
             backend.stop("gate-stats")
+
+
+@pytest.mark.integration
+def test_proxy_endpoints_folds_a_live_capture() -> None:
+    """On a real capture, endpoints must fold requests into the API surface.
+
+    Drive two GETs to the same path with different query strings and one POST to
+    another path through the proxy, then assert proxy.endpoints collapses the two
+    GETs into a single query-stripped endpoint hit twice, keeps the POST as its
+    own row, and records the status codes -- the site map a backend reverser
+    reads instead of paging per-request flows.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy endpoints Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    with _origin_server() as origin_url:
+        backend.start("gate-endpoints", host="127.0.0.1", port=port)
+        try:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"})
+            )
+            base = origin_url.rsplit("/", 1)[0]  # .../api
+            for query in ("?id=1", "?id=2"):
+                with opener.open(origin_url + query, timeout=10) as response:  # GET -> 200
+                    assert response.status == 200
+            post = urllib.request.Request(
+                base + "/login",
+                data=b'{"user":"alice"}',
+                headers={"Content-Type": "application/json"},
+            )
+            with opener.open(post, timeout=10) as response:  # POST -> 201
+                assert response.status == 201
+
+            assert _poll(lambda: backend.flows("gate-endpoints")["total"] >= 3), (
+                "the three requests through the proxy were never recorded"
+            )
+            data = backend.endpoints("gate-endpoints")
+            assert data["flows_folded"] >= 3
+            path = urllib.parse.urlsplit(origin_url).path  # /api/thing
+
+            get_thing = next(
+                e for e in data["endpoints"] if e["method"] == "GET" and e["path"] == path
+            )
+            # Both GETs differ only by query string, so they fold into one row.
+            assert get_thing["count"] == 2
+            assert get_thing["statuses"] == [200]
+            assert get_thing["host"] == "127.0.0.1"
+
+            post_login = next(e for e in data["endpoints"] if e["method"] == "POST")
+            assert post_login["path"] == urllib.parse.urlsplit(base + "/login").path
+            assert post_login["statuses"] == [201]
+        finally:
+            backend.stop("gate-endpoints")
 
 
 @pytest.mark.integration
