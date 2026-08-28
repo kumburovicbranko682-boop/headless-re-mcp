@@ -285,6 +285,21 @@ def test_as_command_splits_defaults_like_an_operator_would() -> None:
     assert _as_command("echo ok", "pwsh -File revert.ps1") == ("echo", "ok")
 
 
+def test_as_command_keeps_an_unsplittable_value_instead_of_crashing_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unclosed quote must not raise out of Settings.load(), which runs at
+    startup and again from the settings reload route and the IDA gate. It must
+    not become () either -- that would silently drop the isolation step."""
+    from headless_re_mcp.core import isolation as isolation_mod
+
+    monkeypatch.setattr(isolation_mod, "_warned_unsplittable", True)
+    assert _as_command(None, "pwsh -File 'C:/vm/revert.ps1") == (
+        "pwsh -File 'C:/vm/revert.ps1",
+    )
+    assert _as_command("run 'oops", "good --args") == ("run 'oops",)
+
+
 def test_numeric_settings_fall_back_instead_of_crashing_startup() -> None:
     assert _as_float("not-a-number", "also-bad", fallback=1.5) == 1.5
     assert _as_float(None, "2.5") == 2.5

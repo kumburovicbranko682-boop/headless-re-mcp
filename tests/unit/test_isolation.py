@@ -164,6 +164,58 @@ def test_settings_load_splits_an_env_command_as_argv(tmp_path, monkeypatch) -> N
     )
 
 
+def test_an_unsplittable_command_is_kept_whole_rather_than_raised_or_dropped(
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    """An unclosed quote must neither crash Settings.load() nor disable isolation.
+
+    Settings.load() runs well past startup (the settings reload route, the IDA
+    gate), so raising turned one typo into runtime 500s. Falling back to no
+    command would silently run samples without the isolation step. Keeping the
+    string whole does neither: the server runs, and rotation fails visibly.
+    """
+    from headless_re_mcp.core import isolation as isolation_mod
+    from headless_re_mcp.core.isolation import command_argv
+
+    alerts: list[dict[str, Any]] = []
+    monkeypatch.setattr(isolation_mod, "_warned_unsplittable", False)
+    monkeypatch.setattr(
+        isolation_mod,
+        "record_alert",
+        lambda kind, **kwargs: alerts.append({"kind": kind, **kwargs}),
+    )
+
+    bad = "pwsh -File 'C:/vm/revert.ps1"
+    assert command_argv(bad) == (bad,)
+    # Said once per process, and without echoing the command: rotation
+    # commands routinely embed hypervisor credentials.
+    assert command_argv(bad) == (bad,)
+    assert len(alerts) == 1
+    assert alerts[0]["kind"] == "isolation_command_unsplittable"
+    assert bad not in str(alerts[0])
+
+    policy = IsolationPolicy(command=command_argv(bad))
+    assert policy.configured is True
+
+
+def test_from_settings_keeps_an_unsplittable_command_configured(
+    tmp_path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    from dataclasses import replace
+
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core import isolation as isolation_mod
+
+    monkeypatch.setattr(isolation_mod, "_warned_unsplittable", True)
+    base = replace(Settings.load(), artifact_root=tmp_path)
+    policy = IsolationPolicy.from_settings(
+        replace(base, isolation_command="revert.sh 'unclosed")
+    )
+
+    assert policy.command == ("revert.sh 'unclosed",)
+    assert policy.configured is True
+
+
 def test_policy_defaults_to_not_configured_and_fail_closed(tmp_path) -> None:  # type: ignore[no-untyped-def]
     from dataclasses import replace
 

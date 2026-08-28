@@ -573,16 +573,16 @@ def _as_command(raw: str | None, default: object) -> tuple[str, ...]:
     it, including Windows paths. A JSON array is already argv. ``_as_tuple``
     is the wrong tool: it splits on commas and de-duplicates, so
     ``pwsh -File C:\\vm\\revert.ps1`` becomes one un-runnable program name.
+
+    Like the numeric readers this never raises: command_argv keeps an
+    unsplittable string whole rather than crashing every Settings.load() or
+    silently dropping the isolation step.
     """
-    from headless_re_mcp.core.isolation import _split_command
+    from headless_re_mcp.core.isolation import command_argv
 
     if raw is not None:
-        return _split_command(raw)
-    if isinstance(default, str):
-        return _split_command(default)
-    if isinstance(default, (list, tuple)):
-        return tuple(str(part) for part in default if str(part).strip())
-    return ()
+        return command_argv(raw)
+    return command_argv(default)
 
 
 def _packed_analysis_auto_approve_effects() -> tuple[str, ...]:

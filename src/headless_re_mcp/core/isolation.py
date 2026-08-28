@@ -47,6 +47,54 @@ def _split_command(raw: str) -> tuple[str, ...]:
     return tuple(part.replace(_NUL, "\\") for part in shlex.split(raw.replace("\\", _NUL)))
 
 
+_warned_unsplittable = False
+
+
+def _warn_unsplittable(exc: ValueError) -> None:
+    # Once per process: the answer is a property of the configuration, not of
+    # any one Settings.load(), and gate checks reload settings constantly.
+    # The command text itself stays out of the alert -- the operator's
+    # rotation command routinely embeds hypervisor credentials.
+    global _warned_unsplittable  # noqa: PLW0603 - deliberate say-it-once latch
+    if _warned_unsplittable:
+        return
+    _warned_unsplittable = True
+    record_alert(
+        "isolation_command_unsplittable",
+        fields={
+            "detail": str(exc),
+            "consequence": (
+                "the whole string is kept as one argv entry, so rotation "
+                "fails closed instead of running samples without isolation"
+            ),
+        },
+    )
+
+
+def command_argv(value: object) -> tuple[str, ...]:
+    """Read an operator-supplied isolation command as argv, without raising.
+
+    A sequence is already argv; a string is split the way an operator would
+    write it. A string that cannot be split (an unclosed quote around a
+    Windows path is the usual typo) used to raise out of Settings.load(),
+    which is called well beyond startup -- the settings reload route and the
+    IDA gate both call it, so one bad quote turned into runtime 500s. Falling
+    back to no command would be worse: it silently disables a step that
+    exists to stop samples cross-contaminating each other. Keeping the whole
+    string as a single argv entry does neither -- the server runs, and the
+    rotation fails visibly when it is attempted.
+    """
+    if isinstance(value, (list, tuple)):
+        return tuple(str(part) for part in value if str(part).strip())
+    if not isinstance(value, str) or not value.strip():
+        return ()
+    try:
+        return _split_command(value)
+    except ValueError as exc:
+        _warn_unsplittable(exc)
+        return (value,)
+
+
 @dataclass(frozen=True, slots=True)
 class IsolationPolicy:
     """The command to run between samples, if the deployment has one."""
@@ -63,11 +111,7 @@ class IsolationPolicy:
         raw = getattr(settings, "isolation_command", ()) or ()
         # A single string is read the way an operator would write it in a config
         # file; a sequence is taken as an argv that is already split.
-        command = (
-            _split_command(raw)
-            if isinstance(raw, str)
-            else tuple(str(part) for part in raw)
-        )
+        command = command_argv(raw)
         timeout = getattr(settings, "isolation_timeout_s", DEFAULT_TIMEOUT_S)
         return cls(
             command=command,
