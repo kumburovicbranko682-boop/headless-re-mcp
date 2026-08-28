@@ -5,6 +5,26 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（stub 耦合分析把“未测量”误报成 code_nonzero_ratio=0.0，错误阻断 IAT 重建）
+
+- `unpack/stub_calls.py` 计算 `code_nonzero_ratio` 时用 `code / max(code_total, 1)`，
+  当没有任何 code section 落在 dump 内（无 code section、section 越界的截断 dump、空
+  dump）时 `code_total==0` 仍得出 `0.0`。下游 `service_unpack`/`pause_quality` 把
+  `<0.05` 当作硬证据：清掉 `rebuild_allowed`、把 `iat_recoverable` 降级为
+  `iat_insufficient`，甚至直接以 `iat_rebuild_blocked` 拒绝，并打上
+  `code_not_decrypted` ——把“没测到”误报成“测到且仍加密”。
+- 同一段测量循环把“本 section 越界”和“字节预算耗尽”混为一谈：遇到首个越界 section
+  就 `break`，导致后面本可测量的 in-range section 被放弃，出现 `code_bytes=0` 却又有
+  非零 `e8_total` 的自相矛盾输出。
+- `code_section_ranges`、largest-executable 回退与 `count_stub_vs_api_calls` 均未拒绝
+  负 RVA；`data[rva:rva+take]` 对负 rva 会从 dump 尾部切片，把无关字节当作 code 计数，
+  伪造调用统计（其姊妹 `vmp_like_section_ranges` 早已拒绝负 RVA）。
+- 修复：`code_total==0` 时返回 `None`（“未测量”），真正数到全零才返回 `0.0`；把预算
+  耗尽（`break`）与 section 越界（`continue`）分开，使每个 in-range section 都被测量；
+  三处补上 `rva < 0` 守卫。并更新 `analyze_dump_stub_coupling` docstring 说明该契约。
+- 新增 `tests/unit/test_stub_calls_unmeasured_code_ratio.py`：覆盖 None-vs-0.0 契约、
+  越界后仍测量后续 section、预算仍生效、负 RVA 拒绝，以及 gate 对 None/0.0 的不同判定。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
