@@ -34,7 +34,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Launch a Chrome browser for the session and open a URL via CDP.
 
-        Answers with opened, url, title and headless. There is no session,
+        Answers with opened, url, title and headless, plus status when a URL
+        was given and produced an HTTP response. A 4xx/5xx page still opens, so
+        read status to tell an error page from a hit. There is no session,
         browser, ok or page field.
         """
         return _dump(analysis.web_open(session_id, url=url, headless=headless, timeout=timeout))
@@ -47,7 +49,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Navigate the session's browser to a new URL.
 
-        Answers with url and title. There is no navigated, ok or page field.
+        Answers with url and title, plus status when the navigation produced an
+        HTTP response. A 4xx/5xx page still counts as navigated, so read status
+        to tell an error page from a hit. There is no navigated, ok or page
+        field.
         """
         return _dump(analysis.web_navigate(session_id, url, timeout=timeout))
 
@@ -99,10 +104,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Return recent browser console messages.
 
-        Answers with console, count, has_more, and dropped so a page that
-        filled the limit is not read as the whole buffer, and ring
-        eviction is visible. A line longer than the per-message cap is
-        cut and marked text_truncated.
+        Answers with console, count, total, has_more, and dropped so a page
+        that filled the limit is not read as the whole buffer: total is how
+        many messages are buffered, and ring eviction is visible via dropped.
+        console holds the newest messages; the max limit covers the whole ring,
+        so there is no offset. A line longer than the per-message cap is cut
+        and marked text_truncated.
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 
