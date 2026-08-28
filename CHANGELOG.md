@@ -78,6 +78,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   正确夹取返回 True,证明既非“恒真”也非“恒假”。留空的 `_CLAMP_EXEMPT` 允许清单沿用 schema 守卫 `_UNBOUNDED_NUMERIC_OK`
   的 fail-closed 形态:未来若真有豁免,须显式具名登记。
 
+### 测试（非 PE `timeout` 的“后端夹取可达性”漂移守卫：schema 上界只在 MCP 通道生效，直连后端时靠后端自己的 clamp 兜底；这半此前只钉了 schema，新增按调用图做可达性分析的 AST 守卫钉住每个吃 `timeout` 的读取器都能到达一处 clamp）
+
+- `test_non_pe_timeout_schema_bounds` 钉的是“对外声明”那半:每个非 PE 工具的 `timeout` 在 schema 里有有限 maximum。但 schema
+  只在 MCP 通道跑;agent 与 OpenAI 桥直接调后端 handler、跳过它。于是那条通道上唯一挡住 `timeout=1e9` 把共享 worker 无限期
+  占住(或直接喂给 `page.goto` / `run_bounded` / frida attach、活得比系统里其它一切上界都久)的,是后端自己的 clamp:CLI 走
+  `clamp_cli_timeout`、浏览器走 `_bound_nav_timeout`、frida 走 `_bound_timeout`。一次永不返回的挂起,是无人值守任务唯一无法自愈的
+  失败,所以这条运行期兜底比它的兄弟 `limit`/`offset` 守卫更要紧。
+- 这条兜底每个读取器今天都有,但到达它未必是一次行内调用:CLI 读取器委派给会夹取的模块级 `_run`,`jadx.decompile` 委派给
+  `export_sources` 再到 `_run`,`jsre.beautify` 委派给 `deobfuscate`,frida 读取器委派给会夹取的 `_attach_local` /
+  `_run_local_script`。所以新增的 `test_non_pe_timeout_backend_clamp_guard.py` 不是找每个方法“内部”有没有 clamp,而是构建
+  模块内调用图、断言每个吃 `timeout` 的**公开后端类**方法都能顺着自己的调用**到达**三个 clamp 原语之一——`_safe_names` 以
+  不动点从“直接调用 clamp 原语”的函数出发,逐层把“调用了已判安全者”的函数并入,`_direct_call_names` 只收方法自身语句层的调用、
+  不下潜进 `work`/`use` 闭包,免得内层驱动调用污染调用图。
+- 两个私有辅助类上的 `timeout`(`_Runner.call` / `_ProxyInstance.start`)按“只扫公开类”天然排除:前者拿到的是其后端方法已夹好的
+  timeout,后者用的是固定内部默认值,都非调用方输入,要求它们再夹一次没有意义。正向非空:守卫断言扫到 `web.open` /
+  `frida.attach` / `frida.modules` / `apktool.decode` / `jadx.decompile` / `jsre.beautify`(含纯委派的两个,专门压住传递可达那条路),
+  且检测器对它们真实的夹取(行内、单跳、两跳委派)都判为可达;并离线验证检测器对“吃 timeout 却既不夹也不委派”的合成公开方法返回
+  False、对行内与多跳委派返回 True、对私有类方法完全不检,证明既非“恒真”也非“恒假”。
+
 ### `device.install` 校验现在能读出 UTF-8 字符串池的 APK 包名（此前只解 UTF-16LE，aapt2 默认产出的现代 APK 一律读不出包名，成功安装被降级成 `installed: null`）
 
 - `device.install` 装完后从会话 APK 里读回包名,再用 `pm path` 校验是否真的落到设备上。`_apk_package_name` 走的是“不拉
