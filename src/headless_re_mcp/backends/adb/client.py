@@ -527,6 +527,14 @@ class AdbBackend:
         }
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
+        # apk_path is schema-typed as a string, but the agent and OpenAI-bridge
+        # transports bind it from model output with no pydantic coercion. Path()
+        # raises a raw TypeError on a non-str value, which the device.install service
+        # wrapper's except BaseException files as a logged internal_error incident
+        # rather than the invalid_params a bad path deserves. Reject the wrong type
+        # first, before the local file probe and the adb server round-trip.
+        if not isinstance(apk_path, str):
+            raise AdbError("invalid_params", "apk_path must be a string")
         # Check the local APK before resolving the device: a missing file is a
         # cheap local fact and the most common caller mistake, while _device
         # reaches the adb server. Ordering it first means a bad path fails fast
@@ -777,6 +785,14 @@ class AdbBackend:
         return {"remote": remote_path, "local": str(local_path), "size": pulled}
 
     def push(self, serial: str, local_path: str, remote_path: str) -> JsonObject:
+        # local_path is schema-typed as a string, but the agent and OpenAI-bridge
+        # transports bind it from model output with no pydantic coercion. Path()
+        # raises a raw TypeError on a non-str value, which the device.push service
+        # wrapper's except BaseException files as a logged internal_error incident
+        # rather than the invalid_params a bad path deserves. Reject the wrong type
+        # first, before the local file probe and the adb server round-trip.
+        if not isinstance(local_path, str):
+            raise AdbError("invalid_params", "local_path must be a string")
         # Validate the local file (exists, stat, size cap) before resolving the
         # device: all cheap local facts, and a bad path or oversized file should
         # fail fast rather than after a device round-trip -- or be masked by a
