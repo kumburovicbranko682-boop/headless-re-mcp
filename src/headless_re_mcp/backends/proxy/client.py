@@ -57,6 +57,25 @@ class ProxyError(RuntimeError):
         self.details = details
 
 
+def _page_int(value: object, name: str) -> int:
+    """Coerce a paging argument to int, or raise a structured invalid_params.
+
+    ``flows`` fed ``offset``/``limit`` straight to ``int(...)``. The proxy.*
+    schemas type both as integers, but the agent and OpenAI-bridge transports
+    call the handler with no pydantic coercion, so a float (inf from a JSON
+    1e400), nan, null, or a non-numeric string reached ``int(...)`` and raised
+    OverflowError/ValueError/TypeError. None is a ProxyError, so the service's
+    ``except BaseException`` filed an internal_error incident for what is only a
+    bad page window. A bool is an int subclass but never a valid page bound.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ProxyError("invalid_params", f"{name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ProxyError("invalid_params", f"{name} must be an integer") from exc
+
+
 def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
     """Cancel and await every remaining task, then close the loop.
 
@@ -629,8 +648,8 @@ class ProxyBackend:
     def flows(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
         inst = self._get(session_id)
         items = inst.recorder.snapshot()
-        start = max(0, int(offset))
-        cap = max(1, min(int(limit), 1000))
+        start = max(0, _page_int(offset, "offset"))
+        cap = max(1, min(_page_int(limit, "limit"), 1000))
         window = items[start : start + cap]
         dropped = 0
         if items:
