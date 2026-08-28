@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（packed 预设的越权拒绝断言只抽查了排除集的一部分）
+
+- `test_the_packed_analysis_preset_keeps_sensitive_writes_behind_approval` 在
+  decide 级只硬编码断言了 `_EXCLUDED_AUTO_FILE_WRITES`(16 项"必须人工批准"的
+  敏感写)中的 7 项确被拒绝,另 9 项的"预设下确实被拒"只隐式成立、无断言。该排除
+  集的拒绝**只通过 file_write effect 生效**:packed 预设广授 `state_change`
+  effect、再按名单授予文件写工具,被排除工具之所以仍需人工,仅因它是"未进名单的
+  文件写工具"。经变异验证:一个纯 `state_change` 工具(如 `breakpoints.condition
+  .set`)在该预设下会被 `allowlisted_effects:state_change` **自动批准**;若日后
+  有人把这类工具加进排除集期望拒绝,硬编码 7 项的旧断言查不到,它会静默越权执行。
+  已改为遍历整个 `_EXCLUDED_AUTO_FILE_WRITES` 做 decide 级"必被拒绝"断言,使当前
+  及未来每一项都被钉住,与既有的"每项都是 file_write"断言两相独立、不再随排除集
+  增长而漂移。仅测试改动;autonomy 全套 17 项通过,ruff 干净。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

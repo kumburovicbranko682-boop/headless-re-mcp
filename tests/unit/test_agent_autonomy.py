@@ -297,8 +297,21 @@ def test_the_packed_analysis_denylist_stays_pinned_to_the_real_catalog() -> None
 
 
 def test_the_packed_analysis_preset_keeps_sensitive_writes_behind_approval() -> None:
-    """Applied to the real specs: no denylisted write auto-runs, stealth does."""
+    """Applied to the real specs: no denylisted write auto-runs, stealth does.
+
+    Every entry in the denylist is asserted at the decision level, not a
+    hand-picked subset. The denylist only bites through the file-write effect:
+    the preset grants state_change broadly and file-writes by name, so a
+    denylisted tool stays behind approval solely because it is a file write
+    left out of the name allowlist. A future denylist entry that is pure
+    state_change would be auto-approved by the effect grant and never park --
+    the exclusion silently inert. test_the_packed_analysis_denylist_stays_
+    pinned_to_the_real_catalog pins that every entry is a file write; driving
+    this decision check off the whole set rather than a frozen seven keeps
+    the two guarantees from drifting apart as the denylist grows.
+    """
     from headless_re_mcp.agent.autonomy import (
+        _EXCLUDED_AUTO_FILE_WRITES,
         PACKED_ANALYSIS_AUTO_APPROVE_EFFECTS,
         PACKED_ANALYSIS_AUTO_APPROVE_TOOLS,
     )
@@ -315,16 +328,10 @@ def test_the_packed_analysis_preset_keeps_sensitive_writes_behind_approval() -> 
         spec.name: spec for spec in COMMAND_CATALOG.for_transport(CommandTransport.AGENT)
     }
 
-    for name in (
-        "patches.apply",
-        "patches.restore",
-        "static.bytes.patch",
-        "apk.sign",
-        "apk.repack",
-        "artifacts.gc",
-        "web.screenshot",
-    ):
-        assert policy.decide(agent_specs[name]).approved is False, (
+    for name in sorted(_EXCLUDED_AUTO_FILE_WRITES):
+        spec = agent_specs.get(name)
+        assert spec is not None, f"denylisted tool no longer exists: {name}"
+        assert policy.decide(spec).approved is False, (
             f"{name} must stay behind human approval under the packed preset"
         )
 
