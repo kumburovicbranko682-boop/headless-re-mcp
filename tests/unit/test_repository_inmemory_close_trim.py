@@ -11,7 +11,9 @@ each of those directly against InMemoryAnalysisRepository.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -268,6 +270,12 @@ def test_audit_log_trims_to_the_newest_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(repo_module, "AUDIT_RETAINED_ROWS", 3)
+    # A coarse Windows clock can stamp every row identically, which would leave
+    # the newest-first sort to fall back to insertion order; tick it explicitly.
+    ticks = iter(range(100))
+    base = datetime(2024, 1, 1, tzinfo=UTC)
+    fake_clock = SimpleNamespace(now=lambda tz=UTC: base + timedelta(seconds=next(ticks)))
+    monkeypatch.setattr(repo_module, "datetime", fake_clock)
     repo = _repo(tmp_path)
     for index in range(6):
         repo.append_audit(
