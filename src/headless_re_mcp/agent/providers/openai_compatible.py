@@ -214,7 +214,9 @@ async def _aiter_bounded_sse_lines(
             yield line.decode("utf-8", "replace")
             start = newline + 1
     if buf:
-        if len(buf) > limit:
+        # The in-loop guards above refuse any piece that would push buf past the
+        # limit before it is appended, so a residual buf is always within bounds.
+        if len(buf) > limit:  # pragma: no cover - unreachable, buf is bounded above
             raise ValueError(f"provider SSE line exceeded {limit} bytes")
         line = bytes(buf)
         if line.endswith(b"\r"):
@@ -228,7 +230,10 @@ async def _read_bounded_error_detail(response: Any) -> str:
     truncated = False
     async for chunk in response.aiter_bytes():
         allowance = _MAX_ERROR_BODY_BYTES + 1 - len(body)
-        if allowance <= 0:
+        # body.extend below is capped at `allowance`, so body never exceeds
+        # _MAX_ERROR_BODY_BYTES + 1, and that case breaks below before the next
+        # iteration; allowance is therefore always positive at the loop top.
+        if allowance <= 0:  # pragma: no cover - unreachable, body is bounded below
             truncated = True
             break
         body.extend(chunk[:allowance])
