@@ -200,6 +200,24 @@ class WebAnalysisMixin:
             domain_filter=domain_filter,
         )
 
+    def web_storage(
+        self,
+        session_id: str,
+        kind: str = "local",
+        offset: int = 0,
+        limit: int = 200,
+        key_filter: str = "",
+    ) -> Result[JsonObject]:
+        return self._web_wrap(
+            session_id,
+            "storage",
+            session_id,
+            kind=kind,
+            offset=offset,
+            limit=limit,
+            key_filter=key_filter,
+        )
+
     def web_scripts(
         self,
         session_id: str,

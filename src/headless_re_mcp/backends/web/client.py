@@ -57,6 +57,43 @@ _MAX_HEADERS_BYTES = 16 * 1024
 # cookies with large values, so cap the universe collected and clip each value.
 _MAX_COOKIES = 1000
 _MAX_COOKIE_VALUE = 4 * 1024
+# web.storage reads localStorage/sessionStorage through a fixed in-page snippet
+# (the dom_snapshot pattern, not caller-supplied JS). A hostile page can fill
+# either store with many large entries, so cap the count collected in-browser
+# and clip each value; localStorage values (base64 blobs, JSON config) run
+# larger than cookies, hence the wider value clip.
+_MAX_STORAGE_ITEMS = 1000
+_MAX_STORAGE_VALUE = 8 * 1024
+# A fixed reader: the caller chooses only the area (local/session), never code.
+# Bounds are applied in-browser so a store with millions of keys or a
+# multi-megabyte value never serialises whole into this process.
+_STORAGE_JS = """
+(args) => {
+  let store;
+  try {
+    store = args.area === 'session' ? window.sessionStorage : window.localStorage;
+    void store.length;
+  } catch (e) {
+    return { unavailable: true, origin: (location && location.origin) || '' };
+  }
+  const items = [];
+  let over = false;
+  const total = store.length;
+  for (let i = 0; i < total; i++) {
+    if (items.length >= args.maxItems) { over = true; break; }
+    const key = store.key(i);
+    let value = store.getItem(key);
+    if (typeof value !== 'string') value = (value == null) ? '' : String(value);
+    const clipped = value.length > args.maxValue;
+    items.push({
+      key: String(key),
+      value: clipped ? value.slice(0, args.maxValue) : value,
+      value_truncated: clipped,
+    });
+  }
+  return { origin: (location && location.origin) || '', items, total, over };
+}
+"""
 # Header lists live on the ring entry but are stripped from network.list.
 _NETWORK_HEADER_KEYS = frozenset({"request_headers", "response_headers"})
 # Ring-only capture detail that no network.* view should surface directly: the
@@ -1184,6 +1221,87 @@ class WebBackend:
             "has_more": start + len(window) < total,
             "collection_truncated": universe_over,
         }
+
+    def storage(
+        self,
+        session_id: str,
+        *,
+        kind: str = "local",
+        offset: int = 0,
+        limit: int = 200,
+        key_filter: str = "",
+    ) -> JsonObject:
+        """Read localStorage/sessionStorage for the top document's origin.
+
+        The Web Storage companion to :meth:`cookies`: SPAs keep JWT/refresh
+        tokens and app config here, and neither the request-header capture nor a
+        page's own document.cookie reaches it. Read through a fixed in-page
+        snippet (like dom_snapshot) so the caller supplies no code, only the
+        area. A data:/about:blank page has an opaque origin with no storage and
+        is reported as invalid_state rather than an empty jar.
+        """
+        handle = self._get(session_id)
+        area = (kind or "").strip().lower()
+        if area not in ("local", "session"):
+            raise WebError("invalid_params", "kind must be 'local' or 'session'", kind=kind)
+
+        def work() -> JsonObject:
+            try:
+                raw = handle.page.evaluate(
+                    _STORAGE_JS,
+                    {"area": area, "maxItems": _MAX_STORAGE_ITEMS, "maxValue": _MAX_STORAGE_VALUE},
+                )
+            except WebError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"cannot read {area} storage: {exc}") from exc
+            if not isinstance(raw, dict):
+                raise WebError("backend_error", "storage read returned no object")
+            origin = _bounded_metadata(raw.get("origin"), _MAX_METADATA_BYTES)[0]
+            if raw.get("unavailable"):
+                raise WebError(
+                    "invalid_state",
+                    "web storage is unavailable for this origin (data:/about:blank "
+                    "pages have none); navigate to an http(s) page first",
+                    origin=origin,
+                )
+            raw_items = raw.get("items")
+            items = raw_items if isinstance(raw_items, list) else []
+            rows: list[JsonObject] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                value, value_over = _bounded_metadata(item.get("value"), _MAX_STORAGE_VALUE)
+                row: JsonObject = {
+                    "key": _bounded_metadata(item.get("key"), _MAX_METADATA_BYTES)[0],
+                    "value": value,
+                }
+                if value_over or bool(item.get("value_truncated")):
+                    row["value_truncated"] = True
+                rows.append(row)
+            # A case-insensitive substring on the key, applied before paging, so
+            # one entry (an auth token, a feature flag) is reachable without
+            # walking every page; total then reflects the matching set, while
+            # collection_truncated stays the in-browser universe cap.
+            needle = key_filter.strip().lower() if isinstance(key_filter, str) else ""
+            if needle:
+                rows = [row for row in rows if needle in str(row.get("key", "")).lower()]
+            total = len(rows)
+            start = max(0, int(offset))
+            cap = max(1, min(int(limit), _MAX_STORAGE_ITEMS))
+            window = rows[start : start + cap]
+            return {
+                "kind": area,
+                "origin": origin,
+                "storage": window,
+                "count": len(window),
+                "total": total,
+                "offset": start,
+                "has_more": start + len(window) < total,
+                "collection_truncated": bool(raw.get("over")),
+            }
+
+        return self._runner(handle).call(work)
 
     def scripts(
         self,

@@ -188,6 +188,39 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="web.storage")
+    def web_storage(
+        session_id: str,
+        kind: str = "local",
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+        key_filter: str = "",
+    ) -> dict[str, Any]:
+        """Read the page's localStorage or sessionStorage (the other token store).
+
+        The Web Storage companion to web.cookies: modern SPAs keep JWT/refresh
+        tokens and app config in localStorage/sessionStorage, not cookies, and
+        neither the per-request Set-Cookie capture nor a page's document.cookie
+        reaches it. kind selects the area -- local (the default; persists across
+        tabs and restarts) or session (per-tab) -- and anything else is
+        invalid_params. It is read through a fixed in-page snippet, so no
+        arbitrary JS is accepted, and only for the top document's origin (a
+        cross-origin iframe's storage is not included). Answers with storage
+        (each {key, value}, value clipped with value_truncated when long), kind,
+        origin (the origin the entries belong to), count, total, offset,
+        has_more, and collection_truncated when the store held more entries than
+        the collection cap. key_filter keeps only entries whose key contains
+        that substring (case-insensitive), applied before paging so total is the
+        match count. A data:/about:blank page has an opaque origin with no
+        storage and answers invalid_state -- navigate to an http(s) page first,
+        not an empty result. This is read-only: there is no set or remove.
+        """
+        return _dump(
+            analysis.web_storage(
+                session_id, kind=kind, offset=offset, limit=limit, key_filter=key_filter
+            )
+        )
+
     @tools.tool(name="web.scripts")
     def web_scripts(
         session_id: str,

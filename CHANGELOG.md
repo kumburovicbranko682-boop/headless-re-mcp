@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **272（154 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **273（155 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -252,6 +252,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   一次性读出整个 jar：返回 `name`、`value`（按上限裁剪并标 `value_truncated`）、`domain`、`path`、`http_only`、`secure`、
   `session`，以及浏览器给出的 `expires`/`size`/`same_site`；先按 `_MAX_COOKIES` 限制采集面（jar 更大时置 `collection_truncated`），
   `domain_filter` 对域名做大小写不敏感子串匹配、在分页前应用，把应用自身 cookie 从第三方追踪里择出来。工具总数 267→268。
+- **`web.storage` 缺席：令牌的另一半藏在 localStorage 里却读不到**。`web.cookies` 补齐了 cookie jar，但现代 SPA 的 JWT/刷新令牌
+  和应用配置往往存在 `localStorage`/`sessionStorage`，而非 cookie——抓包的 Set-Cookie 够不着，页面自身的 `document.cookie` 也读不到。
+  既然设计上不开放任意 JS（无 `web.evaluate`），就沿用 `web.dom.snapshot` 已在用的**定长内嵌脚本**范式（调用方只选 area，永远不提供代码），
+  新增只读工具 `web.storage`：`kind` 选 `local`（默认，跨标签页/重启持久）或 `session`（单标签页），其它值 `invalid_params`；只读顶层文档
+  所属源（跨源 iframe 的存储不含在内）。返回 `storage`（每项 `{key, value}`，`value` 超限裁剪并标 `value_truncated`）、`kind`、`origin`
+  （条目所属源）、`count`/`total`/`offset`/`has_more`，以及 store 条目数超采集上限时的 `collection_truncated`；`key_filter` 对键做大小写
+  不敏感子串匹配、在分页前应用，故 `total` 为匹配数。计数与单值都在浏览器内先行设限（`_MAX_STORAGE_ITEMS`/`_MAX_STORAGE_VALUE`），
+  百万键或数 MB 的值都不会整体序列化进本进程。`data:`/`about:blank` 这类不透明源没有存储，返回 `invalid_state`（提示先导航到 http(s) 页面）
+  而非伪装成空 jar。只读，工具总数 272→273（155 只读 / 118 写）。
 - **`proxy.start` 同样不限并发实例，跨会话可无界累积线程与抓包缓冲**。每个活的代理都占一个事件循环线程、一个绑定端口，并可
   保留至多 `_MAX_RETAINED_BYTES`（64 MiB）的抓包体；单会话有「一会话一代理」和端口占用检查约束，但总数无界——一个在多会话
   间反复 `proxy.start` 的调用方能攒下 N 个线程和 N×64 MiB。仿照刚给 web 加的并发上限，加上 `_MAX_PROXIES`（8）：持锁、在
