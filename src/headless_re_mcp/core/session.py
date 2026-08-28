@@ -4066,7 +4066,17 @@ def _read_wasm_limits(
     return (minimum if ok else None), maximum, bool(flag & 0x02), pos, ok
 
 
-def detect_pe_architecture(path: Path) -> Architecture:
+def detect_pe_architecture(path: Path) -> Architecture | None:
+    """The debugger-selection architecture of a PE, or None when neither fits.
+
+    Architecture picks between the x86 and x64 x64dbg backends, so only those
+    two machines map to a value. Any other machine (ARM64 Windows, EFI
+    bytecode, ...) returns None rather than raising: the session still opens
+    and every static fact still applies -- the ``arch`` metadata names the
+    real CPU -- only dynamic debugging is off the table, which
+    require_architecture reports when asked. A file that is not a PE at all
+    is still an error: callers reach here only after PE classification.
+    """
     with path.open("rb") as stream:
         dos = stream.read(64)
         if len(dos) < 64 or dos[:2] != b"MZ":
@@ -4081,7 +4091,7 @@ def detect_pe_architecture(path: Path) -> Architecture:
         return Architecture.X86
     if machine == 0x8664:
         return Architecture.X64
-    raise ValueError(f"unsupported PE machine 0x{machine:04x}: {path}")
+    return None
 
 
 # A .NET assembly is a PE with a COM descriptor data directory (index 14) that
@@ -4293,6 +4303,23 @@ _PE_OS_VERSION_OFF = 40
 _PE_SUBSYS_VERSION_OFF = 48
 _PE_SUBSYSTEM_OFF = 68
 _PE_DLLCHARACTERISTICS_OFF = 70
+# The COFF Machine field: which CPU the image runs on -- the PE identity fact
+# ELF (e_machine) and Mach-O (cputype) sessions already answer as ``arch``,
+# named the same way here. pefile reads the identical field, so the hardening
+# gate can cross-check it. Unlisted values render as machine_0x%04x: named
+# honestly, never guessed.
+_PE_MACHINES = {
+    0x014C: "x86",
+    0x8664: "x86-64",
+    0x01C0: "arm",
+    0x01C4: "arm",  # ARMNT: Thumb-2 Windows-on-ARM, still 32-bit ARM
+    0xAA64: "arm64",
+    0x0200: "ia64",
+    0x5032: "riscv32",
+    0x5064: "riscv64",
+    0x6264: "loongarch64",
+    0x0EBC: "ebc",  # EFI bytecode
+}
 _PE_SUBSYSTEMS = {
     0: "unknown",
     1: "native",
@@ -6209,7 +6236,9 @@ def _pe_hardening_facts(path: Path) -> dict[str, Any]:
     """Subsystem, loader mitigations and entry VA off the PE optional header.
 
     The native PE build posture -- the pair to the ELF nx/relro/canary/pie and
-    Mach-O nx/pie facts. ``subsystem`` answers what kind of program this is
+    Mach-O nx/pie facts. ``arch`` (the COFF Machine field) and ``bits`` (PE32
+    vs PE32+) are the identity facts ELF and Mach-O sessions already report
+    under the same names; ``subsystem`` answers what kind of program this is
     (gui, console, a native driver, an EFI image); the DllCharacteristics bits
     are the loader mitigation contract (DYNAMICBASE -> ``aslr``, NX_COMPAT ->
     ``nx``, GUARD_CF -> ``cfg``, plus high-entropy 64-bit ASLR, forced
@@ -6259,7 +6288,10 @@ def _pe_hardening_facts(path: Path) -> dict[str, Any]:
     dllchar = int.from_bytes(
         optional[_PE_DLLCHARACTERISTICS_OFF : _PE_DLLCHARACTERISTICS_OFF + 2], "little"
     )
+    machine = int.from_bytes(coff[4:6], "little")
     facts: dict[str, Any] = {
+        "arch": _PE_MACHINES.get(machine, f"machine_0x{machine:04x}"),
+        "bits": 64 if magic == 0x20B else 32,
         "subsystem": _PE_SUBSYSTEMS.get(subsystem, f"subsystem_{subsystem}"),
         "os_version": _pe_u16_pair(optional, _PE_OS_VERSION_OFF),
         "subsystem_version": _pe_u16_pair(optional, _PE_SUBSYS_VERSION_OFF),

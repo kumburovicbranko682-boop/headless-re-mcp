@@ -372,9 +372,10 @@ class XdbgClient:
         path = executable.resolve(strict=True)
         actual_architecture = detect_pe_architecture(path)
         if actual_architecture != architecture:
+            actual = actual_architecture.value if actual_architecture else "an unsupported machine"
             raise XdbgRpcError(
                 "architecture_mismatch",
-                f"expected {architecture.value} x64dbg, got {actual_architecture.value}",
+                f"expected {architecture.value} x64dbg, got {actual}",
                 details={"executable": str(path)},
             )
 

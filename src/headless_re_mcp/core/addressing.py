@@ -563,6 +563,10 @@ def _resolve_runtime_module_path(value: str) -> Path:
 def _read_pe_image_layout(path: Path) -> tuple[Architecture, int, int]:
     try:
         architecture = detect_pe_architecture(path)
+        if architecture is None:
+            # Runtime address sync is an x64dbg concern; a machine neither
+            # x86 nor x64 has no debugger to sync against.
+            raise ValueError("unsupported PE machine for runtime address sync")
         with path.open("rb") as stream:
             dos = stream.read(64)
             pe_offset = int.from_bytes(dos[0x3C:0x40], "little")

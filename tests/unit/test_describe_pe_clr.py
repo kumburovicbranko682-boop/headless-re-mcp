@@ -1037,6 +1037,7 @@ def _pe_with_posture(
     entry_rva: int = 0,
     image_base: int = 0x1_4000_0000,
     magic: int = 0x20B,
+    machine: int | None = None,
     os_version: tuple[int, int] = (0, 0),
     subsys_version: tuple[int, int] = (0, 0),
     sections: list[tuple[bytes, int, int]] | None = None,
@@ -1054,7 +1055,8 @@ def _pe_with_posture(
     dos = bytearray(0x40)
     dos[0:2] = b"MZ"
     struct.pack_into("<I", dos, 0x3C, 0x40)
-    machine = 0x8664 if magic == 0x20B else 0x14C
+    if machine is None:
+        machine = 0x8664 if magic == 0x20B else 0x14C
     opt_size = 0xF0 if magic == 0x20B else 0xE0
     coff = b"PE\x00\x00" + struct.pack(
         "<HHIIIHH", machine, len(sections), 0, 0, 0, opt_size, 0
@@ -1105,6 +1107,8 @@ class TestPeHardeningFacts:
         )
         facts = _pe_hardening_facts(path)
         assert facts == {
+            "arch": "x86-64",
+            "bits": 64,
             "subsystem": "gui",
             "os_version": "10.0",
             "subsystem_version": "6.2",
@@ -1172,6 +1176,37 @@ class TestPeHardeningFacts:
         path = tmp_path / "subsystem_42.exe"
         path.write_bytes(_pe_with_posture(subsystem=42))
         assert _pe_hardening_facts(path)["subsystem"] == "subsystem_42"
+
+    def test_the_machine_field_reads_as_the_arch_fact(self, tmp_path: Path) -> None:
+        # The COFF Machine values a Windows analyst actually meets, named the
+        # way the ELF and Mach-O sessions already name them -- including both
+        # 32-bit ARM encodings collapsing to "arm".
+        for machine, magic, name in (
+            (0x014C, 0x10B, "x86"),
+            (0x8664, 0x20B, "x86-64"),
+            (0xAA64, 0x20B, "arm64"),
+            (0x01C0, 0x10B, "arm"),
+            (0x01C4, 0x10B, "arm"),
+        ):
+            path = tmp_path / f"machine_{machine:04x}.exe"
+            base = 0x40_0000 if magic == 0x10B else 0x1_4000_0000
+            path.write_bytes(_pe_with_posture(machine=machine, magic=magic, image_base=base))
+            assert _pe_hardening_facts(path)["arch"] == name, hex(machine)
+
+    def test_an_unmapped_machine_reads_hex_not_a_guess(self, tmp_path: Path) -> None:
+        path = tmp_path / "exotic.exe"
+        path.write_bytes(_pe_with_posture(machine=0x01F2))
+        assert _pe_hardening_facts(path)["arch"] == "machine_0x01f2"
+
+    def test_bits_follow_the_optional_header_magic(self, tmp_path: Path) -> None:
+        # PE32 vs PE32+ is the pointer-width fact, independent of Machine: a
+        # PE32 image is 32-bit even on a mislabelled machine field.
+        wide = tmp_path / "wide.exe"
+        wide.write_bytes(_pe_with_posture(magic=0x20B))
+        assert _pe_hardening_facts(wide)["bits"] == 64
+        narrow = tmp_path / "narrow.exe"
+        narrow.write_bytes(_pe_with_posture(magic=0x10B, image_base=0x40_0000))
+        assert _pe_hardening_facts(narrow)["bits"] == 32
 
     def test_a_pe32_entry_rebases_off_the_narrow_image_base(self, tmp_path: Path) -> None:
         # PE32 keeps a 32-bit ImageBase at offset 28 (after BaseOfData); a
@@ -3010,6 +3045,8 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
             "delay_imports": [],
             "forwarded_exports": [],
             "exports": [],
+            "arch": "x86",
+            "bits": 32,
             "subsystem": "unknown",
             "os_version": "0.0",
             "subsystem_version": "0.0",
@@ -3035,6 +3072,19 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
             "cleartext_url_count": 0,
         }
     }
+
+
+def test_session_over_an_arm64_pe_opens_for_static_analysis(tmp_path: Path) -> None:
+    # Windows-on-ARM: no x86/x64 debugger backend fits (architecture None),
+    # but the session opens and the static facts name the real CPU -- an
+    # unsupported-machine PE used to be refused outright.
+    path = tmp_path / "woa.exe"
+    path.write_bytes(_pe_with_posture(machine=0xAA64, magic=0x20B))
+    session = SessionRegistry().create(str(path))
+    assert session.target is TargetKind.PE
+    assert session.architecture is None
+    assert session.metadata["pe"]["arch"] == "arm64"
+    assert session.metadata["pe"]["bits"] == 64
 
 
 def test_session_over_a_signed_pe_carries_the_authenticode_range(tmp_path: Path) -> None:

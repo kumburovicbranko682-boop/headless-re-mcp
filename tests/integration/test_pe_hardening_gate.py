@@ -57,6 +57,16 @@ _SUBSYSTEM_BY_PEFILE = {
     "IMAGE_SUBSYSTEM_WINDOWS_CUI": "console",
     "IMAGE_SUBSYSTEM_EFI_APPLICATION": "efi_application",
 }
+# pefile machine constant name -> the reader's arch fact value: pefile decodes
+# the COFF Machine field through its own MACHINE_TYPE table, so the mapping
+# below is the only shared vocabulary between referee and reader.
+_ARCH_BY_PEFILE = {
+    "IMAGE_FILE_MACHINE_I386": "x86",
+    "IMAGE_FILE_MACHINE_AMD64": "x86-64",
+    "IMAGE_FILE_MACHINE_ARM64": "arm64",
+    "IMAGE_FILE_MACHINE_ARM": "arm",
+    "IMAGE_FILE_MACHINE_ARMNT": "arm",
+}
 
 
 def _pefile() -> Any | None:
@@ -74,6 +84,7 @@ def _pe_with_posture(
     dllchar: int,
     entry_rva: int,
     image_base: int,
+    machine: int | None = None,
     os_version: tuple[int, int] = (6, 0),
     subsys_version: tuple[int, int] = (6, 0),
 ) -> bytes:
@@ -86,7 +97,8 @@ def _pe_with_posture(
     dos = bytearray(0x40)
     dos[0:2] = b"MZ"
     struct.pack_into("<I", dos, 0x3C, 0x40)
-    machine = 0x8664 if magic == 0x20B else 0x14C
+    if machine is None:
+        machine = 0x8664 if magic == 0x20B else 0x14C
     opt_size = 0xF0 if magic == 0x20B else 0xE0
     coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", machine, 1, 0, 0, 0, opt_size, 0x0102)
     opt = bytearray(opt_size)
@@ -130,10 +142,18 @@ def _pefile_posture(pefile_mod: Any, path: Path) -> dict[str, Any]:
     pe = pefile_mod.PE(str(path))
     header = pe.OPTIONAL_HEADER
     subsystem_name = pefile_mod.SUBSYSTEM_TYPE.get(header.Subsystem, "")
+    machine_name = pefile_mod.MACHINE_TYPE.get(pe.FILE_HEADER.Machine, "")
     posture: dict[str, Any] = {
         "subsystem": _SUBSYSTEM_BY_PEFILE.get(
             subsystem_name, f"subsystem_{header.Subsystem}"
         ),
+        # The CPU identity off the COFF Machine field and the pointer width
+        # off the optional-header magic -- pefile classifies both itself
+        # (MACHINE_TYPE, PE_TYPE), independently of the reader's tables.
+        "arch": _ARCH_BY_PEFILE.get(
+            machine_name, f"machine_0x{pe.FILE_HEADER.Machine:04x}"
+        ),
+        "bits": 64 if pe.PE_TYPE == pefile_mod.OPTIONAL_HEADER_MAGIC_PE_PLUS else 32,
     }
     for fact, flag in _MITIGATION_TO_PEFILE.items():
         posture[fact] = bool(
@@ -159,7 +179,15 @@ def _session_posture(path: Path) -> dict[str, Any]:
         created = service.create_session(str(path))
         assert created.ok, created.error
         pe = created.data["session"]["metadata"]["pe"]
-        keys = {"subsystem", "os_version", "subsystem_version", "entry", *_MITIGATION_TO_PEFILE}
+        keys = {
+            "arch",
+            "bits",
+            "subsystem",
+            "os_version",
+            "subsystem_version",
+            "entry",
+            *_MITIGATION_TO_PEFILE,
+        }
         return {key: value for key, value in pe.items() if key in keys}
     finally:
         service.close_all()
@@ -219,6 +247,54 @@ def test_posture_agrees_with_pefile(
     # minimum Windows pairs, and the entry VA (present and rebased
     # identically, or absent on both sides).
     assert _session_posture(binary) == expected
+
+
+@pytest.mark.integration
+def test_an_arm64_machine_field_agrees_with_pefile(tmp_path: Path) -> None:
+    # The one mainstream machine value the x86-centric builders above never
+    # produce: Windows-on-ARM. pefile names it through MACHINE_TYPE; the
+    # reader must land on the same "arm64" -- and stay 64-bit off the magic.
+    pefile_mod = _pefile()
+    if pefile_mod is None:
+        pytest.skip("pefile not installed — PE hardening gate not run (skip != pass)")
+    binary = tmp_path / "woa.exe"
+    binary.write_bytes(
+        _pe_with_posture(
+            magic=0x20B,
+            subsystem=2,
+            dllchar=_HARDENED,
+            entry_rva=0x1000,
+            image_base=0x1_4000_0000,
+            machine=0xAA64,
+        )
+    )
+    expected = _pefile_posture(pefile_mod, binary)
+    assert expected["arch"] == "arm64"  # the referee really saw ARM64
+    assert expected["bits"] == 64
+    assert _session_posture(binary) == expected
+
+
+@pytest.mark.integration
+def test_arch_and_bits_of_the_committed_fixtures_agree_with_pefile() -> None:
+    # Real linker output on both sides of the width split: the MinGW-built
+    # UPX pair (x86 and x64, packed and unpacked) plus the managed fixture.
+    # pefile classifies each through FILE_HEADER.Machine and PE_TYPE; the
+    # reader's arch/bits must match binary for binary.
+    pefile_mod = _pefile()
+    if pefile_mod is None:
+        pytest.skip("pefile not installed — PE hardening gate not run (skip != pass)")
+    fixtures = Path(__file__).resolve().parents[2] / "fixtures"
+    binaries = sorted((fixtures / "upx").glob("*.exe")) + [
+        fixtures / "dotnet" / "minimal_assembly.exe"
+    ]
+    binaries = [path for path in binaries if path.is_file()]
+    if not binaries:
+        pytest.skip("no committed PE fixtures found")
+    for binary in binaries:
+        expected = _pefile_posture(pefile_mod, binary)
+        session = _session_posture(binary)
+        assert session["arch"] == expected["arch"], binary.name
+        assert session["bits"] == expected["bits"], binary.name
 
 
 @pytest.mark.integration

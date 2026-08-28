@@ -53,9 +53,9 @@ def run_command_loop_gate(
     path = executable.resolve(strict=True)
     actual_architecture = detect_pe_architecture(path)
     if actual_architecture != architecture:
+        actual = actual_architecture.value if actual_architecture else "an unsupported machine"
         raise ValueError(
-            f"expected {architecture.value} headless executable, "
-            f"got {actual_architecture.value}: {path}"
+            f"expected {architecture.value} headless executable, got {actual}: {path}"
         )
 
     observed: set[str] = set()

@@ -356,8 +356,11 @@ def test_detect_rejects_an_mz_stub_pointing_at_garbage(tmp_path: Path) -> None:
         detect_pe_architecture(crafted)
 
 
-def test_detect_rejects_a_machine_it_cannot_debug(tmp_path: Path) -> None:
+def test_detect_reads_none_for_a_machine_it_cannot_debug(tmp_path: Path) -> None:
+    # A machine that is neither x86 nor x64 picks no debugger backend -- but
+    # that is None, not an error: the session must still open for static
+    # analysis (the metadata names the real CPU as ``arch``), and only
+    # require_architecture refuses, when dynamic debugging actually asks.
     crafted = tmp_path / "arm.exe"
     _write_minimal_pe(crafted, machine=0x01C4)
-    with pytest.raises(ValueError, match="unsupported PE machine 0x01c4"):
-        detect_pe_architecture(crafted)
+    assert detect_pe_architecture(crafted) is None
