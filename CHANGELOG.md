@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（js.unpack_bundle 在装有现代 webcrack 的机器上必败：目录已存在，缺 -f）
+
+- 真机复现（webcrack 2.16.0）：`JsClient.unpack_bundle` 先 `out_dir.mkdir(exist_ok=True)`
+  自己建出输出目录，再把这个目录当 `-o` 交给 webcrack。但 `webcrack <in> -o <已存在目录>`
+  会退出码 1、报 "output directory already exists"——于是**每一次** `js.unpack_bundle`
+  在任何装了 ≥2.x webcrack 的宿主上都失败（客户端建好目录、webcrack 又拒绝它），返回
+  backend_error "webcrack unpack failed"。这不是边角情形，是这条工具的主路径整个坏掉。
+- 危害：js 反混淆是 web 逆向线的核心能力之一，无人值守 agent 只会看到一个不透明的
+  backend_error，无从知道根因是我们自己建了目录。旧行为在 webcrack 1.x（会静默复用已存在
+  目录）下能过，所以 CI/单测用 fake `_run` 或 `/bin/true` 都测不到——真 CLI 的契约变了。
+- 改法：给 argv 加 `-f`（`--force`，help 里写明 "overwrite output directory"）。实测 `-f`
+  对**已存在**和**全新**目录都成功，所以保留客户端自己的 `mkdir`（由我们保证目录链存在、
+  不依赖 webcrack 未文档化的叶目录创建行为）再加 `-f` 是两条路径都稳的最小修法。
+- 真机验证：走完整客户端调用路径 + 真 webcrack 2.16.0，修前预建目录必败、修后成功解出
+  index.js/1.js/deobfuscated.js/bundle.json。新增回归单测
+  `test_unpack_passes_force_so_an_existing_out_dir_does_not_abort` 钉死 argv 必含 `-f`；
+  相邻 jsre 单测（用 `cmd.index("-o")+1` 定位目录，不断言完整 argv）不受影响。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

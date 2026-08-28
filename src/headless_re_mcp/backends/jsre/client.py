@@ -200,8 +200,15 @@ class JsClient:
     ) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # -f (--force, "overwrite output directory"): measured against real
+        # webcrack 2.16.0, `webcrack <in> -o <dir>` aborts with exit 1 and
+        # "output directory already exists" whenever -o points at a directory
+        # that is already there -- and the mkdir directly above always makes it
+        # first, so without -f *every* unpack failed on any host with a modern
+        # webcrack. -f is a documented flag that succeeds on both an existing
+        # and a fresh directory, so it is safe on either path.
         stdout, stderr, code = _run(
-            [str(self.executable), str(resolved), "-o", str(out_dir)],
+            [str(self.executable), str(resolved), "-o", str(out_dir), "-f"],
             timeout=timeout,
             maximum=_MAX_UNPACK_TIMEOUT_S,
         )

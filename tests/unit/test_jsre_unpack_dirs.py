@@ -115,6 +115,42 @@ def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
     assert set(page["files"]) & set(tail["files"]) == set()
 
 
+def test_unpack_passes_force_so_an_existing_out_dir_does_not_abort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The webcrack invocation must carry -f (--force).
+
+    unpack_bundle mkdirs out_dir itself, and measured against real webcrack
+    2.16.0 `webcrack <in> -o <existing-dir>` aborts with exit 1 and "output
+    directory already exists". Without -f every unpack therefore failed on any
+    host with a modern webcrack -- the client created the directory and then
+    handed webcrack a path it refused. -f (a documented flag, "overwrite output
+    directory") makes it succeed on both an existing and a fresh directory, so
+    the argv must always include it right after -o <dir>.
+    """
+    from headless_re_mcp.backends.jsre import client as jsre_client
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    seen: dict[str, list[str]] = {}
+
+    def fake_run(
+        cmd: list[str], *, timeout: float, maximum: float = 0.0
+    ) -> tuple[str, str, int]:
+        del timeout, maximum
+        seen["cmd"] = list(cmd)
+        out_dir = Path(cmd[cmd.index("-o") + 1])
+        (out_dir / "index.js").write_text("x", encoding="utf-8")
+        return "", "", 0
+
+    monkeypatch.setattr(jsre_client, "_run", fake_run)
+    bundle = tmp_path / "app.js"
+    bundle.write_text("bundle", encoding="utf-8")
+
+    JsClient(executable=Path("/bin/true")).unpack_bundle(bundle, tmp_path / "out")
+
+    assert "-f" in seen["cmd"], seen["cmd"]
+
+
 @pytest.mark.parametrize(
     ("files_written", "listing_truncated"),
     [(5, False), (6, True)],
