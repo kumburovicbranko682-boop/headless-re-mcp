@@ -1310,7 +1310,7 @@ class WebBackend:
     def cookies(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
         handle = self._get(session_id)
 
-        def work() -> JsonObject:
+        def work() -> list[Any]:
             try:
                 resp = handle.cdp.send("Network.getAllCookies")
             except Exception as exc:  # noqa: BLE001
@@ -1374,7 +1374,8 @@ class WebBackend:
             return raw
 
         raw = self._runner(handle).call(work)
-        rows = raw.get("entries") if isinstance(raw.get("entries"), list) else []
+        entries_raw = raw.get("entries")
+        rows = entries_raw if isinstance(entries_raw, list) else []
         total = int(raw.get("total") or 0)
         # Sort by key so paging is stable across calls; the store's own order is
         # insertion order and not something a caller can rely on.
