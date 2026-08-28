@@ -109,6 +109,16 @@ _WASM_SECTION_NAMES = {
 _WASM_VEC_SECTION_IDS = frozenset({1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12})
 _MAX_WASM_SECTIONS_COLLECT = 5000
 _MAX_WASM_SECTIONS_PAGE = 1000
+# wasm.custom_sections filters the section table to the id-0 customs and reports
+# each one's payload byte range, routing the three the suite decodes to their
+# tools and leaving the rest (DWARF, dylink, vendor blobs) flagged as opaque.
+_MAX_WASM_CUSTOM_COLLECT = 5000
+_MAX_WASM_CUSTOM_PAGE = 1000
+_WASM_CUSTOM_DECODERS = {
+    "name": "wasm.names",
+    "producers": "wasm.producers",
+    "target_features": "wasm.features",
+}
 # wasm.names reads the "name" custom section, the module's debug symbol table.
 # Its subsections id 0 (module name) and 1 (function namemap) are the useful
 # ones; the collect cap is larger because a symbolized module names thousands
@@ -645,6 +655,103 @@ def parse_wasm_sections(path: Path, *, offset: int = 0, limit: int = 100) -> Jso
     window = rows[start : start + cap]
     return {
         "sections": window,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def parse_wasm_custom_sections(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """List a module's custom sections and route them to a decoder, wabt-free.
+
+    Custom sections are where a module keeps its non-code metadata -- the debug
+    symbol table ("name"), the build fingerprint ("producers", "target_features"),
+    DWARF debug info (".debug_info" and friends), dynamic-linking data ("dylink.0",
+    "linking"), source-map pointers and vendor blobs -- and this filters the
+    section table down to just them in pure Python, so unlike wasm.info / wasm.wat
+    it needs no wabt. Where wasm.sections lists every section, this reports each
+    custom one's carveable payload range and, crucially, whether a tool in this
+    suite decodes it. Each row is name (the section's own name), offset and size
+    (the byte position and length of the payload that follows the name, i.e. the
+    slice to carve for an opaque section), and decoder -- "wasm.names",
+    "wasm.producers" or "wasm.features" for the three the suite understands, else
+    null so the rest read plainly as opaque. Rows keep binary order and duplicate
+    names are listed separately. Answers with count, total, offset and has_more so
+    a filled page is not read as every custom section; total is capped at 5000 with
+    scan_capped when more may exist, and truncated is true when a section's declared
+    size runs past the module or a custom name is malformed (a best-effort row with
+    a null name is still recorded). A file that is not a WebAssembly module is
+    refused as invalid_params, one over 16 MiB as too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
+    rows: list[JsonObject] = []
+    scan_more = False
+    truncated = False
+    try:
+        pos = 8  # 4-byte magic + 4-byte version
+        total = len(raw)
+        while pos < total:
+            if len(rows) >= _MAX_WASM_CUSTOM_COLLECT:
+                scan_more = True
+                break
+            sec_id = raw[pos]
+            pos += 1
+            size, pos = _read_uleb(raw, pos)
+            body_start = pos
+            end = body_start + size
+            if end > total:
+                # Body runs past the module: if it is a custom section note its
+                # presence with an unreadable name, then stop.
+                truncated = True
+                if sec_id == 0:
+                    rows.append(
+                        {
+                            "name": None,
+                            "offset": body_start,
+                            "size": size,
+                            "decoder": None,
+                        }
+                    )
+                break
+            if sec_id == 0:
+                try:
+                    name, rel_end = _read_wasm_name(raw[body_start:end], 0)
+                    rows.append(
+                        {
+                            "name": name,
+                            "offset": body_start + rel_end,
+                            "size": size - rel_end,
+                            "decoder": _WASM_CUSTOM_DECODERS.get(name),
+                        }
+                    )
+                except _WasmParseError:
+                    # The section length was fine but its name overran the body.
+                    truncated = True
+                    rows.append(
+                        {
+                            "name": None,
+                            "offset": body_start,
+                            "size": size,
+                            "decoder": None,
+                        }
+                    )
+            pos = end
+    except _WasmParseError:
+        truncated = True
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_CUSTOM_PAGE))
+    window = rows[start : start + cap]
+    return {
+        "custom_sections": window,
         "count": len(window),
         "total": len(rows),
         "offset": start,

@@ -678,6 +678,37 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_locals(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.custom_sections")
+    def wasm_custom_sections(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List a module's custom sections and route them to a decoder, wabt-free.
+
+        Custom sections are where a module keeps its non-code metadata -- the
+        debug symbol table ("name"), the build fingerprint ("producers",
+        "target_features"), DWARF debug info (".debug_info" and friends),
+        dynamic-linking data ("dylink.0", "linking"), source-map pointers and
+        vendor blobs -- and this filters the section table down to just them in
+        pure Python, so unlike wasm.info / wasm.wat it needs no wabt. Where
+        wasm.sections lists every section, this reports each custom one's
+        carveable payload range and, crucially, whether a tool in this suite
+        decodes it. Each row is name (the section's own name), offset and size
+        (the byte position and length of the payload that follows the name, i.e.
+        the slice to carve for an opaque section), and decoder -- "wasm.names",
+        "wasm.producers" or "wasm.features" for the three the suite understands,
+        else null so the rest read plainly as opaque. Rows keep binary order and
+        duplicate names are listed separately. Answers with count, total, offset
+        and has_more so a filled page is not read as every custom section; total
+        is capped at 5000 with scan_capped when more may exist, and truncated is
+        true when a section's declared size runs past the module or a custom name
+        is malformed (a best-effort row with a null name is still recorded). A
+        file that is not a WebAssembly module is refused as invalid_params, one
+        over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_custom_sections(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.strings")
     def wasm_strings(
         path: str,

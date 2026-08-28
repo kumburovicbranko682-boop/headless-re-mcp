@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **290（173 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **291（174 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -816,6 +816,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `imported_count`,及含 `count/total/offset/has_more` 的 `functions`;`total` 上限 50000、越限置
   `scan_capped`,段畸形时 `truncated` 为真(已读行仍返回)。非 WebAssembly 文件按 `invalid_params` 拒绝,
   超过 16 MiB 按 `too_large` 拒绝。
+- `wasm.custom_sections`：把段表筛到 id-0 自定义段并给出解码路由,纯 Python、**不需要 wabt**。自定义段是模块
+  存放非代码元数据的地方——调试符号表("name")、构建指纹("producers"/"target_features")、DWARF 调试信息
+  (".debug_info" 等)、动态链接数据("dylink.0"/"linking")、source-map 指针与厂商 blob。`wasm.sections` 列
+  全部段,这里只筛自定义段并给出可切片的负载范围与"本套件是否能解码它"。每行含 `name`(段自身名字)、`offset`
+  与 `size`(名字之后负载的字节位置与长度,即不透明段可直接切出的切片)、`decoder`——本套件能解的三种给出
+  "wasm.names"/"wasm.producers"/"wasm.features",其余为 null(视作不透明)。按二进制序,重名分别列出。返回含
+  `count/total/offset/has_more` 的 `custom_sections`;`total` 上限 5000、越限置 `scan_capped`;段声明大小越过
+  模块或自定义名畸形时 `truncated` 为真(仍记一条 name 为 null 的尽力行)。非 WebAssembly 文件按
+  `invalid_params` 拒绝,超过 16 MiB 按 `too_large` 拒绝。
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。
