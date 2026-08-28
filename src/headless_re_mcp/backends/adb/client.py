@@ -477,6 +477,35 @@ class AdbBackend:
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read device info: {exc}") from exc
 
+    def uptime(self, serial: str) -> JsonObject:
+        """Read /proc/uptime: seconds since boot and summed idle seconds.
+
+        The file holds two floats on one line -- elapsed wall-clock time
+        since boot, and the sum of idle seconds across every CPU (so on an
+        SMP device idle can exceed uptime). A low uptime signals a recent
+        reboot, e.g. the device crashed mid-analysis. /proc/uptime is always
+        present on a live kernel, so an unreadable or unparseable reply is a
+        backend failure, not a legitimate empty state.
+        """
+        dev = self._device(serial)
+        text = _device_shell(dev, "cat /proc/uptime")
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "reading /proc/uptime failed", output=text[:800])
+        for line in text.splitlines():
+            fields = line.split()
+            if len(fields) < 2:
+                continue
+            try:
+                uptime_seconds = float(fields[0])
+                idle_seconds = float(fields[1])
+            except ValueError:
+                continue
+            return {
+                "uptime_seconds": uptime_seconds,
+                "idle_seconds": idle_seconds,
+            }
+        raise AdbError("backend_error", "reading /proc/uptime failed", output=text[:800])
+
     def properties(self, serial: str, *, limit: int = 500) -> JsonObject:
         dev = self._device(serial)
         capped = max(1, min(int(limit), _MAX_PROPERTIES))

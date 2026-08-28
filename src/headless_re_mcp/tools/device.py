@@ -58,6 +58,20 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_info(serial))
 
+    @tools.tool(name="device.uptime")
+    def device_uptime(serial: str) -> dict[str, Any]:
+        """Return seconds since boot and summed idle seconds from /proc/uptime.
+
+        Answers with uptime_seconds (elapsed wall time since boot) and
+        idle_seconds (idle summed across every CPU, so it can exceed uptime on
+        a multi-core device). A low uptime_seconds signals a recent reboot --
+        useful to notice the device crashed and restarted mid-analysis. Both
+        are floats. /proc/uptime is always present on a live kernel, so an
+        unreadable or unparseable reply surfaces as backend_error rather than
+        an empty result.
+        """
+        return _dump(analysis.device_uptime(serial))
+
     @tools.tool(name="device.properties")
     def device_properties(
         serial: str, limit: Annotated[int, Field(ge=1, le=2000)] = 500

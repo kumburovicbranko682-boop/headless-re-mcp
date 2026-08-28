@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -85,6 +85,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   全部写效果；`GET` 回传 `mode`。切换立即写入本机配置，完全访问时会放行当前停着的批准卡片。
 - 未配置 autonomy 键时，加壳 PE 分析所需的 `state_change` 加相关 `file_write` 默认自动批准
   （patches / APK 改包除外）。
+
+### 新增（设备侦察）
+
+- **`device.uptime`（只读）**：读 `/proc/uptime`，回 `uptime_seconds`（自启动经过的墙钟秒数）
+  与 `idle_seconds`（各 CPU 空闲秒数之和，多核时可超过 uptime）。uptime 很小说明设备刚重启，
+  便于察觉分析中途设备崩溃重启。两者均为浮点。`/proc/uptime` 在活内核上总是存在，故读不到或
+  解析失败按 `backend_error` 上报，而不是伪装成空结果。
 
 ### 新增（x64dbg 用户态反检测）
 
