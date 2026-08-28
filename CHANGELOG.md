@@ -294,6 +294,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **活进程线补齐 strings→endpoints→secrets 三件套（与 r2/apk/dotnet 等静态线对齐）**：`frida.strings` 之上新增两个只读
+  工具，跑在同一批活内存字符串上、复用共享的 `finding_aggregate.py`（`aggregate_endpoints` / `aggregate_secrets`）。
+  `frida.endpoints` 抽取 URL/host/请求路径——运行时才解密出的 C2 host、内存里拼出的 base URL，静态扫壳后的二进制只
+  看得到密文的那些。返回 endpoints（每项 {value、kind(url|path)、scheme、host、source（所在字符串）、address（命中处
+  的内存地址，可直接喂给 frida.memory.read）、count}）加 hosts 去重集/hosts_truncated、offset/limit/total/has_more、
+  scanned_ranges、scan_capped（活内存字符串多于 scan_limit）；include_paths 可关掉相对路径只留 URL。`frida.secrets` 用
+  同一套高精度检测器（外加 include_generic 高熵兜底）找运行时解密/派生、从不出现在壳内的凭据，返回 secrets（每项
+  {detector、value、source、address、count}）加 detectors、scan_capped。两者都支持 protection 掩码（'rw-' 收窄到解密
+  数据常驻的可写段）、min_length、name_filter 与分页，scan_limit 界定扫描前抓取的字符串数；目标为本会话已授权设备 pid
+  （frida.device.connect + frida.spawn），否则本地被调试进程。是每条静态线都有的端点/凭据三件套在活进程上的对应物，
+  且每条命中都带内存地址可回溯。只读，工具总数 317→319（199 只读 / 120 写）。
 - **Frida 原生线只能按已知 needle 搜内存，无法发现未知字符串**：`frida.memory.scan` 要你先知道要找什么，而 r2.strings /
   apk.strings 那种"把所有可打印字符串抓出来"的发现步骤在活进程上没有——偏偏运行时才解密的 C2 URL、密钥料、脱混淆
   日志行只存在于活内存里，静态扫壳后的二进制只看得到密文。新增只读工具 `frida.strings`：按 protection 掩码遍历内存段，

@@ -216,6 +216,101 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="frida.endpoints")
+    def frida_endpoints(
+        session_id: str,
+        protection: Annotated[str, Field(pattern="^[r-][w-][x-]$")] = "r--",
+        min_length: Annotated[int, Field(ge=1, le=64)] = 4,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        name_filter: str = "",
+        include_paths: bool = True,
+        scan_limit: Annotated[int, Field(ge=1, le=5000)] = 5000,
+    ) -> dict[str, Any]:
+        """URLs and API paths in the target's live memory via a Frida probe.
+
+        The runtime counterpart to r2.endpoints / apk.endpoints, and what
+        frida.strings feeds: the same URL/path recogniser the static lines use,
+        run over the printable runs harvested from the running process, so an
+        endpoint that only exists once decrypted at runtime (an unpacked C2 host,
+        a base URL a config builds in memory) is found where a static scan of the
+        packed binary sees only ciphertext. Each endpoint carries the memory
+        address it was found at, ready for frida.memory.read.
+
+        Answers with endpoints, each having value, kind (url or path), scheme,
+        host, source (the containing string), address and count (how many
+        harvested strings held it); plus hosts (the distinct URL hosts), total,
+        offset, has_more for paging, scanned_ranges, and scan_capped when more
+        strings existed than scan_limit harvested. include_paths=false keeps only
+        absolute URLs; name_filter keeps endpoints whose value or host contains
+        it. protection is the same r/w/x mask as frida.memory.ranges (default
+        'r--'; 'rw-' narrows to writable regions where decrypted data lands),
+        min_length drops shorter runs, and scan_limit bounds how many strings are
+        harvested before scanning. The target is the connected device's authorized
+        pid when this session has one (frida.device.connect + frida.spawn);
+        otherwise the local debuggee. Read-only.
+        """
+        return _dump(
+            analysis.frida_endpoints(
+                session_id,
+                protection=protection,
+                min_length=min_length,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_paths=include_paths,
+                scan_limit=scan_limit,
+            )
+        )
+
+    @tools.tool(name="frida.secrets")
+    def frida_secrets(
+        session_id: str,
+        protection: Annotated[str, Field(pattern="^[r-][w-][x-]$")] = "r--",
+        min_length: Annotated[int, Field(ge=1, le=64)] = 4,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        name_filter: str = "",
+        include_generic: bool = False,
+        scan_limit: Annotated[int, Field(ge=1, le=5000)] = 5000,
+    ) -> dict[str, Any]:
+        """Embedded credentials in the target's live memory via a Frida probe.
+
+        The runtime counterpart to r2.secrets / apk.secrets, and the payoff of
+        frida.strings: the same high-precision detector table (AWS keys,
+        GitHub/Slack/Stripe tokens, private-key headers, JWTs, ...) the static
+        lines use, run over the printable runs harvested from the running process.
+        A key derived or decrypted at runtime -- never present in the packed
+        binary -- shows up here in plaintext, and each finding carries the memory
+        address it sits at for a frida.memory.read pivot.
+
+        Answers with secrets, each having detector, value (the matched
+        credential), source (the containing string), address and count; plus
+        detectors (the kinds that fired), total, offset, has_more for paging,
+        scanned_ranges, and scan_capped when more strings existed than scan_limit
+        harvested. include_generic=true adds the noisier entropy/assignment
+        heuristics that are off by default; name_filter keeps findings whose
+        detector or value contains it. protection is the same r/w/x mask as
+        frida.memory.ranges (default 'r--'; 'rw-' narrows to writable regions
+        where decrypted secrets land), min_length drops shorter runs, and
+        scan_limit bounds how many strings are harvested before scanning. The
+        target is the connected device's authorized pid when this session has one
+        (frida.device.connect + frida.spawn); otherwise the local debuggee.
+        Read-only.
+        """
+        return _dump(
+            analysis.frida_secrets(
+                session_id,
+                protection=protection,
+                min_length=min_length,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_generic=include_generic,
+                scan_limit=scan_limit,
+            )
+        )
+
     @tools.tool(name="frida.memory.read")
     def frida_memory_read(
         session_id: str, address: int, size: Annotated[int, Field(ge=1, le=262144)] = 16

@@ -758,6 +758,44 @@ class ExtAnalysisMixin(UiDriveMixin):
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def _frida_harvest_strings(
+        self,
+        session_id: str,
+        *,
+        protection: str,
+        min_length: int,
+        limit: int,
+        name_filter: str = "",
+    ) -> JsonObject:
+        """Run the live-memory string harvest on the local or device target.
+
+        Shared by frida.strings / frida.endpoints / frida.secrets so the three
+        read the same set: the strings tool returns it as-is, the other two run
+        the endpoint / secret scanners over it. Raises FridaError like the client.
+        """
+        client = FridaClient()
+        target = _frida_device_target(self, session_id)
+        if target is not None:
+            device_id, pid, allowed = target
+            return client.strings_device(
+                device_id,
+                pid,
+                allowed_pids=allowed,
+                protection=protection,
+                min_length=min_length,
+                limit=limit,
+                name_filter=name_filter,
+            )
+        pid = _require_debuggee_pid(self, session_id)
+        return client.strings(
+            pid,
+            allowed_pid=pid,
+            protection=protection,
+            min_length=min_length,
+            limit=limit,
+            name_filter=name_filter,
+        )
+
     def frida_strings(
         self,
         session_id: str,
@@ -767,29 +805,13 @@ class ExtAnalysisMixin(UiDriveMixin):
         name_filter: str = "",
     ) -> Result[JsonObject]:
         try:
-            client = FridaClient()
-            target = _frida_device_target(self, session_id)
-            if target is not None:
-                device_id, pid, allowed = target
-                data = client.strings_device(
-                    device_id,
-                    pid,
-                    allowed_pids=allowed,
-                    protection=protection,
-                    min_length=min_length,
-                    limit=limit,
-                    name_filter=name_filter,
-                )
-            else:
-                pid = _require_debuggee_pid(self, session_id)
-                data = client.strings(
-                    pid,
-                    allowed_pid=pid,
-                    protection=protection,
-                    min_length=min_length,
-                    limit=limit,
-                    name_filter=name_filter,
-                )
+            data = self._frida_harvest_strings(
+                session_id,
+                protection=protection,
+                min_length=min_length,
+                limit=limit,
+                name_filter=name_filter,
+            )
             _timeline_append(
                 self,
                 session_id,
@@ -798,6 +820,86 @@ class ExtAnalysisMixin(UiDriveMixin):
                 count=data.get("count"),
             )
             return _success(data, session_id=session_id, backend="frida")
+        except FridaError as exc:
+            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
+    def frida_endpoints(
+        self,
+        session_id: str,
+        protection: str = "r--",
+        min_length: int = 4,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        include_paths: bool = True,
+        scan_limit: int = 5000,
+    ) -> Result[JsonObject]:
+        try:
+            data = self._frida_harvest_strings(
+                session_id,
+                protection=protection,
+                min_length=min_length,
+                limit=scan_limit,
+            )
+            payload = aggregate_endpoints(
+                _frida_string_pairs(data),
+                include_paths=include_paths,
+                name_filter=name_filter,
+                offset=offset,
+                limit=limit,
+                scan_capped=bool(data.get("truncated")),
+            )
+            payload["scanned_ranges"] = int(data.get("scanned_ranges") or 0)
+            _timeline_append(
+                self,
+                session_id,
+                "frida.endpoints",
+                "frida endpoints harvested",
+                count=payload.get("count"),
+            )
+            return _success(payload, session_id=session_id, backend="frida")
+        except FridaError as exc:
+            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
+    def frida_secrets(
+        self,
+        session_id: str,
+        protection: str = "r--",
+        min_length: int = 4,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        include_generic: bool = False,
+        scan_limit: int = 5000,
+    ) -> Result[JsonObject]:
+        try:
+            data = self._frida_harvest_strings(
+                session_id,
+                protection=protection,
+                min_length=min_length,
+                limit=scan_limit,
+            )
+            payload = aggregate_secrets(
+                _frida_string_pairs(data),
+                include_generic=include_generic,
+                name_filter=name_filter,
+                offset=offset,
+                limit=limit,
+                scan_capped=bool(data.get("truncated")),
+            )
+            payload["scanned_ranges"] = int(data.get("scanned_ranges") or 0)
+            _timeline_append(
+                self,
+                session_id,
+                "frida.secrets",
+                "frida secrets harvested",
+                count=payload.get("count"),
+            )
+            return _success(payload, session_id=session_id, backend="frida")
         except FridaError as exc:
             return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
         except BaseException as exc:
@@ -1375,6 +1477,24 @@ def _require_debuggee_pid(service: Any, session_id: str) -> int:
     if not isinstance(pid, int) or pid <= 0:
         raise XdbgRpcError("invalid_state", "no active debuggee for optional backend")
     return pid
+
+
+def _frida_string_pairs(data: JsonObject) -> list[tuple[str, JsonObject]]:
+    """(string, {address}) pairs from a frida.strings harvest.
+
+    The reference carries the live-memory address the run starts at, so an
+    endpoint / secret finding can be taken straight to frida.memory.read.
+    """
+    items = data.get("strings")
+    rows = [it for it in items if isinstance(it, dict)] if isinstance(items, list) else []
+    pairs: list[tuple[str, JsonObject]] = []
+    for item in rows:
+        ref: JsonObject = {}
+        address = item.get("address")
+        if isinstance(address, str) and address:
+            ref["address"] = address
+        pairs.append((str(item.get("value") or ""), ref))
+    return pairs
 
 
 def _frida_device_target(
