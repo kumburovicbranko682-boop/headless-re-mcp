@@ -137,6 +137,37 @@ def test_offset_past_total_is_an_empty_final_page(
     assert payload["has_more"] is False
 
 
+def test_classes_page_is_the_sorted_prefix_not_a_raw_enumeration_slice(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Classes arrive reverse-ordered and overflow the page: the first page must be
+    the alphabetical prefix, and a later offset must return the next names.
+
+    The clamp tests above feed already-ascending names, so they pass whether or not
+    ``classes()`` sorts -- they pin the window math, not the ordering. This feeds
+    ``get_classes()`` in reverse and requires the cap-3 page to still be
+    ``L0000..L0002``; a dropped ``names.sort()`` (returning a raw DEX-order slice)
+    would yield ``L0009..L0007`` and fail. That sorted prefix is the honesty
+    apk.classes anchors and its siblings mirror: a name absent from within a page's
+    alphabetical range is genuinely not among the collected classes, not merely
+    walked-late past the cap.
+    """
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeClassParsed(
+            [_FakeClass(f"L{i:04d};") for i in reversed(range(10))]
+        ),
+    )
+    client = ApkClient()
+    first = client.classes(tmp_path / "app.apk", offset=0, limit=3)
+    assert first["total"] == 10
+    assert first["classes"] == ["L0000;", "L0001;", "L0002;"]
+    assert first["has_more"] is True
+    second = client.classes(tmp_path / "app.apk", offset=3, limit=3)
+    assert second["classes"] == ["L0003;", "L0004;", "L0005;"]
+
+
 def test_methods_clamp_negative_offset(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeMethodParsed(10))
     client = ApkClient()
@@ -167,6 +198,33 @@ def test_strings_clamp_negative_offset(tmp_path: Path, monkeypatch: Any) -> None
     assert payload["offset"] == 0
     assert payload["count"] == 10
     assert payload["has_more"] is False
+
+
+def test_strings_page_is_the_sorted_prefix_not_set_iteration_order(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The strings page must be the alphabetical prefix, not raw set order.
+
+    ``strings()`` collects into a set and returns ``sorted(seen)``. The clamp test
+    feeds ascending values, so it would still pass if that ``sorted`` became
+    ``list(seen)`` -- set iteration order, which under hash randomization varies
+    per run. Feeding the values reversed (the set discards order either way) and
+    requiring ``s0000..s0002`` then ``s0003..s0005`` pins the alphabetical prefix:
+    a dropped sort would return a hash-ordered slice that would not match these six
+    ordered values, so a paged strings scan stays a real prefix of the whole set.
+    """
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeStringParsed([f"s{i:04d}" for i in reversed(range(10))]),
+    )
+    client = ApkClient()
+    first = client.strings(tmp_path / "app.apk", offset=0, limit=3)
+    assert first["total"] == 10
+    assert first["strings"] == ["s0000", "s0001", "s0002"]
+    assert first["has_more"] is True
+    second = client.strings(tmp_path / "app.apk", offset=3, limit=3)
+    assert second["strings"] == ["s0003", "s0004", "s0005"]
 
 
 class _FakeXrefCall:

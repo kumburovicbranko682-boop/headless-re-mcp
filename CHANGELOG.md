@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（apk.classes / strings 的“先排序再切页”是兄弟读取器共同对标的诚实范式，但此前只被喂了升序输入的 clamp 用例覆盖——补钉逆序输入的字母序前缀，掉了 sort 也能被抓住）
+
+- `apk.classes`(`names.sort()`)与 `apk.strings`(`sorted(seen)`)是最早确立“先排序再切页”的两个读取器,`apk.xrefs` /\
+  jadx `java_files` / ADB `device.packages` 等后来都对标它们。可讽刺的是,这两个范式源头自己的排序从未被真正钉住:\
+  `test_apk_page_clamp.py` 里 classes / strings 的 clamp 用例喂的是**已经升序**的假名字(`L0000..`、`s0000..`),于是断言\
+  `classes[0] == "L0000;"` 无论代码排不排序都成立——它们钉的是 offset/limit 窗口算术,不是顺序。一次把 `names.sort()` \
+  误删、直接切 `get_classes()` 原始 DEX 序的重构会让这些用例照过,而超限页悄悄退化成“遍历序的任意切片”,字母序靠前\
+  但遍历晚的类从有序页中间消失。新增两条逆序输入用例补上:classes 以逆序喂入,要求 cap-3 首页仍是 `L0000..L0002`、\
+  `offset=3` 取到 `L0003..L0005`(掉 sort 会切出 `L0009..L0007` 而失败);strings 同理钉 `s0000..` 前缀(其经 set 收集,\
+  掉 `sorted` 会退化为随哈希种子变动的 set 迭代序,六个有序值不可能碰巧对上)。与既有的 xrefs 字母序前缀用例合起来,\
+  四个 DEX 分页读取器的“先排序再切页”这下都各有逆序输入把关。
+
 ### 测试（_session_work_dir 是会话关闭清理交给 rmtree 的目录选择器，补钉其穿越防护 fail-closed：敌意 session_id 绝不能把工作目录塌回共享父目录而误删邻居会话或制品根）
 
 - 关闭会话时,`_forget_session_work_dirs` 把 `_session_work_dir(kind, session_id)` 选出的 jadx / apktool / ghidra 工作树\
