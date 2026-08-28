@@ -24,8 +24,10 @@ real APK or a real analysis.
 
 from __future__ import annotations
 
+import importlib.util
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -36,6 +38,52 @@ from headless_re_mcp.backends.apk.client import (
     ApkError,
     _ParsedApk,
 )
+
+_HAS_ANDROGUARD = importlib.util.find_spec("androguard") is not None
+
+
+@pytest.fixture(autouse=True)
+def _androguard_importable() -> Any:
+    """Run these cache tests on the minimal quality install, where androguard is absent.
+
+    The suite drives the client's two deferred imports by patching
+    ``androguard.core.apk.APK`` and ``androguard.misc.AnalyzeAPK``, which needs
+    those modules importable. androguard is an optional extra and the
+    every-commit quality job installs only ``.[test,dev,web]``, so there the
+    patch raised ModuleNotFoundError and all seven cache tests failed for a
+    missing backend rather than exercising the cache the way they do locally
+    (where the android extra is installed). Unit tests are meant to be
+    self-sufficient -- every other backend suite injects fakes without importing
+    the real module -- so when androguard cannot be imported, stand in minimal
+    stub modules, wired as a package so both ``ApkClient.__init__``'s probe and
+    the deferred ``from ... import`` resolve and the client reports itself
+    available. Drop only the stubs we inserted so a real androguard (the
+    android-extra jobs, local dev) is never shadowed.
+    """
+    inserted: list[str] = []
+    if not _HAS_ANDROGUARD:
+        for name, is_pkg in (
+            ("androguard", True),
+            ("androguard.core", True),
+            ("androguard.core.apk", False),
+            ("androguard.misc", False),
+        ):
+            module = ModuleType(name)
+            if is_pkg:
+                module.__path__ = []  # a package, so submodule imports resolve
+            sys.modules[name] = module
+            inserted.append(name)
+        sys.modules["androguard"].core = sys.modules["androguard.core"]
+        sys.modules["androguard.core"].apk = sys.modules["androguard.core.apk"]
+        sys.modules["androguard"].misc = sys.modules["androguard.misc"]
+        # Placeholder symbols the tests replace via monkeypatch.setattr.
+        sys.modules["androguard.core.apk"].APK = None
+        sys.modules["androguard.misc"].AnalyzeAPK = None
+    try:
+        yield
+    finally:
+        for name in reversed(inserted):
+            sys.modules.pop(name, None)
 
 
 @pytest.fixture(autouse=True)

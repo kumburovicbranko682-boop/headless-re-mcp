@@ -157,6 +157,14 @@ def test_start_rolls_back_an_instance_whose_session_was_stopped_mid_launch(
 
     monkeypatch.setattr(proxy_client, "_ProxyInstance", _FakeInstance)
     backend = ProxyBackend()
+    # This test is about the reserve/rollback race, not backend availability, and
+    # _ProxyInstance is faked -- so no real mitmproxy is needed. But start() calls
+    # _check_available() first, which raises capability_unavailable on the
+    # every-commit quality job (it installs .[test,dev,web], no proxy extra),
+    # masking the invalid_state path under test. Mark it available so the race is
+    # what gets exercised; the absence path is covered by
+    # test_missing_mitmproxy_degrades_to_capability_unavailable.
+    backend._available = True
     with pytest.raises(ProxyError) as info:
         backend.start("s", port=18099)
     assert info.value.code == "invalid_state"
