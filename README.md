@@ -131,7 +131,7 @@ OpenAI 不允许函数名带点，导出会做安全名转换并附 `name_map` �
 - Workflow：`workflow.*`
 - 检测/脱壳（可选外部 CLI）：`detect.*`、`unpack.*`（非通杀承诺；`claims_universal_unpack=false`）
 - 目标 UI（有界）：Win32 交互与截图；UIA/OCR/SendInput 为实验路径，勿默认依赖
-- Android 静态：`apk.open/manifest/permissions/certificates/components/classes/methods/strings/xrefs`（androguard 进程内）、`apk.decompile/export_sources`（jadx CLI）
+- Android 静态：`apk.open/manifest/permissions/certificates/components/native_libs/classes/methods/strings/xrefs`（androguard 进程内）、`apk.decompile/export_sources`（jadx CLI）
 - Android 改包：`apk.decode/repack/sign`（apktool + apksigner；`apk.sign` 缺省用 Android debug keystore）
 - Android 设备：`device.list/connect/info/properties/packages/install/uninstall/launch/force_stop/current_activity/logcat/screenshot/pull/push/forward`
 - Android 动态：`frida.devices/device.connect/server.ensure/applications/spawn/java.classes/java.methods`；hook 复用 `frida.hook.template`（含 `android_ssl_unpin` / `android_crypto_monitor` / `android_root_bypass`）

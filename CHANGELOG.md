@@ -5,6 +5,43 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Android/Web 能力目录与探针把未就绪的工具报成 ready）
+
+- `capabilities.search` / `capabilities.describe` 按 `_CORE_CAPABILITIES` 的
+  `status_probe` 报告每条能力的就绪度，但几处 Android/Web 能力的探针并不真正闸住它们
+  广告的工具，导致目录把调用即失败的工具报成 ready：
+
+  - `apk.sign` 过去挂在 `apktool` 探针下，而 apktool 客户端的 `sign()` 独立检查
+    `apksigner`（`signer_available`），与 apktool 是否可用无关——只装 apktool 没装
+    apksigner 的主机会把 `apk.sign` 报成 ready、调用却以 `capability_unavailable` 失败，
+    只装 apksigner 时又被藏起。现拆出 `apk.apksigner` 能力，`apk.sign` 跟随 `apksigner`
+    探针，`apk.decode` / `apk.repack` 仍跟 `apktool`。
+
+  - `wasm.info` 跑的是 `wasm-objdump`，`WasmClient` 独立解析该二进制且各自带
+    `capability_unavailable` 降级；旧目录把 `wasm.info` 与 `wasm.wat` 一起挂在只探
+    `wasm2wat` 的 `wabt` 探针下，只装 `wasm2wat` 的主机会把 `wasm.info` 报成 ready。现
+    拆出 `wasm.objdump` 能力跟随新增的 `wabt_objdump` 探针；并把客户端解析器
+    `_resolve_wabt_tool` 提为公共 `resolve_wabt_tool`、由 doctor 与客户端共用，顺带修好
+    “wabt 配成 bin 目录时通用 PATH 探针漏检”的老分歧。
+
+  - `apk.androguard` 只列了 7 个 androguard 解析工具，漏掉同走 `ApkClient` / `_apk_call`
+    的 `apk.certificates` / `apk.components` / `apk.native_libs`；`web.cdp` 也漏掉同为 CDP
+    观测面的 `web.console` / `web.wasm.list` / `web.dom.snapshot` / `web.har.export`
+    （生命周期 `web.close` 按目录不列 close 的惯例仍不列）。现补齐这两条能力广告的工具面，
+    使 `capabilities.describe` 不再少报 Android 静态与 Web 观测能力。README 的 Android 静态
+    工具清单同步补上 `apk.native_libs`。
+
+### 测试（Android/Web 降级路径在装了对应 extras 的主机上被跳过）
+
+- 三个“缺依赖即降级”的单元测试以 `if <已安装>: pytest.skip(...)` 守卫断言，凡装了
+  `.[android]` / `.[web]` extras 的主机（含全量 CI）都会跳过——skip 不等于 pass，降级分支
+  在真正重要的机器上从未执行。现改为主动制造缺失：`test_missing_adbutils_degrades...`
+  用 `sys.modules["adbutils"]=None` 逼构造器的 `import adbutils` 抛错，再验 `list_devices()`
+  以 `capability_unavailable` 拒绝；`test_missing_webcrack_degrades` /
+  `test_missing_wabt_degrades` 把 `jsre.client.shutil.which` 打成找不到，使
+  `JsClient(None)` / `WasmClient(None)` 保持不可用并验其 `deobfuscate` / `wat` 拒绝。三者现在
+  无论本机是否装了对应工具都真正执行降级分支。
+
 ### 修复（de4dot 输出别名测试的 Windows-only 路径炸裂）
 
 - main 新落的 `test_dotnet_de4dot_run_paths.py::test_run_rejects_an_output_path_aliasing_the_input`
