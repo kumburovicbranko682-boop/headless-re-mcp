@@ -52,6 +52,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `spill_dir` 时落全文并带 `manifest_xml_path`、未超限不落盘且不建空目录、不给 `spill_dir` 保持旧形状(向后\
   兼容)、写失败降级为无路径,以及服务层把溢出文件注册成带 `artifact_id` 的制品。
 
+### 测试（钉住 frida.java.classes / methods 的 has_more 全靠“向脚本多要一个”：脚本按 limit+1 枚举，回包按 limit 切页）
+
+- `frida.java.classes` / `frida.java.methods` 的 `has_more` 是否诚实,取决于后端向设备脚本请求的是\
+  `capped + 1` 而非 `capped`——那多出来的一个,正是区分“就这些了”和“只是你要的这些”的唯一依据。这条不变量此前\
+  只有真机路径能碰到,而没装 frida 的 CI 会 skip,一次把 `capped + 1` 改回 `capped` 的回归会让 `has_more` 悄悄\
+  永远为假,agent 便据此误判“已枚举全部已加载类”。`_page` 本身有单测,但“后端多要一个”这一步没有被钉住。
+- `tests/unit/test_frida_device_path_faults.py` 复用既有的假设备/假脚本注入缝,新增四例(不需真机):classes\
+  多出一条时请求数为 11(=10+1)、回包切到 10 且 `has_more` 为真;恰好填满一页时仍请求 11、只回 10 且 `has_more`\
+  为假;methods 路径独立钉住同一 limit+1 纪律;越过 schema 上限的 `limit=10000` 被后端重钳到 2000,故向脚本请求\
+  2001——证明是后端在重新收口枚举,而不仅是 schema。
+
 
 
 - `timeline.list` 是无人值守跑完后运维要看的可观测性面，一旦某条时间线 `details` 里进了密钥就是一次持久泄漏。\

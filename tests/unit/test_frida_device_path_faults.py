@@ -152,6 +152,85 @@ def test_java_enumerate_tolerates_the_bare_array_methods_shape() -> None:
     assert payload["has_more"] is False
 
 
+class _RecordingApi:
+    """Records the count the client asked the script for, and returns that many
+    (or a fixed number of) items so the paging contract can be pinned."""
+
+    def __init__(self, produced: int) -> None:
+        self._produced = produced
+        self.classes_count: int | None = None
+        self.methods_count: int | None = None
+
+    def classes(self, name_filter: str, count: int) -> list[str]:
+        self.classes_count = count
+        return [f"C{i}" for i in range(self._produced)]
+
+    def methods(self, class_name: str, count: int) -> dict[str, Any]:
+        self.methods_count = count
+        return {"found": True, "methods": [f"m{i}" for i in range(self._produced)]}
+
+
+def test_java_classes_asks_for_one_past_the_page_and_reports_more() -> None:
+    """has_more is honest only because the script is asked for limit+1: the extra
+    item is exactly what tells 'that is all there is' from 'that is all you asked
+    for'. Pin both the request size and the paged result, so a regression that
+    asks the script for the bare limit cannot make has_more silently always-false
+    -- a failure an agent reads as 'I have enumerated every loaded class'."""
+    api = _RecordingApi(produced=11)  # one past a page of 10
+    client = _client(_Device(api=api))
+    payload = client.java_enumerate(
+        "usb", 4242, allowed_pids={4242}, mode="classes", limit=10
+    )
+    assert api.classes_count == 11  # capped(10) + 1
+    assert payload["count"] == 10  # paged back to the caller's limit
+    assert payload["has_more"] is True
+
+
+def test_java_classes_that_fills_the_page_with_nothing_behind_it_is_complete() -> None:
+    """The boundary: the target has exactly a page of classes. The script is
+    still asked for limit+1, only limit come back, so has_more is False -- a full
+    page is not mistaken for a truncated one."""
+    api = _RecordingApi(produced=10)
+    client = _client(_Device(api=api))
+    payload = client.java_enumerate(
+        "usb", 4242, allowed_pids={4242}, mode="classes", limit=10
+    )
+    assert api.classes_count == 11
+    assert payload["count"] == 10
+    assert payload["has_more"] is False
+
+
+def test_java_methods_asks_for_one_past_the_page_and_reports_more() -> None:
+    """The methods path shares the limit+1 discipline: pin it independently so a
+    regression on either RPC is caught."""
+    api = _RecordingApi(produced=6)
+    client = _client(_Device(api=api))
+    payload = client.java_enumerate(
+        "usb",
+        4242,
+        allowed_pids={4242},
+        mode="methods",
+        class_name="com.example.Foo",
+        limit=5,
+    )
+    assert api.methods_count == 6
+    assert payload["count"] == 5
+    assert payload["has_more"] is True
+
+
+def test_java_enumerate_clamps_an_over_max_limit_before_asking_the_script() -> None:
+    """The tool schema bounds limit<=2000, but the agent / OpenAI transports call
+    the client directly and skip that validation. The client re-clamps to 2000,
+    so even a 10000 request asks the script for 2001 and the page can never
+    exceed 2000 -- the backend re-bound the enumeration, not merely the schema."""
+    api = _RecordingApi(produced=0)
+    client = _client(_Device(api=api))
+    client.java_enumerate(
+        "usb", 4242, allowed_pids={4242}, mode="classes", limit=10_000
+    )
+    assert api.classes_count == 2001  # min(10000, 2000) + 1
+
+
 def test_hook_template_device_refuses_an_unknown_template_before_device_work() -> None:
     """The template allow-list is a fixed set; an unknown name is invalid_params
     with the allowed names disclosed, and no device is resolved for it."""
