@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 
 from headless_re_mcp.core.health import BackendHealthMonitor
@@ -259,3 +260,59 @@ def test_a_backend_that_recovers_starts_from_zero_if_it_drops_again() -> None:
         "a fresh drop must be retried at once, not held back by the previous failure"
     )
     assert while_failing < 15
+
+
+def test_reconnect_backoff_survives_a_concurrent_forget() -> None:
+    """A close must never tear the backoff walk that a sweep is writing.
+
+    forget() runs on a close thread and walks _reconnect_backoff to drop a
+    session's entries; check_once() writes that same dict on the sweep thread
+    and again on a caller's session.health request. If those writes skip the
+    lock forget() takes, the walk hits "dictionary changed size during
+    iteration" and close_session raises for a reason that has nothing to do
+    with the session being closed. Every writer of _reconnect_backoff must
+    share the lock so the walk is always over a stable dict.
+
+    Non-vacuous: a large stable population makes forget()'s walk long enough
+    that a concurrent insert reliably lands inside it, so an off-lock writer
+    trips the RuntimeError this asserts against.
+    """
+    monitor = _monitor()
+    for index in range(2000):
+        monitor._reconnect_backoff[("stable", f"b{index}")] = (1, 0)
+
+    errors: list[BaseException] = []
+    stop = threading.Event()
+
+    def churn() -> None:
+        counter = 0
+        while not stop.is_set():
+            key = ("live", f"b{counter}")
+            counter += 1
+            try:
+                monitor._note_reconnect_failed(key)
+                monitor._reconnect_is_due(key)
+            except BaseException as exc:  # noqa: BLE001 - captured for the assert
+                errors.append(exc)
+                return
+
+    def sweep_forget() -> None:
+        for _ in range(2000):
+            try:
+                monitor.forget("live")
+            except BaseException as exc:  # noqa: BLE001 - captured for the assert
+                errors.append(exc)
+                return
+
+    writer = threading.Thread(target=churn, name="churn")
+    forgetter = threading.Thread(target=sweep_forget, name="forget")
+    writer.start()
+    forgetter.start()
+    forgetter.join(timeout=30)
+    stop.set()
+    writer.join(timeout=30)
+
+    assert not errors, f"a concurrent forget tore the backoff walk: {errors!r}"
+    assert not writer.is_alive() and not forgetter.is_alive()
+    # The stable population is untouched: forget only drops the named session.
+    assert monitor._reconnect_backoff.get(("stable", "b0")) == (1, 0)

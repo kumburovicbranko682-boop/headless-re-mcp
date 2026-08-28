@@ -193,10 +193,10 @@ class BackendHealthMonitor:
                 else:
                     reconnects += 1
                     last_error = None
-                    self._reconnect_backoff.pop(key, None)
+                    self._clear_backoff(key)
                     connected = bool(getattr(worker, "transport_connected", True))
         elif connected:
-            self._reconnect_backoff.pop(key, None)
+            self._clear_backoff(key)
 
         # Published as one finished value: a reader must never see a row that is
         # half updated, for instance connected already true but the repair not
@@ -224,17 +224,35 @@ class BackendHealthMonitor:
         run serially on one thread, and XdbgClient gives a reconnect thirty
         seconds, so one unreachable backend delays every other session's health
         check by that much on every sweep.
+
+        Held under the same lock as ``_entries`` and ``forget``: ``check_once``
+        runs on both the sweep thread and a caller's ``session.health`` request,
+        and ``forget`` walks this dict on a close thread, so an off-lock write
+        here races that walk into "dictionary changed size during iteration".
+        The lock never spans the reconnect itself -- only the counter update --
+        so an unreachable backend still cannot stall another session's check.
         """
-        failures, skip_remaining = self._reconnect_backoff.get(key, (0, 0))
-        if skip_remaining > 0:
-            self._reconnect_backoff[key] = (failures, skip_remaining - 1)
-            return False
-        return True
+        with self._lock:
+            failures, skip_remaining = self._reconnect_backoff.get(key, (0, 0))
+            if skip_remaining > 0:
+                self._reconnect_backoff[key] = (failures, skip_remaining - 1)
+                return False
+            return True
 
     def _note_reconnect_failed(self, key: tuple[str, str]) -> None:
-        failures, _ = self._reconnect_backoff.get(key, (0, 0))
-        failures += 1
-        self._reconnect_backoff[key] = (failures, _checks_to_skip(failures))
+        with self._lock:
+            failures, _ = self._reconnect_backoff.get(key, (0, 0))
+            failures += 1
+            self._reconnect_backoff[key] = (failures, _checks_to_skip(failures))
+
+    def _clear_backoff(self, key: tuple[str, str]) -> None:
+        """Drop a backend's backoff once it reconnects or is found connected.
+
+        Same lock as every other writer of ``_reconnect_backoff``: a bare
+        ``pop`` off-lock races ``forget``'s locked walk of this dict.
+        """
+        with self._lock:
+            self._reconnect_backoff.pop(key, None)
 
     def forget(self, session_id: str) -> None:
         with self._lock:

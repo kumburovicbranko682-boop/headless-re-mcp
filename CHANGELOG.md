@@ -5,6 +5,29 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（后端健康监控的 `_reconnect_backoff` 存在无锁并发写，与 `forget` 的加锁遍历相撞）
+
+- `core/health.py` 的 `BackendHealthMonitor` 用 `self._lock` 守护共享状态：`_entries`
+  的读写、`forget()` 对两个字典的清理都在锁内完成。唯独 `_reconnect_backoff` 的写
+  漏了锁——`_reconnect_is_due`、`_note_reconnect_failed` 与两处裸 `pop(key)` 全在锁外
+  改这个字典。而 `check_once()` 会在**两条线程**上跑：后台 `backend-health` 扫描线程
+  （每个 interval，`repair=True`），以及处理 `session.health` 请求的调用线程
+  （`service.py` 第 1174 行，`repair=False` 也会走到 `elif connected: pop`）；`forget()`
+  又在会话关闭线程上以 `[item for item in self._reconnect_backoff ...]` 遍历同一字典。
+  锁外的插入与这段加锁遍历相撞时，CPython 抛
+  `RuntimeError: dictionary changed size during iteration`——`close_session` 会因一个
+  与"关闭"毫无关系的原因崩掉。
+- 改法：让 `_reconnect_backoff` 的每一个写者都持 `self._lock`，与 `_entries`、`forget`
+  同一把锁。`_reconnect_is_due`/`_note_reconnect_failed` 的锁只圈住计数更新，绝不跨
+  `reconnect()` 本身（那需要三十秒，圈进去会卡住其他会话的健康检查），维持原有的
+  "被动、不占锁做慢 I/O" 契约；两处裸 `pop` 收拢进新的 `_clear_backoff(key)` 助手，同样
+  在锁内。
+- 新增 `tests/unit/test_health_monitor.py::test_reconnect_backoff_survives_a_concurrent_forget`：
+  预置 2000 条稳定条目让 `forget()` 的遍历足够长，一条线程持续对新 key 调
+  `_note_reconnect_failed`/`_reconnect_is_due`，另一条线程反复 `forget("live")`，断言全程
+  无异常且稳定条目不受影响。非空洞性：把两个助手退回锁外后该用例连续三次稳定抛
+  `RuntimeError`（"changed size during iteration"），加回锁后连跑三次全绿。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
