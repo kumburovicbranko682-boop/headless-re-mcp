@@ -248,6 +248,29 @@ def test_package_ops_reject_a_bad_package_before_resolving_the_device(
     assert resolved == [], f"{method} reached _device for package {bad!r}"
 
 
+def test_device_resolution_rejects_a_bad_serial_before_the_capability_gate() -> None:
+    """A malformed serial reads as invalid_params even where adbutils is absent.
+
+    ``connect`` spells this out for its endpoint, and package ops (above) reject
+    a bad package before ``_device`` -- but every serial-keyed read (``info``,
+    ``properties``, ``packages``, ...) resolves the device through ``_device``,
+    which used to call ``_client`` (the capability probe) before validating the
+    serial. On a host without adbutils that inverted the errors: a caller's
+    obviously-bad serial surfaced as ``capability_unavailable`` ("install adb")
+    instead of the ``invalid_params`` ("fix the serial") it is, and an agent
+    routes on that code. With ``_available`` forced False so the gate is live
+    and would fire if reached first, a bad serial now still fails as
+    invalid_params. One representative ``_device`` caller stands in for all of
+    them, since the fix is in the shared resolver.
+    """
+    backend = AdbBackend()
+    backend._available = False  # host without adbutils; the capability gate is live
+
+    with pytest.raises(AdbError) as excinfo:
+        backend.info("bad serial;rm -rf /")
+    assert excinfo.value.code == "invalid_params"
+
+
 def test_pull_refuses_a_directory(tmp_path: Path) -> None:
     """A remote directory is refused before any bytes move."""
     sync = _Sync(stat_result=_StatResult(mode=stat.S_IFDIR | 0o755, size=0))

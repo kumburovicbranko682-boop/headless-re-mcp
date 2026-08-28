@@ -417,9 +417,17 @@ class AdbBackend:
             raise AdbError("backend_error", f"cannot reach adb server: {exc}") from exc
 
     def _device(self, serial: str) -> Any:
+        # Validate the serial before the capability probe, so a malformed serial
+        # reads as invalid_params even where adbutils is absent -- the order
+        # connect() spells out and web.open / proxy.start settled on, rather than
+        # letting _client()'s capability_unavailable mask a caller mistake. Every
+        # method that resolves a device flows through here, so hoisting the check
+        # fixes them all at once. _check_serial is pure, so it costs nothing up
+        # front and its normalised value is reused for the lookup below.
+        checked = _check_serial(serial)
         client = self._client(socket_timeout=_ADB_TRANSPORT_TIMEOUT_S)
         try:
-            dev = client.device(serial=_check_serial(serial))
+            dev = client.device(serial=checked)
         except AdbError:
             raise
         except Exception as exc:  # noqa: BLE001
