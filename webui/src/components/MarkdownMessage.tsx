@@ -3,7 +3,18 @@ import { parseMarkdown, safeHref, type MarkdownBlock } from "../lib/markdown";
 
 type Props = { text: string; streaming?: boolean };
 
-const INLINE_RE = /`([^`\n]+)`|\*\*(.+?)\*\*|\[([^\]]+)\]\(([^)\s]+)\)|~~(.+?)~~|\*(.+?)\*/g;
+// Emphasis and strikethrough spans require their content to start and end with
+// a non-whitespace character: a delimiter run flanked by whitespace does not
+// open or close emphasis in CommonMark. The naive `\*(.+?)\*` matched a space-
+// surrounded asterisk pair, so ordinary prose the assistant writes -- "2 * 3 *
+// 4", "$5 * qty and $10 * weight", a glob like "src/* and lib/*" -- had a whole
+// run of text swallowed into <em> and the literal asterisks dropped. `\S(?:.*?
+// \S)??` (rather than lookbehind, which older Safari cannot parse) captures a
+// single non-space char, or a non-space run whose last char is also non-space;
+// the tail group is lazy-optional (`??`) so the shortest valid span wins and
+// single-character emphasis like *x* still matches while " * " does not.
+const INLINE_RE =
+  /`([^`\n]+)`|\*\*(\S(?:.*?\S)??)\*\*|\[([^\]]+)\]\(([^)\s]+)\)|~~(\S(?:.*?\S)??)~~|\*(\S(?:.*?\S)??)\*/g;
 
 function renderInline(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];

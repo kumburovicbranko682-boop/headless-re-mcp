@@ -17,6 +17,23 @@ describe("MarkdownMessage", () => {
     expect(screen.getByText((content, element) => element?.tagName === "P" && content.includes("下一行"))).toBeInTheDocument();
   });
 
+  it("leaves whitespace-flanked asterisks as literal text, not emphasis", () => {
+    // "2 * 3 * 4" used to render as "2 <em> 3 </em> 4", silently dropping the
+    // asterisks. CommonMark does not open emphasis on a space-flanked run.
+    render(<MarkdownMessage text={"2 * 3 * 4 = 24"} />);
+    expect(document.querySelector("em")).toBeNull();
+    expect(
+      screen.getByText((_content, element) => element?.tagName === "P" && element.textContent === "2 * 3 * 4 = 24"),
+    ).toBeInTheDocument();
+  });
+
+  it("still renders single-character and internal-space emphasis", () => {
+    render(<MarkdownMessage text={"*x* and *a b* and **c d**"} />);
+    const ems = Array.from(document.querySelectorAll("em")).map((node) => node.textContent);
+    expect(ems).toEqual(["x", "a b"]);
+    expect(screen.getByText("c d").tagName).toBe("STRONG");
+  });
+
   it("does not turn unsafe links into anchors", () => {
     render(<MarkdownMessage text={"[x](javascript:alert(1)) 和 [ok](https://example.com)"} />);
     expect(screen.queryByRole("link", { name: "x" })).toBeNull();

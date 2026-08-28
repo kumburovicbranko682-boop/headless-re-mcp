@@ -5,7 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
+### 修复（WebUI Markdown 行内 emphasis 把空格包围的星号误判为斜体)
+
+- `webui/src/components/MarkdownMessage.tsx` 的行内正则用 `\*(.+?)\*` 匹配斜体,
+  不做 CommonMark 的 flanking 判断:被空格包围的星号对也会成对匹配。助手回复里
+  很常见的普通文本——`2 * 3 * 4 = 24`、`$5 * qty and $10 * weight`、通配符
+  `src/* and lib/*`——于是有一整段文字被吞进 `<em>`,且字面星号被删掉,读者既看
+  不到乘号也看不到原文。`**` 粗体与 `~~` 删除线同理。修复要求 emphasis/删除线
+  内容首尾均为非空白字符:把 `(.+?)` 改为 `\S(?:.*?\S)??`(单个非空白字符,或首
+  尾均非空白的串;尾组用惰性可选 `??` 以取最短有效跨度)。这样 `*x*`、`*a b*`、
+  `**c d**` 仍正确渲染,而 `2 * 3 * 4` 保持字面文本。刻意不用 lookbehind——旧版
+  Safari 无法解析,会让整个 bundle 报错。回归测试覆盖"空格包围星号不成斜体"与
+  "单字符/含内部空格的 emphasis 仍生效";前者在旧正则上失败。已重建并提交 SPA
+  产物以过 CI 的 stale 校验。
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
   `_ProxyInstance.start()/_run()` 的串行化 bring-up 改造（`_STARTUP_LOCK` +
