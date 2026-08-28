@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（依赖清单不再把“指向目录的可执行依赖”报成已就绪）
+
+- `/api/deps` 背后的 `build_deps_snapshot`（监控台依赖/上手清单）过去对每个条目先判 `is_file()`,
+  不是文件再回退 `Path(path).exists()`。回退本意是给 IDA / Ghidra 这类“目录根”用,却对所有条目
+  一视同仁：于是一个本该是可执行文件的依赖(x64dbg headless、diec、upx、cdb、de4dot、scylla、
+  VMPDump)一旦被误配成一个目录(例如把 `HEADLESS_RE_X64DBG_HEADLESS_X64` 设成所在文件夹而非
+  `headless.exe`),目录“存在”便被判成 `present=true`。x64dbg headless 是 `required_for_core`,
+  于是它被悄悄移出 `missing_core`——上手页据此宣称“核心依赖齐备”,可那里根本没有能跑的二进制。
+- 现按依赖形态分别核验:给 `_entry` 增加 `kind`(默认 `file`,IDA / Ghidra 标为 `dir`)。可执行依赖
+  只在路径是文件时 `present`,目录根只在路径是目录时 `present`,`path` 为空则一律不 present。
+  返回体每个条目新增 `kind` 字段,让控制台知道该校验的是文件还是目录(纯新增,向后兼容;原有
+  present/counts/missing_core 语义仅在“误配”这一分支上变得诚实)。
+- 新增回归:把 required 的 x64dbg headless 指向一个目录时 `present=false` 且落入 `missing_core`;
+  反向地把 IDA home 指向一个文件时同样 `present=false`。既有“文件→present、目录根→present、
+  None→缺失”的用例保持不变。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
