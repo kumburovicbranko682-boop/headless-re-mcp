@@ -772,6 +772,61 @@ def test_nonpe_tools_reject_a_session_they_cannot_analyse(tmp_path: Path) -> Non
         service.close_all()
 
 
+def test_closing_an_apk_session_releases_its_cached_dex_analysis(tmp_path: Path) -> None:
+    """Closing an APK session must drop its parse from the process-wide cache.
+
+    ApkClient caches a full DEX analysis -- tens to hundreds of MB -- keyed by
+    path and mtime, and close_session is the one place that calls
+    ApkClient.release to hand that memory back. The cache eviction and release()
+    itself are unit-tested in isolation, but nothing pinned the *wiring*: a
+    refactor that dropped the release() call in close_session would leave a
+    fully-analysed APK resident for the life of the process -- the Android twin
+    of a browser or proxy that reports closed while its resources stay live --
+    and every other test would still pass. This stands a parse in the cache
+    (androguard-free: release() matches on the resolved path, not the value) and
+    proves close_session clears it. Load-bearing: remove the release() call and
+    this is the test that fails.
+    """
+    import zipfile
+
+    from headless_re_mcp.backends.apk.client import ApkClient
+
+    apk = tmp_path / "cached.apk"
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+        archive.writestr("classes.dex", b"dex\n035\x00")
+
+    service = AnalysisService(_settings(tmp_path))
+    try:
+        created = service.create_session(str(apk), target="apk")
+        assert created.ok and created.data is not None
+        session_id = str(created.data["session"]["id"])
+
+        # Key by the exact string release() will resolve from the session's
+        # binary, so a match is guaranteed regardless of how the path was
+        # stored; the mtime slot is irrelevant because release() drops every
+        # key for the path.
+        resolved = str(service.registry.get(session_id).binary.expanduser().resolve())
+        ApkClient._full_cache[(resolved, 111)] = object()
+        ApkClient._light_cache[(resolved, 222)] = object()
+        assert any(key[0] == resolved for key in ApkClient._full_cache)
+
+        closed = service.close_session(session_id)
+        assert closed.ok, closed.error
+
+        assert not any(key[0] == resolved for key in ApkClient._full_cache), (
+            "close_session left the DEX analysis cached; ApkClient.release was not called"
+        )
+        assert not any(key[0] == resolved for key in ApkClient._light_cache)
+    finally:
+        # Class-level cache: leave nothing behind for a sibling test to trip on.
+        resolved_cleanup = str(apk.expanduser().resolve())
+        for cache in (ApkClient._full_cache, ApkClient._light_cache):
+            for key in [key for key in cache if key[0] == resolved_cleanup]:
+                cache.pop(key, None)
+        service.close_all()
+
+
 def test_an_elf_session_reaches_the_portable_backends_and_refuses_the_pe_tools(
     tmp_path: Path,
 ) -> None:
