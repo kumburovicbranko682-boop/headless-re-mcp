@@ -24,6 +24,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（钉住 `frida.spawn` 双写观测的“时间线那一半”——审计半边测得很全,时间线半边一条没测)
+
+- `frida.spawn` 刻意同时写两处:跨会话存活的durable审计行(设备变更轨迹),以及随会话裁剪的会话级时间线条目——`_audit_frida` 的文档正强调这份双写(“不同于 device.*,它们跑在会话内,所以还各自拥有一条时间线条目”)。`test_frida_audit.py` 把审计半边测得很全(参数/结果、失败带 code、纯枚举不审计、会话过滤可见、审计写失败不拖垮 spawn),却没有一条断言时间线半边:一旦重构删掉 `_timeline_append`,所有审计测试仍全绿,而会话自己的 spawn 记录会悄悄消失。新增 `test_frida_spawn_writes_a_session_timeline_entry`,断言 spawn 恰好写一条 `frida.spawn` 时间线条目、且 details 里带 package 与结果 pid。带外验证:临时删掉 `frida_spawn` 里的 `_timeline_append` → 唯独这条新测试失败(`0 == 1`),六条审计测试仍绿——精确点名被删的正是时间线那一半,证明双写不可再悄悄退化成单写。
+
 ### 测试（补齐 Agent 工作台 `PersonaStore` 三条已实现却没被钉住的失败闭合/校验契约——覆盖率 83%,缺口都在错误分支)
 
 - 损坏的 `index.json`(非法 JSON)必须降级到默认人格、绝不让每次人格读取抛异常:`_read_index` 捕获 `JSONDecodeError` 回默认目录,`list_public`/`current_id`/`current_prompt` 仍作答,默认提示词照旧从 `default.md` 直出;重建 store 会重新种入合法索引,损坏是一次性的、不粘连。既有测试只覆盖“超限截断”那条分支,这条覆盖更常见的“写一半被崩溃/磁盘满打断”式损坏。新增 `test_a_corrupt_index_degrades_to_the_default_persona`。带外验证:临时把 `except (OSError, json.JSONDecodeError)` 收窄成 `except OSError` → 该测试如期抛 `JSONDecodeError` 失败,复原转绿。

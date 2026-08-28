@@ -132,6 +132,42 @@ def test_frida_server_ensure_audits_the_push_and_start(
         service.close_all()
 
 
+def test_frida_spawn_writes_a_session_timeline_entry(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """spawn records to BOTH the durable audit and the session timeline.
+
+    The two are deliberately distinct: the audit line survives cross-session (it
+    is the device-mutation trail), while the timeline entry is the session's own
+    record and is trimmed with it -- which is exactly why the mutation writes both
+    rather than one. Every audit assertion above would still pass if the
+    ``_timeline_append`` call were dropped, silently losing the session-scoped
+    spawn record; this pins the timeline half, with the package and resulting pid
+    in its details, so the dual-write cannot quietly become a single write.
+    """
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_frida.FridaClient",
+        lambda *a, **k: _FakeClient(),
+    )
+    service, session_id = _open_session(tmp_path)
+    try:
+        _authorize_device(service, session_id)
+        result = service.frida_spawn(session_id, "com.example.app")
+        assert result.ok is True, result.error
+
+        timeline = service.timeline_list(session_id)
+        assert timeline.ok and timeline.data is not None
+        spawn_events = [
+            event for event in timeline.data["events"] if event["event"] == "frida.spawn"
+        ]
+        assert len(spawn_events) == 1, "spawn must own exactly one timeline entry"
+        details = spawn_events[0]["details"]
+        assert details["package"] == "com.example.app"
+        assert details["pid"] == 4242
+    finally:
+        service.close_all()
+
+
 def test_a_failed_frida_mutation_is_audited_with_its_code(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
