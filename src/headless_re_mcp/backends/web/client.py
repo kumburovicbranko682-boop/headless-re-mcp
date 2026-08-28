@@ -58,6 +58,11 @@ _MAX_COOKIE_VALUE_CHARS = 4096
 _MAX_FORMS = 200
 _MAX_FORM_FIELDS = 100
 _MAX_FIELD_VALUE_CHARS = 2048
+# web.meta caps: a page head can carry hundreds of meta/link tags (og:*, twitter:*,
+# preconnect); bound both lists and each meta content string.
+_MAX_META_TAGS = 300
+_MAX_META_LINKS = 200
+_MAX_META_CONTENT_CHARS = 2048
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -257,6 +262,109 @@ def _fold_form(raw: object, page_host: str) -> JsonObject:
         "fields_truncated": bool(form.get("fields_truncated")),
         "has_password": has_password,
         "has_file": has_file,
+    }
+
+
+_META_SCRIPT = """(cfg) => {
+  const metas = [];
+  const metaEls = document.getElementsByTagName('meta');
+  const metaTotal = metaEls.length;
+  let refresh = null, csp = null;
+  for (let i = 0; i < metaTotal; i++) {
+    const m = metaEls[i];
+    const httpEquiv = String(m.getAttribute('http-equiv') || '');
+    const content = String(m.getAttribute('content') || '').slice(0, cfg.maxContent);
+    const he = httpEquiv.toLowerCase();
+    if (he === 'refresh' && refresh === null) refresh = content;
+    if (he === 'content-security-policy' && csp === null) csp = content;
+    if (metas.length < cfg.maxMetas) {
+      metas.push({
+        name: String(m.getAttribute('name') || ''),
+        property: String(m.getAttribute('property') || ''),
+        http_equiv: httpEquiv,
+        charset: String(m.getAttribute('charset') || ''),
+        content: content
+      });
+    }
+  }
+  const links = [];
+  const linkEls = document.getElementsByTagName('link');
+  const linkTotal = linkEls.length;
+  for (let i = 0; i < linkTotal && links.length < cfg.maxLinks; i++) {
+    const l = linkEls[i];
+    let href = '';
+    try { href = String(l.href || ''); } catch (e) { href = ''; }
+    links.push({
+      rel: String(l.getAttribute('rel') || ''),
+      href: href,
+      type: String(l.getAttribute('type') || '')
+    });
+  }
+  let base = '';
+  try { const b = document.querySelector('base'); base = b ? String(b.href || '') : ''; }
+  catch (e) { base = ''; }
+  let lang = '';
+  try { lang = String(document.documentElement.getAttribute('lang') || ''); }
+  catch (e) { lang = ''; }
+  return {
+    title: String(document.title || ''),
+    charset: String(document.characterSet || ''),
+    lang: lang,
+    base: base,
+    metas: metas,
+    meta_total: metaTotal,
+    links: links,
+    link_total: linkTotal,
+    refresh: refresh,
+    csp: csp
+  };
+}"""
+
+
+def _parse_meta_refresh(content: object) -> JsonObject | None:
+    """Split a meta-refresh content string into {delay, url}.
+
+    The grammar is ``<seconds>[; url=<target>]`` (case-insensitive, quotes
+    optional). A bare number is a self-refresh with no url. Anything unparseable
+    yields None so the caller reports no redirect rather than a wrong one.
+    """
+    if not isinstance(content, str) or not content.strip():
+        return None
+    head, _, tail = content.partition(";")
+    try:
+        delay = int(float(head.strip()))
+    except ValueError:
+        return None
+    url: str | None = None
+    tail = tail.strip()
+    if tail:
+        _, _, target = tail.partition("=")
+        target = target.strip().strip("'\"")
+        url = _bounded_metadata(target, _MAX_URL_BYTES)[0] if target else None
+    return {"delay": delay, "url": url}
+
+
+def _fold_meta_tag(raw: object) -> JsonObject:
+    """Normalise one page-side <meta> dump into a bounded row."""
+    item = raw if isinstance(raw, dict) else {}
+    content = item.get("content")
+    content = content if isinstance(content, str) else ""
+    return {
+        "name": _bounded_metadata(item.get("name"), _MAX_METADATA_BYTES)[0],
+        "property": _bounded_metadata(item.get("property"), _MAX_METADATA_BYTES)[0],
+        "http_equiv": _bounded_metadata(item.get("http_equiv"), _MAX_METADATA_BYTES)[0],
+        "charset": _bounded_metadata(item.get("charset"), _MAX_METADATA_BYTES)[0],
+        "content": content[:_MAX_META_CONTENT_CHARS],
+    }
+
+
+def _fold_meta_link(raw: object) -> JsonObject:
+    """Normalise one page-side <link> dump into a bounded row."""
+    item = raw if isinstance(raw, dict) else {}
+    return {
+        "rel": _bounded_metadata(item.get("rel"), _MAX_METADATA_BYTES)[0],
+        "href": _bounded_metadata(item.get("href"), _MAX_URL_BYTES)[0],
+        "type": _bounded_metadata(item.get("type"), _MAX_METADATA_BYTES)[0],
     }
 
 
@@ -1145,6 +1253,55 @@ class WebBackend:
                 "count": len(forms),
                 "total": total_int,
                 "truncated": total_int > len(forms),
+            }
+
+        return self._runner(handle).call(work)
+
+    def meta(self, session_id: str) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            cfg = {
+                "maxMetas": _MAX_META_TAGS,
+                "maxLinks": _MAX_META_LINKS,
+                "maxContent": _MAX_META_CONTENT_CHARS,
+            }
+            try:
+                raw = handle.page.evaluate(_META_SCRIPT, cfg)
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"meta read failed: {exc}") from exc
+            if not isinstance(raw, dict):
+                raise WebError("backend_error", "meta read returned no data")
+            page_url = _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0]
+            metas = [_fold_meta_tag(item) for item in raw.get("metas") or []]
+            links = [_fold_meta_link(item) for item in raw.get("links") or []]
+            meta_total = raw.get("meta_total")
+            meta_total_int = int(meta_total) if isinstance(meta_total, int) else len(metas)
+            link_total = raw.get("link_total")
+            link_total_int = int(link_total) if isinstance(link_total, int) else len(links)
+            title = _bounded_metadata(raw.get("title"), _MAX_METADATA_BYTES)[0]
+            csp = raw.get("csp")
+            csp_out = (
+                _bounded_metadata(csp, _MAX_META_CONTENT_CHARS)[0]
+                if isinstance(csp, str)
+                else None
+            )
+            return {
+                "url": page_url,
+                "title": title,
+                "charset": _bounded_metadata(raw.get("charset"), _MAX_METADATA_BYTES)[0],
+                "lang": _bounded_metadata(raw.get("lang"), _MAX_METADATA_BYTES)[0],
+                "base": _bounded_metadata(raw.get("base"), _MAX_URL_BYTES)[0],
+                "metas": metas,
+                "meta_count": len(metas),
+                "meta_total": meta_total_int,
+                "metas_truncated": meta_total_int > len(metas),
+                "links": links,
+                "link_count": len(links),
+                "link_total": link_total_int,
+                "links_truncated": link_total_int > len(links),
+                "refresh": _parse_meta_refresh(raw.get("refresh")),
+                "csp": csp_out,
             }
 
         return self._runner(handle).call(work)

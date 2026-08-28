@@ -324,6 +324,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "web.storage",
         "web.cookies",
         "web.forms",
+        "web.meta",
         "web.screenshot",
         "web.har.export",
         # Interception (proxy.*)

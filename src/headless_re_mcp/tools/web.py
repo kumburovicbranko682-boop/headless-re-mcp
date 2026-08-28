@@ -245,6 +245,24 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_forms(session_id))
 
+    @tools.tool(name="web.meta")
+    def web_meta(session_id: str) -> dict[str, Any]:
+        """Read the page head's identity: title, charset, meta tags, link rels.
+
+        The phishing/redirect/CSP triage view -- what the page claims to be and
+        where it points -- without dumping the whole DOM. Answers with url,
+        title, charset, lang, base, plus metas, meta_count, meta_total,
+        metas_truncated and links, link_count, link_total, links_truncated. Each
+        meta row carries name, property (og:/twitter: cards), http_equiv, charset
+        and content; each link row carries rel (canonical/icon/manifest/
+        preconnect), href (resolved absolute) and type. refresh is the decoded
+        meta-refresh redirect ({delay, url}) or null -- a meta refresh to another
+        origin is a classic cloaked redirect. csp is the Content-Security-Policy
+        declared via meta, or null. Read metas_truncated/links_truncated: a head
+        stuffed with hundreds of tags is capped.
+        """
+        return _dump(analysis.web_meta(session_id))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.

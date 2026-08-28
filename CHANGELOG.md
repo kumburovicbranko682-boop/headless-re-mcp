@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **284（167 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **285（168 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -470,6 +470,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `enctype`、`field_count`、`has_password`、`has_file`、`fields` 列表与 `fields_truncated`。
   每个字段带 `tag`/`type`/`name`/`required`/`value`——`value` 只对 hidden 与 submit 输入抓取
   (CSRF token、动作标记),password/text 一律空值。表单多时按 200 个封顶,读 `truncated`。
+- 新增 `web.meta`:读页面 head 的身份——title、charset、meta 标签、link rel——做钓鱼/跳转/CSP
+  三连而不必倒出整个 DOM。回 `url`、`title`、`charset`、`lang`、`base`,外加 `metas`/`meta_count`/
+  `meta_total`/`metas_truncated` 与 `links`/`link_count`/`link_total`/`links_truncated`。每个 meta 行带
+  `name`、`property`(og:/twitter: 卡片)、`http_equiv`、`charset`、`content`;每个 link 行带
+  `rel`(canonical/icon/manifest/preconnect)、`href`(解析后的绝对 URL)、`type`。`refresh` 是解码后的
+  meta-refresh 跳转(`{delay, url}`)或 null——refresh 到另一 origin 是经典的隐蔽跳转;`csp` 是经 meta
+  声明的 Content-Security-Policy 或 null。head 塞了成百上千标签时按 300/200 封顶,读两个 truncated。
 
 ### 新增（浏览器 Cookie 罐）
 
