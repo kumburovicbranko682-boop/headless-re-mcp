@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（workspace.mode.set 的 profile 白名单在三处各写一遍、易漂移）
+
+- 与 frida.hook.template 同一类问题：合法 profile 名的真源是 `core/workspace.py` 的
+  `PROFILES = ("full", "pe", "android", "web")`，但 `workspace.mode.set` 工具 schema 又手写了
+  一遍 `Field(pattern="^(full|pe|android|web)$")`，测试里还硬编码了第三份。往 `PROFILES` 加一个
+  work direction（比如将来的 proxy/native）却忘改 schema 正则，schema 会在请求还没到 service
+  归一化前就静默拒掉这个本该合法的 profile；旧测试对着源码文本精确匹配 `PROFILES` 元组字面量、
+  又独立断言那条正则，两处各自都能被“改对”而 schema 仍未更新。现让 schema 的 `pattern` 由
+  `PROFILES` 派生（`re.escape` 防未来非标识符名），测试改为从 `PROFILES` 派生断言：加 profile
+  保持绿、两处不同步即失败。当前四个 profile 派生出的正则与原硬编码完全一致，纯属可维护性重构，
+  不改行为。（`session.create` 的 `Literal["pe","apk","web"]` 与 `TargetKind` 枚举同源但为共享入口、
+  且改动会变更 schema 形状，故此次不动。）
+
 ### 修复（frida.hook.template 的可用模板名在三处各写一遍、易漂移）
 
 - 可用模板名过去写在三个地方：客户端的 `_HOOK_TEMPLATES` 字典（真源）、工具 schema 里手写的

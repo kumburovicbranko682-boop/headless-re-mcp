@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any
 
 from pydantic import Field
 
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
+from headless_re_mcp.core.workspace import PROFILES
 from headless_re_mcp.tools.binding import BoundTool, ToolSetBuilder
+
+# Built from core.workspace.PROFILES so the schema accepts exactly the profiles
+# that exist. A hand-written second copy would silently reject a profile added
+# to PROFILES but not here (the schema rejects before the service normalizes),
+# the same drift the frida.hook.template names had. re.escape guards a future
+# profile that is not a bare identifier; today's are, so the pattern is unchanged.
+_PROFILE_PATTERN = "^(" + "|".join(re.escape(profile) for profile in PROFILES) + ")$"
 
 
 def _dump(result: Result[JsonObject]) -> dict[str, Any]:
@@ -32,7 +41,7 @@ def build_workspace_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="workspace.mode.set")
     def workspace_mode_set(
-        profile: Annotated[str, Field(pattern="^(full|pe|android|web)$")],
+        profile: Annotated[str, Field(pattern=_PROFILE_PATTERN)],
     ) -> dict[str, Any]:
         """Set the startup work direction; persists and applies on next connection.
 
