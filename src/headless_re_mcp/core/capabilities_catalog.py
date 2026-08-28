@@ -67,7 +67,7 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "r2.pipe",
         "backend": "radare2",
         "status_probe": "radare2",
-        "tools": ["r2.open", "r2.info", "r2.functions", "r2.strings", "r2.strings_all", "r2.imports", "r2.exports", "r2.sections", "r2.symbols", "r2.entrypoints", "r2.disasm", "r2.disasm_function", "r2.xrefs", "r2.read", "r2.search", "r2.libs", "r2.relocations", "r2.resolve"],
+        "tools": ["r2.open", "r2.info", "r2.functions", "r2.strings", "r2.strings_all", "r2.imports", "r2.exports", "r2.sections", "r2.symbols", "r2.entrypoints", "r2.disasm", "r2.disasm_function", "r2.xrefs", "r2.read", "r2.search", "r2.libs", "r2.relocations", "r2.resolve", "r2.callgraph"],
         "summary": "radare2/rizin whitelist pipe",
         "optional": True,
     },

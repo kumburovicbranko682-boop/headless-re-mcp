@@ -557,6 +557,58 @@ class ExtAnalysisMixin(UiDriveMixin):
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def r2_callgraph(
+        self,
+        session_id: str,
+        address: int,
+        direction: str = "both",
+        offset: int = 0,
+        limit: int = 100,
+        timeout: float = 30.0,
+    ) -> Result[JsonObject]:
+        try:
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"r2.callgraph cannot run in {session.state.value} state"
+                )
+            exe = getattr(self.settings, "r2", None)
+            client = R2Client(Path(exe) if exe else None)
+            data = client.callgraph(
+                session.require_binary(),
+                address,
+                direction=direction,
+                offset=offset,
+                limit=limit,
+                timeout=timeout,
+            )
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"r2.callgraph cannot run in {session.state.value} state"
+                )
+            _timeline_append(
+                self,
+                session_id,
+                "r2.callgraph",
+                "r2 call graph",
+                address=address,
+                direction=direction,
+            )
+            return _success(data, session_id=session_id, backend="radare2")
+        except R2Error as exc:
+            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
     def r2_libs(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)

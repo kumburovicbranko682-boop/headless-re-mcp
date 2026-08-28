@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import json
 import os
 import re
@@ -34,6 +35,12 @@ _MAX_SEARCH_BYTES = 256
 # Kept equal to mapping._MAX_ITEMS (4096): r2 stops at the same ceiling the
 # enrich step would trim to, so the truncation disclosure stays honest.
 _SEARCH_MAXHITS_COMMAND = "e search.maxhits=4096"
+# r2.callgraph edge caps. A hot leaf (an allocator, a logging helper) can carry
+# thousands of inbound call sites, so the edge list pages rather than
+# hard-truncates; the collect ceiling only bounds a pathological fan-in from
+# building an unbounded list before paging.
+_MAX_CALLGRAPH_COLLECT = 20_000
+_MAX_CALLGRAPH_PAGE = 1000
 _ALLOWED = frozenset(
     {
         "i",
@@ -583,6 +590,218 @@ class R2Client:
             fdj_val, address, module=binary.name, image_base=image_base, architecture=arch
         )
         return result
+
+    def callgraph(
+        self,
+        binary: Path,
+        address: int,
+        *,
+        direction: str = "both",
+        offset: int = 0,
+        limit: int = 100,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """The direct callees and callers of the function at ``address``.
+
+        Where ``r2.xrefs`` answers one address and ``r2.disasm_function`` reads a
+        whole body op by op, this collapses a function to its call-graph
+        neighbours: the functions it calls (callees) and the functions that call
+        it (callers), each resolved to a name and a call-site address rather than
+        left as raw pointers. It is the native analogue of ``apk.method_xrefs``
+        -- the seam from ``r2.functions`` (pick a function) or ``r2.resolve`` (map
+        a hit to its function) to "who reaches this, and what does it reach".
+
+        Runs ``aa`` then ``aflj`` once and builds the graph from r2's own
+        per-function ``callrefs`` (outbound) and ``codexrefs`` (inbound), so a
+        single pass answers both directions and every edge endpoint is resolved
+        to the function that contains it (an import thunk such as
+        ``sym.imp.malloc`` included). ``address`` may sit anywhere inside a
+        function, not only on its entry.
+        """
+        if type(address) is not int or address < 0:
+            raise R2Error("invalid_params", "address must be a non-negative int")
+        if direction not in ("callees", "callers", "both"):
+            raise R2Error(
+                "invalid_params",
+                "direction must be callees, callers or both",
+                direction=direction,
+            )
+        data = self.run(binary, ["aa", "aflj"], timeout=timeout)
+        arrays = parse_r2_arrays(str(data.get("raw") or ""))
+        funcs = arrays[0] if arrays else []
+        arch, image_base = pe_preferred_base(binary)
+
+        # Index every function by its start so a call target/source address can
+        # be named. r2 5.x keys the start under ``offset``, 6.x under ``addr``;
+        # read either. ``spans`` (sorted by start) lets a call site that lands in
+        # the middle of a function -- a tail-called body, an offset the caller
+        # asked about -- still resolve to the function that contains it.
+        by_start: dict[int, JsonObject] = {}
+        spans: list[tuple[int, int, str]] = []
+        for func in funcs:
+            if not isinstance(func, dict):
+                continue
+            start = _item_va(func, ("offset", "addr"))
+            if start is None:
+                continue
+            size = func.get("size")
+            size = size if isinstance(size, int) and size >= 0 else 0
+            name = str(func.get("name") or "")
+            by_start[start] = func
+            spans.append((start, start + size, name))
+        spans.sort()
+        starts = [span[0] for span in spans]
+
+        def _resolve(va: int | None) -> tuple[int | None, str, bool]:
+            """(function start, name, resolved) for the function containing ``va``."""
+            if va is None:
+                return None, "", False
+            func = by_start.get(va)
+            if func is not None:
+                return va, str(func.get("name") or ""), True
+            index = bisect.bisect_right(starts, va) - 1
+            if 0 <= index < len(spans):
+                start, end, name = spans[index]
+                # end == start guards a zero-size function: only an exact start
+                # hit (handled above) counts, never a stray byte after it.
+                if start <= va < end:
+                    return start, name, True
+            return va, "", False
+
+        node_start, node_name, node_found = _resolve(address)
+        node_func = by_start.get(node_start) if node_start is not None else None
+
+        # (direction, other-start, callsite, type, name) -- a set so a function
+        # called from two sites still yields two edges (distinct callsite) while
+        # a duplicated ref row collapses.
+        edges: set[tuple[str, int, int, str, str]] = set()
+        scan_capped = False
+
+        def _collect(rows: Any, edge_dir: str, endpoint_keys: tuple[str, ...]) -> None:
+            nonlocal scan_capped
+            if not isinstance(rows, list):
+                return
+            for row in rows:
+                if scan_capped or len(edges) >= _MAX_CALLGRAPH_COLLECT:
+                    scan_capped = True
+                    return
+                if not isinstance(row, dict):
+                    continue
+                endpoint = _item_va(row, endpoint_keys)
+                callsite = _item_va(row, ("at",))
+                rtype = str(row.get("type") or "")
+                other_start, _name, _ok = _resolve(endpoint)
+                # A callee edge names the target (``addr``) and its call site is
+                # ``at`` (inside this function). A caller edge names the source
+                # (``addr`` = the calling instruction); that instruction *is* the
+                # call site, so the endpoint and the call site coincide.
+                if edge_dir == "callee":
+                    site = callsite if callsite is not None else -1
+                else:
+                    site = endpoint if endpoint is not None else -1
+                edges.add(
+                    (
+                        edge_dir,
+                        other_start if other_start is not None else -1,
+                        site,
+                        rtype,
+                        _name,
+                    )
+                )
+
+        if node_func is not None:
+            if direction in ("callees", "both"):
+                _collect(node_func.get("callrefs"), "callee", ("addr", "to", "ref"))
+            if direction in ("callers", "both"):
+                _collect(node_func.get("codexrefs"), "caller", ("addr", "from"))
+
+        callees_total = sum(1 for edge in edges if edge[0] == "callee")
+        callers_total = sum(1 for edge in edges if edge[0] == "caller")
+        ordered = sorted(edges)
+        start_at = max(0, int(offset))
+        cap = min(max(1, int(limit)), _MAX_CALLGRAPH_PAGE)
+        window = ordered[start_at : start_at + cap]
+
+        result: JsonObject = {
+            "commands": ["aa", "aflj"],
+            "module": binary.name,
+            "address_va": address,
+            "direction": direction,
+            "parsed": bool(funcs),
+        }
+        if image_base is not None:
+            result["image_base"] = image_base
+        if arch is not None:
+            result["architecture"] = arch.value
+        mapped = address_dict(
+            address, module=binary.name, image_base=image_base, architecture=arch
+        )
+        if mapped is not None:
+            result["address"] = mapped
+        if node_start is not None and node_found:
+            func_entry: JsonObject = {"name": node_name, "addr": node_start}
+            node_size = node_func.get("size") if isinstance(node_func, dict) else None
+            if isinstance(node_size, int):
+                func_entry["size"] = node_size
+            func_mapped = address_dict(
+                node_start, module=binary.name, image_base=image_base, architecture=arch
+            )
+            if func_mapped is not None:
+                func_entry["address"] = func_mapped
+            result["function"] = func_entry
+        else:
+            # The address is not inside any analysed function; report an empty
+            # graph rather than raising, matching r2.disasm_function/r2.xrefs.
+            result["function"] = None
+
+        result["edges"] = [
+            self._callgraph_edge(
+                edge, module=binary.name, image_base=image_base, architecture=arch
+            )
+            for edge in window
+        ]
+        result["count"] = len(window)
+        result["total"] = len(ordered)
+        result["callees_total"] = callees_total
+        result["callers_total"] = callers_total
+        result["offset"] = start_at
+        result["has_more"] = start_at + len(window) < len(ordered)
+        result["scan_capped"] = scan_capped
+        return result
+
+    @staticmethod
+    def _callgraph_edge(
+        edge: tuple[str, int, int, str, str],
+        *,
+        module: str,
+        image_base: int | None,
+        architecture: Any,
+    ) -> JsonObject:
+        edge_dir, other_start, site, rtype, name = edge
+        item: JsonObject = {
+            "direction": edge_dir,
+            "name": name,
+            "addr": other_start if other_start >= 0 else None,
+            "call_site_va": site if site >= 0 else None,
+            "type": rtype,
+            # False when the endpoint fell outside every analysed function --
+            # ``addr`` is then the raw target/source, not a function start, and
+            # the name is empty (every aflj function carries a name).
+            "resolved": bool(name),
+        }
+        if other_start >= 0:
+            mapped = address_dict(
+                other_start, module=module, image_base=image_base, architecture=architecture
+            )
+            if mapped is not None:
+                item["address"] = mapped
+        if site >= 0:
+            site_mapped = address_dict(
+                site, module=module, image_base=image_base, architecture=architecture
+            )
+            if site_mapped is not None:
+                item["call_site"] = site_mapped
+        return item
 
     def libs(self, binary: Path, *, timeout: float = 30.0) -> JsonObject:
         """List the shared libraries the image links against.

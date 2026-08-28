@@ -329,6 +329,53 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_resolve(session_id, address, timeout=timeout))
 
+    @tools.tool(name="r2.callgraph")
+    def r2_callgraph(
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+        direction: Literal["callees", "callers", "both"] = "both",
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Direct callees and callers of the function at an address.
+
+        Where r2.xrefs answers one address and r2.disasm_function reads a whole
+        body, this collapses a function to its call-graph neighbours: the
+        functions it calls (callees) and the functions that call it (callers),
+        each resolved to a name and a call-site address instead of a raw pointer.
+        It is the native twin of apk.method_xrefs -- the seam from r2.functions
+        (pick a function) or r2.resolve (map a hit to its function) to "what does
+        this reach, and who reaches it". address may sit anywhere inside a
+        function, not only on its entry. direction "callees", "callers" or "both"
+        (default) chooses which edges to return.
+
+        Runs ``aa`` then ``aflj`` once and builds the graph from r2's own
+        per-function callrefs (outbound) and codexrefs (inbound). Answers with
+        function ({name, addr, size, address} of the resolved node, or null when
+        address is not inside any analysed function), direction, and edges. Each
+        edge carries direction ("callee"/"caller"), name (the function at the
+        other end), addr (its start, or the raw endpoint when it resolved to no
+        function), address (va/rva/module), call_site_va and call_site (the call
+        instruction), type (CALL/CODE as r2 tags it) and resolved (false when the
+        endpoint fell outside every analysed function). edges are deduplicated by
+        endpoint and call site and sorted; count, total, offset and has_more page
+        them, callees_total and callers_total count each direction across the
+        whole graph, and scan_capped is set once the 20000-edge ceiling was hit.
+        A leaf that nothing calls (or that calls nothing) is a clean empty edges
+        list, not an error.
+        """
+        return _dump(
+            analysis.r2_callgraph(
+                session_id,
+                address,
+                direction=direction,
+                offset=offset,
+                limit=limit,
+                timeout=timeout,
+            )
+        )
+
     @tools.tool(name="r2.libs")
     def r2_libs(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
