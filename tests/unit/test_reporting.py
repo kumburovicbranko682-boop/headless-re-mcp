@@ -132,6 +132,63 @@ def test_report_escapes_pipes_and_truncates_long_cells() -> None:
     assert len(row.replace("\\|", "").strip("| ").split(" | ")) == 3
 
 
+def test_a_pipe_in_a_finding_value_is_escaped_exactly_once() -> None:
+    """The summarizer used to escape, then the table escaped again.
+
+    ``a|b`` went out as ``a\\\\|b``: an escaped backslash followed by a live
+    pipe, which a renderer reads as a column break -- the Updated column
+    shifted out of its place for scalar and dict values alike.
+    """
+    knowledge = {
+        "entries": [
+            {"kind": "note", "key": "cmdline", "value": "netstat | findstr 443", "updated_at": "t"},
+            {
+                "kind": "note",
+                "key": "detail",
+                "value": {"cmd": "tasklist | more"},
+                "updated_at": "t",
+            },
+        ]
+    }
+    markdown = render_markdown_report(session=_SESSION, knowledge=knowledge, generated_at="t")
+    assert "netstat \\| findstr 443" in markdown
+    assert "cmd=tasklist \\| more" in markdown
+    assert "\\\\|" not in markdown
+
+
+def test_crlf_in_a_finding_value_cannot_split_the_table_row() -> None:
+    """CommonMark treats a bare CR as a line ending, same as LF.
+
+    Only LF was replaced, so a CRLF value left the CR behind and the row
+    broke in two mid-cell. Windows tool output is CRLF throughout.
+    """
+    knowledge = {
+        "entries": [
+            {"kind": "note", "key": "banner", "value": "line one\r\nline two", "updated_at": "t"}
+        ]
+    }
+    markdown = render_markdown_report(session=_SESSION, knowledge=knowledge, generated_at="t")
+    assert "\r" not in markdown
+    assert "line one line two" in markdown
+
+
+def test_backslashes_in_artifact_paths_survive_rendering() -> None:
+    """``\\_`` is a Markdown escape: raw ``C:\\dumps\\_final.exe`` renders as
+    ``C:\\dumps_final.exe`` -- a path that does not exist. Escaping every
+    backslash makes the renderer print the path as recorded."""
+    markdown = render_markdown_report(
+        session=_SESSION,
+        artifacts={
+            "artifacts": [{"kind": "dump", "path": "C:\\dumps\\_final.exe", "size": 7}],
+            "count": 1,
+            "total": 1,
+        },
+        generated_at="t",
+    )
+    assert "C:\\\\dumps\\\\_final.exe" in markdown
+    assert "| C:\\dumps\\_final.exe |" not in markdown
+
+
 def test_report_includes_audit_when_supplied() -> None:
 
     audit = {

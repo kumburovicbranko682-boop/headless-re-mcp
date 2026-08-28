@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Markdown 报告的表格单元格转义：双重转义、CR 断行、反斜杠被渲染器吃掉）
+
+- `reporting.py` 的转义在错误的层做且不完整，三个同根问题会破坏 `report.generate`
+  产出的 .md 报告（写盘的正是"别人留存并据以行动"的产物，由外部 Markdown 渲染器打开）：
+  ① 双重转义——`_summarize_value` 用 `_cell` 转义每个片段，`_table` 落格时又对整格
+  `_cell` 一次，含竖线的值（抓到的命令行、反汇编、正则里常见）`a|b` 变成 `a\\|b`：
+  转义的反斜杠 + 未转义的活竖线，渲染器视为列分隔，整行后续列错位；标量值与 dict 值
+  两条路径同病。② 只替换了 `\n` 不管 `\r`——CommonMark 把孤立 CR 与 LF 同等视为行结束，
+  Windows 工具输出满是 CRLF，替换 LF 后留下的 CR 让表格行当场断成两截。③ 反斜杠从不
+  转义——`\_`、`\(`、`\*` 是 Markdown 转义序列，产物表里的 Windows 路径
+  `C:\dumps\_final.exe` 渲染成 `C:\dumps_final.exe`、`C:\Program Files (x86)\…` 的
+  `\(` 被吃掉——报告展示的是一条不存在的路径。改法：拆出无转义的单行截断层
+  `_flatten`（摘要器只用它），转义只在 `_cell` 一处做且完整（先反斜杠后竖线，顺序
+  反了会自己制造 `\\|`）；截断先于转义，单元格不再可能在转义序列中间被切断。
+- 回归测试：竖线值恰好转义一次（标量与 dict 两路，断言 `\\|` 不再出现）、CRLF 值
+  不含残留 CR 且两行并为一行、`C:\dumps\_final.exe` 以反斜杠转义形态写入而原始形态
+  不再出现。三例在旧代码下如实失败。既有 12 例（含键名竖线转义与截断省略号）不变。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

@@ -23,17 +23,31 @@ JsonObject = dict[str, Any]
 _MAX_CELL = 120
 
 
-def _cell(value: object) -> str:
+def _flatten(value: object) -> str:
+    """One bounded line of plain text, with no Markdown escaping applied.
 
+    Escaping belongs to the table layer alone. When the summarizer escaped its
+    pieces too, ``_cell`` escaped them again, and a value holding ``a|b`` went
+    out as ``a\\\\|b`` -- an escaped backslash followed by a live pipe, which a
+    renderer reads as a column break, shifting the rest of the row.
+    """
     text = "" if value is None else str(value)
-
-    text = text.replace("|", "\\|").replace("\n", " ").strip()
-
+    # A bare CR is a line ending to CommonMark, exactly like LF, and Windows
+    # tool output is full of CRLF; leaving the CR behind split the row.
+    for lineend in ("\r\n", "\n", "\r"):
+        text = text.replace(lineend, " ")
+    text = text.strip()
     if len(text) > _MAX_CELL:
-
         text = text[: _MAX_CELL - 1] + "…"
-
     return text or "—"
+
+
+def _cell(value: object) -> str:
+    # Backslash first, or escaping the pipe manufactures the very ``\\|``
+    # sequence that breaks the cell. Escaping every backslash also keeps
+    # Windows paths intact: raw ``C:\dist\_internal`` renders as
+    # ``C:\dist_internal`` because ``\_`` is a Markdown escape.
+    return _flatten(value).replace("\\", "\\\\").replace("|", "\\|")
 
 
 def _table(headers: list[str], rows: list[list[object]]) -> list[str]:
@@ -57,9 +71,9 @@ def _summarize_value(value: object) -> str:
 
             return "—"
 
-        return ", ".join(f"{key}={_cell(item)}" for key, item in list(value.items())[:4])
+        return ", ".join(f"{key}={_flatten(item)}" for key, item in list(value.items())[:4])
 
-    return _cell(value)
+    return _flatten(value)
 
 
 def _note_if_partial(
