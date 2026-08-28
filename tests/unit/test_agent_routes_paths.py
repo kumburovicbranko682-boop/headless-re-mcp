@@ -339,6 +339,40 @@ def test_event_history_and_terminal_stream(tmp_path: Path, monkeypatch: pytest.M
     assert "event: llm.completed" in streamed.text
 
 
+def test_event_stream_ends_when_the_run_row_vanishes_mid_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After each batch the stream re-resolves the run to decide whether to
+    keep waiting. A row that stops resolving mid-stream -- a purged store, a
+    swapped database file -- must end the stream, not park the client on
+    heartbeats for a run nobody can look up anymore."""
+    app, client = _build(tmp_path, monkeypatch)
+    store = app.state.agent_store
+
+    thread_id = store.create_thread(title="vanish").id
+    run = store.create_run(thread_id, provider_profile="default", model="m", deadline_seconds=30)
+    store.append_event(run.id, "llm.started", {"round": 1})
+    # The run stays non-terminal: only the vanish can end this stream.
+
+    real_get_run = store.get_run
+    lookups = {"count": 0}
+
+    def vanishing(run_id: str) -> Any:
+        lookups["count"] += 1
+        if lookups["count"] == 1:
+            return real_get_run(run_id)  # the route's own 404 pre-check
+        return None  # gone by the first in-stream poll
+
+    monkeypatch.setattr(store, "get_run", vanishing)
+
+    streamed = client.get(f"/api/agent/runs/{run.id}/events", headers=HEADERS)
+
+    assert streamed.status_code == 200, "the run still existed at the pre-check"
+    assert "event: llm.started" in streamed.text, "the backlog was delivered first"
+    assert "event: heartbeat" not in streamed.text
+    assert lookups["count"] == 2, "the stream ended at the first failed poll"
+
+
 def test_event_stream_emits_a_heartbeat_while_idle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

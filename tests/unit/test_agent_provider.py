@@ -399,6 +399,32 @@ async def test_a_proxy_setting_httpx_cannot_parse_does_not_end_every_run(
 
 
 @pytest.mark.asyncio
+async def test_an_unparseable_proxy_environment_is_reported_once_not_per_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every run builds a fresh client, so a broken no_proxy trips the same
+    fallback each time. The alert must fire on the first build only -- an
+    unattended mission would otherwise fill the incident log with one identical
+    alert per run while the fallback keeps every run working."""
+    broken = "127.0.0.1,localhost,::1,127.0.0.0/8,::1/128"
+    monkeypatch.setenv("NO_PROXY", broken)
+    monkeypatch.setenv("no_proxy", broken)
+    monkeypatch.setattr(openai_compatible, "_reported_bad_proxy_env", False)
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        openai_compatible, "record_alert", lambda kind, **kwargs: alerts.append(kind)
+    )
+
+    first = openai_compatible.build_client(httpx, timeout=5.0, transport=None)
+    second = openai_compatible.build_client(httpx, timeout=5.0, transport=None)
+
+    assert first.trust_env is False and second.trust_env is False
+    assert alerts == ["proxy_env_unparseable"], "the second build must stay quiet"
+    await first.aclose()
+    await second.aclose()
+
+
+@pytest.mark.asyncio
 async def test_every_client_shares_one_ssl_context(monkeypatch: pytest.MonkeyPatch) -> None:
     """Building the context per client cost 352ms, on the shared event loop.
 
