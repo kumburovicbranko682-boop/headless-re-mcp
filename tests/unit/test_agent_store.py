@@ -250,6 +250,56 @@ def test_recovery_is_still_available_and_still_adopts_orphans(tmp_path: Path) ->
     assert successor.get_run(run.id).status is RunStatus.INTERRUPTED
     assert successor.get_mission(mission.id).status is MissionStatus.PENDING
 
+def test_list_threads_breaks_a_tied_updated_at_by_id_for_a_stable_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Threads sharing an updated_at must order by a unique key, deterministically.
+
+    updated_at is a wall-clock isoformat string, so threads created together (or
+    touched in the same instant) tie on it. list_threads ordered by ``updated_at
+    DESC`` alone -- a non-unique key -- so SQLite left the tied group in an
+    undefined order: the console's thread list could reshuffle between identical
+    refreshes, and a thread sitting on the LIMIT boundary could flicker in and out
+    of the result. Every sibling reader in this store already tie-breaks with
+    ``id DESC`` (list_missions, and the OFFSET-paged thread lists); this pins that
+    list_threads does too. The clock is frozen so all rows tie, and ids are handed
+    out ascending so insertion (rowid) order is the *opposite* of ``id DESC``: only
+    a real id tiebreak yields the descending order asserted here, and without it
+    the read falls back to ascending insertion order and fails.
+    """
+    from headless_re_mcp.agent import store as store_module
+
+    store = AgentStore(tmp_path / "thread-ties.db")
+    store.recover_after_restart()
+
+    # Patch after recovery so the id counter is clean for the threads below.
+    monkeypatch.setattr(store_module, "utc_now", lambda: "2026-01-01T00:00:00+00:00")
+    counter = {"n": -1}
+
+    class _Id:
+        def __init__(self, n: int) -> None:
+            self._n = n
+
+        @property
+        def hex(self) -> str:
+            return f"{self._n:02d}"
+
+    def _next_uuid() -> _Id:
+        counter["n"] += 1
+        return _Id(counter["n"])
+
+    monkeypatch.setattr(store_module.uuid, "uuid4", _next_uuid)
+
+    created = [store.create_thread(title=f"t{index}").id for index in range(12)]
+    # Ascending insertion order, the reverse of what id DESC must produce.
+    assert created == [f"{index:02d}" for index in range(12)]
+
+    listed = [thread.id for thread in store.list_threads(limit=50)]
+    assert listed == [f"{index:02d}" for index in reversed(range(12))], (
+        "a tied updated_at must page by id DESC, not incidental insertion order"
+    )
+
+
 def test_every_capped_list_keeps_the_end_it_says_it_keeps(tmp_path: Path) -> None:
     """Pin which end of an over-full collection each list method returns.
 

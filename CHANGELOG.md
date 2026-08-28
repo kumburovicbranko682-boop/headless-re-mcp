@@ -24,6 +24,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（Agent 工作台会话存储 `list_threads` 只按非唯一的 `updated_at DESC` 排序,时间列打平时线程列表次序不确定、边界线程会闪进闪出）
+
+- `agent/store.py` 的 `threads` 表以 `id TEXT PRIMARY KEY` 为唯一键,`updated_at` 则是墙钟 isoformat 字符串:同批创建或同一瞬间被触达的线程会打平。该存储里其余读取(`list_missions`、以及 `OFFSET` 翻页的线程列表)一律以 `... DESC, id DESC` 收尾唯一次键,唯独 `list_threads` 只写 `ORDER BY updated_at DESC`——SQLite 对并列组次序不保证,于是同样的刷新之间线程列表会重排,恰卡在 `LIMIT` 边界上的线程还会在结果里闪进闪出。补上 `, id DESC` 使其与兄弟读取一致,次序确定。带外验证:去掉 `, id DESC` → 新用例失败(冻结时钟令 12 行全并列、受控自增 id 使插入序恰为 `id DESC` 的反序,读取退化成升序插入序 `00,01,...` 而非应有的 `11,10,...`),复原后全绿。补 `test_list_threads_breaks_a_tied_updated_at_by_id_for_a_stable_order`。
+
 ### 修复（文件型会话时间线 `list_session_timeline` 的分页把行含 U+2028 / U+2029 的合法条目撕碎并丢失,还让其后条目变得不可达）
 
 - 时间线条目以 `json.dumps(entry, ensure_ascii=False)` 逐行写入,`\n` 是唯一的行分隔符;而 U+2028(行分隔符)/U+2029(段分隔符)码点 >= 0x20,json 不会转义,`ensure_ascii=False` 下原样落进 details 字符串的 JSON 文本里。读取端 `_page` 却用 `str.splitlines()` 切分窗口,而 `splitlines()` 会额外在 U+2028/U+2029 等 Unicode 行边界上断行——于是一条带 U+2028 的条目被切成多个碎片:每个碎片 `json.loads` 失败(条目虽在磁盘上有效却整条消失),更糟的是多出来的碎片抬高了窗口行数,使 `has_more`(`offset + len(chunk) < total`)提前判为 false,其后的条目因而永远翻不到。details 承载的是脱敏后的工具入参,其中不乏抓取到的字符串(URL、选择器、DOM 文本),裸 U+2028 在这些内容里完全常见。改为只按 `"\n"` 切分窗口(并丢弃末尾换行留下的空片,内部空行仍保留以占住 offset 槽位),每条 JSON 条目保持完整、行数与 `offset`/`total` 一致;`total` 本就按 `\n` 计数,故契约不变。带外验证:把切分换回 `splitlines()` → 新用例失败(五条中带 U+2028 的一条被丢,`count` 由 5 退化为 4;三条一页两条地翻时第三条不可达),复原后全绿。补 `test_an_entry_with_a_unicode_line_separator_stays_whole_and_reachable`:第二条带 U+2028,断言整表读取三条齐全且 payload 原样往返,两条一页地翻能走完三条无重复无缺口。
