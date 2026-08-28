@@ -101,6 +101,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（PE 重建的可选头解析对截断 dump 直接 struct 崩，而非命名报错）
+
+- `unpack/pe_rebuild.py` 的 `parse_runtime_headers` 在校验 `SizeOfOptionalHeader` 能否装下后，
+  就直接按固定偏移读 magic、entry_point、image_base 等标量以及数据目录数量/数组。但这些读取的
+  边界没有单独兜住：一个精心构造的 dump 可以把可选头声明得太短（连 2 字节 magic 都不够），或让
+  数据目录数量指向镜像之外，于是 `_u16`/`_u32`/`_u64` 的 `struct.unpack` 直接抛出，冒泡成不透明的
+  内部错误/incident，而不是这一层本该给出的「optional header is truncated」命名错误。现补三处边界：
+  读 magic 前先确保有 2 字节；标量与目录计数所在的最大固定偏移 `dir_count_off + 4` 一次兜住全部
+  标量读；数据目录数组按 `dir_off + dir_count * 8` 在索引前兜住——任一越界都抛 `PeRebuildError`
+  失败关闭。新增 `tests/unit/test_pe_rebuild_hostile_dump.py` 钉住这些截断情形按命名错误拒绝。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

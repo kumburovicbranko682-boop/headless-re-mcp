@@ -149,13 +149,24 @@ def parse_runtime_headers(image: bytes | bytearray) -> JsonObject:
     optional_size = _u16(image, file_header + 16)
     characteristics = _u16(image, file_header + 18)
     optional = file_header + 20
-    if optional + optional_size > len(image):
+    # The declared optional header must fit, and we must be able to read the
+    # 2-byte magic before we can tell PE32 from PE32+.
+    if optional + optional_size > len(image) or optional + 2 > len(image):
         raise PeRebuildError("optional header is truncated")
     magic = _u16(image, optional)
     pe32_plus = magic == 0x20B
     if magic not in {0x10B, 0x20B}:
         raise PeRebuildError(f"unsupported optional magic: {magic:#x}")
 
+    dir_count_off = optional + (108 if pe32_plus else 92)
+    dir_off = optional + (112 if pe32_plus else 96)
+    # The scalar fields and the data-directory count below live at fixed offsets
+    # past the magic; a crafted dump can declare a SizeOfOptionalHeader too small
+    # to reach them. dir_count_off is the largest of those fixed offsets, so one
+    # bound here keeps every scalar read and the count read from faulting a
+    # struct unpack with a named error instead.
+    if dir_count_off + 4 > len(image):
+        raise PeRebuildError("optional header is truncated")
     entry_point_rva = _u32(image, optional + 16)
     image_base = (
         _u64(image, optional + 24) if pe32_plus else _u32(image, optional + 28)
@@ -166,9 +177,10 @@ def parse_runtime_headers(image: bytes | bytearray) -> JsonObject:
     size_of_headers = _u32(image, optional + 60)
     subsystem = _u16(image, optional + 68)
     dll_characteristics = _u16(image, optional + 70)
-    dir_count_off = optional + (108 if pe32_plus else 92)
-    dir_off = optional + (112 if pe32_plus else 96)
     dir_count = min(_u32(image, dir_count_off), 16)
+    # The data-directory array follows; bound it before indexing into it.
+    if dir_off + dir_count * 8 > len(image):
+        raise PeRebuildError("optional header is truncated")
     directories = []
     for index in range(dir_count):
         base = dir_off + index * 8
