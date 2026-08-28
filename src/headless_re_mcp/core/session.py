@@ -2373,6 +2373,36 @@ _HAR_MAX_ENTRIES = 200_000
 # Distinct hosts are a strong "what did this capture touch" fact; list a bounded
 # sample and always report the true count alongside it.
 _HAR_MAX_HOSTS = 64
+# Executable and container magic at the start of a decoded body. Every prefix
+# is 4+ bytes except MZ, which additionally requires a DOS-header-sized body so
+# prose that merely opens with the letters cannot read as an executable.
+_HAR_MAGIC_KINDS: tuple[tuple[bytes, str], ...] = (
+    (b"\x7fELF", "elf"),
+    (b"\x00asm", "wasm"),
+    (b"PK\x03\x04", "zip"),
+    (b"dex\n", "dex"),
+    (b"\x1f\x8b", "gzip"),
+    (b"\xcf\xfa\xed\xfe", "macho"),
+    (b"\xce\xfa\xed\xfe", "macho"),
+    (b"\xfe\xed\xfa\xcf", "macho"),
+    (b"\xfe\xed\xfa\xce", "macho"),
+    # CAFEBABE opens both a fat Mach-O and a Java class file; one honest name.
+    (b"\xca\xfe\xba\xbe", "java_class_or_fat_macho"),
+    (b"MZ", "pe"),
+)
+# MIME types whose bodies a browser treats as text: binary executable bytes
+# under one of these claims is the smuggling shape worth flagging.
+_HAR_TEXTY_MIMES = frozenset(
+    {
+        "application/javascript",
+        "application/x-javascript",
+        "application/json",
+        "application/xml",
+        "image/svg+xml",
+    }
+)
+_HAR_MAX_MASQUERADES = 32
+_HAR_MAX_URL = 512
 
 
 def describe_har(path: Path) -> dict[str, Any]:
@@ -2436,10 +2466,15 @@ def describe_har(path: Path) -> dict[str, Any]:
     request_bodies_captured = 0
     request_bodies_stripped = 0
     request_bodies_size_mismatch = 0
+    # Bodies whose bytes open with executable/container magic while the
+    # declared mimeType claims text -- the drive-by / smuggling shape.
+    masquerade_count = 0
+    masquerades: list[dict[str, Any]] = []
     truncated = len(entries) > _HAR_MAX_ENTRIES
     for entry in entries[:_HAR_MAX_ENTRIES]:
         if not isinstance(entry, dict):
             continue
+        entry_url: str | None = None
         request = entry.get("request")
         if isinstance(request, dict):
             method = request.get("method")
@@ -2447,6 +2482,7 @@ def describe_har(path: Path) -> dict[str, Any]:
                 methods[method.upper()] = methods.get(method.upper(), 0) + 1
             url = request.get("url")
             if isinstance(url, str):
+                entry_url = url
                 host = urlsplit(url).hostname
                 if host:
                     hosts.add(host)
@@ -2480,6 +2516,21 @@ def describe_har(path: Path) -> dict[str, Any]:
                         bodies_captured += 1
                         if measured != size:
                             bodies_size_mismatch += 1
+            if isinstance(content, dict):
+                mime = content.get("mimeType")
+                if isinstance(mime, str) and mime and _har_texty_mime(mime):
+                    body = _har_body_bytes(content)
+                    kind = _har_sniff_kind(body) if body is not None else None
+                    if kind is not None:
+                        masquerade_count += 1
+                        if len(masquerades) < _HAR_MAX_MASQUERADES:
+                            masquerades.append(
+                                {
+                                    "url": (entry_url or "")[:_HAR_MAX_URL],
+                                    "mime_type": mime[:128],
+                                    "sniffed": kind,
+                                }
+                            )
         ws = entry.get("_webSocketMessages")
         if isinstance(ws, list) and ws:
             has_websocket = True
@@ -2516,9 +2567,54 @@ def describe_har(path: Path) -> dict[str, Any]:
                 "bodies_stripped": request_bodies_stripped,
                 "bodies_size_mismatch": request_bodies_size_mismatch,
             },
+            # Responses whose captured bytes open with executable or container
+            # magic while the declared mimeType claims text -- a PE behind
+            # text/html is the drive-by / HTML-smuggling shape. The count is
+            # exact; the listed sample is bounded.
+            "mime_masquerade_count": masquerade_count,
+            "mime_masquerades": masquerades,
             "truncated": truncated,
         }
     }
+
+
+def _har_texty_mime(mime: str) -> bool:
+    """True when the declared type claims a body a browser renders as text."""
+    base = mime.split(";", 1)[0].strip().lower()
+    return base.startswith("text/") or base in _HAR_TEXTY_MIMES
+
+
+def _har_body_bytes(content: dict[str, Any]) -> bytes | None:
+    """The decoded response body bytes, or None when absent or undecodable.
+
+    Unlike :func:`_har_body_length` (whose -1 keeps corrupt base64 visible to
+    the integrity tally), a body that does not decode yields None here: magic
+    sniffing needs real bytes, and a guess would be worse than silence.
+    """
+    text = content.get("text")
+    if not isinstance(text, str) or text == "":
+        return None
+    encoding = content.get("encoding")
+    if isinstance(encoding, str) and encoding.lower() == "base64":
+        try:
+            return base64.b64decode(text, validate=True)
+        except ValueError:
+            return None
+    return text.encode("utf-8")
+
+
+def _har_sniff_kind(data: bytes) -> str | None:
+    """The executable/container format the body's opening bytes declare.
+
+    MZ alone is two letters of prose; a real DOS/PE header is at least 0x40
+    bytes, so shorter bodies never read as ``pe``.
+    """
+    for magic, kind in _HAR_MAGIC_KINDS:
+        if data.startswith(magic):
+            if kind == "pe" and len(data) < 0x40:
+                return None
+            return kind
+    return None
 
 
 def _har_body_length(content: dict[str, Any]) -> int | None:

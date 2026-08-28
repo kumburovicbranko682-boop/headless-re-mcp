@@ -293,6 +293,146 @@ class TestHarRequestBodyIntegrity:
         assert describe_har(har)["har"]["request_body_integrity"]["requests_with_body"] == 0
 
 
+def _typed(url: str, mime: str, body: bytes, base64_encode: bool = True) -> dict:
+    import base64
+
+    content: dict = {"size": len(body), "mimeType": mime}
+    if base64_encode:
+        content["text"] = base64.b64encode(body).decode("ascii")
+        content["encoding"] = "base64"
+    else:
+        content["text"] = body.decode("utf-8")
+    return {
+        "request": {"method": "GET", "url": url},
+        "response": {"status": 200, "content": content},
+    }
+
+
+# A DOS/PE-header-sized blob: MZ magic padded to 0x40 bytes, the minimum a
+# real executable can be and the floor the sniffer requires.
+_PE_SHAPED = b"MZ" + b"\x90" * 62
+
+
+class TestHarMimeMasquerade:
+    """describe_har flags executable bytes served under a textual mimeType.
+
+    A PE behind text/html is the drive-by / HTML-smuggling shape: the body a
+    page fetched as "text" opens with executable or container magic. The
+    declared type comes from the capture's mimeType (the Content-Type the
+    server sent); the sniff reads the decoded bytes. Honest binary
+    declarations (application/octet-stream) are never flagged -- the fact is
+    the lie, not the payload.
+    """
+
+    def test_a_pe_behind_text_html_is_flagged(self, tmp_path: Path) -> None:
+        har = _write_har(
+            tmp_path / "m.har", [_typed("https://evil.example.com/update", "text/html", _PE_SHAPED)]
+        )
+        info = describe_har(har)["har"]
+        assert info["mime_masquerade_count"] == 1
+        assert info["mime_masquerades"] == [
+            {
+                "url": "https://evil.example.com/update",
+                "mime_type": "text/html",
+                "sniffed": "pe",
+            }
+        ]
+
+    def test_each_magic_reads_under_its_own_name(self, tmp_path: Path) -> None:
+        bodies = [
+            (b"\x7fELF" + b"\x00" * 12, "elf"),
+            (b"\x00asm\x01\x00\x00\x00", "wasm"),
+            (b"PK\x03\x04" + b"\x00" * 12, "zip"),
+            (b"dex\n035\x00" + b"\x00" * 8, "dex"),
+            (b"\x1f\x8b\x08\x00" + b"\x00" * 8, "gzip"),
+            (b"\xcf\xfa\xed\xfe" + b"\x00" * 12, "macho"),
+            (b"\xca\xfe\xba\xbe" + b"\x00" * 12, "java_class_or_fat_macho"),
+        ]
+        har = _write_har(
+            tmp_path / "kinds.har",
+            [_typed(f"https://x.example.com/{kind}", "text/plain", body) for body, kind in bodies],
+        )
+        info = describe_har(har)["har"]
+        assert info["mime_masquerade_count"] == len(bodies)
+        assert [m["sniffed"] for m in info["mime_masquerades"]] == [k for _, k in bodies]
+
+    def test_an_honest_binary_declaration_is_not_a_lie(self, tmp_path: Path) -> None:
+        har = _write_har(
+            tmp_path / "honest.har",
+            [
+                _typed(
+                    "https://x.example.com/setup.exe", "application/octet-stream", _PE_SHAPED
+                ),
+                _typed(
+                    "https://x.example.com/pkg.zip",
+                    "application/zip",
+                    b"PK\x03\x04" + b"\x00" * 8,
+                ),
+            ],
+        )
+        assert describe_har(har)["har"]["mime_masquerade_count"] == 0
+
+    def test_honest_text_is_not_flagged(self, tmp_path: Path) -> None:
+        har = _write_har(
+            tmp_path / "text.har",
+            [
+                _typed(
+                    "https://x.example.com/app.js",
+                    "application/javascript",
+                    b"console.log(1);",
+                    base64_encode=False,
+                )
+            ],
+        )
+        assert describe_har(har)["har"]["mime_masquerade_count"] == 0
+
+    def test_prose_opening_with_mz_is_not_an_executable(self, tmp_path: Path) -> None:
+        # Two letters are not a DOS header: bodies shorter than 0x40 bytes
+        # never read as pe, so "MZ curve analysis" prose stays unflagged.
+        har = _write_har(
+            tmp_path / "mz.har",
+            [_typed("https://x.example.com/note.txt", "text/plain", b"MZ curve analysis")],
+        )
+        assert describe_har(har)["har"]["mime_masquerade_count"] == 0
+
+    def test_a_charset_parameter_does_not_hide_the_claim(self, tmp_path: Path) -> None:
+        har = _write_har(
+            tmp_path / "cs.har",
+            [
+                _typed(
+                    "https://x.example.com/w",
+                    "text/plain; charset=utf-8",
+                    b"\x00asm\x01\x00\x00\x00",
+                )
+            ],
+        )
+        info = describe_har(har)["har"]
+        assert info["mime_masquerade_count"] == 1
+        assert info["mime_masquerades"][0]["sniffed"] == "wasm"
+
+    def test_corrupt_base64_cannot_be_sniffed(self, tmp_path: Path) -> None:
+        har = _write_har(
+            tmp_path / "corrupt.har",
+            [{
+                "request": {"method": "GET", "url": "https://x.example.com/y"},
+                "response": {"status": 200, "content": {
+                    "size": 64, "mimeType": "text/html",
+                    "text": "!!!not base64!!!", "encoding": "base64",
+                }},
+            }],
+        )
+        assert describe_har(har)["har"]["mime_masquerade_count"] == 0
+
+    def test_the_list_is_bounded_but_the_count_exact(self, tmp_path: Path) -> None:
+        entries = [
+            _typed(f"https://x.example.com/{i}", "text/html", _PE_SHAPED) for i in range(40)
+        ]
+        har = _write_har(tmp_path / "many.har", entries)
+        info = describe_har(har)["har"]
+        assert info["mime_masquerade_count"] == 40
+        assert len(info["mime_masquerades"]) == 32
+
+
 def test_session_over_a_local_har_carries_the_facts(tmp_path: Path) -> None:
     har = _write_har(
         tmp_path / "session.har",
