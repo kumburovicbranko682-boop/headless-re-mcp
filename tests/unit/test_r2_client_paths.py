@@ -10,6 +10,7 @@ guards need no subprocess at all.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -86,21 +87,40 @@ def test_xrefs_rejects_bad_address(tmp_path: Path) -> None:
 
 
 def test_xrefs_enriches_run_payload(tmp_path: Path) -> None:
+    """Both scoped arrays are merged, tagged, and address-enriched.
+
+    The script must stay on the seek-scoped axtj/axfj pair (the old
+    ``axj @ addr`` form dumped the whole xref database -- axj ignores the
+    seek, so the address was inert). The fake sits on ``_run_raw`` because
+    xrefs parses the two root arrays out of the raw text itself.
+    """
     client = R2Client(executable=_exe(tmp_path))
     binary = _pe64(tmp_path / "s.exe")
 
-    def _fake_run(_binary: Path, commands: list[str], *, timeout: float) -> dict[str, Any]:
-        assert commands == ["aa", "axj @ 8192"]
-        return {"raw": json.dumps([{"from": 0x140002000}]), "commands": commands}
+    def _fake_run_raw(_binary: Path, commands: list[str], *, timeout: float) -> dict[str, Any]:
+        assert commands == ["aa", "axtj @ 8192", "axfj @ 8192"]
+        raw = json.dumps([{"from": 0x140002000}]) + "\n" + json.dumps([])
+        return {"raw": raw, "commands": commands}
 
-    client.run = _fake_run  # type: ignore[assignment]
+    client._run_raw = _fake_run_raw  # type: ignore[method-assign]
     out = client.xrefs(binary, 0x2000)
     assert out["address_va"] == 0x2000
+    assert out["items"][0]["direction"] == "to"
     assert out["items"][0]["from_address"]["va"] == 0x140002000
+    # The referenced side of an inbound xref is the asked address itself.
+    assert out["items"][0]["to"] == 0x2000
 
 
-def test_run_reports_capability_unavailable_without_executable(tmp_path: Path) -> None:
+def test_run_reports_capability_unavailable_without_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # executable=None means "discover from PATH", not "no executable": on a
+    # machine with radare2 installed the client came up available and this
+    # reported not_found for the binary instead. Pin discovery to nothing so
+    # the absence arc runs regardless of what the host has installed.
+    monkeypatch.setattr(shutil, "which", lambda name: None)
     client = R2Client(executable=None)
+    assert client.available is False
     with pytest.raises(R2Error) as caught:
         client.run(tmp_path / "any.exe", ["i"])
     assert caught.value.code == "capability_unavailable"

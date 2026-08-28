@@ -13,7 +13,7 @@ from headless_re_mcp.backends.common.bounded_run import (
     clamp_cli_timeout,
     run_bounded,
 )
-from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
+from headless_re_mcp.backends.r2.mapping import enrich_r2_payload, parse_r2_json_values
 
 JsonObject = dict[str, Any]
 _MAX_OUTPUT = 1_000_000
@@ -32,12 +32,15 @@ _ALLOWED = frozenset(
         "iij",
         "iEj",
         "pdj",
-        "axj",
         "aa",
     }
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
-_AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+# axtj (refs to the seek) and axfj (refs from it) are the address-scoped xref
+# queries. Bare "axj @ N" is deliberately not whitelisted: axj ignores the
+# seek and dumps the program's whole xref database, so the form reads as
+# address-scoped while the address is inert -- exactly the bug xrefs() had.
+_AXREF_COMMAND = re.compile(r"ax[tf]j @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 
 
 class R2Error(RuntimeError):
@@ -54,7 +57,7 @@ def _require_allowed_command(command: str) -> None:
     pdj = _PDJ_COMMAND.fullmatch(command)
     if pdj is not None and int(pdj.group(1)) <= 512:
         return
-    if _AXJ_COMMAND.fullmatch(command) is not None:
+    if _AXREF_COMMAND.fullmatch(command) is not None:
         return
     raise R2Error("invalid_params", "r2 command not whitelisted", command=command)
 
@@ -107,13 +110,46 @@ class R2Client:
     ) -> JsonObject:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
-        cmd = f"axj @ {address}"
-        data = self.run(binary, ["aa", cmd], timeout=timeout)
-        data = dict(data)
+        # This used to run "axj @ addr", but axj ignores the seek and lists the
+        # program's entire xref database: measured against a real binary, every
+        # address -- including 0 -- got the same 1044 entries back, so the
+        # address parameter did nothing. axtj (refs to the seek) and axfj
+        # (refs from it) are the scoped queries; one process runs both so
+        # "aa" pays for analysis once.
+        commands = ["aa", f"axtj @ {address}", f"axfj @ {address}"]
+        payload = self._run_raw(binary, commands, timeout=timeout)
+        values = parse_r2_json_values(str(payload.get("raw") or ""))
+        arrays = [value for value in values if isinstance(value, list)]
+        combined: list[JsonObject] | None = None
+        if len(arrays) >= 2:
+            # Print order follows command order, so the first root array is
+            # axtj's and the second axfj's. Fewer than two arrays means a
+            # command produced no JSON (truncated output, unsupported form):
+            # attributing a lone array to a direction would be a guess, so
+            # that case reports parsed: False with the raw text intact.
+            combined = []
+            for direction, entries in (("to", arrays[0]), ("from", arrays[1])):
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    item = dict(entry)
+                    item["direction"] = direction
+                    # axtj rows name only the referencing side (the referenced
+                    # side is the seek address itself); mirror for axfj so
+                    # every item carries both endpoints for enrichment.
+                    item.setdefault("to" if direction == "to" else "from", address)
+                    combined.append(item)
+        data = dict(payload)
         data["address"] = address
-        return enrich_r2_payload(data, binary=binary)
+        return enrich_r2_payload(data, binary=binary, parsed=combined)
 
     def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
+        return enrich_r2_payload(
+            self._run_raw(binary, commands, timeout=timeout), binary=binary
+        )
+
+    def _run_raw(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
+        """Launch r2, enforce the whitelist and bounds, and return the raw payload."""
         try:
             timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
         except InvalidTimeout as exc:
@@ -176,7 +212,7 @@ class R2Client:
             payload["truncated"] = True
             payload["output_bytes"] = produced
             payload["returned_bytes"] = len(out)
-        return enrich_r2_payload(payload, binary=binary)
+        return payload
 
 
 def _discover() -> Path | None:

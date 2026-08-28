@@ -97,7 +97,7 @@ def address_dict(
 def parse_r2_json(raw: str) -> Any | None:
     """Extract the first JSON value from r2 -q0 output (may include banners).
 
-    ``rfind("[")`` is wrong here: ``pdj`` / ``axj`` / ``izj`` put ``[`` inside
+    ``rfind("[")`` is wrong here: ``pdj`` / ``axtj`` / ``izj`` put ``[`` inside
     opcodes (``mov eax, dword [rbp+0x10]``), C++ names, and strings. That
     slice is not the root array, so the ``{…}`` fallback loaded only the last
     object and ``enrich_r2_payload`` reported ``parsed: True`` with no items.
@@ -117,6 +117,33 @@ def parse_r2_json(raw: str) -> Any | None:
     return None
 
 
+def parse_r2_json_values(raw: str) -> list[Any]:
+    """Every top-level JSON value in r2 -q0 output, in print order.
+
+    A script that chains two ``*j`` commands (``axtj`` then ``axfj``) makes r2
+    print two root arrays back to back, and ``parse_r2_json`` stops at the
+    first. This walks the whole text the same way -- try each ``[``/``{`` and
+    skip banner noise -- but resumes after each decoded value, so the caller
+    gets one value per command and can attribute them by command order.
+    """
+    text = (raw or "").strip()
+    values: list[Any] = []
+    decoder = json.JSONDecoder()
+    index = 0
+    while index < len(text):
+        if text[index] not in "[{":
+            index += 1
+            continue
+        try:
+            value, end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            index += 1
+            continue
+        values.append(value)
+        index = end
+    return values
+
+
 def _item_va(entry: JsonObject, keys: tuple[str, ...]) -> int | None:
     for key in keys:
         value = entry.get(key)
@@ -130,19 +157,32 @@ def _item_va(entry: JsonObject, keys: tuple[str, ...]) -> int | None:
     return None
 
 
+# Distinguishes "caller did not pre-parse" from "caller parsed and got None":
+# xrefs assembles its own item list from two root arrays and hands it in, and
+# passing None must mean "nothing parseable" (parsed: False), not "parse raw".
+_UNPARSED = object()
+
+
 def enrich_r2_payload(
     data: JsonObject,
     *,
     binary: Path,
     architecture: Architecture | None = None,
+    parsed: Any = _UNPARSED,
 ) -> JsonObject:
-    """Parse *j payloads into items with unified Address fields."""
+    """Parse *j payloads into items with unified Address fields.
+
+    ``parsed`` overrides the raw-text parse when the caller already extracted
+    (or assembled) the value -- the item mapping, caps, and truncation
+    reporting below still apply to it.
+    """
     module = binary.name
     pe_arch, image_base = pe_preferred_base(binary)
     arch = architecture or pe_arch
     raw = str(data.get("raw") or "")
     commands = list(data.get("commands") or [])
-    parsed = parse_r2_json(raw)
+    if parsed is _UNPARSED:
+        parsed = parse_r2_json(raw)
     out = dict(data)
     out["module"] = module
     if image_base is not None:

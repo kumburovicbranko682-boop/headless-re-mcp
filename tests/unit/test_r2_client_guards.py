@@ -81,12 +81,26 @@ def test_disasm_refuses_addresses_and_counts_outside_the_whitelist(
 def test_xrefs_builds_the_whitelisted_command_and_refuses_bad_addresses(
     tmp_path: Path,
 ) -> None:
-    client, calls = _client_with_fake_run(tmp_path)
+    """xrefs runs the seek-scoped axtj/axfj pair, never the global axj dump.
+
+    xrefs assembles items from both root arrays itself, so the fake sits on
+    ``_run_raw`` (the launch seam) rather than ``run``.
+    """
+    client = R2Client(executable=tmp_path / "r2")
+    calls: list[tuple[Any, ...]] = []
+
+    def _fake_run_raw(binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
+        calls.append((binary, commands, timeout))
+        return {"raw": "[]\n[]", "commands": commands}
+
+    client._run_raw = _fake_run_raw  # type: ignore[method-assign]
     binary = tmp_path / "sample.bin"
     binary.write_bytes(b"\x90" * 16)
     data = client.xrefs(binary, 4096, timeout=8.0)
-    assert calls == [(binary, ["aa", "axj @ 4096"], 8.0)]
+    assert calls == [(binary, ["aa", "axtj @ 4096", "axfj @ 4096"], 8.0)]
     assert data["address"] == {"va": 4096}
+    assert data["items"] == []
+    assert data["parsed"] is True
 
     for bad_address in (-5, False):
         with pytest.raises(R2Error) as info:

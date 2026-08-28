@@ -58,7 +58,7 @@ def test_r2_xrefs_puts_the_request_va_in_address_va_not_address(
             "raw": json.dumps(
                 [{"from": 0x140002000, "to": 0x140001000, "type": "CODE"}]
             ),
-            "commands": ["axj"],
+            "commands": ["axtj @ 5368713216", "axfj @ 5368713216"],
             "address": 0x140001000,
         },
         binary=_pe(tmp_path),

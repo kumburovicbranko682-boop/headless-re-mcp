@@ -8,13 +8,13 @@ branches nothing exercised:
   without a usable executable (``capability_unavailable``).
 * ``disasm`` / ``xrefs`` input validation -- a bool or string address, a
   negative address, a count outside 1..512 -- and, on the happy path, the
-  exact ``pdj``/``axj`` script handed to the process plus the echoed
-  address/count fields.
+  exact ``pdj``/``axtj``+``axfj`` script handed to the process plus the
+  echoed address/count fields.
 * ``_discover`` returning the first radare2 binary name found on PATH.
 
 The disasm/xrefs commands matter because they are built from caller input and
-must stay inside the allow-list ``run`` enforces: a change to the format
-string that stops matching ``_PDJ_COMMAND``/``_AXJ_COMMAND`` would reject
+must stay inside the allow-list the client enforces: a change to the format
+string that stops matching ``_PDJ_COMMAND``/``_AXREF_COMMAND`` would reject
 every disasm call at runtime, which these tests would catch immediately.
 """
 
@@ -152,20 +152,62 @@ def test_xrefs_rejects_a_non_int_or_negative_address(tmp_path: Path) -> None:
         assert caught.value.code == "invalid_params"
 
 
-def test_xrefs_builds_the_whitelisted_axj_script_and_echoes_the_address(
+def test_xrefs_builds_the_scoped_axtj_axfj_script_and_tags_directions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """One process, both scoped queries, and per-item direction tags.
+
+    The script must be ``aa`` then ``axtj @ addr`` then ``axfj @ addr`` --
+    never ``axj``, which ignores the seek and dumps the whole xref database
+    (the address parameter was inert until this was fixed). The two root
+    arrays are attributed by print order: axtj rows become direction "to"
+    with the seek address filled in as their implicit ``to`` endpoint, axfj
+    rows become direction "from".
+    """
     recorded: list[list[str]] = []
-    monkeypatch.setattr(r2_client, "run_bounded", _capture(recorded))
+    stdout = (
+        b'[{"from": 64, "type": "CALL", "opcode": "call 0x20"}]\n'
+        b'[{"from": 32, "to": 96, "type": "CALL"}]\n'
+    )
+    monkeypatch.setattr(r2_client, "run_bounded", _capture(recorded, stdout=stdout))
     client = R2Client(_stub_executable(tmp_path))
 
     payload = client.xrefs(_target(tmp_path), 0x20)
 
     assert len(recorded) == 1
-    assert _script_lines(recorded[0]) == ["aa", "axj @ 32", "q"]
+    assert _script_lines(recorded[0]) == ["aa", "axtj @ 32", "axfj @ 32", "q"]
     assert payload["address_va"] == 0x20
     assert payload["parsed"] is True
+    assert [(item["direction"], item["from"], item["to"]) for item in payload["items"]] == [
+        ("to", 64, 32),
+        ("from", 32, 96),
+    ]
+    # Both endpoints of every row map through the unified Address shape.
+    assert payload["items"][0]["from_address"]["va"] == 64
+    assert payload["items"][0]["to_address"]["va"] == 32
+    assert payload["items"][1]["to_address"]["va"] == 96
+
+
+def test_xrefs_reports_unparsed_when_a_direction_array_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single root array cannot be attributed to a direction safely.
+
+    Truncated output or a backend that rejected one command leaves one array
+    behind; guessing which query produced it would silently mislabel every
+    row, so the payload degrades to ``parsed: False`` with the raw text kept.
+    """
+    recorded: list[list[str]] = []
+    monkeypatch.setattr(r2_client, "run_bounded", _capture(recorded, stdout=b'[{"from": 64}]'))
+    client = R2Client(_stub_executable(tmp_path))
+
+    payload = client.xrefs(_target(tmp_path), 0x20)
+
+    assert payload["parsed"] is False
+    assert "items" not in payload
+    assert payload["raw"] == '[{"from": 64}]'
 
 
 # --- _discover ---------------------------------------------------------------

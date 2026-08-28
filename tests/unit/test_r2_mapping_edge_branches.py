@@ -247,7 +247,9 @@ def test_enrich_does_not_synthesize_an_address_that_does_not_map(tmp_path: Path)
     non-negative int, so this is the defensive arc, not a normal one.)
     """
     binary = _pe(tmp_path, "app.exe")
-    out = enrich_r2_payload({"raw": "[]", "commands": ["axj"], "address": -5}, binary=binary)
+    out = enrich_r2_payload(
+        {"raw": "[]", "commands": ["axtj @ -5"], "address": -5}, binary=binary
+    )
     assert out["count"] == 0
     assert "address_va" not in out
     assert out["address"] == -5

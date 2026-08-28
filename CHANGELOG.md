@@ -5,6 +5,35 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（r2.xrefs 的 address 参数完全失效：axj 无视 seek、返回全库交叉引用）
+
+- `R2Client.xrefs(address)` 此前构造 `axj @ {address}`，但 radare2 的 `axj` 列出的是
+  整个程序的交叉引用数据库，`@ seek` 对它不起作用。真机实测（radare2 5.5.0 + mingw
+  交叉编译的 PE fixture）：任意地址——包括 0 和 MZ 头——都返回同样的 1044 条记录，
+  `address` 参数是摆设；工具文档承诺的"References to and from address"从未成立。
+  单测从未抓到，因为三个文件的假 run 都把 `axj @ N` 这个错误命令钉成了期望值——
+  典型的"fake 把 bug 编码成契约"。
+- 改法：一次 r2 进程内跑 `aa; axtj @ addr; axfj @ addr`（`aa` 只付一次分析成本）。
+  `axtj`/`axfj` 才是按 seek 作用域取"引用到该地址/从该地址发出"的查询。新增
+  `mapping.parse_r2_json_values` 按打印顺序解出多条根 JSON 值（`parse_r2_json` 只取
+  第一条，第二个方向会整个丢失）；两个根数组按命令顺序归属方向，每行打上
+  `direction`（"to"=该行引用了所询地址，"from"=所询地址向外引用），并补上隐含端点
+  （`axtj` 行只带引用方，被引用方就是 seek 地址本身），使每行都有 from/to 且都经
+  统一 Address 映射。只解出一个根数组时（输出被截断或后端不支持某命令）不猜方向，
+  诚实降级为 `parsed: False` 并保留 raw。`enrich_r2_payload` 新增可选 `parsed` 覆盖
+  参数承接预组装的条目，4096 上限与 items_truncated 报告照常生效。
+- 白名单同步收紧：`axj`（裸列全库）与 `axj @ N`（看着按地址作用域、实则无效的形态）
+  都移出白名单并在测试里钉死拒绝，防止这个 footgun 静默回归；`ax[tf]j @ N` 进入白名单。
+- 真机验证（radare2 5.5.0）：`xrefs(sym.__tmainCRTStartup)` 由 1044 条全库记录变为
+  2 条真实调用方（entry0 与 mainCRTStartup，RVA 正确），`xrefs(0)`/`xrefs(image_base)`
+  由 1044 变 0，调用点地址返回 1 条 direction="from" 指向被调函数。集成 gate
+  （`test_m11_r2_live_gate.py`）新增作用域校验：前 12 个函数逐一断言每行 xref 的
+  to/from 端点确为所询地址，且 MZ 头处必须为 0 条——旧实现在此 gate 上当场翻车。
+- 顺手修一处同类环境依赖测试：`test_run_reports_capability_unavailable_without_executable`
+  用 `R2Client(executable=None)` 验证 capability_unavailable，但 None 的语义是"从 PATH
+  发现"，装了 radare2 的机器（包括新加的 linux-nonpe-gates CI 作业）上客户端可用、
+  报的是 not_found。钉死 `shutil.which -> None` 让缺席弧与宿主环境无关。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

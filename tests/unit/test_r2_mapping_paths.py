@@ -75,6 +75,23 @@ def test_parse_r2_json_returns_none_without_json() -> None:
     assert mapping.parse_r2_json("   ") is None
 
 
+def test_parse_r2_json_values_returns_every_root_value_in_order() -> None:
+    """A chained *j script prints one root value per command; keep them all.
+
+    ``parse_r2_json`` stops at the first value, which is why xrefs (axtj then
+    axfj in one process) needs this: the second array would be lost, and with
+    it the entire "from" direction. Banner noise between values is skipped
+    the same way the single-value parser skips a leading banner.
+    """
+    raw = 'banner\n[{"from": 1}]\nnoise [not json\n[]\n{"info": true}'
+    assert mapping.parse_r2_json_values(raw) == [[{"from": 1}], [], {"info": True}]
+
+
+def test_parse_r2_json_values_is_empty_without_json() -> None:
+    assert mapping.parse_r2_json_values("just a banner line") == []
+    assert mapping.parse_r2_json_values("") == []
+
+
 def test_enrich_reads_hex_string_offsets(tmp_path: Path) -> None:
     payload = mapping.enrich_r2_payload(
         {"raw": json.dumps([{"offset": "0x2000"}]), "commands": ["aflj"]},
