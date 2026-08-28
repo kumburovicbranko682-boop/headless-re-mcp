@@ -63,8 +63,15 @@ def _apk_file(tmp_path: Path, name: str = "app.apk") -> Path:
 # --- availability + require -----------------------------------------------------
 
 
-def test_without_androguard_the_client_is_unavailable(tmp_path: Path) -> None:
-    client = ApkClient()  # androguard genuinely absent in this environment
+def test_without_androguard_the_client_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Force the absence instead of assuming it: on a host with the android
+    # extra installed the bare constructor finds the real androguard and the
+    # availability assert flips. A None sys.modules entry makes the client's
+    # `import androguard` raise regardless of what the machine has.
+    monkeypatch.setitem(sys.modules, "androguard", None)
+    client = ApkClient()
 
     assert client.available is False
     with pytest.raises(ApkError) as caught:

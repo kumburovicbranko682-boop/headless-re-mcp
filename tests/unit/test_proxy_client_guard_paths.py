@@ -454,9 +454,16 @@ def test_instance_run_falls_back_when_the_constructor_signature_differs(
     assert calls["dumpmaster"] == 2
 
 
-def test_instance_run_records_an_import_failure() -> None:
-    """With mitmproxy absent, the run thread records the import error."""
-    assert "mitmproxy" not in sys.modules
+def test_instance_run_records_an_import_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With mitmproxy absent, the run thread records the import error.
+
+    Absence is forced rather than asserted: the old precondition
+    ``"mitmproxy" not in sys.modules`` fails outright on a host with the proxy
+    extra installed (any earlier test importing it trips the assert, and a
+    successful import leaves ``_error`` None). A None sys.modules entry makes
+    ``from mitmproxy import options`` inside _run raise on any machine.
+    """
+    monkeypatch.setitem(sys.modules, "mitmproxy", None)
     inst = _free_instance()
     _run_in_thread(inst)
     assert inst._error is not None

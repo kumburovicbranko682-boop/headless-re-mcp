@@ -5,7 +5,31 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
+### 测试（新一批路径覆盖测试把"可选依赖缺席"当环境事实——满配机器上 7 个用例翻红）
+
+- 现象：在装齐 `android/proxy/pe` extras 且 PATH 上有真 radare2 的机器上跑
+  `tests/unit`，当前 main 有 6 个失败 + 1 个顺序依赖（全量跑绿、单文件跑红）。CI
+  的单测环境只装 `test,dev,web`，androguard/mitmproxy/r2 全都缺席，于是这些用例
+  在 CI 永远绿——与此前修过的十支同类分支一个病根，是随近期覆盖率推进新落地的
+  一批实例。
+- 逐个定性：`test_apk_client_parse_layer` 两例与 `test_apk_client_paths` 一例
+  裸构造 `ApkClient()` 并注释"本环境没装 androguard"；`test_proxy_client_paths::
+  test_backend_check_available_reports_and_caches` 期待真 `import mitmproxy` 失败；
+  `test_proxy_client_guard_paths::test_instance_run_records_an_import_failure`
+  直接 `assert "mitmproxy" not in sys.modules`（装了 mitmproxy 时要么该断言先炸、
+  要么 `_run` 导入成功而 `_error` 为 None）；`test_r2_client_paths` 一例最隐蔽——
+  `R2Client(executable=None)` 并不是"无执行档"，构造器会回退 `_discover()`，装了
+  r2 的机器上客户端找到真 r2、错误码从 `capability_unavailable` 变成 `not_found`
+  （输入文件不存在）；第 7 例 `test_instance_start_reports_a_thread_that_fails_to_
+  launch_mitmproxy` 依赖在场时未打桩的 `_run` 会**真的在 8080 端口起 DumpMaster**，
+  在全量跑里侥幸绿、单文件跑必红，属顺序依赖 + 端口占用双重毛病。
+- 改法（既有惯例）：`monkeypatch.setitem(sys.modules, "<dep>", None)` 强制缺席
+  （None 项使 `import X` 与 `from X import ...` 在任何机器上都确定性抛
+  ImportError）；r2 例改为 `monkeypatch.setattr(r2client, "_discover", lambda: None)`
+  关掉发现回退。在依赖真缺席的环境（如 CI）里这些补丁是语义等价的空操作。
+- 实测：满配环境下五个文件孤立各自全绿（23/24/43/57/10），全量 `tests/unit`
+  6045 通过 0 失败（修前同环境 6 失败）；ruff 与 mypy strict 通过。只改测试、
+  不动源码。
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
   `request_workflow_module_refresh` 对未跟踪的模块 key 必须拒绝（抛

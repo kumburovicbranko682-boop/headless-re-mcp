@@ -99,7 +99,14 @@ def test_xrefs_enriches_run_payload(tmp_path: Path) -> None:
     assert out["items"][0]["from_address"]["va"] == 0x140002000
 
 
-def test_run_reports_capability_unavailable_without_executable(tmp_path: Path) -> None:
+def test_run_reports_capability_unavailable_without_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # executable=None does not mean "no executable": the constructor falls
+    # back to _discover(), so on a host with radare2 on PATH the client finds
+    # the real r2 and run() fails later with not_found (missing input file)
+    # instead of the capability guard this test pins. Disable discovery.
+    monkeypatch.setattr(r2client, "_discover", lambda: None)
     client = R2Client(executable=None)
     with pytest.raises(R2Error) as caught:
         client.run(tmp_path / "any.exe", ["i"])
