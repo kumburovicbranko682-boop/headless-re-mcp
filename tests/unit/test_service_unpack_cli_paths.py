@@ -171,6 +171,7 @@ def test_upx_unpack_reports_input_changed(tmp_path: Path) -> None:
 def test_upx_unpack_flags_architecture_mismatch(tmp_path: Path, monkeypatch: Any) -> None:
     service = _make_service(tmp_path, upx=_touch(tmp_path / "upx.exe"))
     try:
+        binary = tmp_path / "sample.exe"
         session_id = _session(service, tmp_path)
         out = tmp_path / "artifacts" / "out.exe"
 
