@@ -386,8 +386,9 @@ def test_xrefs_requires_a_method_name(tmp_path: Path) -> None:
 
 def test_xrefs_skips_external_and_mismatched_methods(tmp_path: Path) -> None:
     class Call:
-        class_name = "Lcom/caller;"
-        name = "invoke"
+        def __init__(self, class_name: str) -> None:
+            self.class_name = class_name
+            self.name = "invoke"
 
     class Method:
         def __init__(self, name: str, external: bool, callers: int) -> None:
@@ -398,8 +399,11 @@ def test_xrefs_skips_external_and_mismatched_methods(tmp_path: Path) -> None:
         def is_external(self) -> bool:
             return self._external
 
+        # Distinct callers per callsite: xrefs now deduplicates by
+        # (class, method), so identical callsites would collapse to one and
+        # this test (about which *methods* are enumerated) would count wrong.
         def get_xref_from(self) -> list[Any]:
-            return [(None, Call(), None) for _ in range(self._callers)]
+            return [(None, Call(f"Lcom/caller{i};"), None) for i in range(self._callers)]
 
     class Analysis:
         def get_methods(self) -> list[Any]:
