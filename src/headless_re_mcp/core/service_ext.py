@@ -500,6 +500,13 @@ class ExtAnalysisMixin(UiDriveMixin):
             self, session_id, "function", limit=limit, address=address, timeout=timeout
         )
 
+    def ghidra_search_bytes(
+        self, session_id: str, pattern: str, limit: int = 256, timeout: float = 180.0
+    ) -> Result[JsonObject]:
+        return _ghidra_export(
+            self, session_id, "search_bytes", limit=limit, address=pattern, timeout=timeout
+        )
+
     def ghidra_decompile(
         self, session_id: str, address: str | int, timeout: float = 180.0
     ) -> Result[JsonObject]:
@@ -1231,6 +1238,12 @@ def _ghidra_export(
                 raise GhidraError("invalid_params", "address required for ghidra.function")
             data = client.function(
                 session.require_binary(), project, address, limit=limit, timeout=timeout
+            )
+        elif mode == "search_bytes":
+            if address is None:
+                raise GhidraError("invalid_params", "pattern required for ghidra.search_bytes")
+            data = client.search_bytes(
+                session.require_binary(), project, str(address), limit=limit, timeout=timeout
             )
         elif mode == "xrefs":
             if address is None:

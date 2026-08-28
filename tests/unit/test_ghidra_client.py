@@ -657,6 +657,71 @@ def test_ghidra_function_passes_the_function_mode_and_address(
     assert listed["export_path"]
 
 
+def test_ghidra_search_bytes_passes_the_pattern_in_the_address_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = (
+        '{"mode": "search_bytes", "pattern": "e8 ?? ?? ?? ??", "searched": true,'
+        ' "matches": [{"address": "00401000", "block": ".text",'
+        ' "function": "main", "function_entry": "00401000"}],'
+        ' "match_count": 1, "has_more": false}'
+    )
+    calls = _capture_mode_run(monkeypatch, payload)
+    client = _client(tmp_path)
+
+    found = client.search_bytes(
+        _binary(tmp_path), tmp_path / "project", "e8 ?? ?? ?? ??"
+    )
+
+    assert "search_bytes" in calls[0]
+    assert "e8 ?? ?? ?? ??" in calls[0]
+    assert found["match_count"] == 1
+    assert found["matches"][0]["function"] == "main"
+    assert found["export_path"]
+
+
+def test_ghidra_search_bytes_zero_matches_is_content_on_nonzero_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # analyzeHeadless often exits non-zero even after a real postScript write; a
+    # search that ran but matched nothing must still count as a success.
+    payload = (
+        '{"mode": "search_bytes", "pattern": "deadbeef", "searched": true,'
+        ' "matches": [], "match_count": 0, "has_more": false}'
+    )
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(str(arg)).write_text(payload, encoding="utf-8")
+        return Completed(1, b"analyze noise", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+
+    found = client.search_bytes(_binary(tmp_path), tmp_path / "project", "deadbeef")
+    assert found["searched"] is True
+    assert found["match_count"] == 0
+
+
+def test_export_has_content_treats_searched_flag_as_content() -> None:
+    assert ghidra_client._export_has_content(
+        {"searched": True, "matches": []}, "search_bytes"
+    )
+    assert not ghidra_client._export_has_content(
+        {"error": "empty pattern", "matches": []}, "search_bytes"
+    )
+
+
+def test_ghidra_search_bytes_docstring_names_its_shape() -> None:
+    doc = _tool_docstring("ghidra.search_bytes")
+    assert "pattern" in doc
+    assert "wildcard" in doc
+    assert "match_count" in doc
+    assert "searched" in doc
+
+
 def test_ghidra_imports_and_strings_descriptions_name_their_fields() -> None:
     imports = _tool_docstring("ghidra.imports")
     assert "library" in imports

@@ -280,4 +280,33 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         not. A failed export is an error, not empty code.
         """
         return _dump(analysis.ghidra_decompile(session_id, address, timeout=timeout))
+
+    @tools.tool(name="ghidra.search_bytes")
+    def ghidra_search_bytes(
+        session_id: str,
+        pattern: str,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
+    ) -> dict[str, Any]:
+        """Search program memory for a byte pattern, with wildcards.
+
+        The signature-hunting primitive the other Ghidra tools lack: locate a
+        constant, a magic value, an opcode stub or a known code signature
+        anywhere in the loaded image, then pivot on where it landed. pattern is
+        hex bytes, whitespace optional, with "??" (or "..") for a wildcard byte
+        -- so "e8 ?? ?? ?? ??" finds every 5-byte x86 relative call and
+        "504b0304" finds embedded zip headers. Every match reports its containing
+        memory block and, when the address falls inside a function, that
+        function -- turning a raw hit into an analysis lead.
+
+        Answers with pattern, searched (true when the scan ran; false with error
+        set when the pattern would not parse), matches (paged, each address plus
+        block and, when applicable, function / function_entry), match_count and
+        has_more when the hit count reached limit. Minutes on a large binary;
+        requires HEADLESS_RE_GHIDRA_HOME.
+        """
+        return _dump(
+            analysis.ghidra_search_bytes(session_id, pattern, limit=limit, timeout=timeout)
+        )
+
     return tools.bindings

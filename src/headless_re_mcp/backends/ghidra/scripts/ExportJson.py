@@ -36,6 +36,33 @@ def _addr(value):
     return program.getAddressFactory().getAddress(value)
 
 
+def _parse_byte_pattern(text):
+    # Return (byte_values, mask_values, error). "??" (or "..") is a wildcard
+    # byte: value 0, mask 0. A fixed byte gets mask 0xFF. Whitespace is ignored,
+    # so "de ad ?? ef" and "dead??ef" parse the same.
+    if not text:
+        return [], [], "empty pattern"
+    cleaned = "".join(text.split())
+    if len(cleaned) % 2 != 0:
+        return [], [], "pattern must be whole bytes (even hex length)"
+    byte_values = []
+    mask_values = []
+    i = 0
+    while i < len(cleaned):
+        pair = cleaned[i : i + 2]
+        i += 2
+        if pair in ("??", ".."):
+            byte_values.append(0)
+            mask_values.append(0)
+            continue
+        try:
+            byte_values.append(int(pair, 16))
+            mask_values.append(0xFF)
+        except Exception:
+            return [], [], "invalid hex byte: " + pair
+    return byte_values, mask_values, None
+
+
 if mode == "functions":
     items = []
     for fn in fm.getFunctions(True):
@@ -404,6 +431,52 @@ elif mode == "decompile":
     payload["found"] = found
     payload["decompiled"] = text[:200000]
     payload["truncated"] = len(text) > 200000
+elif mode == "search_bytes":
+    matches = []
+    payload["pattern"] = address_arg
+    byte_values, mask_values, perr = _parse_byte_pattern(address_arg)
+    if perr:
+        payload["error"] = perr
+    else:
+        from jarray import array as _jarray
+
+        signed_bytes = [(v - 256 if v > 127 else v) for v in byte_values]
+        signed_masks = [(v - 256 if v > 127 else v) for v in mask_values]
+        b_arr = _jarray(signed_bytes, "b")
+        m_arr = _jarray(signed_masks, "b")
+        memory = program.getMemory()
+        start = program.getMinAddress()
+        payload["searched"] = True
+        while start is not None and len(matches) < limit:
+            try:
+                hit = memory.findBytes(start, b_arr, m_arr, True, monitor)
+            except Exception:
+                hit = None
+            if hit is None:
+                break
+            entry = {"address": str(hit)}
+            try:
+                block = memory.getBlock(hit)
+                if block is not None:
+                    entry["block"] = block.getName()
+            except Exception:
+                pass
+            try:
+                fn = fm.getFunctionContaining(hit)
+                if fn is not None:
+                    entry["function"] = fn.getName()
+                    entry["function_entry"] = str(fn.getEntryPoint())
+            except Exception:
+                pass
+            matches.append(entry)
+            try:
+                start = hit.add(1)
+            except Exception:
+                break
+        if len(matches) >= limit:
+            payload["has_more"] = True
+    payload["matches"] = matches
+    payload["match_count"] = len(matches)
 else:
     payload["error"] = "unknown mode"
 

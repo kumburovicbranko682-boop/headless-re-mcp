@@ -285,6 +285,27 @@ class GhidraClient:
             max_heap=max_heap,
         )
 
+    def search_bytes(
+        self,
+        binary: Path,
+        project_dir: Path,
+        pattern: str,
+        *,
+        limit: int = 256,
+        timeout: float = 180.0,
+        max_heap: str = "2G",
+    ) -> JsonObject:
+        # The byte pattern rides the generic 4th script arg (the address slot).
+        return self._export(
+            binary,
+            project_dir,
+            mode="search_bytes",
+            limit=limit,
+            address=pattern,
+            timeout=timeout,
+            max_heap=max_heap,
+        )
+
     def decompile(
         self,
         binary: Path,
@@ -503,6 +524,10 @@ def _export_has_content(payload: JsonObject, mode: str) -> bool:
         callers = payload.get("callers")
         items = payload.get("items")
         return bool(callees) or bool(callers) or bool(items)
+    if mode == "search_bytes":
+        # A completed search that found nothing is still real content: the
+        # `searched` flag, not the match count, marks that the scan ran.
+        return bool(payload.get("searched")) or bool(payload.get("matches"))
     items = payload.get("items")
     return isinstance(items, list) and bool(items)
 

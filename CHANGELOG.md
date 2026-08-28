@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **316（198 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **317（199 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -404,6 +404,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (各 name/data_type/length/storage)与 `parameter_count`、`local_variables`(各 name/data_type/length/
   stack_offset)与 `local_count`;列表被 limit 截断时带 `parameters_has_more`/`locals_has_more`。导出失败是
   错误,不是"没有签名"。大二进制耗时以分钟计;需 `HEADLESS_RE_GHIDRA_HOME`。
+- 新增 `ghidra.search_bytes`:在程序内存里按字节模式搜索(支持通配),补上其余 Ghidra 工具缺的特征狩猎原语——
+  在已加载映像的任意位置定位一个常量、magic、opcode 桩或已知代码签名,再据落点旋转分析。`pattern` 是十六进制
+  字节(空白可选),`??`(或 `..`)表示通配字节——于是 `e8 ?? ?? ?? ??` 找出每个 5 字节的 x86 相对 call,
+  `504b0304` 找出内嵌的 zip 头。每个命中报告其所在内存块,地址落在函数内时还报告该函数,把裸命中变成分析线索。
+  回 `pattern`、`searched`(扫描跑了为 true;模式解析不了时为 false 并置 error)、`matches`(分页,各含 address
+  加 block,适用时含 function/function_entry)、`match_count` 与命中数触 limit 时的 `has_more`。大二进制耗时以
+  分钟计;需 `HEADLESS_RE_GHIDRA_HOME`。
 - 新增 `ghidra.callgraph`:给出 address 所在函数四周的调用边。`ghidra.xrefs` 只列到某地址的原始入引用,
   这个把外层函数解析出来,给分析员据以导航的两条调用图边:callees(这个函数调用了谁)与 callers(谁调用了
   它)——不必读反汇编就能上溯到入口点或下钻进 helper。address 可落在函数体任意处,不限入口。回 `found`
