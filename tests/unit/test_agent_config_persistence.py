@@ -58,6 +58,47 @@ def test_provider_config_preserves_original_if_atomic_replace_fails(
     assert list(tmp_path.glob(".providers.json-*.tmp")) == []
 
 
+def test_list_public_skips_a_malformed_profile_instead_of_failing_the_endpoint(
+    tmp_path: Path,
+) -> None:
+    """One bad stored profile must not take down the whole provider listing.
+
+    ``list_public`` builds a ``ProviderProfile`` per stored entry, and its
+    ``__post_init__`` rejects an out-of-range compression threshold. Because the
+    config file is hand-editable (and can predate a stricter schema), a single
+    bad entry made ``GET /api/providers`` raise ``ValueError`` -> 500, so the
+    console could not show even the profiles that were fine. The good profile
+    must still be listed and the bad one simply skipped.
+    """
+    path = tmp_path / "providers.json"
+    path.write_text(
+        json.dumps(
+            {
+                "current": "good",
+                "profiles": {
+                    "good": {
+                        "base_url": "https://provider.example/v1",
+                        "model": "example-model",
+                    },
+                    # 999 is outside the 10..95 band ProviderProfile enforces.
+                    "bad": {
+                        "base_url": "https://provider.example/v1",
+                        "model": "example-model",
+                        "context_compression_threshold_percent": 999,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = ProviderConfigStore(path)
+
+    result = store.list_public()
+
+    assert result["current"] == "good"
+    assert [profile["id"] for profile in result["profiles"]] == ["good"]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 def test_provider_config_is_private_on_posix(tmp_path: Path) -> None:
     path = tmp_path / "providers.json"

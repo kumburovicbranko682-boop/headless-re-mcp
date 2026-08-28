@@ -101,6 +101,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`GET /api/providers` 因一个坏配置项而整个 500）
+
+- `ProviderConfigStore.list_public` 会为每个已存 profile 构造 `ProviderProfile`,而
+  `__post_init__` 会校验 base URL、压缩阈值(10..95)等;由于 provider 配置文件是可手改的
+  边界(也可能是旧版本写下、字段更宽松),只要其中一个 profile 越界(如阈值 999、非法 URL、
+  非数值字段),`list_public` 就抛 `ValueError`,`GET /api/providers` 直接 500——监控台连
+  正常的 profile 都看不到,也无从修那个坏的。现按 `PersonaStore.list_public` 的既有做法:
+  逐个构造,构造失败(`ValueError`/`TypeError`)的那个跳过,其余照常列出,让操作者能看到并
+  重存坏项。新增回归测试:含一个越界 profile 的配置仍能列出正常 profile。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

@@ -188,9 +188,27 @@ class ProviderConfigStore:
             data = self._read()
         profiles_value = data.get("profiles")
         profiles: dict[str, Any] = profiles_value if isinstance(profiles_value, dict) else {}
+        listed: list[dict[str, Any]] = []
+        for key, value in profiles.items():
+            if not isinstance(value, dict):
+                continue
+            try:
+                profile = self._profile_from_raw(key, value)
+            except (ValueError, TypeError):
+                # The config file is a hand-editable boundary, and an entry can
+                # also predate a stricter ProviderProfile: a bad base URL, an
+                # out-of-range compression threshold, or a non-numeric field
+                # makes __post_init__ (or the int() coercion) raise. Listing
+                # must still return the profiles that validate so the console
+                # can show them and the operator can re-save the broken one --
+                # one bad entry used to make GET /api/providers 500 and hide
+                # every provider. PersonaStore.list_public skips malformed
+                # entries for the same reason.
+                continue
+            listed.append(profile.public(source="file"))
         return {
             "current": data.get("current"),
-            "profiles": [self._profile_from_raw(key, value).public(source="file") for key, value in profiles.items() if isinstance(value, dict)],
+            "profiles": listed,
         }
 
     def _profile_from_raw(self, profile_id: str, raw: dict[str, Any]) -> ProviderProfile:
