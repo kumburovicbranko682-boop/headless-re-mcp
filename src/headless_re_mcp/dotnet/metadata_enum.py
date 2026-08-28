@@ -277,19 +277,30 @@ class _MetaCtx:
 def _load_metadata_context(path: Path) -> _MetaCtx:
     pe_report = scan_pe(path)
     del pe_report
-    data = pe_mod._read_pe_bytes(path)  # noqa: SLF001
-    layout = pe_mod._parse_layout(data)  # noqa: SLF001
-    cor_rva, cor_size = pe_mod._directory(layout, 14)  # noqa: SLF001
-    if cor_rva == 0 or cor_size < 72:
-        raise DotnetInspectError("not_dotnet", "missing COM descriptor")
-    cor_off = pe_mod._rva_to_offset(layout, cor_rva, size=72)  # noqa: SLF001
-    header = pe_mod._slice(data, cor_off, 72)  # noqa: SLF001
-    meta_rva = int.from_bytes(header[8:12], "little")
-    meta_size = int.from_bytes(header[12:16], "little")
-    if not meta_rva or meta_size < 16:
-        raise DotnetInspectError("clr_unverified", "metadata directory empty")
-    meta_off = pe_mod._rva_to_offset(layout, meta_rva, size=min(meta_size, 0x200000))  # noqa: SLF001
-    meta = pe_mod._slice(data, meta_off, min(meta_size, 0x200000))  # noqa: SLF001
+    # inspect_dotnet ran first, but it swallows an unmappable COR20/MetaData RVA
+    # as a CLR hint (and does not touch it at all when require_verified is
+    # False), and it only maps the first 0x10000 bytes of the metadata where
+    # this reads a far larger window. So this re-parse is the first, or the
+    # stricter, reader of those RVAs -- and an unmappable one raised a raw
+    # PeFormatError that reached the caller as an internal_error naming neither
+    # the file nor the reason. Convert it to a code the way _read_method_body
+    # and inspect_dotnet already convert their own unmappable RVAs.
+    try:
+        data = pe_mod._read_pe_bytes(path)  # noqa: SLF001
+        layout = pe_mod._parse_layout(data)  # noqa: SLF001
+        cor_rva, cor_size = pe_mod._directory(layout, 14)  # noqa: SLF001
+        if cor_rva == 0 or cor_size < 72:
+            raise DotnetInspectError("not_dotnet", "missing COM descriptor")
+        cor_off = pe_mod._rva_to_offset(layout, cor_rva, size=72)  # noqa: SLF001
+        header = pe_mod._slice(data, cor_off, 72)  # noqa: SLF001
+        meta_rva = int.from_bytes(header[8:12], "little")
+        meta_size = int.from_bytes(header[12:16], "little")
+        if not meta_rva or meta_size < 16:
+            raise DotnetInspectError("clr_unverified", "metadata directory empty")
+        meta_off = pe_mod._rva_to_offset(layout, meta_rva, size=min(meta_size, 0x200000))  # noqa: SLF001
+        meta = pe_mod._slice(data, meta_off, min(meta_size, 0x200000))  # noqa: SLF001
+    except PeFormatError as exc:
+        raise DotnetInspectError("clr_unverified", f"metadata not mappable: {exc}") from exc
     if meta[:4] != b"BSJB":
         raise DotnetInspectError("clr_unverified", "metadata not BSJB")
     version_len = int.from_bytes(meta[12:16], "little")

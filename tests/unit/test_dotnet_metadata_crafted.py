@@ -323,6 +323,20 @@ def test_metadata_context_failures_carry_precise_codes(tmp_path: Path) -> None:
     assert "truncated" in str(caught.value)
 
 
+def test_a_metadata_rva_that_maps_nowhere_is_a_clean_code(tmp_path: Path) -> None:
+    # The COR20 header's MetaData RVA is nonzero but points into no section.
+    # inspect_dotnet(require_verified=False) records that as a CLR hint without
+    # raising, so the enumerator's own re-parse is the first to resolve the RVA
+    # -- and it used to let a raw PeFormatError escape as an internal_error
+    # instead of a fail-closed code that names what went wrong.
+    path = tmp_path / "meta_nowhere.exe"
+    path.write_bytes(_pe_image(b"\0" * 64, meta_rva=0x9000))
+    with pytest.raises(DotnetInspectError) as caught:
+        enumerate_metadata(path, "types", require_verified=False)
+    assert caught.value.code == "clr_unverified"
+    assert "not mappable" in str(caught.value)
+
+
 def test_a_tables_stream_shorter_than_its_header_yields_nothing(tmp_path: Path) -> None:
     path = tmp_path / "short_tables.exe"
     path.write_bytes(_pe_image(_bsjb_root([("#~", b"\0" * 8)])))
