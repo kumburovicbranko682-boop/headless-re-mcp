@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（frida 本地 `_require` 先查 pid 再查能力，把错误码变成 allow-set 探测口）
+
+- `FridaClient._require`（`modules` / `memory_read` / 本地 `hook_template` 用它做授权）先比对
+  `pid != allowed_pid`（`permission_denied`）、后查 frida 是否安装（`capability_unavailable`），
+  与同类 `attach()` / `_authorize()` 以及 apk/adb/web 各后端"先查能力再谈其他"的统一约定相反。
+  这个次序把错误码变成了 allow-set 的探测口：**即便本机没装 frida**，传一个不在会话授权集里的
+  pid 会先撞上 pid 检查得到 `permission_denied`，而授权 pid 则穿过去落到 `capability_unavailable`，
+  两者可区分——调用方（或攻击者）无需装 frida 即可通过错误码枚举某会话被授权触碰哪些 pid。改法：
+  `_require` 改为先查能力、后查 pid，令缺少模块时对任何 pid 一律回 `capability_unavailable`，
+  既堵掉这个 oracle，也与 `attach`/`_authorize` 及全仓约定一致。两条既有测试不受影响（一条用装了
+  frida 的假客户端测坏 pid → 仍 `permission_denied`；一条用授权 pid 测缺模块 → 仍
+  `capability_unavailable`），唯一变化的"缺模块 + 坏 pid"此前无测试覆盖；新增变异验证的回归测试
+  `test_require_hides_the_allow_set_when_the_module_is_absent` 钉死"缺模块时坏 pid 与好 pid 同样
+  回 `capability_unavailable`"。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言

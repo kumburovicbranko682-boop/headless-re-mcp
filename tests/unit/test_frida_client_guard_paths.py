@@ -360,6 +360,21 @@ def test_require_reports_capability_unavailable_for_the_authorized_pid() -> None
     assert caught.value.code == "capability_unavailable"
 
 
+def test_require_hides_the_allow_set_when_the_module_is_absent() -> None:
+    """Absent frida, a disallowed pid answers the same as an allowed one.
+
+    _require gates on capability before the pid allow-set (like attach() and
+    _authorize()), so with no module installed both an authorized and an
+    unauthorized pid return capability_unavailable. The old pid-first order
+    returned permission_denied here instead, which let the error code reveal
+    whether a pid was in the session's allow-set without any frida present.
+    """
+    with pytest.raises(FridaError) as caught:
+        _unavailable_client().modules(1, allowed_pid=2)
+
+    assert caught.value.code == "capability_unavailable"
+
+
 # ----------------------------------------------------------------------
 # hook_template (local).
 # ----------------------------------------------------------------------

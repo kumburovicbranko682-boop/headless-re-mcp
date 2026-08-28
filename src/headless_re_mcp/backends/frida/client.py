@@ -488,10 +488,17 @@ class FridaClient:
             raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
 
     def _require(self, pid: int, allowed_pid: int) -> None:
-        if pid != allowed_pid:
-            raise FridaError("permission_denied", "pid not allowed", pid=pid)
+        # Capability before authorization, matching attach()/_authorize() and
+        # every other backend (apk/adb/web all gate on availability first). The
+        # old pid-first order turned the error code into an oracle for the
+        # session's allow-set even with no frida installed: a disallowed pid
+        # returned permission_denied while an allowed one fell through to
+        # capability_unavailable, so the two were distinguishable. Absent the
+        # module the answer is now capability_unavailable for every pid.
         if not self._available or self._frida is None:
             raise FridaError("capability_unavailable", "frida Python module is not installed")
+        if pid != allowed_pid:
+            raise FridaError("permission_denied", "pid not allowed", pid=pid)
 
     # ------------------------------------------------------------------
     # Device-aware operations (USB / emulator / remote). The single-pid
