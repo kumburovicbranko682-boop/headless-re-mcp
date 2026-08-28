@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（`r2.read_bytes`：读取某地址处的原始字节，缺失的"看内存"原语）
+
+- r2 线此前无法查看任意地址处的原始字节：`r2.xrefs_to` 找到谁引用了某个数据、
+  `r2.disasm` 显示 `[0x...]` 操作数之后，却没有工具能看那里到底是什么（字符串？
+  表？结构体？魔数？），`r2.strings` 只给 r2 自动识别出的字符串。新工具
+  `r2.read_bytes` 跑 `pxj size @ addr`（读已映射地址是加载期操作，无需分析
+  pass），把 pxj 的字节数组渲染成 hex（十六进制串）与 ascii（可打印列，非可打印
+  字节用 `.`），并给出 size、address（va/rva/module）与 address_va。radare2 对
+  未映射地址填 0xff，原样透出（全 ff、全 `.` 即未映射）。size 默认 64、上限 4096。
+  `pxj <count> @ <hex|dec>` 进白名单（正则全匹配并卡 count ≤ 4096，拒绝符号名与
+  命令注入）。真实 ELF 上读取 "hello world" 字符串地址得到
+  `68656c6c6f20776f726c6400...` 与裸 `pxj` 字节逐一致，未映射地址得到 0xff 填充。
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

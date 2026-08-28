@@ -13,7 +13,7 @@ from headless_re_mcp.backends.common.bounded_run import (
     clamp_cli_timeout,
     run_bounded,
 )
-from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
+from headless_re_mcp.backends.r2.mapping import enrich_r2_payload, parse_r2_json
 
 JsonObject = dict[str, Any]
 _MAX_OUTPUT = 1_000_000
@@ -37,7 +37,9 @@ _ALLOWED = frozenset(
     }
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+_PXJ_COMMAND = re.compile(r"pxj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 _AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+_MAX_READ_BYTES = 4096
 
 
 class R2Error(RuntimeError):
@@ -53,6 +55,9 @@ def _require_allowed_command(command: str) -> None:
         return
     pdj = _PDJ_COMMAND.fullmatch(command)
     if pdj is not None and int(pdj.group(1)) <= 512:
+        return
+    pxj = _PXJ_COMMAND.fullmatch(command)
+    if pxj is not None and int(pxj.group(1)) <= _MAX_READ_BYTES:
         return
     if _AXJ_COMMAND.fullmatch(command) is not None:
         return
@@ -97,6 +102,48 @@ class R2Client:
         data["address"] = address
         data["count"] = count
         return enrich_r2_payload(data, binary=binary)
+
+    def read_bytes(
+        self,
+        binary: Path,
+        address: int,
+        *,
+        size: int = 64,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """Read ``size`` raw bytes at ``address`` (pxj), as hex and ASCII.
+
+        No analysis pass: reading a mapped address is a load-time operation.
+        pxj yields a plain array of byte values, not the dict items enrich maps,
+        so we render it here into hex and a printable-ASCII column (the '.' for
+        non-printable bytes a hexdump shows). r2 fills unmapped addresses with
+        0xff, which is surfaced as-is rather than masked.
+        """
+        if type(address) is not int or address < 0:
+            raise R2Error("invalid_params", "address must be a non-negative int")
+        if type(size) is not int or not 1 <= size <= _MAX_READ_BYTES:
+            raise R2Error("invalid_params", f"size must be 1..{_MAX_READ_BYTES}")
+        cmd = f"pxj {size} @ {address}"
+        data = self.run(binary, [cmd], timeout=timeout)
+        data = dict(data)
+        data["address"] = address
+        enriched = enrich_r2_payload(data, binary=binary)
+        values = parse_r2_json(str(enriched.get("raw") or ""))
+        byte_list = (
+            [b for b in values if type(b) is int and 0 <= b <= 255]
+            if isinstance(values, list)
+            else []
+        )
+        raw_bytes = bytes(byte_list)
+        # Byte values are not the dict "items" every other tool returns; drop
+        # the empty list enrich produced so a caller does not read it as "no
+        # bytes here" and reach for items_truncated that will never be set.
+        enriched.pop("items", None)
+        enriched.pop("count", None)
+        enriched["size"] = len(raw_bytes)
+        enriched["hex"] = raw_bytes.hex()
+        enriched["ascii"] = "".join(chr(b) if 32 <= b < 127 else "." for b in raw_bytes)
+        return enriched
 
     def xrefs(
         self,

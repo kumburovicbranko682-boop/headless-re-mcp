@@ -115,6 +115,28 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_disasm(session_id, address, count=count, timeout=timeout))
 
+    @tools.tool(name="r2.read_bytes")
+    def r2_read_bytes(
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+        size: Annotated[int, Field(ge=1, le=4096)] = 64,
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Read size raw bytes at address (pxj) as hex and ASCII.
+
+        The examine-memory primitive no other r2 tool gives: after r2.xrefs_to
+        points at a datum, or r2.disasm shows a `[0x...]` operand, this dumps
+        what is actually there. Runs pxj size @ address (no analysis pass
+        needed -- reading a mapped address is load-time). Answers with hex (the
+        bytes as a hex string), ascii (a printable-ASCII column, '.' for
+        non-printable) and size (the count returned), plus address
+        (va/rva/module) and address_va (the integer that was asked). radare2
+        fills unmapped addresses with 0xff, surfaced as-is (an all-ff, all-'.'
+        dump means the address is not mapped). size defaults to 64 and is
+        capped at 4096. There is no items, count, bytes or truncated field.
+        """
+        return _dump(analysis.r2_read_bytes(session_id, address, size=size, timeout=timeout))
+
     @tools.tool(name="r2.xrefs")
     def r2_xrefs(
         session_id: str,
