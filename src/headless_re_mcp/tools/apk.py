@@ -122,17 +122,33 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         class_name: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        name_contains: str = "",
+        access: str = "",
     ) -> dict[str, Any]:
-        """List methods of a class (dotted or Lsmali/form; paginated).
+        """List methods of a class (dotted or Lsmali/form; paginated, filterable).
 
         Answers with methods (name, descriptor, access), class_name, count,
         total, offset, and has_more so a page that filled the limit is not
-        read as the whole collected class. total is the number collected,
-        capped at 2000; scan_capped is true when more methods may exist.
+        read as the whole collected class. scan_capped is true when the scan
+        stopped before examining every method (bounded at 2000 scanned).
         has_more only means a larger offset still has collected rows.
+
+        On a large class, narrow instead of paging: name_contains is a
+        case-insensitive substring of the method name, and access a
+        case-insensitive substring of the access-flag string -- pass native to
+        find the JNI bridges into a .so, or public/static/abstract to slice by
+        modifier. When a filter is set the reply echoes it as filter and total
+        becomes the number of matches (so offset/has_more page the matches).
         """
         return _dump(
-            analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
+            analysis.apk_methods(
+                session_id,
+                class_name,
+                offset=offset,
+                limit=limit,
+                name_contains=name_contains,
+                access=access,
+            )
         )
 
     @tools.tool(name="apk.fields")
@@ -141,8 +157,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         class_name: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        name_contains: str = "",
+        access: str = "",
     ) -> dict[str, Any]:
-        """List a class's declared fields (dotted or Lsmali/form; paginated).
+        """List a class's declared fields (dotted or Lsmali/form; paginated, filterable).
 
         The read surface lists a class's methods (apk.methods) but had no way to
         list its fields, though a field is where a key, token, URL or feature flag
@@ -150,12 +168,26 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with fields (name, type, access), class_name, count, total, offset,
         and has_more so a page that filled the limit is not read as the whole
         class. type is the raw Dalvik type descriptor (I for int,
-        Ljava/lang/String; for a String). total is the number collected;
-        scan_capped is true when more fields may exist. has_more only means a
-        larger offset still has collected rows. Pair with apk.field_xrefs: list
-        here, then pivot on a name to its read/write sites.
+        Ljava/lang/String; for a String). scan_capped is true when the scan
+        stopped early. has_more only means a larger offset still has collected
+        rows. Pair with apk.field_xrefs: list here, then pivot on a name to its
+        read/write sites.
+
+        Narrow the same way as apk.methods: name_contains is a case-insensitive
+        substring of the field name and access a case-insensitive substring of the
+        access-flag string (static, private, final). When a filter is set the
+        reply echoes it as filter and total becomes the number of matches.
         """
-        return _dump(analysis.apk_fields(session_id, class_name, offset=offset, limit=limit))
+        return _dump(
+            analysis.apk_fields(
+                session_id,
+                class_name,
+                offset=offset,
+                limit=limit,
+                name_contains=name_contains,
+                access=access,
+            )
+        )
 
     @tools.tool(name="apk.method_bytecode")
     def apk_method_bytecode(

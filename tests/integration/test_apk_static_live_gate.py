@@ -880,6 +880,24 @@ def test_apk_dex_readers_decode_a_populated_dex(tmp_path: Path) -> None:
             assert names == sorted(_DEX_METHODS), spelling
             assert all(m["descriptor"] == "()V" for m in methods.data["methods"]), spelling
 
+        # Filtered listing over the real analysis: a name substring picks one
+        # method, and the access substring slices by modifier. total narrows to
+        # the matches and the applied filter is echoed, so a filtered page is
+        # never read as the whole class.
+        only_create = service.apk_methods(session_id, "com.example.App", name_contains="Create")
+        assert only_create.ok and only_create.data is not None, only_create.error
+        assert [m["name"] for m in only_create.data["methods"]] == ["onCreate"], only_create.data
+        assert only_create.data["total"] == 1
+        assert only_create.data["filter"] == {"name_contains": "create"}, only_create.data
+        # Both methods are public static, so the static slice keeps both...
+        statics = service.apk_methods(session_id, "com.example.App", access="static")
+        assert statics.ok and statics.data is not None, statics.error
+        assert statics.data["total"] == 2, statics.data
+        # ...and a modifier none of them carries narrows to nothing, cleanly.
+        privates = service.apk_methods(session_id, "com.example.App", access="private")
+        assert privates.ok and privates.data is not None, privates.error
+        assert privates.data["total"] == 0 and privates.data["methods"] == [], privates.data
+
         strings = service.apk_strings(session_id, limit=100)
         assert strings.ok and strings.data is not None, strings.error
         assert _DEX_STRING in strings.data["strings"]
@@ -1144,6 +1162,20 @@ def test_apk_field_xrefs_resolve_read_and_write_sites(tmp_path: Path) -> None:
             back = service.apk_field_xrefs(session_id, secret["name"], direction="write")
             assert back.ok and back.data is not None, back.error
             assert back.data["found"] is True, back.data
+
+        # The same name/access filter apk.methods has: secret is static, so the
+        # static slice keeps it and a name substring isolates it, while a modifier
+        # it lacks narrows to nothing.
+        static_fields = service.apk_fields(session_id, "com.example.Store", access="static")
+        assert static_fields.ok and static_fields.data is not None, static_fields.error
+        assert any(f["name"] == _DEX_FIELD_NAME for f in static_fields.data["fields"])
+        assert static_fields.data["filter"] == {"access": "static"}, static_fields.data
+        named = service.apk_fields(session_id, "com.example.Store", name_contains="secret")
+        assert named.ok and named.data is not None, named.error
+        assert [f["name"] for f in named.data["fields"]] == [_DEX_FIELD_NAME], named.data
+        volatile = service.apk_fields(session_id, "com.example.Store", access="volatile")
+        assert volatile.ok and volatile.data is not None, volatile.error
+        assert volatile.data["total"] == 0 and volatile.data["fields"] == [], volatile.data
 
         # A class the DEX does not declare is a clean not_found, not a crash.
         missing = service.apk_fields(session_id, "com.example.Nope")

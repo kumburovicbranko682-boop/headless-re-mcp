@@ -59,6 +59,31 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     return items, has_more
 
 
+def _member_filter(name_contains: str, access: str) -> JsonObject:
+    """The active, normalised class-member filter -- empty when nothing was asked.
+
+    Shared by apk.methods and apk.fields so listing a class's members reads the
+    same way whether they are methods or fields: name_contains is a
+    case-insensitive substring of the member name, access a case-insensitive
+    substring of its access-flag string (so ``native``, ``public``, ``static`` or
+    ``abstract`` all work). The fields are folded to the case the match uses, so
+    the echoed ``filter`` in the reply is exactly what was compared.
+    """
+    active: JsonObject = {}
+    if isinstance(name_contains, str) and name_contains.strip():
+        active["name_contains"] = name_contains.strip().lower()
+    if isinstance(access, str) and access.strip():
+        active["access"] = access.strip().lower()
+    return active
+
+
+def _member_matches(name: str, access: str, active: JsonObject) -> bool:
+    """True when a member's name and access satisfy every field of an active filter."""
+    if "name_contains" in active and active["name_contains"] not in name.lower():
+        return False
+    return not ("access" in active and active["access"] not in access.lower())
+
+
 class _ParsedApk:
     __slots__ = ("apk", "analysis", "_dex")
 
@@ -439,7 +464,17 @@ class ApkClient:
         *,
         offset: int = 0,
         limit: int = 100,
+        name_contains: str = "",
+        access: str = "",
     ) -> JsonObject:
+        """List a class's methods (name, descriptor, access), optionally filtered.
+
+        name_contains is a case-insensitive substring of the method name and
+        access a case-insensitive substring of the access-flag string, so
+        ``access="native"`` isolates the JNI bridges into a ``.so`` and
+        ``public``/``static``/``abstract`` slice by modifier. Dotted or Lsmali/
+        class form; the paginated, scan-capped shape ``apk.fields`` shares.
+        """
         parsed = self._parsed(path)
         target = class_name.strip()
         if not target:
@@ -451,32 +486,47 @@ class ApkClient:
         ]
         if not found:
             raise ApkError("not_found", "class not found", class_name=class_name)
+        active = _member_filter(name_contains, access)
         methods: list[JsonObject] = []
+        scanned = 0
         scan_more = False
         for klass in found:
             for method in klass.get_methods():
-                if len(methods) >= _MAX_METHODS_COLLECT:
+                # Cap the scan, not the matches: a filter narrow enough to keep
+                # nothing must still stop after a bounded number of methods rather
+                # than walking an enormous class end to end.
+                if scanned >= _MAX_METHODS_COLLECT:
                     scan_more = True
                     break
+                scanned += 1
+                name = str(method.name)
+                access_str = str(getattr(method, "access", ""))
+                if active and not _member_matches(name, access_str, active):
+                    continue
                 methods.append(
                     {
-                        "name": method.name,
+                        "name": name,
                         "descriptor": str(getattr(method, "descriptor", "")),
-                        "access": str(getattr(method, "access", "")),
+                        "access": access_str,
                     }
                 )
             if scan_more:
                 break
         window = methods[offset : offset + limit]
-        return {
+        result: JsonObject = {
             "class_name": found[0].name,
             "methods": window,
             "count": len(window),
+            # total is the size of the set being paged: the matches when a filter
+            # is active, so offset/has_more stay honest over the filtered view.
             "total": len(methods),
             "offset": offset,
             "has_more": offset + len(window) < len(methods),
             "scan_capped": scan_more,
         }
+        if active:
+            result["filter"] = active
+        return result
 
     def fields(
         self,
@@ -485,6 +535,8 @@ class ApkClient:
         *,
         offset: int = 0,
         limit: int = 100,
+        name_contains: str = "",
+        access: str = "",
     ) -> JsonObject:
         """List a class's declared fields (name, type, access).
 
@@ -495,7 +547,8 @@ class ApkClient:
         (the raw Dalvik type descriptor, e.g. ``I`` for int or
         ``Ljava/lang/String;``) and access -- so a caller can spot the interesting
         field then hand its name to ``apk.field_xrefs``. Mirrors ``apk.methods``:
-        dotted or Lsmali/ class form, and the same paginated, scan-capped shape.
+        dotted or Lsmali/ class form, the same name_contains/access filter, and
+        the same paginated, scan-capped shape.
         """
         parsed = self._parsed(path)
         target = class_name.strip()
@@ -509,31 +562,36 @@ class ApkClient:
         ]
         if not found:
             raise ApkError("not_found", "class not found", class_name=class_name)
+        active = _member_filter(name_contains, access)
         fields: list[JsonObject] = []
+        scanned = 0
         scan_more = False
         for klass in found:
             for fa in klass.get_fields():
-                if len(fields) >= _MAX_FIELDS_COLLECT:
+                if scanned >= _MAX_FIELDS_COLLECT:
                     scan_more = True
                     break
+                scanned += 1
                 # The FieldClassAnalysis wraps an EncodedField for an internal
                 # field; go through it for type and access. An external field
                 # reference would lack these accessors, so degrade to the name.
                 ef = fa.get_field()
                 name = ef.get_name() if hasattr(ef, "get_name") else getattr(fa, "name", "")
                 type_desc = ef.get_descriptor() if hasattr(ef, "get_descriptor") else ""
-                access = (
+                access_str = (
                     ef.get_access_flags_string()
                     if hasattr(ef, "get_access_flags_string")
                     else ""
                 )
+                if active and not _member_matches(str(name), str(access_str), active):
+                    continue
                 fields.append(
-                    {"name": str(name), "type": str(type_desc), "access": str(access)}
+                    {"name": str(name), "type": str(type_desc), "access": str(access_str)}
                 )
             if scan_more:
                 break
         window = fields[offset : offset + limit]
-        return {
+        result: JsonObject = {
             "class_name": found[0].name,
             "fields": window,
             "count": len(window),
@@ -542,6 +600,9 @@ class ApkClient:
             "has_more": offset + len(window) < len(fields),
             "scan_capped": scan_more,
         }
+        if active:
+            result["filter"] = active
+        return result
 
     def method_bytecode(
         self,
