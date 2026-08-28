@@ -59,6 +59,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   即“无事可查”地失败。以把 `service_ext` 某处退回重包裹形态验证非空:守卫精确报出 `('service_ext','FridaError',517)`,
   还原后转绿——这条守卫本可在上一轮就自动逮住那个 `service_ext` 缺口。
 
+### `apk.export_sources` 的 `java_file_count` 在走查触顶时如实标注为下界（对齐兄弟工具 `js.unpack` 的双信号，不再把两种截断混成一个 `has_more`）
+
+- jadx 的 `_capped_java_listing` 沿两个轴设限:返回名单的页大小(`_MAX_LISTED_FILES`)与走查的文件总数上限
+  (`_MAX_COUNTED_FILES`)。此前它把“走查触顶”折进 `has_more` 一并上报,`java_file_count` 却按精确值给出——一个 `.java`
+  文件数超过走查上限、但整棵树字节数仍在 `_refuse_oversized_tree` 的 64 MiB 上限之内(因而不会被先行拒绝)的巨型 APK,会
+  把那个上限当作精确的 `java_file_count` 交给调用方,而调用方无从把它与“恰好有这么多文件”的树区分开,读成了确定的类计数。
+  其兄弟工具 `js.unpack` 的 `_capped_file_listing` 早已把走查触顶单列为 `listing_truncated`,两者本应一致。
+- `_capped_java_listing` 现返回四元组,新增第四个布尔 `listing_truncated`(即走查触顶),`export_sources` 结果新增同名字段
+  (与 `jsre/client.py` 的字段名一字不差);`has_more` 保留原语义(返回名单被页大小裁剪,且为兼容 cap ≥ 走查上限的调用仍
+  或上走查触顶),`listing_truncated` 则专表“计数本身是下界”。`decompile` 只透传 `exit_code` / `tool_failed` / `stderr`,
+  不含名单字段,不受影响。`test_jadx_pure_helpers.py` 全部改按四元组解包并逐例断言 `listing_truncated`,新增一例以
+  monkeypatch 压低 `_MAX_COUNTED_FILES` 钉住:走查触顶时 `listing_truncated` 为真、页未被裁(cap 高于上限)时 `has_more`
+  仍为真但计数精确的普通分页 `listing_truncated` 为假,把两条轴分开验证。
+
 ### 测试（非 PE 后端错误码词表守卫：八个后端的 code 是 agent 路由所依的机器契约，此前为散落的裸字符串、无枚举无校验，新增守卫钉住“抛出的 code 恰等于 canonical 词表”——拼写错 / 混入 PE 线方言 / 词表烂成宽集三向皆拦）
 
 - 每个非 PE 后端(web / proxy / adb / apk 静态 / apktool / frida / jsre / jadx)抛出的类型化错误,其首参 `code` 经

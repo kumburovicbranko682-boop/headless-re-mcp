@@ -30,9 +30,9 @@ _MAX_LISTED_FILES = 2000
 _MAX_COUNTED_FILES = 50_000
 
 
-def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
-    """Return a sorted alphabetical prefix of the ``.java`` tree, its total, and
-    whether the returned page is clipped.
+def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool, bool]:
+    """Return a sorted alphabetical prefix of the ``.java`` tree, its total,
+    whether the returned page is clipped, and whether the *count itself* is a floor.
 
     Sort before the cap, not after. The whole tree (up to the walk ceiling
     ``_MAX_COUNTED_FILES``) is collected and sorted, then sliced to ``cap`` -- so
@@ -43,9 +43,19 @@ def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]
     that gap as "absent". The walk itself is bounded (``_MAX_COUNTED_FILES``), so
     the pre-sort set stays in hand; matches apk.classes / device.packages, which
     page their sorted set rather than sort a raw slice.
+
+    Two truncations are reported separately, matching the jsre unpack listing
+    (``has_more`` for the page, ``listing_truncated`` for the walk ceiling) rather
+    than folding both into one flag. ``has_more`` says the returned names are a
+    clipped view; ``listing_truncated`` says the walk stopped at the ceiling, so
+    ``total`` is a floor -- an APK with more than ``_MAX_COUNTED_FILES`` small
+    ``.java`` files (well under the tree byte cap that ``_refuse_oversized_tree``
+    enforces, so it is not refused first) would otherwise report that ceiling as
+    an exact ``java_file_count``, and a caller could not tell it from a tree that
+    happens to hold exactly that many.
     """
     if not root.is_dir():
-        return [], 0, False
+        return [], 0, False, False
     names: list[str] = []
     scan_capped = False
     for path in root.rglob("*.java"):
@@ -58,7 +68,7 @@ def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]
     total = len(names)
     names.sort()
     has_more = total > cap or scan_capped
-    return names[:cap], total, has_more
+    return names[:cap], total, has_more, scan_capped
 
 
 class JadxError(RuntimeError):
@@ -112,7 +122,7 @@ class JadxClient:
             timeout=timeout,
         )
         sources_root = out_dir / "sources"
-        java_files, java_file_count, has_more = _capped_java_listing(
+        java_files, java_file_count, has_more, listing_truncated = _capped_java_listing(
             out_dir, cap=_MAX_LISTED_FILES
         )
         result: JsonObject = {
@@ -121,6 +131,9 @@ class JadxClient:
             "java_file_count": java_file_count,
             "java_files": java_files,
             "has_more": has_more,
+            # java_file_count is a floor when the walk hit its ceiling; a caller
+            # reading it as exact would undercount an oversized-by-count tree.
+            "listing_truncated": listing_truncated,
         }
         return _note_partial_decompile(result, code=code, stderr=stderr)
 
