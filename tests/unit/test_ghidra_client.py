@@ -128,6 +128,80 @@ def test_ghidra_analyze_deletes_the_project_other_tools_cannot_read(
     assert listed["export_path"]
 
 
+def _capture_timeout(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    captured: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        captured["timeout"] = kwargs.get("timeout")
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(str(arg)).write_text('{"items": []}', encoding="utf-8")
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    return captured
+
+
+def test_ghidra_clamps_a_caller_timeout_the_agent_transport_left_unbounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timeout past the schema ceiling is clamped, matching the sibling adapters.
+
+    The ghidra tool schemas declare ``0 < timeout <= 600`` but the agent
+    transport calls handlers straight from model arguments with no schema
+    enforcement. Without a clamp a wedged analyzeHeadless -- a JVM analysing a
+    large binary -- would hold a worker and a core for as long as the caller
+    named. r2/jadx/apktool/jsre all clamp; ghidra used to be the exception.
+    """
+    client = _client(tmp_path)
+    captured = _capture_timeout(monkeypatch)
+    client.functions(_binary(tmp_path), tmp_path / "project", timeout=10**9)
+    assert captured["timeout"] == ghidra_client._MAX_TIMEOUT_S
+
+
+@pytest.mark.parametrize("bad", [0.0, -5.0, float("nan")])
+def test_ghidra_refuses_a_non_positive_timeout_before_launching_the_jvm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: float
+) -> None:
+    """A zero/negative/NaN deadline is a bad parameter, not a backend timeout.
+
+    Left unchecked it reaches run_bounded, which launches analyzeHeadless only
+    to kill it on the first loop iteration and report a misleading ``timeout``
+    for what is really an ``invalid_params`` mistake.
+    """
+    client = _client(tmp_path)
+
+    def must_not_spawn(cmd: list[str], **kwargs: Any) -> Completed:
+        raise AssertionError("run_bounded was reached despite an invalid timeout")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", must_not_spawn)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.analyze_binary(_binary(tmp_path), tmp_path / "project", timeout=bad)
+    assert caught.value.code == "invalid_params"
+
+
+def test_ghidra_maps_an_unlaunchable_headless_to_a_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A launcher present at discovery but unexecutable at spawn is a backend fault.
+
+    analyzeHeadless can be found (so availability passes) yet fail to exec -- not
+    marked +x, or gone between discovery and Popen -- which surfaces as OSError.
+    Uncaught it becomes an opaque internal_error incident; the sibling run_bounded
+    adapters all map it to backend_error, and ghidra must agree.
+    """
+    client = _client(tmp_path)
+
+    def refuse_to_launch(cmd: list[str], **kwargs: Any) -> Completed:
+        raise OSError("Exec format error")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", refuse_to_launch)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.analyze_binary(_binary(tmp_path), tmp_path / "project")
+    assert caught.value.code == "backend_error"
+    assert "analyzeHeadless" in caught.value.message
+
+
 def test_ghidra_serializes_clients_using_the_same_project(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
