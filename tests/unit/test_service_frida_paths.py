@@ -255,3 +255,44 @@ def test_frida_java_methods_map_a_frida_error(
         assert result.error.code == "frida_failed"
     finally:
         service.close_all()
+
+
+def test_coerce_limit_accepts_a_numeric_string_but_refuses_garbage() -> None:
+    # A numeric string and a float still work, matching the prior lenient
+    # int(limit) and the sibling _coerce_pid; a value that cannot be a count is
+    # a fixable invalid_params, not the internal_error incident a bare
+    # TypeError/OverflowError would have produced inside java_enumerate.
+    assert sf._coerce_limit("500") == 500
+    assert sf._coerce_limit(5.0) == 5
+    for bad in (["500"], {"limit": 1}, "not-a-number", None, float("inf")):
+        with pytest.raises(FridaError) as excinfo:
+            sf._coerce_limit(bad)
+        assert excinfo.value.code == "invalid_params"
+
+
+@pytest.mark.parametrize("bad", [[10], {"limit": 1}, None, float("inf"), "not-a-number"])
+def test_frida_java_classes_refuses_a_non_int_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: object
+) -> None:
+    # java_enumerate is the one frida enumeration whose limit was not bounded by
+    # a backend clamp, so a list/dict/None/inf reached int(limit) and raised --
+    # an internal_error incident on the real backend. The service must answer
+    # invalid_params, and the backend enumeration must not run.
+    calls: list[int] = []
+
+    class _RecordingFrida(_FakeFrida):
+        def java_enumerate(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            calls.append(1)
+            return super().java_enumerate(*args, **kwargs)
+
+    service = _service(tmp_path)
+    try:
+        session_id = _web_session(service)
+        _authorize(service, session_id, pids=(4321,))
+        monkeypatch.setattr(sf, "FridaClient", _RecordingFrida)
+        result = service.frida_java_classes(session_id, pid=4321, limit=bad)  # type: ignore[arg-type]
+        assert result.ok is False and result.error is not None
+        assert result.error.code == "invalid_params"
+        assert calls == []
+    finally:
+        service.close_all()

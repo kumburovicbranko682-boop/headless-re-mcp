@@ -202,7 +202,7 @@ class FridaDeviceMixin:
                 mode=mode,
                 class_name=class_name,
                 name_filter=name_filter,
-                limit=limit,
+                limit=_coerce_limit(limit),
             )
             return _success(data, session_id=session_id, backend="frida")
         except (FridaError, AdbError) as exc:
@@ -222,6 +222,28 @@ def _append_recent(existing: Any, value: Any, *, limit: int = _MAX_AUTHORIZED) -
     items = [item for item in (existing or []) if item != value]
     items.append(value)
     return items[-limit:]
+
+
+def _coerce_limit(limit: Any) -> int:
+    """Coerce a caller-supplied java-enumeration limit to int, or refuse it.
+
+    frida_java_classes/methods type ``limit`` as an integer, but the agent and
+    OpenAI-bridge transports call the handler with no pydantic coercion. Every
+    other frida enumeration bounds its limit through the backend's own clamp,
+    but ``java_enumerate`` alone still took ``max(1, min(int(limit), 2000))``
+    against the raw value, so a list, dict, None, or non-finite float (a JSON
+    ``1e400`` parsed to inf) reached ``int(limit)`` and raised
+    TypeError/OverflowError -- filed by ``_java``'s ``except BaseException`` as
+    an internal_error incident -- while a non-numeric string raised a ValueError
+    whose text echoed the caller's value back. ``int(limit)`` is kept (not
+    ``type(limit) is int``) so a numeric string the model emits still works,
+    matching the prior lenient behavior and the sibling ``_coerce_pid``; the
+    backend still clamps the result to its 1..2000 window.
+    """
+    try:
+        return int(limit)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise FridaError("invalid_params", "limit must be an integer") from exc
 
 
 def _last_pid(auth: JsonObject) -> int:
