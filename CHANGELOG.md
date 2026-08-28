@@ -18,6 +18,10 @@ CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服�
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
+`session.create` 对一个存在但**不可读**（权限拒绝）的目标不再逃逸成 `internal_error` 事故。`classify_target` 在读不出魔数时以 `except OSError` 回退到 PE，随后架构探针 `detect_pe_architecture`（以及 `file_sha256`）重新打开文件，未被捕获的 `PermissionError` 一路上抛，被兜底成一条带 incident 的 `internal_error`——而权限拒绝是一个可预见的调用方输入条件，不是本进程的缺陷。现于 `SessionRegistry.create` 用 `_read_target` 包住所有读文件的身份探针：探针自己的 `ValueError`（如「not a PE file」这类格式判决）原样上抛，只有 `OSError`（目标根本读不了）被改写成干净的 `invalid_request`「cannot read session target: …」，与目录、空文件等其它入口输入错误一致。
+
+`session.create` 的入口边界契约新增经真实 MCP stdio 服务的端到端 Gate（`tests/integration/test_session_create_input_boundary_gate.py`）。这是每个部署最先调用、也是唯一一个会被递上任意甚至敌意路径的工具，其契约是：每种坏输入都回一个**结构化**信封、指明哪里不对，绝不回 `internal_error`（那是本进程有缺陷的兜底码，不该用在「调用方递来一个打不开的路径」上）。本 gate 用纯 stdlib 夹具把这道边界钉在 stdio 上：不存在的路径是 `file_not_found`；目录、空文件、以及内容不是可识别格式的文件是 `invalid_request` 且消息点明哪项检查未过；一个存在却读不了（权限拒绝）的目标是结构化的 `invalid_request`「cannot read session target」而非 incident（上述缺陷的回归守卫，以 root 运行等无法制造不可读文件时自动 skip）；一个有效 PE 以 `pe` 打开、显式 `target` 覆盖优先于嗅探内容（把 PE 以 `web` 打开）、`http` URL 以 `web` 打开、对非 APK 字节强制 `target=apk` 干净失败而非崩溃。表中任何坏输入都不允许答 `internal_error`。纯 stdlib 夹具、stdio 回环、无后端、任意平台。
+
 CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去在 `with subprocess.Popen(...)` 里跑工具，其 `__exit__` 会在调用线程上关闭 stdout/stderr——当被启动进程派生的孙进程继承了这对管道并存活时，读取线程仍阻塞在 `read()` 上持有缓冲区锁，`close()` 便永久阻塞，有界超时变成永久挂起。现不再用上下文管理器：每个读取线程自持其流并在 `read()` 返回后关闭，主线程只回收进程、绝不碰管道。POSIX 下还让工具独立成会话，超时/取消时按进程组整体发信号（限组长，避免误杀服务自身的进程组），从而杀掉 ppid 遍历看不到、已被 init 收养的孙进程（如残留的 JVM/helper）。
 
 die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛：读取线程自持自闭管道、捕获线程只在读取线程已结束时才关句柄，POSIX 下工具独立成会话。de4dot（及复用它的 NETReactorSlayer）正常退出后遗留的 runner 子进程（JVM/dotnet，常被 init 收养）以前 ppid 遍历看不到而泄漏；新增 `collect_process_group` / `terminate_process_group` 按会话组枚举并逐个按各自 `pgrp` 击杀，避免组长 pid 复用误伤无关进程组。
