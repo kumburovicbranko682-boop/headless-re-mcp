@@ -92,6 +92,26 @@ def test_persona_path_import_rejects_invalid_content(
         store.import_path(source)
 
 
+@pytest.mark.parametrize(
+    "hostile",
+    ["~nosuchuser-headless-re/persona.md", "persona\x00.md"],
+    ids=("unresolvable-tilde", "embedded-nul"),
+)
+def test_persona_path_import_reports_a_hostile_path_as_a_value_error(
+    tmp_path: Path, hostile: str
+) -> None:
+    # ``~user`` for a user with no home makes expanduser() raise RuntimeError and
+    # an embedded NUL makes resolve() raise ValueError; both come straight from
+    # the /api/agent/personas/import body, whose route only maps ValueError to a
+    # 400. A RuntimeError would surface as an internal_error 500, and the raw
+    # "embedded null byte" text (with the path) would leak into the reply.
+    store = PersonaStore(tmp_path / "personas", seed_paths=())
+
+    with pytest.raises(ValueError) as caught:
+        store.import_path(Path(hostile))
+    assert str(caught.value) == "persona_path_unreadable"
+
+
 def test_persona_index_and_prompt_reads_are_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -147,3 +167,29 @@ def test_personas_are_switchable_over_http(tmp_path: Path, monkeypatch) -> None:
         )
         assert imported.status_code == 200
         assert imported.json()["current"].startswith("custom-")
+
+
+def test_persona_import_of_a_hostile_path_is_a_client_error_not_a_500(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = Settings(
+        ida_home=None,
+        x64dbg_source=None,
+        x64dbg_headless_x64=None,
+        x64dbg_headless_x86=None,
+        artifact_root=tmp_path / "artifacts",
+        http_host="127.0.0.1",
+        http_port=8765,
+    )
+    app = create_app(AnalysisService(settings), token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    with TestClient(app, raise_server_exceptions=False) as client:
+        for hostile in ("~nosuchuser-headless-re/persona.md", "persona\x00.md"):
+            response = client.post(
+                "/api/agent/personas/import",
+                headers=headers,
+                json={"path": hostile},
+            )
+            assert response.status_code == 400, response.text
+            assert response.json()["detail"] == "persona_path_unreadable"

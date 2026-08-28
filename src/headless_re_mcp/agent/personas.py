@@ -265,10 +265,18 @@ class PersonaStore:
         return self.list_public()
 
     def import_path(self, path: Path) -> JsonObject:
-        resolved = path.expanduser()
         try:
-            resolved = resolved.resolve()
-        except OSError as exc:
+            resolved = path.expanduser().resolve()
+        except (OSError, RuntimeError, ValueError) as exc:
+            # expanduser() has to be inside the guard, not just resolve():
+            # ``~someone/persona.md`` with a user that has no home raises
+            # RuntimeError ("Could not determine home directory"), and an
+            # embedded NUL raises ValueError -- neither is OSError. Both arrive
+            # straight from the import_persona route's caller-supplied ``path``,
+            # and the route only maps ValueError to a 400, so the RuntimeError
+            # surfaced as an internal_error 500 for what is simply a bad path.
+            # Normalising every unreadable path to this one message also keeps
+            # the raw "embedded null byte" text (and the path) out of the reply.
             raise ValueError("persona_path_unreadable") from exc
         if resolved.suffix.lower() not in {".md", ".txt"}:
             raise ValueError("persona_not_markdown")
