@@ -141,6 +141,30 @@ def test_a_runtime_closed_after_the_snapshot_is_left_alone() -> None:
     assert monitor.report("s1") == []
 
 
+def test_a_close_during_reconnect_does_not_resurrect_the_forgotten_entry() -> None:
+    runtimes = FakeRuntimes([])
+    worker = FakeWorker(connected=False)
+    monitor = BackendHealthMonitor(runtimes, interval_s=0.01)
+    runtimes.entries.append(("s1", BackendKind.X64DBG, worker))
+
+    def close_during_reconnect() -> None:
+        # A reconnect blocks for the transport timeout, and close_session lands
+        # inside that window: it pops the runtime (is_current goes False) and
+        # forgets the session's health rows. The row the sweep is about to write
+        # would never be revisited -- the next check_once skips a popped runtime
+        # -- so writing it back would strand an un-forgettable phantom.
+        worker.transport_connected = True
+        runtimes.entries.clear()
+        monitor.forget("s1")
+
+    worker.reconnect = close_during_reconnect  # type: ignore[method-assign]
+
+    monitor.check_once()
+
+    assert monitor.report("s1") == []
+    assert monitor.report() == []
+
+
 def test_restarting_after_a_timed_out_stop_does_not_leave_two_sweepers() -> None:
     worker = FakeWorker()
     monitor = _monitor(("s1", BackendKind.X64DBG, worker))

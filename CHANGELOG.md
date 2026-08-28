@@ -5,7 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
+### 修复（健康探针在 forget 之后复活已关闭会话的 health 行）
+
+- `BackendHealthMonitor._check_backend` 在 `check_once` 顶部用 `is_current` 挡掉
+  快照后已关闭的 runtime，但那次检查之后的整个函数体（包括可长达传输超时的
+  `reconnect()`）都不持锁。若 `close_session` 恰好落在这个窗口里——先 `pop_session`
+  弹出 runtime，再 `forget()` 清掉该会话的 health 行——函数末尾仍会把算好的 entry
+  写回 `self._entries[key]`，为一个已被遗忘的会话复活一条 health 行。下一轮 sweep
+  的快照不再包含被弹出的 runtime（顶部 `is_current` 门也会跳过它），所以这条行再也
+  不会被访问：`checked_at` 永久冻结，`report()`/`session_health` 会永远把它当成一个
+  存活后端汇报，每关闭一个撞上该窗口的会话就泄漏一条——正是 `forget()` 本该消除的
+  东西。现在写回前重新核对 `is_current`，若 runtime 已不在则丢弃本轮 entry 并清掉这
+  一趟可能留下的 backoff 记录。核对刻意放在 health `_lock` 之外：`close_session` 持有
+  owner 锁时才调 `forget()` 去拿 `_lock`（open 路径同样是 owner→health 顺序），在锁内
+  反向获取 owner 锁会死锁。新增回归测试模拟"重连中途关闭"，钉住 entry 不再被复活。
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
   `_ProxyInstance.start()/_run()` 的串行化 bring-up 改造（`_STARTUP_LOCK` +

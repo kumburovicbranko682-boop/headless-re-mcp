@@ -158,19 +158,19 @@ class BackendHealthMonitor:
             # same lock, and would resurrect a health entry that was forgotten.
             if not self.runtimes.is_current(session_id, kind, runtime):
                 continue
-            worker = getattr(runtime, "worker", runtime)
-            results.append(self._check_backend(session_id, kind, worker, repair=repair))
+            results.append(self._check_backend(session_id, kind, runtime, repair=repair))
         return results
 
     def _check_backend(
         self,
         session_id: str,
         kind: BackendKind,
-        worker: object,
+        runtime: object,
         *,
         repair: bool = True,
     ) -> BackendHealth:
         key = (session_id, kind.value)
+        worker = getattr(runtime, "worker", runtime)
         with self._lock:
             previous = self._entries.get(key)
             reconnects = previous.reconnects if previous else 0
@@ -211,6 +211,23 @@ class BackendHealthMonitor:
             failures=failures,
             last_error=last_error,
         )
+        # The body above ran holding no lock, and a reconnect() can block for
+        # the full transport timeout -- long enough for close_session to pop
+        # this runtime and forget() the session out from under us. Writing the
+        # entry now would resurrect a health row the sweep never revisits (the
+        # is_current gate at the top of the next check_once skips a popped
+        # runtime), so it would sit in report()/session_health forever with a
+        # frozen checked_at -- one un-forgettable phantom per closed session,
+        # the very leak forget() exists to prevent. Re-check ownership and drop
+        # anything this pass left behind instead. is_current briefly takes the
+        # owner lock, so it must run outside _lock: close_session holds the
+        # owner lock while forget() takes _lock, and the reverse order here
+        # would deadlock.
+        if not self.runtimes.is_current(session_id, kind, runtime):
+            with self._lock:
+                self._entries.pop(key, None)
+                self._reconnect_backoff.pop(key, None)
+            return entry
         with self._lock:
             self._entries[key] = entry
         return entry
