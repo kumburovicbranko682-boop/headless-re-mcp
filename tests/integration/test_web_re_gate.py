@@ -94,6 +94,11 @@ _WAT_EXPORT_RE = re.compile(r'\(export "([^"]+)" \((func|memory|global|table)\b'
 # wasm2wat renders any memory -- imported or defined -- as "(memory (;N;) MIN
 # [MAX] [shared])", the same min/max pages describe_wasm reports as its footprint.
 _WAT_MEMORY_RE = re.compile(r"\(memory \(;\d+;\) (\d+)(?: (\d+))?")
+# And any table -- imported or defined, inside an (import ...) or standalone --
+# as "(table (;N;) MIN [MAX] ELEM)", the same element type and slot bounds
+# describe_wasm reports. In index order, which is imported tables first: the
+# order call_indirect numbers them and the order the reader lists them.
+_WAT_TABLE_RE = re.compile(r"\(table \(;\d+;\) (\d+)(?: (\d+))? (funcref|externref)")
 # With a name section present, wasm2wat names the module ``(module $demo`` and
 # every function ``(func $name`` -- imported or defined -- straight from the
 # same subsections the tool-free reader parses. Declaration sites carry a
@@ -303,6 +308,70 @@ def test_wasm_tool_free_facts_agree_with_wabt(tmp_path: Path) -> None:
             (int(lo), int(hi) if hi else None) for lo, hi in _WAT_MEMORY_RE.findall(wat)
         ]
         assert wabt_memory == reader_memory
+    finally:
+        service.close_all()
+
+
+# A module carrying every table shape wasm2wat can render: an imported funcref
+# table (min 3, max 9), a defined funcref table (min 2, max 10) and a defined
+# externref table (min 1, no max) -- exercising the imported/defined split, the
+# bounded/unbounded split and both reference types in one decode.
+_TABLES_WASM = bytes.fromhex(
+    "0061736d01000000020e0103656e760374626c01700103090408027001020a6f0001"
+)
+
+
+@pytest.mark.integration
+def test_wasm_table_facts_agree_with_wabt(tmp_path: Path) -> None:
+    """The tool-free table footprint and wabt's decode must match, table for table.
+
+    describe_wasm now reports each table's element type and slot limits the way
+    it already reports each memory's pages -- and a funcref table's size is the
+    reach of every call_indirect, so it is the control-flow pair to a memory's
+    address-space bound. The reader walks the Table section (and the imported
+    tables the Import section leads with) itself; this drives a module carrying
+    an imported funcref table, a bounded defined funcref table and an unbounded
+    externref table through both create_session and wasm2wat, and requires the
+    (element_type, min, max) triples to agree in index order -- imported first,
+    the order call_indirect numbers them. The WASM analogue of the memory gate
+    just above. Needs wabt; skip != pass when it is absent.
+    """
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm2wat) not installed — WASM table gate not run (skip != pass)")
+    module = tmp_path / "tables.wasm"
+    module.write_bytes(_TABLES_WASM)
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(module))
+        assert created.ok, created.error
+        wasm = created.data["session"]["metadata"]["wasm"]
+        reader_tables = [(t["element_type"], t["min"], t["max"]) for t in wasm["tables"]]
+
+        result = service.wasm_wat(str(module))
+        assert result.ok, result.error
+        wat = result.data["wat"]
+        wabt_tables = [
+            (elem, int(lo), int(hi) if hi else None)
+            for lo, hi, elem in _WAT_TABLE_RE.findall(wat)
+        ]
+
+        expected = [("funcref", 3, 9), ("funcref", 2, 10), ("externref", 1, None)]
+        assert reader_tables == expected
+        assert wabt_tables == expected
+        # The imported table leads the footprint, tagged by origin: the reader's
+        # import/define split must line up with wabt's (import ...) placement.
+        assert [t["imported"] for t in wasm["tables"]] == [True, False, False]
+        # And the enriched import entry carries the same element type and bounds.
+        assert wasm["imports"] == [
+            {
+                "module": "env",
+                "name": "tbl",
+                "kind": "table",
+                "element_type": "funcref",
+                "min": 3,
+                "max": 9,
+            }
+        ]
     finally:
         service.close_all()
 
