@@ -112,6 +112,36 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.files")
+    def apk_files(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        name_filter: str = "",
+    ) -> dict[str, Any]:
+        """List every archive member, not just the lib/ natives.
+
+        apk.native_libs surfaces lib/*.so; this lists the whole APK zip so a
+        bundled payload -- a second classesN.dex, an ELF or nested apk/zip hidden
+        under assets/, an oversized blob -- is visible without decompressing the
+        archive. Each row is {path, size (uncompressed), compressed_size, stored
+        (true when the member is not deflated, the usual tell for an
+        already-compressed nested archive)}, plus kind when the leading magic
+        bytes name it: dex, elf, zip, axml (compiled XML), png, jpeg, pdf or
+        class -- read from the bytes, not the extension, so a payload renamed to
+        .png is still called what it is. kind is sniffed only for the returned
+        page, so it costs at most limit short reads. Answers with files, count,
+        total, offset, and has_more so a page that filled the limit is not read
+        as the whole archive, plus scan_capped when the member collection hit its
+        10000-entry ceiling. name_filter keeps only members whose path contains
+        that substring (case-sensitive), applied during the scan before the cap,
+        so an assets/ payload past the ceiling is still findable. The list field
+        is files, not entries or members.
+        """
+        return _dump(
+            analysis.apk_files(session_id, offset=offset, limit=limit, name_filter=name_filter)
+        )
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,

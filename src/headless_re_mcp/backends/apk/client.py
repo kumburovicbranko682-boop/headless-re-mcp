@@ -38,6 +38,13 @@ _MAX_XREF_STRING_ECHO = 256
 _MAX_NATIVE_LIBS = 256
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
+# apk.files lists the whole archive from the central directory. A zip can name
+# an unbounded number of members (a crafted one has millions), so cap the set
+# collected (scan_capped when hit) and the page returned; magic is sniffed only
+# for the page, reading this many leading bytes per member.
+_MAX_FILES_COLLECT = 10000
+_MAX_FILES_PAGE = 1000
+_FILE_MAGIC_BYTES = 16
 # The manifest attribute namespace, and the tags that declare a component whose
 # export state defines the app's cross-app attack surface.
 _ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
@@ -774,6 +781,102 @@ class ApkClient:
             "has_more": has_more,
         }
 
+    def files(
+        self, path: Path, *, offset: int = 0, limit: int = 100, name_filter: str = ""
+    ) -> JsonObject:
+        """Every archive member (path, sizes, sniffed kind), not just lib/.
+
+        native_libs surfaces lib/*.so; this lists the whole zip so a bundled
+        payload -- a second classesN.dex, an ELF or nested apk/zip hidden under
+        assets/, an oversized blob -- is visible from the central directory
+        without decompressing the archive. name/size come from the zip metadata;
+        the magic-byte kind is read only for the returned page, so classifying it
+        costs at most ``limit`` short reads rather than one per member. A
+        substring name_filter runs during the scan before the collect cap, so a
+        member past the 10000-entry ceiling is still findable by name.
+        """
+        resolved = self._require(path)
+        needle = name_filter.strip() if isinstance(name_filter, str) else ""
+        # (name, uncompressed, compressed, compress_type)
+        collected: list[tuple[str, int, int, int]] = []
+        scan_more = False
+        try:
+            with zipfile.ZipFile(resolved) as archive:
+                for info in archive.infolist():
+                    if info.is_dir():
+                        continue
+                    name = str(info.filename)
+                    if needle and needle not in name:
+                        continue
+                    if len(collected) >= _MAX_FILES_COLLECT:
+                        scan_more = True
+                        break
+                    collected.append(
+                        (
+                            name,
+                            int(info.file_size),
+                            int(info.compress_size),
+                            int(info.compress_type),
+                        )
+                    )
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise ApkError(
+                "backend_error", f"cannot read apk archive: {exc}", path=str(resolved)
+            ) from exc
+        collected.sort(key=lambda item: item[0])
+        start, capped = _page_bounds(offset, limit, cap=_MAX_FILES_PAGE)
+        window = collected[start : start + capped]
+        rows = self._files_page_rows(resolved, window)
+        return {
+            "files": rows,
+            "count": len(rows),
+            "total": len(collected),
+            "offset": start,
+            "has_more": start + len(rows) < len(collected),
+            "scan_capped": scan_more,
+        }
+
+    @staticmethod
+    def _files_page_rows(
+        path: Path, window: list[tuple[str, int, int, int]]
+    ) -> list[JsonObject]:
+        """Shape one page of archive members, sniffing kind per row.
+
+        Reads only ``_FILE_MAGIC_BYTES`` from each member of the page (bounded,
+        so a decompression bomb cannot inflate here). A member that cannot be
+        opened -- encrypted or corrupt -- still lists from its metadata with kind
+        left off, and if the archive itself fails to reopen the page falls back
+        to metadata-only rows rather than dropping the page.
+        """
+
+        def metadata_row(entry: tuple[str, int, int, int]) -> JsonObject:
+            name, size, csize, ctype = entry
+            return {
+                "path": name,
+                "size": size,
+                "compressed_size": csize,
+                "stored": ctype == zipfile.ZIP_STORED,
+            }
+
+        if not window:
+            return []
+        rows: list[JsonObject] = []
+        try:
+            with zipfile.ZipFile(path) as archive:
+                for entry in window:
+                    row = metadata_row(entry)
+                    try:
+                        with archive.open(entry[0]) as member:
+                            kind = _sniff_kind(member.read(_FILE_MAGIC_BYTES))
+                    except (OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError):
+                        kind = ""
+                    if kind:
+                        row["kind"] = kind
+                    rows.append(row)
+        except (OSError, zipfile.BadZipFile):
+            return [metadata_row(entry) for entry in window]
+        return rows
+
     def classes(
         self, path: Path, *, offset: int = 0, limit: int = 100, name_filter: str = ""
     ) -> JsonObject:
@@ -1124,3 +1227,30 @@ def _dotted_to_smali(name: str) -> str:
     if name.startswith("L") and name.endswith(";"):
         return name
     return "L" + name.replace(".", "/") + ";"
+
+
+def _sniff_kind(head: bytes) -> str:
+    """Name an archive member by its leading magic bytes, ignoring extension.
+
+    So a payload renamed to .png or dropped into assets/ is still called what it
+    is -- a bundled dex, a native ELF, a nested apk/zip. Only the magics an
+    APK-triage read cares about are named; anything else is "" (unknown), never
+    guessed from the name.
+    """
+    if head[:4] == b"dex\n":
+        return "dex"
+    if head[:4] == b"\x7fELF":
+        return "elf"
+    if head[:4] in (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"):
+        return "zip"
+    if head[:4] == b"\x03\x00\x08\x00":
+        return "axml"  # Android binary XML (a compiled manifest/layout)
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if head[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    if head[:4] == b"%PDF":
+        return "pdf"
+    if head[:4] == b"\xca\xfe\xba\xbe":
+        return "class"  # Java .class (CAFEBABE)
+    return ""

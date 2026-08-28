@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **273（155 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **274（156 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -284,6 +284,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **`apk.native_libs` 只看 `lib/`，assets 里藏的第二段 dex / ELF / 嵌套 apk 全看不见**。恶意样本常把真正的载荷塞进
+  `assets/`、`res/raw/` 或多出来的 `classes2.dex`——`apk.native_libs` 只枚举 `lib/*.so`，其余归档成员没有任何工具能列出。
+  新增只读工具 `apk.files`，直接读 zip 中央目录列出全部成员（不解压归档）：每行 `{path, size（未压缩）, compressed_size,
+  stored（未被 deflate，通常是已压缩的嵌套归档的信号）}`，并在**首字节 magic 命中时**附 `kind`（`dex`/`elf`/`zip`/`axml`/
+  `png`/`jpeg`/`pdf`/`class`）——按字节而非扩展名判定，故一个改名成 `.png` 的载荷仍被叫作它本来的样子。`kind` 只对返回页
+  的成员嗅探（每个至多读 `_FILE_MAGIC_BYTES` 字节，解压炸弹在这里也撑不起来），故代价至多 `limit` 次短读，而非每个成员一次。
+  同样的 `offset`/`limit` 分页与 `total`/`has_more`，成员数超 `_MAX_FILES_COLLECT`（10000）采集上限时置 `scan_capped`；
+  `name_filter` 对成员路径做大小写敏感子串匹配、在采集上限前应用，故超上限的 `assets/` 载荷仍可按名找到。加密/损坏的成员
+  仍按元数据列出、`kind` 留空。只读，工具总数 273→274（156 只读 / 118 写）。
 - **adb forward 只能建、不能查也不能单删，填满 32 槽后只有 `close_all` 能回收**。`device.forward` 会在 adb server 上占一个
   转发槽（frida 的 `tcp:27042`、某个调试端口），而这些转发不随会话关闭消失；此前唯一的清理是 `close_all` 里的
   `release_forwards` 一次性全删。于是一个跨多个 app、长期运行的 agent 会把 32 槽的表悄悄填满，撞上 `too many adb forwards` 后
