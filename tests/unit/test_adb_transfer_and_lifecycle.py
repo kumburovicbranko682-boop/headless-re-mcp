@@ -291,6 +291,37 @@ def test_pull_refuses_a_file_over_the_capture_cap(tmp_path: Path) -> None:
     assert not local.exists()
 
 
+def test_pull_deletes_an_oversized_file_the_pre_stat_missed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When stat cannot pre-screen, the post-pull cap still cleans up.
+
+    ``test_pull_refuses_a_file_over_the_capture_cap`` covers the pre-stat path,
+    where the oversized file is refused *before* any bytes move, so the local
+    path is never created. This pins the other, distinct path: the pre-stat probe
+    is best-effort -- older adbutils has no ``sync.stat`` and a stat can fail -- so
+    an oversized remote can slip past it and adb writes the whole file to disk
+    before ``capped_file_size`` catches it. Leaving that file would defeat the
+    capture budget it just tripped (the disk is already consumed), and this local
+    path is unregistered so retention never prunes it. ``capped_file_size`` deletes
+    a file it finds over cap, so the refusal leaves nothing behind even though the
+    write already happened. Here stat raises (``stat_result=None``) so the
+    pre-check is skipped and the fake writes an over-cap body; the cap is shrunk so
+    a handful of bytes stands in for the 64 MiB ceiling.
+    """
+    from headless_re_mcp.backends.adb import client as mod
+
+    monkeypatch.setattr(mod, "UNREGISTERED_CAPTURE_MAX_BYTES", 4)
+    dev = _FakeDev(sync=_Sync(stat_result=None, pull_bytes=b"12345"))
+    local = tmp_path / "slipped_through.bin"
+    with pytest.raises(AdbError) as excinfo:
+        _backend_with(dev).pull("emulator-5554", "/sdcard/huge.bin", local)
+    assert excinfo.value.code == "too_large"
+    assert excinfo.value.details["size"] == 5
+    # The file adb wrote is gone: a refused pull leaves nothing on the capture area.
+    assert not local.exists()
+
+
 def test_pull_returns_the_size_on_success(tmp_path: Path) -> None:
     """A small file pulls through and its byte size is reported."""
     sync = _Sync(
