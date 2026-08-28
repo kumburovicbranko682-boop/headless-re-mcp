@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -178,6 +178,25 @@ def test_frida_device_connect_maps_a_frida_error(
         service.close_all()
 
 
+@pytest.mark.parametrize("endpoint", [123, ["tcp:x"], {"e": "x"}, 1.5, b"tcp:x"])
+def test_frida_device_connect_refuses_a_non_string_endpoint(
+    tmp_path: Path, endpoint: object
+) -> None:
+    # endpoint is schema-typed as a string, but the agent transport binds it from
+    # model output with no coercion. A non-string endpoint reached endpoint.strip()
+    # and raised a raw AttributeError that _failure filed as a logged internal_error
+    # incident; it must read as the invalid_params caller fault it is. No FridaClient
+    # stub is installed, proving the guard fires before any backend touch.
+    service = _service(tmp_path)
+    try:
+        session_id = _web_session(service)
+        result = service.frida_device_connect(session_id, endpoint=cast(Any, endpoint))
+        assert result.ok is False and result.error is not None
+        assert result.error.code == "invalid_params"
+    finally:
+        service.close_all()
+
+
 # --------------------------------------------------------------------------- #
 # frida_server_ensure                                                          #
 # --------------------------------------------------------------------------- #
@@ -189,6 +208,29 @@ def test_frida_server_ensure_maps_an_adb_error(tmp_path: Path) -> None:
         result = service.frida_server_ensure(session_id, serial="emulator-5554")
         assert result.ok is False and result.error is not None
         assert result.error.code == "adb_failed"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.parametrize("server_binary", [123, ["/x"], {"b": "/x"}, 2.0, b"/x"])
+def test_frida_server_ensure_refuses_a_non_string_server_binary(
+    tmp_path: Path, server_binary: object
+) -> None:
+    # server_binary is schema-typed as a string, but the agent transport binds it
+    # from model output with no coercion. A non-string value reached
+    # server_binary.strip() and raised a raw AttributeError that _failure filed as a
+    # logged internal_error incident; it must read as the invalid_params caller fault
+    # it is. The _BoomAdb backend would raise adb_failed if the guard let execution
+    # reach it, so asserting invalid_params proves the guard fires first.
+    service = _service(tmp_path)
+    try:
+        session_id = _web_session(service)
+        service._adb_backend = _BoomAdb()  # type: ignore[assignment]
+        result = service.frida_server_ensure(
+            session_id, serial="emulator-5554", server_binary=cast(Any, server_binary)
+        )
+        assert result.ok is False and result.error is not None
+        assert result.error.code == "invalid_params"
     finally:
         service.close_all()
 

@@ -75,6 +75,14 @@ class FridaDeviceMixin:
         self, session_id: str, device_id: str = "usb", endpoint: str = ""
     ) -> Result[JsonObject]:
         try:
+            # endpoint is schema-typed as a string, but the agent and OpenAI-bridge
+            # transports bind it straight from model output with no pydantic coercion.
+            # A non-string endpoint reached endpoint.strip() below and raised a raw
+            # AttributeError that the outer except BaseException would file as a logged
+            # internal_error incident. Reject it as the invalid_params caller fault it
+            # is, before the FridaClient touch.
+            if not isinstance(endpoint, str):
+                raise FridaError("invalid_params", "endpoint must be a string")
             self._require_open_session(session_id, "frida.device.connect")
             client = FridaClient()
             if endpoint.strip():
@@ -115,6 +123,14 @@ class FridaDeviceMixin:
         bind_host: str = "127.0.0.1",
     ) -> Result[JsonObject]:
         try:
+            # server_binary is schema-typed as a string, but the transports bind it
+            # from model output with no pydantic coercion. A non-string value reached
+            # server_binary.strip() below and raised a raw AttributeError that the
+            # outer except BaseException would file as a logged internal_error
+            # incident. Reject it as the invalid_params caller fault it is, before the
+            # AdbBackend touch.
+            if not isinstance(server_binary, str):
+                raise FridaError("invalid_params", "server_binary must be a string")
             self._require_open_session(session_id, "frida.server.ensure")
             backend = getattr(self, "_adb_backend", None) or AdbBackend(
                 getattr(self.settings, "adb", None)
