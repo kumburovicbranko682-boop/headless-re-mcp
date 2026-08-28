@@ -129,8 +129,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   同时厘清语义：`permissions` 就是请求（uses）列表；`requested_permissions` 保留为其别名
   （androguard ≥ 4 已移除 `get_requested_permissions()`，旧代码那段 `try` 在新版恒抛异常、
   回退成与 `permissions` 完全相同的冗余字段——现显式说明它是别名，并按能力有无优雅降级）。
-  已用假 APK 对象核验：暴露定义权限、按上限截断、以及 androguard ≥ 4 无 requested getter 时
-  别名回退到 uses 列表且 declared 仍照常给出。
+  已在真 APK 上核验（aapt 打包、声明两个 uses-permission 加一个 signature 级自定义
+  `<permission>` 的最小清单）：`declared_permissions` 恰为该自定义权限、`declared_count: 1`，
+  `permissions`/`requested_permissions` 为两个请求权限；单测另钉住按上限截断与
+  androguard ≥ 4 无 requested getter 时别名回退到 uses 列表且 declared 仍照常给出。
 
 - **apk（jadx/apktool）、web（webcrack/wabt）与 r2（radare2）几条 CLI 适配器把调用方的 `timeout`
   直接塞进 `run_bounded`**，而 frida 早已用 `_bound_timeout` 在后端边界拒非正、封上限。MCP schema
