@@ -113,6 +113,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   横幅、usage+容忍退出码、无标记但有输出的兜底、不可执行文件的 OSError 兜底。行覆盖
   60% → 97%(余量为两处实践中不可达的防御分支)。
 
+### 测试（apk.* 全surface 拒绝非 APK 会话，对称补齐 target 守卫）
+
+- 既有 `TestPeOnlyToolsRefuseApkSessions` 钉住了反方向(APK 会话调用 PE 专属的 detect/dotnet/unpack
+  返回 `target_mismatch`),但对称的一侧——PE 或 Web 会话调用 apk.* 工具必须同样以 `target_mismatch`
+  被拒——从未被检验。整个 apk.* 面(androguard 的 open/manifest/permissions/certificates/components/
+  native_libs/classes/methods/strings/xrefs,以及 apktool/jadx 的 decompile/decode/repack/sign)都经
+  `ApkAnalysisMixin._apk_binary → require_target(APK)` 收口,少一道门就会让整面 Android 分析在错误
+  target 上运行——把 PE 当 zip 解析、或对着 URL 跑 androguard——继而报出比 `target_mismatch` 更含糊的
+  `capability_unavailable`/`backend_error`/`internal_error`。happy-path 的 apk 夹具从不触及这条错误
+  target 臂。在 `test_android_backends.py` 新增 `TestApkToolsRefuseNonApkSessions`:对 PE 会话与 Web
+  会话各跑一遍全部 14 个 apk.* 入口,逐一断言 `ok is False` 且 `error.code == "target_mismatch"`。
+  变异验证:把 `_apk_binary` 的 `require_target(APK)` 去掉后,两例均失败(改判 `internal_error`)。
+  仅测试与 CHANGELOG,未改动产品代码。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

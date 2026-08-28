@@ -30,6 +30,15 @@ def _apk(path: Path) -> Path:
     return path
 
 
+def _write_minimal_pe(path: Path, machine: int = 0x8664) -> None:
+    image = bytearray(0x200)
+    image[:2] = b"MZ"
+    image[0x3C:0x40] = (0x80).to_bytes(4, "little")
+    image[0x80:0x84] = b"PE\0\0"
+    image[0x84:0x86] = machine.to_bytes(2, "little")
+    path.write_bytes(image)
+
+
 class TestNoShellPassthrough:
     def test_catalog_exposes_no_generic_device_shell(self) -> None:
         """The debugger surface has no dynamic.command; devices get the same rule."""
@@ -501,6 +510,74 @@ class TestPeOnlyToolsRefuseApkSessions:
             assert signed.ok is False
             assert signed.error is not None
             assert signed.error.code == "invalid_params"
+        finally:
+            service.close_all()
+
+
+# The apk.* surface is the mirror of TestPeOnlyToolsRefuseApkSessions: androguard,
+# apktool and jadx must all refuse a session whose target is not an APK, and they
+# must do so with the same target_mismatch envelope the PE-only tools use -- before
+# reaching a backend that would otherwise report a vaguer capability_unavailable /
+# backend_error, or (worse) try to parse a PE/URL as an Android package. Every apk.*
+# entry point funnels through ApkAnalysisMixin._apk_binary -> require_target(APK), so
+# one missing gate would open the whole surface; the happy-path apk fixtures never
+# exercise the wrong-target arm.
+_APK_TOOLS: tuple[tuple[str, tuple[Any, ...]], ...] = (
+    ("apk_open", ()),
+    ("apk_manifest", ()),
+    ("apk_permissions", ()),
+    ("apk_certificates", ()),
+    ("apk_components", ()),
+    ("apk_native_libs", ()),
+    ("apk_classes", ()),
+    ("apk_methods", ("La/B;",)),
+    ("apk_strings", ()),
+    ("apk_xrefs", ("someMethod",)),
+    ("apk_decompile", ("a.B",)),
+    ("apk_decode", ()),
+    ("apk_repack", ()),
+    ("apk_sign", ()),
+)
+
+
+class TestApkToolsRefuseNonApkSessions:
+    @staticmethod
+    def _service(tmp_path: Path) -> Any:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        return AnalysisService(
+            replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        )
+
+    def _assert_all_refuse(self, service: Any, session_id: str) -> None:
+        for name, args in _APK_TOOLS:
+            result = getattr(service, name)(session_id, *args)
+            assert result.ok is False, f"{name} accepted a non-apk session"
+            assert result.error is not None, name
+            assert result.error.code == "target_mismatch", (
+                f"{name} returned {result.error.code}, not target_mismatch"
+            )
+
+    def test_a_pe_session_is_refused_by_every_apk_tool(self, tmp_path: Path) -> None:
+        service = self._service(tmp_path)
+        try:
+            binary = tmp_path / "sample.exe"
+            _write_minimal_pe(binary, 0x8664)
+            created = service.create_session(str(binary), target="pe")
+            assert created.ok, created.error
+            self._assert_all_refuse(service, str(created.data["session"]["id"]))
+        finally:
+            service.close_all()
+
+    def test_a_web_session_is_refused_by_every_apk_tool(self, tmp_path: Path) -> None:
+        service = self._service(tmp_path)
+        try:
+            created = service.create_session("https://example.test/app", target="web")
+            assert created.ok, created.error
+            self._assert_all_refuse(service, str(created.data["session"]["id"]))
         finally:
             service.close_all()
 
