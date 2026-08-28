@@ -84,6 +84,38 @@ def test_listing_stops_counting_at_the_file_ceiling(
     assert has_more is True
 
 
+def test_listing_returns_the_alphabetical_prefix_not_an_arbitrary_subset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A capped listing must be the alphabetically-first names, not a slice.
+
+    The alphabetically-smallest file is handed back last by the walk. Capping
+    during collection and sorting only the survivors (the old behaviour) drops it
+    and returns sorted(m1,m2,m3) -- sorted, but an arbitrary filesystem-order
+    window, so a caller reading the sorted list plus has_more never sees "aaa" and
+    cannot tell it is missing (export_sources has no offset). Sorting the full set
+    before slicing keeps it. rglob's order is otherwise the filesystem's, so the
+    walk order is pinned here to make the difference deterministic.
+    """
+    for name in ("m1.java", "m2.java", "m3.java", "aaa.java"):
+        (tmp_path / name).write_text("class X {}", encoding="utf-8")
+    walk_order = [tmp_path / n for n in ("m1.java", "m2.java", "m3.java", "aaa.java")]
+    real_rglob = Path.rglob
+
+    def fake_rglob(self: Path, pattern: str, *args: Any, **kwargs: Any) -> Any:
+        if self == tmp_path and pattern == "*.java":
+            return iter(walk_order)
+        return real_rglob(self, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "rglob", fake_rglob)
+
+    names, total, has_more = _capped_java_listing(tmp_path, cap=3)
+
+    assert total == 4
+    assert has_more is True
+    assert names == ["aaa.java", "m1.java", "m2.java"]
+
+
 def test_decompile_rejects_a_blank_class_name(tmp_path: Path) -> None:
     client, apk, out = _jadx(tmp_path)
 

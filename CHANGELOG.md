@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（jadx.export_sources 的 java_files 列表 sort-after-cap，看似排序实为任意子集）
+
+- `backends/jadx/client.py::_capped_java_listing`（`jadx.export_sources` 用它汇总反编译出的
+  .java 树）以 `cap=_MAX_LISTED_FILES`（2000）在收集时截断：先按 `rglob` 的任意文件系统顺序
+  取前 2000 个，再对这 2000 个排序。于是当文件超过 2000 时，返回的 `java_files` 只是“看起来
+  有序”——实际是任意子集排序后的结果，调用方看到有序列表加 `has_more=True`，却并不是
+  按字母序最靠前的那些类，也无从知道漏了谁（该工具没有 offset）。这与我此前修的
+  `apk._cap_names` 是同一类问题；jsre 的同类 `_capped_file_listing` 因为按扫描上限收集后再排序
+  而没有这个毛病。
+- 改为先收集（上限仍是扫描上限 `_MAX_COUNTED_FILES`）、排序、再切片，使 `java_files` 成为
+  诚实的字母序前缀；`has_more` 在收集数超过展示上限或触达扫描上限时为真。内存仍有界
+  （最多 5 万条路径，与 jsre 一致），遍历成本不变（旧代码也会继续遍历以统计 total）。
+- 新增 `test_jadx_client_fallback_and_run_guards.py::test_listing_returns_the_alphabetical_prefix_not_an_arbitrary_subset`：
+  把字母序最小的文件放在遍历顺序最后（用打桩的 `rglob` 固定顺序保证确定性），断言 cap=3 时
+  返回 `["aaa.java","m1.java","m2.java"]`。去掉修复后会返回 `["m1.java","m2.java","m3.java"]`
+  而失败，因此非空。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

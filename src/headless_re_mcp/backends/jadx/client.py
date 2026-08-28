@@ -30,24 +30,34 @@ _MAX_COUNTED_FILES = 50_000
 
 
 def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
-    names: list[str] = []
-    total = 0
-    has_more = False
+    """The alphabetically-first ``cap`` .java paths under ``root``, the total, and
+    whether more exist.
+
+    Sort before capping, not after. The old code kept the first ``cap`` files in
+    rglob's arbitrary filesystem order and sorted only those, so the returned page
+    merely *looked* sorted: it was an arbitrary subset, and a caller reading a
+    sorted list plus ``has_more`` was not seeing the alphabetically-first classes
+    and had no way to know which were missing -- the same dishonesty apk._cap_names
+    carried. Collect the names first (bounded by the scan cap, exactly as jsre's
+    unpack listing already does) and sort the full set before slicing, so the page
+    is an honest alphabetical prefix.
+    """
     if not root.is_dir():
         return [], 0, False
+    names: list[str] = []
+    total = 0
+    scan_capped = False
     for path in root.rglob("*.java"):
         if not path.is_file():
             continue
         total += 1
-        if len(names) < cap:
-            names.append(str(path.relative_to(root)))
-        else:
-            has_more = True
+        names.append(str(path.relative_to(root)))
         if total >= _MAX_COUNTED_FILES:
-            has_more = True
+            scan_capped = True
             break
     names.sort()
-    return names, total, has_more
+    has_more = len(names) > cap or scan_capped
+    return names[:cap], total, has_more
 
 
 class JadxError(RuntimeError):
