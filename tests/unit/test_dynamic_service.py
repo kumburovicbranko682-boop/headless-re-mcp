@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from collections import deque
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -1886,6 +1887,24 @@ def test_resolve_runtime_address_rejects_unknown_source(tmp_path: Path) -> None:
     assert rejected.error.code == "invalid_request"
 
 
+@pytest.mark.parametrize("source", [123, ["static"], {"s": "static"}, 1.0, b"static"])
+def test_resolve_runtime_address_rejects_a_non_string_source(
+    tmp_path: Path, source: object
+) -> None:
+    # source is schema-typed as a string, but the agent transport binds it from
+    # model output with no coercion. A non-string, non-falsy source reached the
+    # (source or "static").strip() idiom and raised a raw AttributeError that
+    # _failure filed as a logged internal_error incident; it must read as the
+    # invalid_request caller fault an unknown source already earns.
+    service, session_id, _ = _rebased_service(tmp_path, 0x7FF700000000)
+
+    rejected = service.resolve_runtime_address(
+        session_id, 0x1000, source=cast(Any, source)
+    )
+    assert not rejected.ok and rejected.error is not None
+    assert rejected.error.code == "invalid_request"
+
+
 def test_breakpoint_set_rebases_static_and_rva_coordinates(tmp_path: Path) -> None:
     runtime_base = 0x7FF700000000
     service, session_id, dynamic = _rebased_service(tmp_path, runtime_base)
@@ -1910,6 +1929,24 @@ def test_breakpoint_set_rebases_static_and_rva_coordinates(tmp_path: Path) -> No
     ]
 
     rejected = service.dynamic_breakpoint_set(session_id, 0x1000, address_space="bogus")
+    assert not rejected.ok and rejected.error is not None
+    assert rejected.error.code == "invalid_request"
+
+
+@pytest.mark.parametrize("address_space", [123, ["static"], {"s": "x"}, 2.0, b"rva"])
+def test_breakpoint_set_rejects_a_non_string_address_space(
+    tmp_path: Path, address_space: object
+) -> None:
+    # address_space is schema-typed as a string, but the transports bind it from
+    # model output with no coercion. A non-string, non-falsy value reached the
+    # (address_space or "runtime").strip() idiom and raised a raw AttributeError
+    # that _failure filed as an internal_error incident instead of the
+    # invalid_request an unknown space already earns.
+    service, session_id, _ = _rebased_service(tmp_path, 0x7FF700000000)
+
+    rejected = service.dynamic_breakpoint_set(
+        session_id, 0x1000, address_space=cast(Any, address_space)
+    )
     assert not rejected.ok and rejected.error is not None
     assert rejected.error.code == "invalid_request"
 

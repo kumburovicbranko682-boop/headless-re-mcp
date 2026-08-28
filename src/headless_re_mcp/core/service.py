@@ -2035,6 +2035,16 @@ class AnalysisService(
         address_space: str,
     ) -> int:
         """Translate a caller coordinate into the live runtime VA."""
+        # address_space is schema-typed as a string with a "runtime" default, but the
+        # agent and OpenAI-bridge transports bind it straight from model output with
+        # no pydantic coercion. The (address_space or "runtime") idiom folds None and
+        # "" back to the default, yet a non-string, non-falsy value (e.g. an int or a
+        # list) reaches .strip() and raises a raw AttributeError. dynamic_breakpoint_set
+        # wraps this call in except BaseException, so _failure files that as a logged
+        # internal_error incident rather than the invalid_request an unknown space
+        # already earns. Reject the wrong type up front so it stays a caller fault.
+        if address_space is not None and not isinstance(address_space, str):
+            raise ValueError("address_space must be a string")
         normalized = (address_space or "runtime").strip().casefold()
         if normalized == "runtime":
             return address
@@ -2086,6 +2096,15 @@ class AnalysisService(
         try:
             if isinstance(address, bool) or type(address) is not int or address < 0:
                 raise ValueError("address must be a non-negative integer")
+            # source mirrors address_space in _runtime_breakpoint_address: the schema
+            # types it as a string with a "static" default, but the transports bind it
+            # from model output with no coercion. (source or "static") folds None/"" to
+            # the default, yet a non-string, non-falsy value reaches .strip() and raises
+            # a raw AttributeError that the outer except BaseException would file as an
+            # internal_error incident instead of the invalid_request an unknown source
+            # earns just below.
+            if source is not None and not isinstance(source, str):
+                raise ValueError("source must be a string")
             normalized = (source or "static").strip().casefold()
             if normalized not in {"static", "rva", "runtime"}:
                 raise ValueError("source must be one of: static, rva, runtime")
