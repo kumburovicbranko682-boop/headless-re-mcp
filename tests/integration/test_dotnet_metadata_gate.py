@@ -116,9 +116,14 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
             "path": r"C:\build\headless\MyAssembly.pdb",
             "signature": "A1B2C3D4E5F6478899AABBCCDDEEFF001",
         }
+        # The native import surface at symbol level: the ImplMap decoded to
+        # (native name, DLL) pairs. The wrapper is NativeBeep but the import
+        # is Beep -- the reader must report what the runtime binds. The
+        # monodis gate cross-checks the same row against --implmap.
+        assert report["pinvoke_imports"] == [{"name": "Beep", "module": "kernel32.dll"}]
         stats = report["metadata_stats"]
         assert stats["type_count"] == 2
-        assert stats["method_count"] == 3
+        assert stats["method_count"] == 4
         assert stats["field_count"] == 1
         assert stats["resource_count"] == 1
 
@@ -130,14 +135,15 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
         assert {t["name"] for t in types["items"]} == {"<Module>", "Sample"}
 
         methods = _data(service.dotnet_enumerate(session_id, "methods", limit=16))
-        assert methods["total"] == 3
+        assert methods["total"] == 4
         by_name = {m["name"]: m for m in methods["items"]}
-        assert set(by_name) == {".cctor", "Add", "Run"}
+        assert set(by_name) == {".cctor", "Add", "Run", "NativeBeep"}
         # Laid out in row order: the module initializer's body first, then
-        # Sample's two methods.
+        # Sample's two real bodies; the P/Invoke wrapper has no IL at all.
         assert by_name[".cctor"]["rva"] > 0
         assert by_name["Add"]["rva"] > by_name[".cctor"]["rva"]
         assert by_name["Run"]["rva"] > by_name["Add"]["rva"]
+        assert by_name["NativeBeep"]["rva"] == 0
 
         fields = _data(service.dotnet_enumerate(session_id, "fields", limit=16))
         assert [f["name"] for f in fields["items"]] == ["Secret"]

@@ -69,6 +69,12 @@ _METHOD_END_RE = re.compile(r"//\s*end of method\s+(\S+)")
 _GLOBAL_CCTOR_LINE_RE = re.compile(
     r"//\s*method line (\d+)\s*\n\s*\.method[^\n]*\n[^\n]*'\.cctor'"
 )
+# monodis --implmap prints each P/Invoke row as
+# "1: void class Sample::NativeBeep() 256 (Beep kernel32.dll)" -- the managed
+# wrapper's full signature, the MappingFlags in decimal, then the ImportName
+# and ImportScope DLL in parentheses: Mono's own decode of the same
+# (native symbol, module) pair the reader reports.
+_IMPLMAP_ROW_RE = re.compile(r"^\d+:\s+.*::(\w+)\(\)\s+(\d+)\s+\((\S+)\s+(\S+)\)\s*$", re.MULTILINE)
 
 
 def _monodis_public_key(assembly_dump: str) -> bytes:
@@ -299,5 +305,50 @@ def test_module_initializer_agrees_with_monodis(tmp_path: Path) -> None:
         # printed the global .cctor from.
         assert token == 0x06000000 | mono_row
         assert token == 0x06000001
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_pinvoke_imports_agree_with_monodis_implmap(tmp_path: Path) -> None:
+    """The tool-free P/Invoke import map against Mono's ImplMap decode.
+
+    pinvoke_imports is the symbol-level native import surface: which native
+    function each P/Invoke binds (the ImportName the runtime resolves) and in
+    which DLL -- the managed analogue of an ELF's undefined dynamic symbols,
+    which the native gate cross-checks against readelf. Mono decodes the same
+    ImplMap rows itself for ``--implmap`` (and renders the binding as
+    ``pinvokeimpl ("dll" as "name")`` in the full disassembly), so the two
+    must agree pair for pair. The fixture's wrapper (NativeBeep) and import
+    (Beep) deliberately differ: a reader echoing MethodDef names instead of
+    ImportName cannot pass.
+    """
+    if not _FIXTURE.is_file():
+        pytest.skip(
+            "minimal .NET fixture missing; run fixtures/dotnet/build_minimal_dotnet.py"
+            " (skip != pass)"
+        )
+    if shutil.which("monodis") is None:
+        pytest.skip("monodis (mono-utils) not installed — .NET cross-check not run (skip != pass)")
+
+    # Independent ground truth: Mono's own ImplMap table decode.
+    implmap_dump = _monodis("--implmap")
+    mono_rows = _IMPLMAP_ROW_RE.findall(implmap_dump)
+    assert mono_rows, implmap_dump
+    mono_imports = [(name, module) for _wrapper, _flags, name, module in mono_rows]
+
+    service = _service(tmp_path)
+    try:
+        session_id = service.create_session(str(_FIXTURE)).data["session"]["id"]
+        report = service.dotnet_inspect(session_id, require_verified=True)
+        assert report.ok, report.error
+        reader_imports = [
+            (entry["name"], entry["module"]) for entry in report.data["pinvoke_imports"]
+        ]
+        # Pair for pair, in row order: the same native symbols from the same
+        # DLLs, and specifically the renamed import -- not the wrapper.
+        assert reader_imports == mono_imports
+        assert reader_imports == [("Beep", "kernel32.dll")]
+        assert mono_rows[0][0] == "NativeBeep"  # the wrapper Mono names differs
     finally:
         service.close_all()

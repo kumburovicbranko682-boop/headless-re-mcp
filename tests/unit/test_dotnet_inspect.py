@@ -163,7 +163,7 @@ def test_inspect_reads_assembly_name_past_intervening_tables() -> None:
     assert report.mvid == "8b8a2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
     assert report.metadata_stats is not None
     assert report.metadata_stats.type_count == 2
-    assert report.metadata_stats.method_count == 3
+    assert report.metadata_stats.method_count == 4
     # The AssemblyRef table is the managed DT_NEEDED: which assemblies this one
     # links against, with the version each was compiled for. The fixture
     # references the runtime library the way every real compiler output does.
@@ -176,6 +176,12 @@ def test_inspect_reads_assembly_name_past_intervening_tables() -> None:
     # ModuleRef row) both read correctly proves the new row is sized right.
     assert report.module_refs == ("kernel32.dll",)
     assert report.to_dict()["module_refs"] == ["kernel32.dll"]
+    # The ImplMap decoded: the *native* symbol each P/Invoke resolves and its
+    # DLL. The fixture's managed wrapper is NativeBeep but the import is Beep
+    # (an EntryPoint= rename), so this passing proves the reader reports the
+    # ImportName the runtime binds, not the method name.
+    assert report.pinvoke_imports == ({"name": "Beep", "module": "kernel32.dll"},)
+    assert report.to_dict()["pinvoke_imports"] == [{"name": "Beep", "module": "kernel32.dll"}]
     # The TargetFrameworkAttribute the builder stamps on the assembly: reading
     # it walks TypeRef -> MemberRef -> CustomAttribute and decodes the value
     # blob's SerString from #Blob -- the platform the build targets, the
@@ -431,6 +437,77 @@ def test_synthetic_verified_image_has_no_module_initializer(tmp_path: Path) -> N
     path = tmp_path / "synthetic_no_cctor.exe"
     _write_verified_clr_pe(path)
     assert inspect_dotnet(path).module_initializer_token is None
+
+
+# The fixture's one ImplMap row: MappingFlags 0x0100 (winapi), MemberForwarded
+# (4 << 1) | 1 = 9 (MethodDef row 4). The pair prefixes the row uniquely, so
+# mutation tests can locate its fields without hardcoding a file offset.
+_IMPLMAP_ROW_PREFIX = struct.pack("<HH", 0x0100, 9)
+
+
+def test_a_field_forwarded_implmap_row_is_skipped(tmp_path: Path) -> None:
+    # MemberForwarded tag 0 is Field, which P/Invoke does not use (ECMA notes
+    # it exists only for historical reasons); a row forwarding a field is not
+    # a native import. Flipping the fixture row's tag must clear the list --
+    # and prove the reader checked the tag rather than taking every row.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    raw = bytearray(fixture.read_bytes())
+    assert raw.count(_IMPLMAP_ROW_PREFIX) == 1, "fixture layout changed"
+    struct.pack_into("<H", raw, raw.index(_IMPLMAP_ROW_PREFIX) + 2, 4 << 1)  # tag -> Field
+    path = tmp_path / "field_pinvoke.exe"
+    path.write_bytes(bytes(raw))
+
+    report = inspect_dotnet(path)
+    assert report.pinvoke_imports == ()
+    # The tables behind ImplMap still parse -- the skip is per-row.
+    assert report.assembly_name == "MyAssembly"
+
+
+def test_an_out_of_range_import_scope_reads_as_no_module(tmp_path: Path) -> None:
+    # ImportScope indexes ModuleRef; a row pointing past the table names no
+    # DLL. The import itself is still real (the name is what the runtime
+    # resolves), so it is kept with module None rather than dropped or guessed.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    raw = bytearray(fixture.read_bytes())
+    assert raw.count(_IMPLMAP_ROW_PREFIX) == 1, "fixture layout changed"
+    # Row layout: MappingFlags(2) MemberForwarded(2) ImportName(2)
+    # ImportScope(2) -- the scope sits 6 bytes into the row.
+    struct.pack_into("<H", raw, raw.index(_IMPLMAP_ROW_PREFIX) + 6, 99)
+    path = tmp_path / "dangling_scope.exe"
+    path.write_bytes(bytes(raw))
+
+    report = inspect_dotnet(path)
+    assert report.pinvoke_imports == ({"name": "Beep", "module": None},)
+
+
+def test_a_lying_implmap_count_stays_bounded(tmp_path: Path) -> None:
+    # The ImplMap row count is attacker-controlled like every other; a claim
+    # of two billion P/Invokes must neither allocate for the claim nor crash
+    # the walk, and everything in front of the liar still parses.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    raw = bytearray(fixture.read_bytes())
+    struct.pack_into("<I", raw, _rowcount_offset(bytes(raw), 0x1C), 0x7FFFFFFF)
+    path = tmp_path / "liar_pinvokes.exe"
+    path.write_bytes(bytes(raw))
+
+    report = inspect_dotnet(path)
+    assert report.verified_clr is True
+    assert report.module_refs == ("kernel32.dll",)
+    assert len(report.pinvoke_imports) <= 1024
+
+
+def test_synthetic_verified_image_has_no_pinvoke_imports(tmp_path: Path) -> None:
+    # No #~ tables at all means no ImplMap rows: an empty list, the same
+    # honest absence as module_refs.
+    path = tmp_path / "synthetic_no_pinvoke.exe"
+    _write_verified_clr_pe(path)
+    assert inspect_dotnet(path).pinvoke_imports == ()
 
 
 def _rowcount_offset(raw: bytes, table_bit: int) -> int:

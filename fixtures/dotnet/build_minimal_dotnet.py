@@ -15,7 +15,9 @@ signatures (monodis asserts on malformed ones, so real blobs are what let it
 fully disassemble the fixture and mark the .entrypoint the entrypoint gate
 cross-checks), and three method bodies with actual CIL -- including a
 <Module>::.cctor module initializer (the managed code-before-main the
-monodis gate cross-checks). It also carries a
+monodis gate cross-checks) plus a bodiless P/Invoke method bound through an
+ImplMap row (the symbol-level native import the same gate cross-checks
+against monodis --implmap). It also carries a
 CodeView RSDS debug directory (a per-build PDB GUID, age and path) so the
 managed build-fingerprint fact -- the symbol-server key, the analogue of an
 ELF build-id -- has a positive case a strict PE decoder (llvm-readobj /
@@ -66,6 +68,14 @@ CONSOLE_NAMESPACE = "System"
 # Its row sits between MemberRef (0x0A) and Assembly (0x20) in the walk, so it
 # is another table the AssemblyRef/resource reads must step over correctly.
 MODULE_REF_NAME = "kernel32.dll"
+# A real P/Invoke: MethodDef row 4 (flags carry PinvokeImpl, no IL body) plus
+# an ImplMap row (0x1C) binding it to the native import. The managed wrapper
+# name and the ImportName deliberately differ -- ``static extern`` methods are
+# routinely renamed with EntryPoint= -- so a reader that echoes the method
+# name instead of the ImportName cannot pass the gate.
+PINVOKE_METHOD = "NativeBeep"
+PINVOKE_IMPORT = "Beep"
+PINVOKE_FLAGS = 0x0100  # CallConvWinapi
 RESOURCE_NAME = "config.json"
 RESOURCE_FLAGS = 0x0001  # Public
 # The AssemblyRef every real compiler emits: the runtime library the assembly
@@ -142,6 +152,8 @@ def build() -> bytes:
     i_type_sample = add_string(TYPE_NAME)
     i_add = add_string(METHOD_ADD)
     i_run = add_string(METHOD_RUN)
+    i_pinvoke = add_string(PINVOKE_METHOD)
+    i_pinvoke_import = add_string(PINVOKE_IMPORT)
     i_asm = add_string(ASSEMBLY_NAME)
     i_field = add_string(FIELD_NAME)
     i_memberref = add_string(MEMBERREF_NAME)
@@ -235,13 +247,14 @@ def build() -> bytes:
         | (1 << 0x0A)  # MemberRef
         | (1 << 0x0C)  # CustomAttribute
         | (1 << 0x1A)  # ModuleRef
+        | (1 << 0x1C)  # ImplMap
         | (1 << 0x20)  # Assembly
         | (1 << 0x23)  # AssemblyRef
         | (1 << 0x28)  # ManifestResource
     )
     row_counts = {
-        0x00: 1, 0x01: 2, 0x02: 2, 0x04: 1, 0x06: 3, 0x0A: 2, 0x0C: 1,
-        0x1A: 1, 0x20: 1, 0x23: 1, 0x28: 1,
+        0x00: 1, 0x01: 2, 0x02: 2, 0x04: 1, 0x06: 4, 0x0A: 2, 0x0C: 1,
+        0x1A: 1, 0x1C: 1, 0x20: 1, 0x23: 1, 0x28: 1,
     }
 
     tables = bytearray()
@@ -273,6 +286,9 @@ def build() -> bytes:
     tables += _u32(rva_cctor) + _u16(0) + _u16(0x1811) + _u16(i_cctor) + _u16(b_void_sig) + _u16(1)
     tables += _u32(rva_add) + _u16(0) + _u16(0x0016) + _u16(i_add) + _u16(b_add_sig) + _u16(1)
     tables += _u32(rva_run) + _u16(0) + _u16(0x0016) + _u16(i_run) + _u16(b_void_sig) + _u16(1)
+    # Row 4: the P/Invoke wrapper -- RVA 0 (no IL body), flags Public | Static
+    # | PinvokeImpl (0x2016); its native binding is the ImplMap row below.
+    tables += _u32(0) + _u16(0) + _u16(0x2016) + _u16(i_pinvoke) + _u16(b_void_sig) + _u16(1)
     # MemberRef x2: Class Name Signature. Row 1 is the WriteLine call target,
     # its Class the System.Console TypeRef (MemberRefParent tag 1, row 2);
     # row 2 is TargetFrameworkAttribute::.ctor(string), its Class the TypeRef
@@ -286,6 +302,11 @@ def build() -> bytes:
     tables += _u16((1 << 5) | 14) + _u16((2 << 3) | 3) + _u16(b_ca_value)
     # ModuleRef: Name -- the unmanaged DLL a P/Invoke binds to.
     tables += _u16(i_mod_ref)
+    # ImplMap: MappingFlags MemberForwarded ImportName ImportScope -- binds
+    # MethodDef row 4 (MemberForwarded coded index tag 1 = MethodDef) to the
+    # native import in ModuleRef row 1, under a different name than the
+    # managed wrapper's, the way EntryPoint= renames do.
+    tables += _u16(PINVOKE_FLAGS) + _u16((4 << 1) | 1) + _u16(i_pinvoke_import) + _u16(1)
     # Assembly: HashAlgId Maj Min Build Rev Flags PublicKey Name Culture.
     # Flags bit 0 (afPublicKey) marks the PublicKey field as a full public key,
     # which points at the ECMA strong-name key in #Blob.

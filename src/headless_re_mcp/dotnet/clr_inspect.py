@@ -89,6 +89,15 @@ _METHOD_FLAG_STATIC = 0x0010
 # <Module> owns a handful of methods in a real image (compilers emit none or
 # one); the cap only bounds a hostile MethodList span, not an honest one.
 _MAX_MODULE_METHOD_SCAN = 4096
+# The ImplMap table (0x1C) is the P/Invoke import map: which native function
+# each forwarded method binds to, in which unmanaged DLL -- the symbol-level
+# complement to module_refs (which only names the DLLs), and the managed
+# analogue of an ELF/Mach-O undefined-import list or a PE import table.
+# MemberForwarded's tag 1 is MethodDef (tag 0, Field, is not used for
+# P/Invoke). Interop-heavy assemblies carry hundreds of rows; the cap only
+# bounds a lying row count.
+_MEMBER_FORWARDED_METHODDEF_TAG = 1
+_MAX_PINVOKE_IMPORTS = 1024
 
 
 class DotnetKind(StrEnum):
@@ -162,6 +171,12 @@ class DotnetInspectReport:
     # its native (rather than managed) dependencies, the interop counterpart to
     # assembly_refs and the closest managed analogue to a native DT_NEEDED.
     module_refs: tuple[str, ...] = ()
+    # The ImplMap table decoded: each P/Invoke as {"name", "module"} -- the
+    # native function imported (the ImportName the runtime resolves, not the
+    # managed wrapper's name) and the DLL it comes from. The symbol-level
+    # native import surface, the managed analogue of an ELF's undefined
+    # dynamic symbols. Empty for an assembly that P/Invokes nothing.
+    pinvoke_imports: tuple[JsonObject, ...] = ()
     # The TargetFrameworkAttribute string the compiler stamps on the assembly
     # (e.g. ".NETCoreApp,Version=v8.0"): the platform the build targets -- the
     # managed analogue of a Mach-O LC_BUILD_VERSION or an ELF ABI-tag note.
@@ -213,6 +228,7 @@ class DotnetInspectReport:
             "mvid": self.mvid,
             "assembly_refs": list(self.assembly_refs),
             "module_refs": list(self.module_refs),
+            "pinvoke_imports": list(self.pinvoke_imports),
             "target_framework": self.target_framework,
             "public_key_token": self.public_key_token,
             "entry_point_name": self.entry_point_name,
@@ -312,6 +328,7 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
     mvid: str | None = None
     assembly_refs: tuple[JsonObject, ...] = ()
     module_refs: tuple[str, ...] = ()
+    pinvoke_imports: tuple[JsonObject, ...] = ()
     target_framework: str | None = None
     public_key_token: str | None = None
     entry_point_name: str | None = None
@@ -335,6 +352,7 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
                     mvid,
                     assembly_refs,
                     module_refs,
+                    pinvoke_imports,
                     target_framework,
                     public_key_token,
                     entry_point_name,
@@ -370,6 +388,7 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
         mvid=mvid,
         assembly_refs=assembly_refs,
         module_refs=module_refs,
+        pinvoke_imports=pinvoke_imports,
         target_framework=target_framework,
         public_key_token=public_key_token,
         entry_point_name=entry_point_name,
@@ -506,6 +525,7 @@ def _parse_metadata_root(
     str | None,
     tuple[JsonObject, ...],
     tuple[str, ...],
+    tuple[JsonObject, ...],
     str | None,
     str | None,
     str | None,
@@ -513,17 +533,17 @@ def _parse_metadata_root(
     MetadataStats | None,
 ]:
     if len(meta) < 16 or meta[:4] != _CLR_METADATA_SIG:
-        return None, [], None, None, None, None, (), (), None, None, None, None, None
+        return None, [], None, None, None, None, (), (), (), None, None, None, None, None
     version_len = int.from_bytes(meta[12:16], "little")
     if version_len < 0 or 16 + version_len > len(meta):
-        return None, [], None, None, None, None, (), (), None, None, None, None, None
+        return None, [], None, None, None, None, (), (), (), None, None, None, None, None
     version_raw = meta[16 : 16 + version_len]
     version = version_raw.split(b"\0", 1)[0].decode("utf-8", errors="replace")
     # Align version block to 4 bytes.
     version_padded = (version_len + 3) & ~3
     cursor = 16 + version_padded
     if cursor + 4 > len(meta):
-        return version, [], None, None, None, None, (), (), None, None, None, None, None
+        return version, [], None, None, None, None, (), (), (), None, None, None, None, None
     stream_count = int.from_bytes(meta[cursor + 2 : cursor + 4], "little")
     cursor += 4
     streams: list[str] = []
@@ -550,6 +570,7 @@ def _parse_metadata_root(
     mvid: str | None = None
     refs: tuple[JsonObject, ...] = ()
     mod_refs: tuple[str, ...] = ()
+    pinvokes: tuple[JsonObject, ...] = ()
     framework: str | None = None
     public_key_token: str | None = None
     entry_name: str | None = None
@@ -563,6 +584,7 @@ def _parse_metadata_root(
             mvid,
             refs,
             mod_refs,
+            pinvokes,
             framework,
             public_key_token,
             entry_name,
@@ -576,6 +598,7 @@ def _parse_metadata_root(
         mvid = None
         refs = ()
         mod_refs = ()
+        pinvokes = ()
         framework = None
         public_key_token = None
         entry_name = None
@@ -590,6 +613,7 @@ def _parse_metadata_root(
         mvid,
         refs,
         mod_refs,
+        pinvokes,
         framework,
         public_key_token,
         entry_name,
@@ -655,6 +679,7 @@ def _parse_tables_and_names(
     str | None,
     tuple[JsonObject, ...],
     tuple[str, ...],
+    tuple[JsonObject, ...],
     str | None,
     str | None,
     str | None,
@@ -664,13 +689,13 @@ def _parse_tables_and_names(
     """Best-effort Module/Assembly identity + table row counts from #~ + heaps.
 
     Returns ``(module_name, assembly_name, assembly_version, mvid,
-    assembly_refs, module_refs, target_framework, public_key_token,
-    entry_point_name, module_initializer_token, stats)``.
+    assembly_refs, module_refs, pinvoke_imports, target_framework,
+    public_key_token, entry_point_name, module_initializer_token, stats)``.
     """
     tables_key = "#~" if "#~" in stream_map else ("#-" if "#-" in stream_map else None)
     strings_key = "#Strings" if "#Strings" in stream_map else None
     if tables_key is None:
-        return None, None, None, None, (), (), None, None, None, None, None
+        return None, None, None, None, (), (), (), None, None, None, None, None
     t_off, t_size = stream_map[tables_key]
     tables = meta[t_off : t_off + t_size]
     strings = b""
@@ -689,7 +714,7 @@ def _parse_tables_and_names(
         blob_heap = meta[b_off : b_off + b_size]
     us_heap_bytes = stream_map["#US"][1] if "#US" in stream_map else None
     if len(tables) < 24:
-        return None, None, None, None, (), (), None, None, None, None, None
+        return None, None, None, None, (), (), (), None, None, None, None, None
     heap_sizes = tables[6]
     string_index_size = 4 if (heap_sizes & 0x01) else 2
     valid = int.from_bytes(tables[8:16], "little")
@@ -698,7 +723,7 @@ def _parse_tables_and_names(
     for bit in range(64):
         if valid & (1 << bit):
             if cursor + 4 > len(tables):
-                return None, None, None, None, (), (), None, None, None, None, None
+                return None, None, None, None, (), (), (), None, None, None, None, None
             row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
             cursor += 4
     # A row count is a number out of the assembly; a claim that could not fit
@@ -769,6 +794,7 @@ def _parse_tables_and_names(
     mvid: str | None = None
     assembly_refs: list[JsonObject] = []
     module_refs: list[str] = []
+    pinvoke_imports: list[JsonObject] = []
     public_key_token: str | None = None
     # The TargetFramework walk: TypeRef rows naming the attribute type, then
     # MemberRef rows for its .ctor, then the CustomAttribute row on the
@@ -790,7 +816,7 @@ def _parse_tables_and_names(
     entry_point_name: str | None = None
     module_cctor: int | None = None
     if not strings:
-        return None, None, None, None, (), (), None, None, None, None, stats
+        return None, None, None, None, (), (), (), None, None, None, None, stats
     # Walk the tables in ascending order, sizing each one so the offset lands
     # on the next. The Module table (0x00) is first, but the Assembly table
     # (0x20) sits behind TypeDef/Field/MethodDef and friends -- an assembly
@@ -903,6 +929,30 @@ def _parse_tables_and_names(
                 ref_name = string_at(name_idx)
                 if ref_name is not None:
                     module_refs.append(ref_name)
+        elif bit == 0x1C:  # ImplMap: MappingFlags(2), MemberForwarded(coded), ...
+            # ... ImportName(str), ImportScope(ModuleRef index). Each row is
+            # one P/Invoke: the native symbol the runtime resolves (which need
+            # not match the managed wrapper's name) and the DLL it lives in.
+            # ModuleRef (0x1A) was walked just above, so the scope resolves to
+            # a name; a scope past the table (or the cap) reads as None
+            # rather than a guess.
+            fwd_size = coded_index_size(row_counts, (0x04, 0x06), 1)
+            scope_size = simple_index_size(row_counts, 0x1A)
+            for i in range(min(rows, _MAX_PINVOKE_IMPORTS)):
+                at = offset + i * row_size
+                if at + row_size > len(tables):
+                    break
+                forwarded = int.from_bytes(tables[at + 2 : at + 2 + fwd_size], "little")
+                if forwarded & 0x1 != _MEMBER_FORWARDED_METHODDEF_TAG:
+                    continue
+                name_idx, advance = read_string_index(tables, at + 2 + fwd_size)
+                scope_at = at + 2 + fwd_size + advance
+                scope = int.from_bytes(tables[scope_at : scope_at + scope_size], "little")
+                import_name = string_at(name_idx)
+                if import_name is None:
+                    continue
+                module = module_refs[scope - 1] if 1 <= scope <= len(module_refs) else None
+                pinvoke_imports.append({"name": import_name, "module": module})
         elif bit == 0x20:  # Assembly: HashAlg(4), Major/Minor/Build/Revision(2 each), ...
             major = int.from_bytes(tables[offset + 4 : offset + 6], "little")
             minor = int.from_bytes(tables[offset + 6 : offset + 8], "little")
@@ -967,6 +1017,7 @@ def _parse_tables_and_names(
         mvid,
         tuple(assembly_refs),
         tuple(module_refs),
+        tuple(pinvoke_imports),
         target_framework,
         public_key_token,
         entry_point_name,
