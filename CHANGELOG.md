@@ -10,10 +10,12 @@ until 1.0 the tool surface may still change between minor versions.
 - `frida.applications` 一直回 `count` / `total` / `has_more`，却不收 `offset`——于是设备上应用
   数超过单页 `limit` 时，`has_more` 报 True 却无从翻到后面几页，是 Android/Web 读取面里唯一
   没遵守 apk.* 那套 `offset` / `limit` / `total` / `has_more` 契约的一处。现补上 `offset`
-  参数（schema `ge=0`，默认 0），客户端按 `apps[start:start+limit]` 切片、回 `offset` 与
-  `has_more = start + count < total`；并像 apk.* 的 `_clamp_page` 一样对 `offset` 做防御性钳制
-  （agent/OpenAI 传输绕过 schema 校验，负 `offset` 必须回到表头而非从尾部反向切片）。越界
-  `offset` 回空的终止页，不再回绕。
+  参数（schema `ge=0`，默认 0），客户端先按 `identifier` 排序再按 `apps[start:start+limit]`
+  切片、回 `offset` 与 `has_more = start + count < total`；并像 apk.* 的 `_clamp_page` 一样对
+  `offset` 做防御性钳制（agent/OpenAI 传输绕过 schema 校验，负 `offset` 必须回到表头而非从
+  尾部反向切片）。越界 `offset` 回空的终止页，不再回绕。排序是必要的：`enumerate_applications`
+  不承诺枚举顺序，而 `offset` 分页只有在整份列表跨调用稳定时才不会重复/漏掉应用——`adb.packages`
+  与 `apk.classes` 出于同样原因在切片前排序。
 
 ### 修复（web.network.get 的非法 base64 错误路径漏掉了 body 等字段）
 

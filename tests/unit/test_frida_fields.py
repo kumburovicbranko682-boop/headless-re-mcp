@@ -168,7 +168,9 @@ def test_frida_devices_puts_the_list_in_devices_not_items() -> None:
 
 class _App:
     def __init__(self, index: int) -> None:
-        self.identifier = f"com.app{index}"
+        # Zero-padded so the client's lexicographic sort-by-identifier matches
+        # numeric order, keeping the paging assertions below readable.
+        self.identifier = f"com.app{index:02d}"
         self.name = f"App{index}"
         self.pid = 0
 
@@ -211,7 +213,9 @@ def test_frida_applications_offset_pages_past_a_filled_limit() -> None:
     total/has_more contract the apk.* readers keep. With 25 apps, offset 20
     limit 10 must return the final five (offset 20, count 5, total 25, has_more
     False), and an offset past the end must be an empty, terminal page rather
-    than a wrap into the tail.
+    than a wrap into the tail. The client sorts by identifier so the pages are
+    stable across calls (frida-core promises no enumeration order), which the
+    zero-padded ids make line up with numeric order here.
     """
     client = FridaClient()
     client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
@@ -222,7 +226,7 @@ def test_frida_applications_offset_pages_past_a_filled_limit() -> None:
     assert tail["total"] == 25
     assert tail["has_more"] is False
     assert [app["identifier"] for app in tail["applications"]] == [
-        f"com.app{index}" for index in range(20, 25)
+        f"com.app{index:02d}" for index in range(20, 25)
     ]
 
     beyond = client.applications("usb", offset=100, limit=10)
@@ -236,8 +240,37 @@ def test_frida_applications_offset_pages_past_a_filled_limit() -> None:
     negative = client.applications("usb", offset=-5, limit=10)
     assert negative["offset"] == 0
     assert [app["identifier"] for app in negative["applications"]] == [
-        f"com.app{index}" for index in range(0, 10)
+        f"com.app{index:02d}" for index in range(0, 10)
     ]
+
+
+def test_frida_applications_sorts_by_identifier_so_pages_are_stable() -> None:
+    """Paging must not depend on frida-core's enumeration order.
+
+    offset paging only gives every app once if the full list has a stable order
+    across calls, but device.enumerate_applications carries no ordering promise.
+    The client sorts by identifier defensively (as adb.packages does), so even
+    when the device hands back a scrambled order the first page is the
+    alphabetically-first identifiers and the concatenated pages are the whole
+    set with no repeats -- proven here by enumerating a shuffled device.
+    """
+
+    class _ShuffledDevice:
+        def enumerate_applications(self) -> list[_App]:
+            return [_App(index) for index in (7, 1, 9, 3, 5, 0, 8, 2, 6, 4)]
+
+    client = FridaClient()
+    client._resolve_device = lambda device_id: _ShuffledDevice()  # type: ignore[method-assign]
+
+    first = client.applications("usb", offset=0, limit=4)
+    assert [app["identifier"] for app in first["applications"]] == [
+        f"com.app{index:02d}" for index in range(0, 4)
+    ]
+    second = client.applications("usb", offset=4, limit=4)
+    assert [app["identifier"] for app in second["applications"]] == [
+        f"com.app{index:02d}" for index in range(4, 8)
+    ]
+    assert first["has_more"] is True and second["has_more"] is True
 
 class _JavaApi:
     def classes(self, name_filter: str, count: int) -> list[str]:
