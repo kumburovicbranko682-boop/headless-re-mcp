@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（Frida 枚举的 limit 钳制边界）
+
+- `backends/frida/client.py` 的 `modules`（上限 256）、`exports`（512）与 `java_enumerate`
+  （2000）都以 `max(1, min(int(limit), 上限))` 钳制请求页。schema 声明 limit 为正数且有界,
+  但 agent 与 OpenAI-bridge 传输直接用模型给的参数调处理器、不过 schema——与当初促成 web
+  `scripts`/`console` 钳制、以及 frida `applications` 下限的正是同一个缺口。既有 frida 枚举
+  测试一律只传小的正数 limit,下限与上限从未被观测:去掉 `max(1, ...)`,limit=0 仍通过
+  （只是请求 0 行、返回空页却把 has_more 报错）;去掉上限,limit=10**9 仍通过,却让注入脚本
+  去目标进程里枚举十亿行。新增 `tests/unit/test_frida_enumerate_limit_clamps.py`（15 个参数化
+  用例,通过捕获后端真正向 RPC 请求的计数来钉住钳制）:非正 limit 落到 1、超大 limit 被各方法
+  各自的上限截断（`exports`/`java_enumerate` 因多取一位判 has_more,请求数为页大小+1）。
+  `applications` 已有独立回归,不在此重复。两组变异（去下限／去上限,三方法同时）分别被对应的
+  下限／上限用例捕获;无产品代码改动。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
