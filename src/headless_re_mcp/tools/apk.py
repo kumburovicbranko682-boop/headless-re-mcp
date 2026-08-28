@@ -135,6 +135,41 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="apk.method_bytecode")
+    def apk_method_bytecode(
+        session_id: str,
+        class_name: str,
+        method_name: str,
+        descriptor: str = "",
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Disassemble one method's Dalvik bytecode (the Android r2.disasm_function).
+
+        apk.methods lists a class's methods but not what any does; jadx/apktool
+        decompile the whole app and need those tools installed. This shows just
+        one routine's instructions -- for a license check, a crypto call, an
+        anti-tamper guard. Resolve by class_name (dotted or Lsmali/form) plus
+        method_name; pass descriptor (e.g. "(I)Z") to pick one overload, else the
+        first is used and overloads reports how many share the name. Answers with
+        class_name, method, descriptor, access, has_code, instructions, count,
+        total, offset and has_more. Each instruction carries addr (bytes into the
+        method code), mnemonic, operands (with the invoked method or referenced
+        field/string named, not an index), bytes and size -- so a call reads as
+        its target. An abstract/native method has has_code false and no
+        instructions; insns_capped means a huge method was cut at 100000.
+        """
+        return _dump(
+            analysis.apk_method_bytecode(
+                session_id,
+                class_name,
+                method_name,
+                descriptor=descriptor,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
     @tools.tool(name="apk.strings")
     def apk_strings(
         session_id: str,

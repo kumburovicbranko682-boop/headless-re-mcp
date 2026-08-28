@@ -928,6 +928,46 @@ def test_apk_dex_readers_decode_a_populated_dex(tmp_path: Path) -> None:
         assert absent.ok and absent.data is not None, absent.error
         assert absent.data["found"] is False, absent.data
         assert absent.data["xrefs"] == []
+
+        # Method bytecode: apk.methods named main; this reads what it does. main is
+        # const-string "hello world"; invoke-static onCreate; return-void -- the
+        # exact three ops _build_populated_dex emits. This is the seam from
+        # "list a class's methods" to "disassemble one", and the version-drift
+        # surface (androguard's instruction decoder) an empty method can't touch.
+        for spelling in (_DEX_CLASS_SMALI, "com.example.App"):
+            bc = service.apk_method_bytecode(session_id, spelling, _DEX_CALLER)
+            assert bc.ok and bc.data is not None, (spelling, bc.error)
+            assert bc.data["class_name"] == _DEX_CLASS_SMALI, spelling
+            assert bc.data["method"] == _DEX_CALLER, spelling
+            assert bc.data["descriptor"] == "()V", spelling
+            assert bc.data["has_code"] is True, spelling
+            assert bc.data["overloads"] == 1, spelling
+            ins = bc.data["instructions"]
+            assert [i["mnemonic"] for i in ins] == [
+                "const-string",
+                "invoke-static",
+                "return-void",
+            ], (spelling, ins)
+            # The point of bytecode over a method list: the operand resolves the
+            # target. The invoke names onCreate; the const-string names the literal.
+            invoke = next(i for i in ins if i["mnemonic"] == "invoke-static")
+            assert _DEX_CALLEE in invoke["operands"], invoke
+            const = next(i for i in ins if i["mnemonic"] == "const-string")
+            assert _DEX_STRING in const["operands"], const
+            # addr is the byte offset within the method; ops decode to real bytes.
+            assert [i["addr"] for i in ins] == [0, 4, 10], ins
+            assert all(i["bytes"] for i in ins), ins
+            assert bc.data["total"] == 3 and bc.data["has_more"] is False, bc.data
+
+        # onCreate is return-void only -- a one-instruction method still reads cleanly.
+        leaf_bc = service.apk_method_bytecode(session_id, _DEX_CLASS_SMALI, _DEX_CALLEE)
+        assert leaf_bc.ok and leaf_bc.data is not None, leaf_bc.error
+        assert [i["mnemonic"] for i in leaf_bc.data["instructions"]] == ["return-void"]
+
+        # A method the class does not declare is a clean not_found, not a crash.
+        missing = service.apk_method_bytecode(session_id, _DEX_CLASS_SMALI, "noSuchMethod")
+        assert not missing.ok
+        assert missing.error is not None and missing.error.code == "not_found", missing.error
     finally:
         service.close_all()
 

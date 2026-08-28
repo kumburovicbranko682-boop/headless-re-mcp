@@ -25,6 +25,10 @@ _MAX_STRINGS_COLLECT = 5000
 _MAX_FIELDS_COLLECT = 20_000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
+# A Dalvik method's instruction count is bounded by the DEX code format, but cap
+# how many rows apk.method_bytecode materialises so a crafted method cannot make
+# one call build an unbounded list.
+_MAX_METHOD_INSNS = 100_000
 _MAX_NATIVE_LIBS = 256
 # A single native library is at most tens of MB; refuse anything absurd so a
 # crafted APK cannot make extraction write a huge file.
@@ -472,6 +476,130 @@ class ApkClient:
             "offset": offset,
             "has_more": offset + len(window) < len(methods),
             "scan_capped": scan_more,
+        }
+
+    def method_bytecode(
+        self,
+        path: Path,
+        class_name: str,
+        method_name: str,
+        *,
+        descriptor: str | None = None,
+        offset: int = 0,
+        limit: int = 200,
+    ) -> JsonObject:
+        """Disassemble one method's Dalvik bytecode.
+
+        ``apk.methods`` lists a class's methods but could not show what any of
+        them does; jadx/apktool decompile the whole app (and need those tools
+        installed), where an agent chasing one routine -- a license check, a
+        crypto call, an anti-tamper guard -- wants just its instructions. This
+        resolves a single method by class + name (plus an optional ``descriptor``
+        to pick one overload) and returns its instruction listing: the Android
+        analogue of ``r2.disasm_function`` for a native binary. Each instruction
+        carries its offset (bytes into the method code), mnemonic, operands (with
+        the invoked method or referenced field/string named, not an index), raw
+        bytes and size, so a call or field access reads as a target rather than
+        an opcode number. When several methods share the name, ``overloads``
+        reports how many and the first is used unless a ``descriptor`` pins one;
+        the listing paginates with ``offset``/``limit`` and ``has_more``. An
+        abstract/native method resolves with ``has_code`` False and no
+        instructions.
+        """
+        cls = class_name.strip()
+        mname = method_name.strip()
+        if not cls:
+            raise ApkError("invalid_params", "class_name is required")
+        if not mname:
+            raise ApkError("invalid_params", "method_name is required")
+        parsed = self._parsed(path)
+        smali = _dotted_to_smali(cls)
+        found = [
+            klass
+            for klass in parsed.analysis.get_classes()
+            if klass.name == cls or klass.name == smali
+        ]
+        if not found:
+            raise ApkError("not_found", "class not found", class_name=class_name)
+        matches = [
+            mca
+            for klass in found
+            for mca in klass.get_methods()
+            if not mca.is_external() and str(getattr(mca, "name", "")) == mname
+        ]
+        if not matches:
+            raise ApkError(
+                "not_found", "method not found", class_name=found[0].name, method_name=mname
+            )
+        want = descriptor.strip() if isinstance(descriptor, str) and descriptor.strip() else None
+        if want is not None:
+            chosen = next(
+                (m for m in matches if str(getattr(m, "descriptor", "")) == want), None
+            )
+            if chosen is None:
+                # Present class, present name, but no such signature: name the
+                # overloads the caller could have meant rather than a bare miss.
+                raise ApkError(
+                    "not_found",
+                    "no method overload with that descriptor",
+                    method_name=mname,
+                    descriptor=want,
+                    available=[str(getattr(m, "descriptor", "")) for m in matches][:32],
+                )
+        else:
+            chosen = matches[0]
+        has_code = False
+        try:
+            encoded = chosen.get_method()
+            code = encoded.get_code()
+            has_code = code is not None
+            raw: list[tuple[int, Any]] = []
+            if has_code:
+                pos = 0
+                for ins in encoded.get_instructions():
+                    raw.append((pos, ins))
+                    pos += int(ins.get_length())
+                    if len(raw) >= _MAX_METHOD_INSNS:
+                        break
+            rows = [
+                {
+                    "addr": pos,
+                    "mnemonic": str(ins.get_name()),
+                    # get_output resolves the operand: an invoked method, a
+                    # referenced field/string, or the registers -- the whole
+                    # reason to read bytecode over a raw opcode dump.
+                    "operands": str(ins.get_output()),
+                    "bytes": str(ins.get_hex()).replace(" ", ""),
+                    "size": int(ins.get_length()),
+                }
+                for pos, ins in raw
+            ]
+        except ApkError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError(
+                "backend_error", f"failed to read method bytecode: {exc}", method_name=mname
+            ) from exc
+        total = len(rows)
+        start = max(0, int(offset))
+        cap = max(1, int(limit))
+        window = rows[start : start + cap]
+        return {
+            "class_name": found[0].name,
+            "method": mname,
+            "descriptor": str(getattr(chosen, "descriptor", "")),
+            "access": str(getattr(chosen, "access", "")),
+            "has_code": has_code,
+            "instructions": window,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
+            # More than one method shares this name; when the caller did not pin a
+            # descriptor, this says the first overload was chosen so they know to
+            # disambiguate if they meant another.
+            "overloads": len(matches),
+            "insns_capped": total >= _MAX_METHOD_INSNS,
         }
 
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
