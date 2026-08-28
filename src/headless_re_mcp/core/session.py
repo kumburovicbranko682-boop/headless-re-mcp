@@ -1309,6 +1309,10 @@ def describe_apk(path: Path) -> dict[str, Any]:
             # Bytes glued on after the EOCD record and its comment: Android's
             # own parser rejects them, naive extractors read right past them.
             "appended_size": _apk_appended_size(path),
+            # Every member's stored CRC-32 replayed against its bytes -- the
+            # container's own integrity check, the APK pair to the DEX header
+            # checksum and the PE CheckSum; a patched member fails it.
+            "crc": _apk_crc_integrity(path),
             "manifest": _apk_manifest_facts_from_apk(path),
             "dex": _apk_dex_facts(path),
             # The JNI surface of each bundled .so, parsed with the same ELF
@@ -1805,6 +1809,50 @@ def _apk_manifest_facts_from_apk(path: Path) -> dict[str, Any]:
     if len(data) > _AXML_MAX_BYTES:
         return {}
     return _apk_manifest_facts(data)
+
+
+_APK_CRC_MAX_BYTES = 64 * 1024 * 1024
+_APK_CRC_MAX_BAD_LISTED = 16
+
+
+def _apk_crc_integrity(path: Path) -> dict[str, Any] | None:
+    """Every member's stored CRC-32 replayed against its actual bytes.
+
+    The container's own integrity check -- the APK pair to the DEX header
+    checksum and the PE optional-header CheckSum: each ZIP member records the
+    CRC-32 of its uncompressed bytes, Android's installer verifies it, and a
+    hand-patched or naively repacked member that skipped the recompute fails
+    it. Each member is decompressed in full (the stdlib verifies the stored
+    CRC on the way out; a corrupt compression stream fails the same member),
+    within a total byte budget so a zip bomb cannot stall the read: ``ok``
+    covers the ``members_checked`` actually replayed, and the bad list is
+    bounded while the verdict stays exact within budget. None -- fact absent
+    -- when the archive cannot be opened at all.
+    """
+    bad: list[str] = []
+    checked = 0
+    budget = _APK_CRC_MAX_BYTES
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                if budget <= 0 or info.file_size > budget:
+                    break
+                try:
+                    with archive.open(info) as member:
+                        while True:
+                            chunk = member.read(1 << 20)
+                            if not chunk:
+                                break
+                            budget -= len(chunk)
+                except (zipfile.BadZipFile, RuntimeError, OSError, zlib.error):
+                    if len(bad) < _APK_CRC_MAX_BAD_LISTED:
+                        bad.append(info.filename)
+                checked += 1
+    except (OSError, zipfile.BadZipFile):
+        return None
+    return {"ok": not bad, "bad_members": bad, "members_checked": checked}
 
 
 def _apk_prepended_size(path: Path) -> int | None:

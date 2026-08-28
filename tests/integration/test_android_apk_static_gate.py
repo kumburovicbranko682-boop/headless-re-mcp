@@ -13,6 +13,8 @@ pass: it skips only when androguard is not installed, and says so.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -416,3 +418,88 @@ def test_dex_integrity_verdicts_agree_with_androguard(tmp_path: Path) -> None:
     assert entry["overlay"] == {"offset": header.file_size, "size": 8}
     assert entry["checksum_ok"] is True
     assert entry["signature_ok"] is True
+
+
+@pytest.mark.integration
+def test_apk_member_crc_verdict_agrees_with_unzip(tmp_path: Path) -> None:
+    """The session's member-CRC replay against unzip's own -t verification.
+
+    ``crc`` is the container's own integrity fact -- the APK pair to the DEX
+    header checksum and the PE CheckSum: every ZIP member's stored CRC-32
+    replayed against its actual bytes. Info-ZIP's ``unzip -t`` performs the
+    same replay with its own extraction code, so its verdict referees the
+    session's on the clean fixture, and on a copy with one STORED member
+    edited in place (the naive-repack shape: bytes changed, CRC not
+    recomputed) both sides must name the same member bad.
+    """
+    unzip = shutil.which("unzip")
+    if unzip is None:
+        pytest.skip("unzip not installed — APK CRC gate not run (skip != pass)")
+    if not _FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_FIXTURE}")
+
+    # The clean leg: unzip -t exits 0 and reports no errors; the session
+    # must call the same archive clean over the same member count.
+    verify = subprocess.run(
+        [unzip, "-t", str(_FIXTURE)], capture_output=True, text=True, timeout=60
+    )
+    assert verify.returncode == 0, verify.stdout + verify.stderr
+    assert "No errors detected" in verify.stdout
+
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(_FIXTURE))
+        assert created.ok, created.error
+        crc = created.data["session"]["metadata"]["apk"]["crc"]
+        assert crc["ok"] is True
+        assert crc["bad_members"] == []
+    finally:
+        service.close_all()
+
+    # The tampered leg: repack the fixture with one member STORED, then edit
+    # that member's bytes in place without recomputing its CRC -- the
+    # naive-repack shape. unzip -t must flag exactly that member, and the
+    # session must name the same one.
+    victim_name = "resources.arsc"
+    rebuilt = tmp_path / "rebuilt.apk"
+    with zipfile.ZipFile(_FIXTURE) as src, zipfile.ZipFile(rebuilt, "w") as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename == victim_name:
+                dst.writestr(
+                    zipfile.ZipInfo(info.filename), data, compress_type=zipfile.ZIP_STORED
+                )
+            else:
+                dst.writestr(info, data, compress_type=info.compress_type)
+    raw = rebuilt.read_bytes()
+    with zipfile.ZipFile(rebuilt) as archive:
+        victim = archive.getinfo(victim_name)
+    assert victim.compress_type == zipfile.ZIP_STORED
+    # The STORED payload starts after the 30-byte local header plus the local
+    # name and extra fields -- read those lengths off the local record itself.
+    name_len = int.from_bytes(raw[victim.header_offset + 26 : victim.header_offset + 28], "little")
+    extra_len = int.from_bytes(raw[victim.header_offset + 28 : victim.header_offset + 30], "little")
+    payload_at = victim.header_offset + 30 + name_len + extra_len
+    patched = bytearray(raw)
+    patched[payload_at] ^= 0xFF
+    tampered = tmp_path / "tampered.apk"
+    tampered.write_bytes(bytes(patched))
+
+    verify = subprocess.run(
+        [unzip, "-t", str(tampered)], capture_output=True, text=True, timeout=60
+    )
+    assert verify.returncode != 0, "unzip must reject the patched member"
+    assert "bad CRC" in verify.stdout, verify.stdout
+
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(tampered))
+        assert created.ok, created.error
+        crc = created.data["session"]["metadata"]["apk"]["crc"]
+        assert crc["ok"] is False
+        # Name for name: the member unzip called bad is the one the session
+        # lists (unzip prints it on the "Bad CRC" line's preceding entry).
+        assert victim.filename in crc["bad_members"]
+        assert victim.filename in verify.stdout
+    finally:
+        service.close_all()

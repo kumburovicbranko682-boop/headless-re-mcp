@@ -2960,3 +2960,55 @@ class TestLogcatDoesNotInventASnapshot:
     def test_an_empty_log_is_a_snapshot_not_a_failure(self) -> None:
         result = _adb_with_shell("").logcat("emulator-5554")
         assert result["lines"] == []
+
+
+class TestApkCrcIntegrity:
+    """describe_apk replays every member's stored CRC-32 against its bytes.
+
+    The container's own integrity check -- the APK pair to the DEX header
+    checksum and the PE optional-header CheckSum: Android's installer
+    verifies each member's CRC, and a hand-patched or naively repacked
+    member that skipped the recompute fails it. ok covers exactly the
+    members actually replayed; the bad list is bounded; None -- fact absent
+    -- when the archive cannot be opened at all.
+    """
+
+    def test_the_committed_fixture_replays_clean(self) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        crc = describe_apk(_APK_FIXTURE)["apk"]["crc"]
+        with zipfile.ZipFile(_APK_FIXTURE) as archive:
+            members = sum(1 for info in archive.infolist() if not info.is_dir())
+        assert crc == {"ok": True, "bad_members": [], "members_checked": members}
+
+    def test_a_patched_member_fails_its_own_crc(self, tmp_path: Path) -> None:
+        # A STORED member edited in place without recomputing the CRC -- the
+        # naive-repack shape: the stored value now lies about the bytes.
+        path = tmp_path / "tampered.apk"
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
+            archive.writestr("AndroidManifest.xml", b"\x00\x00\x00\x00")
+            archive.writestr("assets/config.txt", "ORIGINAL-CONTENT-UNIQUE")
+            archive.writestr("classes.dex", "fine")
+        raw = path.read_bytes().replace(b"ORIGINAL-CONTENT-UNIQUE", b"TAMPERED-CONTENT-UNIQUE")
+        path.write_bytes(raw)
+        crc = describe_apk(path)["apk"]["crc"]
+        assert crc == {
+            "ok": False,
+            "bad_members": ["assets/config.txt"],
+            "members_checked": 3,
+        }
+
+    def test_a_non_archive_reads_none(self, tmp_path: Path) -> None:
+        from headless_re_mcp.core.session import _apk_crc_integrity
+
+        path = tmp_path / "nope.apk"
+        path.write_bytes(b"not a zip at all")
+        assert _apk_crc_integrity(path) is None
+
+    def test_session_over_the_fixture_carries_the_verdict(self) -> None:
+        from headless_re_mcp.core.session import SessionRegistry
+
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        session = SessionRegistry().create(str(_APK_FIXTURE))
+        assert session.metadata["apk"]["crc"]["ok"] is True
