@@ -15,6 +15,25 @@ from headless_re_mcp.config import Settings, default_config_path
 _MAX_TOKEN_FILE_BYTES = 16 * 1024
 
 
+def tokens_match(provided: str | None, expected: str) -> bool:
+    """Constant-time token comparison that tolerates non-ASCII input.
+
+    ``secrets.compare_digest`` is the right tool for the timing-safe check, but
+    on ``str`` operands it raises ``TypeError`` the moment either side holds a
+    non-ASCII code point. A crafted ``?token=`` value or ``Bearer`` header --
+    both decode to arbitrary Unicode -- would therefore surface as a 500 and a
+    logged traceback on every probe, exactly the "unhandled exception where a
+    plain 401/403 was promised" failure the loopback guard already had to close,
+    rather than the ordinary unauthorized answer. Comparing the UTF-8 byte
+    encodings keeps the constant-time property (``compare_digest`` accepts
+    bytes-like operands of any content and length) while turning a non-ASCII
+    probe into a normal mismatch. A missing token is a mismatch, not a crash.
+    """
+    if not provided:
+        return False
+    return secrets.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+
 def web_token_path(settings: Settings | None = None) -> Path:
     """Token file lives next to the user config, never inside artifacts."""
     _ = settings

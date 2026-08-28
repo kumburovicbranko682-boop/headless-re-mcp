@@ -36,6 +36,25 @@ def test_query_token_authorizes_the_spa_fallback() -> None:
     assert denied.status_code == 401
 
 
+def test_non_ascii_token_is_a_plain_401_not_a_crash() -> None:
+    """A non-ASCII ``?token=`` must be rejected, never raise inside the check.
+
+    ``secrets.compare_digest`` raises ``TypeError`` the moment a ``str`` operand
+    carries a non-ASCII code point, and the query value decodes to arbitrary
+    Unicode. Comparing raw strings turned a crafted probe into a 500 and a logged
+    traceback instead of the promised unauthorized answer; ``tokens_match``
+    compares UTF-8 bytes so the probe is an ordinary mismatch. TestClient
+    re-raises server exceptions by default, so with the old string compare this
+    would surface the TypeError rather than a clean 401. (The Bearer branch runs
+    the identical ``tokens_match`` call; httpx refuses to send a non-ASCII header
+    value, so it cannot be driven end to end from here.)
+    """
+    client = _client()
+
+    via_query = client.get("/", params={"token": "café-not-the-token"})
+    assert via_query.status_code == 401
+
+
 def test_missing_spa_build_returns_503(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client()
 

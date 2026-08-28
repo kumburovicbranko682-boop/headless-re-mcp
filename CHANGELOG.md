@@ -5,6 +5,10 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Web 控制台的令牌比对用 `secrets.compare_digest` 直接比 `str`,而它对含非 ASCII 码点的 `str` 抛 `TypeError`——构造的 `?token=` 或 `Bearer` 值一律解码成任意 Unicode,于是本该是明明白白的 401 变成 500 且每次探测都写一条事故日志）
+
+- `secrets.compare_digest` 是这处定时安全比对的正确工具,但对 `str` 操作数一旦任一侧带非 ASCII 码点就抛 `TypeError`;而令牌可来自 `?token=` 查询值或 `Authorization: Bearer …` 头,二者都会解码成任意 Unicode。四处比对(`routes/spa.py` 的 `require_token`、`routes/legacy.py` 的 `_require_token` 与 `_bootstrap_cookie_ok`、`routes/agent.py` 的 `authorize`)都直接比 `str`,于是一个带重音符/行分隔符等字符的令牌探测会在鉴权检查里抛异常,经路由/中间件冒泡成 500 并写一条事故日志,而非承诺的 401——正是 `loopback_guard` 注释里已记下的“中间件里异常变 500、每次探测写事故,而不是说好的 403”那一类失败面。新增共享 `tokens_match(provided, expected)`(在 `web/auth.py`):比对双方的 UTF-8 字节编码,`compare_digest` 接受任意内容与长度的 bytes 操作数,既保住定时安全又把非 ASCII 探测化为普通的不匹配;缺失令牌记为不匹配而非崩溃。四处调用统一改走它。`_bootstrap_cookie_ok` 同时去掉 `len()==len()` 短路(bytes 版 `compare_digest` 本就正确处理不等长,且不再经该分支泄漏长度)。带外验证:把 `tokens_match` 改回比 `str` → 新用例(经 TestClient 默认重抛服务端异常)直接暴露 `TypeError` 而非 401,复原后全绿。补 `test_non_ascii_token_is_a_plain_401_not_a_crash`(经 `?token=` 走通;Bearer 分支跑同一 `tokens_match`,但 httpx 拒发非 ASCII 头,无法在此端到端驱动)。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

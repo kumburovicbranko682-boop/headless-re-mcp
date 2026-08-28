@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -35,6 +34,7 @@ from headless_re_mcp.tools.catalog import (
     CommandTransport,
     ToolEffect,
 )
+from headless_re_mcp.web.auth import tokens_match
 
 JsonObject = dict[str, Any]
 
@@ -122,7 +122,7 @@ def register_agent_routes(
 
     def authorize(authorization: str | None) -> None:
         provided = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else None
-        if not provided or not secrets.compare_digest(provided, token):
+        if not tokens_match(provided, token):
             raise HTTPException(status_code=401, detail="unauthorized")
 
     @app.get("/api/agent/threads")
