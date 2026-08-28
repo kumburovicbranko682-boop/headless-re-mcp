@@ -294,6 +294,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **radare2 这条跨平台二进制逆向线（ELF/Mach-O 等非 PE）有 info/functions/strings/imports/exports/disasm/xrefs，
+  却缺最基础的一层：段/节表**。新增只读工具 `r2.sections`（走白名单命令 `iSj`）：frida.memory.ranges（映射活进程）
+  的静态对应物，也是 PE 节表在 ELF/Mach-O 上的等价物。答复 `items`——每项带 `name`、`size`（虚拟大小）、`vsize`、
+  `paddr`（文件偏移）、`vaddr`、`perm`（rwx 权限串）与 `address`（va/rva/module），另带 `count`；无整数地址字段。
+  列表触及 4096 上限时置 `items_truncated`/`items_total`/`items_limit`；无 `sections`/`truncated`/`has_more` 字段。
+  据此可判断某地址落在哪个段、代码段（r-x）到哪结束、某字符串/符号住在哪个节里。像其他 r2 工具一样一次性重开二进制。
+  只读，工具总数 302→303（183 只读 / 120 写）。
 - **`proxy.hosts` 把抓包按 host 汇总（太粗，看不出调了哪个 API），`proxy.flows` 每个请求一行（太细，繁忙抓包里翻不完），中间缺一层逆向真正想要的「API 清单」：
   这个 app 到底打了哪些 method+path 端点、各多少次、返回什么状态**。新增只读工具 `proxy.endpoints`：js/apk/wasm/web.endpoints（从静态代码抽端点）的动态对应物。
   它把留存的 flow 按 (method, host, 请求路径) 聚成一行，默认把路径里易变的段——纯数字 id、UUID、长 hex 块——折叠成占位符，故 /users/123 与 /users/456 合并成

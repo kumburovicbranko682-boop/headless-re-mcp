@@ -100,6 +100,26 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_exports(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.sections")
+    def r2_sections(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """The binary's sections/segments: its memory layout, as radare2 reads them.
+
+        The static counterpart to frida.memory.ranges (which maps a live
+        process) and the ELF/Mach-O/PE equivalent of a PE section table: the
+        regions the loader lays down, so a caller knows which span an address
+        falls in, where code (r-x) ends and data begins, and which section a
+        string or symbol lives in. Answers with items -- each carrying name,
+        size (virtual size), vsize, paddr (file offset), vaddr, perm (the
+        rwx permission string) and address (va/rva/module) -- plus count. There
+        is no integer address field. Read items_truncated, items_total and
+        items_limit when the list filled the cap (4096). There is no sections,
+        truncated or has_more field. Read-only; reopens the binary one-shot like
+        the other r2 tools.
+        """
+        return _dump(analysis.r2_sections(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,
