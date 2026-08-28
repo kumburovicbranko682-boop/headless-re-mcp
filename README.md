@@ -390,7 +390,11 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 80 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+  Web 线诚实降级经真实 MCP 端到端（无浏览器/webcrack/wabt 也可证）：.js 与 http URL 皆建成 web 会话
+  (无网络无后端)、js.*/wasm.* 无后端时降级为 capability_unavailable 结构化信封而非崩溃、web.scripts
+  等未开浏览器时报 invalid_state(与 Chrome 是否在场无关)、web.open 结构化降级、web.close 空闲幂等、
+  PE-only 的 static.open 与 APK-only 的 apk.open 对 web 会话双向 target_mismatch、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
   浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
