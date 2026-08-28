@@ -40,6 +40,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   验证（去掉兜底后两条断言以 `Invalid IPv6 URL` 失败），还原后恢复通过；26 条 supervisor 用例、`ruff` 与
   `mypy` 均通过。
 
+### 修复（stdio 传输在会话握手中途关闭读流时崩溃）
+
+- `mcp/stdio_errors.py` 的错误应答任务此前只把 `anyio.ClosedResourceError` 当作正常收尾。但当会话在
+  握手途中关闭自己这端、且还有一条已流水线化、尚未读取的请求时，被阻塞的发送破裂抛出的是
+  `anyio.BrokenResourceError`（不是 `ClosedResourceError`）——它逃出应答任务，把一次普通的关机变成一次
+  崩溃。现该 `except` 同时接住 `BrokenResourceError` 与 `ClosedResourceError`，两者都按「这是关机、不是崩溃」
+  静默收尾；另一处从 SDK `stdio_server` 镜像来的读循环兜底 except 标注 `# pragma: no cover`（其 reader 私有于
+  该 task group，外部无从在迭代中途关闭它）。新增 `tests/unit/test_stdio_errors_parse_replies.py` 覆盖两条资源
+  异常路径与超大请求按 ID 回收的既有行为。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
