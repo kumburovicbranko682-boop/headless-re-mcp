@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（_apk_package_name 认不出 UTF-8 字符串池的二进制 AXML，现代 APK 的包名读不出来）
+
+- `backends/adb/client.py` 的 `_apk_package_name()`（不引入 androguard、尽力从 APK 里读出
+  application id，用于 install 验证）只按 UTF-16LE 扫描二进制 AndroidManifest.xml。二进制 AXML
+  的字符串池默认是 UTF-16LE，但 aapt2 会产出 UTF-8 池（字符串池头里的 UTF8_FLAG）。UTF-8 池
+  在 UTF-16LE 解码下变成一堆匹配不上的乱码，于是包名读不出来、验证退化为“无法确定”。
+- 改法：对 UTF-16LE 与 UTF-8 两种编码都做一次宽松解码扫描（先 UTF-16LE，仍是常见形态；命中即
+  返回，UTF-8 只在前者无果时才跑），取第一个通过 `_PACKAGE_RE` 校验、且非 `android.*`/
+  `com.android.*` 框架 id 的候选。`_PACKAGE_IN_TEXT` 用的是显式 `[A-Za-z0-9_]` 字符类，NUL 与
+  非 ASCII 会打断 token，因此对 UTF-16LE 清单跑 UTF-8 扫描不会产生误匹配。
+- 新增用例 `test_apk_package_name_reads_a_utf8_string_pool`：构造前缀非 UTF-8、其后包名为 UTF-8
+  字节的清单，钉死返回 `com.example.app`。非空验证：只留 UTF-16LE 一种编码后该用例返回 None。
+  既有的 UTF-16 回退、无清单 zip 等用例不受影响。
+
 ### 修复（device.force_stop 的 ps -A 回退用整行子串匹配，会把兄弟包的进程算成目标）
 
 - `backends/adb/client.py` 的 `_pids_for_package()` 在没有 `pidof` 的老设备上回退到解析

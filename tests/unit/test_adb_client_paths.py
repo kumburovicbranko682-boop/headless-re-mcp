@@ -250,6 +250,18 @@ def test_apk_package_name_falls_back_to_the_utf16_scan(tmp_path: Path) -> None:
     assert _apk_package_name(apk) == "com.example.app"
 
 
+def test_apk_package_name_reads_a_utf8_string_pool(tmp_path: Path) -> None:
+    # A binary AXML whose string pool is UTF-8 (aapt2's UTF8_FLAG), not UTF-16:
+    # the package bytes are UTF-8, so the UTF-16 scan sees only garbage. The
+    # leading non-UTF-8 bytes keep the strict text path from matching, exactly
+    # as a real binary AXML header would. The UTF-8 fallback scan must still
+    # skip android.* framework ids and return the real application id.
+    text = "namespace package android.intent.action.MAIN pad com.example.app tail"
+    manifest = b"\xff\xff" + text.encode("utf-8")
+    apk = _zip_with_manifest(tmp_path / "app.apk", manifest)
+    assert _apk_package_name(apk) == "com.example.app"
+
+
 def test_apk_package_name_is_none_for_a_manifestless_zip(tmp_path: Path) -> None:
     apk = tmp_path / "empty.apk"
     with zipfile.ZipFile(apk, "w") as archive:

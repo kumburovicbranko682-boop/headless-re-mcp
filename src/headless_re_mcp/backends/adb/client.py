@@ -274,17 +274,23 @@ def _apk_package_name(path: Path) -> str | None:
             return match.group(1)
     except Exception:  # noqa: BLE001
         pass
-    decoded = data.decode("utf-16-le", errors="ignore")
-    window = decoded
-    marker = decoded.find("package")
-    if marker >= 0:
-        window = decoded[marker : marker + 400]
-    for blob in (window, decoded):
-        for candidate in _PACKAGE_IN_TEXT.findall(blob):
-            if candidate.startswith("android.") or candidate.startswith("com.android."):
-                continue
-            if _PACKAGE_RE.match(candidate):
-                return str(candidate)
+    # Binary AXML string pools are UTF-16LE by default, but aapt2 can emit a
+    # UTF-8 pool (the UTF8_FLAG in the string-pool header). Under the wrong
+    # decode the package bytes turn into text that matches nothing, so try both
+    # lenient decodes -- UTF-16LE first, since that is still the common shape --
+    # and take the first real application id either one yields. Without the
+    # UTF-8 pass a modern APK's id was simply lost and verification degraded to
+    # "could not determine".
+    for encoding in ("utf-16-le", "utf-8"):
+        decoded = data.decode(encoding, errors="ignore")
+        marker = decoded.find("package")
+        window = decoded[marker : marker + 400] if marker >= 0 else decoded
+        for blob in (window, decoded):
+            for candidate in _PACKAGE_IN_TEXT.findall(blob):
+                if candidate.startswith("android.") or candidate.startswith("com.android."):
+                    continue
+                if _PACKAGE_RE.match(candidate):
+                    return str(candidate)
     return None
 
 
