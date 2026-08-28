@@ -37,6 +37,11 @@ T = TypeVar("T")
 _MAX_REQUESTS = 3000
 _MAX_CONSOLE = 2000
 _MAX_SCRIPTS = 2000
+# network_list/scripts/wasm page cap (rows per page). The console reader pages
+# the whole ring instead (_MAX_CONSOLE), so it has no separate cap. Matches the
+# web.network/web.scripts/web.wasm_list tool schema limit<=1000; kept equal by
+# test_tool_schema_backend_bound_alignment.py.
+_MAX_PAGE = 1000
 _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
@@ -596,7 +601,7 @@ class WebBackend:
             items = list(handle.requests.values())
             dropped = handle.requests_dropped
         start = max(0, int(offset))
-        cap = max(1, min(int(limit), 1000))
+        cap = max(1, min(int(limit), _MAX_PAGE))
         window = items[start : start + cap]
         return {
             "requests": window,
@@ -707,7 +712,7 @@ class WebBackend:
         if wasm_only:
             values = [s for s in values if str(s.get("language")).lower() == "webassembly"]
         start = max(0, int(offset))
-        cap = max(1, min(int(limit), 1000))
+        cap = max(1, min(int(limit), _MAX_PAGE))
         window = values[start : start + cap]
         return {
             "scripts": window,

@@ -27,6 +27,10 @@ from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
 
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
+# flows() page cap (rows per page), distinct from _MAX_FLOWS (the retained ring
+# size). Matches the proxy.flows tool schema limit<=1000; kept equal by
+# test_tool_schema_backend_bound_alignment.py.
+_MAX_FLOWS_PAGE = 1000
 _REPLAY_WAIT_S = 15.0
 _SERVER_STOP_WAIT_S = 10.0
 # The ring is count-capped, but each slot can still hold a multi-megabyte
@@ -661,7 +665,7 @@ class ProxyBackend:
         inst = self._get(session_id)
         items = inst.recorder.snapshot()
         start = max(0, int(offset))
-        cap = max(1, min(int(limit), 1000))
+        cap = max(1, min(int(limit), _MAX_FLOWS_PAGE))
         window = items[start : start + cap]
         dropped = 0
         if items:

@@ -20,6 +20,11 @@ _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
 _EXPORT_SCRIPT = "ExportJson.py"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
+# functions/symbols/xrefs share one export path; this caps rows per page. The
+# agent transport bypasses the schema, so the client clamps to the same ceiling.
+# Matches the ghidra.functions/symbols/xrefs tool schema limit<=1024; kept equal
+# by test_tool_schema_backend_bound_alignment.py.
+_MAX_LIST_PAGE = 1024
 # Every ghidra tool schema declares ``0 < timeout <= 600``. The agent transport
 # bypasses that schema, so the client clamps to the same ceiling the way its
 # sibling CLI adapters (r2, jadx, apktool, jsre) do. See clamp_cli_timeout.
@@ -207,7 +212,7 @@ class GhidraClient:
         if out_path.exists():
             out_path.unlink()
         addr = "" if address is None else (hex(address) if isinstance(address, int) else str(address))
-        capped = max(1, min(int(limit), 1024))
+        capped = max(1, min(int(limit), _MAX_LIST_PAGE))
         extra = [
             "-scriptPath",
             str(_SCRIPT_DIR),

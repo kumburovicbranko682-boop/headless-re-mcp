@@ -18,6 +18,15 @@ _ANDROID_PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 # process without a JIT. 30s matches adb shell and windbg attach: enough for a
 # slow USB spawn, short enough that a wedged probe cannot keep a worker.
 _PROBE_TIMEOUT_S = 30.0
+# Per-page row caps for the enumerating probes. The agent transport bypasses the
+# tool-schema limit, so each probe clamps to the same ceiling its schema
+# advertises. Kept equal by test_tool_schema_backend_bound_alignment.py:
+# frida.modules<=256, frida.exports<=512, frida.applications<=1000,
+# frida.java.classes/methods<=2000.
+_MAX_MODULES_PAGE = 256
+_MAX_EXPORTS_PAGE = 512
+_MAX_APPLICATIONS_PAGE = 1000
+_MAX_JAVA_PAGE = 2000
 
 # Every operation here attaches, works, and detaches in a finally, which is what
 # keeps a failed call from leaving an agent resident in someone's process. For
@@ -333,7 +342,7 @@ class FridaClient:
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
-            capped = max(1, min(int(limit), 256))
+            capped = max(1, min(int(limit), _MAX_MODULES_PAGE))
             raw = script.exports_sync.modules(capped)
             if isinstance(raw, dict):
                 held = list(raw.get("modules") or [])
@@ -372,7 +381,7 @@ class FridaClient:
         self._require(pid, allowed_pid)
         if not isinstance(module_name, str) or not module_name.strip():
             raise FridaError("invalid_params", "module_name is required")
-        capped = max(1, min(int(limit), 512))
+        capped = max(1, min(int(limit), _MAX_EXPORTS_PAGE))
         session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
@@ -584,7 +593,7 @@ class FridaClient:
             apps = _run_deadline(device.enumerate_applications, timeout=30.0)
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"failed to enumerate applications: {exc}") from exc
-        capped = max(1, min(int(limit), 1000))
+        capped = max(1, min(int(limit), _MAX_APPLICATIONS_PAGE))
         items = [
             {
                 "identifier": str(app.identifier),
@@ -674,7 +683,7 @@ class FridaClient:
     ) -> JsonObject:
         self._authorize(pid, allowed_pids)
         device = self._resolve_device(device_id)
-        capped = max(1, min(int(limit), 2000))
+        capped = max(1, min(int(limit), _MAX_JAVA_PAGE))
         deadline = _bound_timeout(timeout)
         sessions: list[Any] = []
 
