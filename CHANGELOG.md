@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **315（197 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **316（198 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -615,6 +615,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   native_lib/resource/asset/kotlin/other 之一——多 DEX(加固/加载器桩)或 `assets/` 里内嵌的
   jar/apk 一眼可见。`size` 是未压缩字节数(取自中央目录,androguard 不暴露时为 null,绝不靠
   逐条解压去读);病态归档条目数触顶时置 `scan_capped`。
+- 新增 `apk.dex_headers`:逐个读取 classesN.dex 的定长头——在读任何代码前就拿到加壳器/异常构建留下的
+  结构指纹,是 `apk.classes`(遍历已解析的类)的廉价对照物。每个 DEX 头带格式版本(035/037/038/039——
+  比应用 minSdk 更新的版本是个信号)与各 id 池(字符串/类型/方法/类)的大小。一个 classes.dex 里几乎没有
+  类、旁边却躺着一大块加密 asset,是典型的释放器形状;`.dex` 数量异常则是多 DEX/加固形状。直接读 DEX 头,
+  故很轻。回 `dex_files`(按归档顺序每个 classesN.dex 一条)、`dex_count`、`multidex`、
+  `total_classes`/`total_methods`/`total_strings`(对有效头求和)与 `has_more`(DEX 数触顶)。每条带
+  `name`、`version`、`valid`(blob 不是可解析 DEX 时 false)、`checksum`、`declared_file_size`、
+  `actual_size`,以及 id 计数 `string_count`/`type_count`/`proto_count`/`field_count`/`method_count`/
+  `class_def_count` 与 `data_size`。
 
 ### 新增（Android 安全画像）
 

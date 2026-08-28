@@ -9,6 +9,7 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 from __future__ import annotations
 
 import re
+import struct
 import threading
 from collections import Counter, OrderedDict
 from collections.abc import Iterable
@@ -59,6 +60,11 @@ _MAX_GRANT_URIS = 200
 # the returned page.
 _MAX_NATIVE_METHODS_COLLECT = 5000
 _MAX_NATIVE_METHODS_PAGE = 2000
+# apk.dex_headers cap: even a heavily multidex app rarely ships more than a few
+# dozen classesN.dex; bound the listing so a crafted archive cannot make it grow.
+_MAX_DEX_FILES = 200
+_DEX_MAGIC = b"dex\n"
+_DEX_HEADER_SIZE = 112
 # apk.api_usage caps: a big app has hundreds of thousands of analysis method
 # nodes; bound the scan, the callers counted per API, and the APIs shown per
 # category so a hostile app cannot make the scan unbounded.
@@ -1032,6 +1038,64 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    def dex_headers(self, path: Path) -> JsonObject:
+        """Report each classesN.dex header: version, id counts, multidex shape.
+
+        The structural fingerprint a packer or an unusual build leaves before any
+        code is read. Each DEX file carries a fixed header with its format
+        version (035/037/038/039 -- a newer version than the app's minSdk
+        implies is a tell) and the sizes of its id pools (strings, types,
+        methods, classes). A single classes.dex with almost no classes beside a
+        large encrypted asset is the classic dropper shape; an unexpected count
+        of .dex files is the multidex/packer shape. Read straight from the DEX
+        headers, so it stays cheap and needs no full analysis.
+
+        Answers with dex_files (one per classesN.dex, in archive order),
+        dex_count, multidex, total_classes / total_methods / total_strings
+        (summed over valid headers) and has_more. Each entry carries name,
+        version, valid (false when the blob is not a parseable DEX), checksum,
+        declared_file_size, actual_size, and the id counts string_count /
+        type_count / proto_count / field_count / method_count / class_def_count
+        plus data_size.
+        """
+        apk = self._apk(path)
+        try:
+            names = list(apk.get_dex_names() or [])
+        except Exception:  # noqa: BLE001 - androguard access varies by version
+            names = []
+        try:
+            raws = list(apk.get_all_dex() or [])
+        except Exception:  # noqa: BLE001
+            raws = []
+
+        entries: list[JsonObject] = []
+        total_classes = 0
+        total_methods = 0
+        total_strings = 0
+        has_more = False
+        for index, raw in enumerate(raws):
+            if len(entries) >= _MAX_DEX_FILES:
+                has_more = True
+                break
+            name = str(names[index]) if index < len(names) else f"dex[{index}]"
+            header = _parse_dex_header(bytes(raw))
+            header["name"] = name
+            if header["valid"]:
+                total_classes += int(header["class_def_count"] or 0)
+                total_methods += int(header["method_count"] or 0)
+                total_strings += int(header["string_count"] or 0)
+            entries.append(header)
+
+        return {
+            "dex_files": entries,
+            "dex_count": len(raws),
+            "multidex": len(raws) > 1,
+            "total_classes": total_classes,
+            "total_methods": total_methods,
+            "total_strings": total_strings,
+            "has_more": has_more,
+        }
+
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
         names: list[str] = []
@@ -1462,6 +1526,48 @@ class ApkClient:
             "total_call_sites": sum(int(c["hits"]) for c in categories),
             "scan_capped": scan_capped,
         }
+
+
+def _parse_dex_header(raw: bytes) -> JsonObject:
+    """Parse a DEX file's fixed 112-byte header into its version and count table.
+
+    The DEX header layout is fixed little-endian, so this reads it directly
+    rather than through androguard: magic + version, then the ids-size counts
+    (strings/types/protos/fields/methods/class_defs) and the header's own
+    file_size/data_size. A blob that is not a DEX or is too short to hold the
+    header comes back with valid False and whatever could be read.
+    """
+    out: JsonObject = {
+        "valid": False,
+        "version": None,
+        "checksum": None,
+        "declared_file_size": None,
+        "actual_size": len(raw),
+        "string_count": None,
+        "type_count": None,
+        "proto_count": None,
+        "field_count": None,
+        "method_count": None,
+        "class_def_count": None,
+        "data_size": None,
+    }
+    if len(raw) < 8 or raw[:4] != _DEX_MAGIC:
+        return out
+    out["version"] = raw[4:7].decode("ascii", errors="replace")
+    if len(raw) < _DEX_HEADER_SIZE:
+        return out
+    checksum = struct.unpack_from("<I", raw, 8)[0]
+    out["checksum"] = f"{checksum:08x}"
+    out["declared_file_size"] = struct.unpack_from("<I", raw, 32)[0]
+    out["string_count"] = struct.unpack_from("<I", raw, 56)[0]
+    out["type_count"] = struct.unpack_from("<I", raw, 64)[0]
+    out["proto_count"] = struct.unpack_from("<I", raw, 72)[0]
+    out["field_count"] = struct.unpack_from("<I", raw, 80)[0]
+    out["method_count"] = struct.unpack_from("<I", raw, 88)[0]
+    out["class_def_count"] = struct.unpack_from("<I", raw, 96)[0]
+    out["data_size"] = struct.unpack_from("<I", raw, 104)[0]
+    out["valid"] = True
+    return out
 
 
 def _categorize_apk_entry(name: str) -> str:

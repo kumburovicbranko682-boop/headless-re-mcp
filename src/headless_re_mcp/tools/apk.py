@@ -153,6 +153,29 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_files(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.dex_headers")
+    def apk_dex_headers(session_id: str) -> dict[str, Any]:
+        """Report each classesN.dex header: version, id counts, multidex shape.
+
+        The structural fingerprint a packer or unusual build leaves before any
+        code is read, and the fast counterpart to apk.classes (which walks the
+        parsed classes). Each DEX carries a fixed header with its format version
+        (035/037/038/039 -- a version newer than the app's minSdk implies is a
+        tell) and the sizes of its id pools. A single classes.dex with almost no
+        classes next to a large encrypted asset is the classic dropper shape; an
+        unexpected .dex count is the multidex / packer shape. Read straight from
+        the DEX headers, so it stays cheap.
+
+        Answers with dex_files (one entry per classesN.dex in archive order),
+        dex_count, multidex, total_classes / total_methods / total_strings
+        (summed over the valid headers) and has_more (the DEX cap was hit). Each
+        entry carries name, version, valid (false when the blob is not a
+        parseable DEX), checksum, declared_file_size, actual_size, and the id
+        counts string_count / type_count / proto_count / field_count /
+        method_count / class_def_count plus data_size.
+        """
+        return _dump(analysis.apk_dex_headers(session_id))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,
