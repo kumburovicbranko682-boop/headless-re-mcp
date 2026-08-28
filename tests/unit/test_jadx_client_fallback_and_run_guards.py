@@ -93,6 +93,23 @@ def test_decompile_rejects_a_blank_class_name(tmp_path: Path) -> None:
     assert caught.value.code == "invalid_params"
 
 
+@pytest.mark.parametrize("bad_name", [["com.x.Y"], 5, None, {"c": "com.x.Y"}])
+def test_decompile_rejects_a_non_string_class_name(tmp_path: Path, bad_name: object) -> None:
+    """A non-string class_name is a clean invalid_params, not an AttributeError.
+
+    The agent and OpenAI-bridge transports bypass the schema, so a list/int/null
+    reached ``class_name.strip()`` and raised AttributeError -- an internal_error
+    incident -- rather than the invalid_params a blank name earns. The guard fires
+    before the jadx export runs.
+    """
+    client, apk, out = _jadx(tmp_path)
+
+    with pytest.raises(JadxError) as caught:
+        client.decompile(apk, out, bad_name)  # type: ignore[arg-type]
+
+    assert caught.value.code == "invalid_params"
+
+
 def test_decompile_falls_back_to_a_unique_simple_name_match(tmp_path: Path) -> None:
     client, apk, out = _jadx(tmp_path)
     fake_run = _writes(out, "sources/pkg/Main.java")

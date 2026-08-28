@@ -122,6 +122,15 @@ class JadxClient:
         timeout: float = 300.0,
     ) -> JsonObject:
         """Decompile the whole APK, then return one class's Java source."""
+        # class_name is a handler kwarg the apk.decompile tool schema types as a
+        # string, but the agent and OpenAI-bridge transports call the handler
+        # straight from model arguments with no pydantic coercion, so a
+        # list/int/null reaches ``class_name.strip()``. That raised AttributeError
+        # -- not the JadxError apk_decompile maps to a clean code -- so a bad name
+        # became an internal_error incident instead of the invalid_params a blank
+        # name already earns, and it happened before the jadx export could run.
+        if not isinstance(class_name, str):
+            raise JadxError("invalid_params", "class_name must be a string")
         target = class_name.strip()
         if not target:
             raise JadxError("invalid_params", "class_name is required")
