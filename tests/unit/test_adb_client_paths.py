@@ -33,6 +33,7 @@ from headless_re_mcp.backends.adb.client import (
     _frida_server_visible,
     _is_host_error_output,
     _is_timeout,
+    _local_path,
     _pids_for_package,
 )
 
@@ -832,6 +833,51 @@ def test_push_reraises_an_adberror_from_the_transfer(tmp_path: Path) -> None:
     with pytest.raises(AdbError) as exc:
         _backend_with_dev(_TransferDev(sync)).push("emulator-5554", str(local), "/sdcard/x")
     assert exc.value.code == "timeout"
+
+
+# --------------------------------------------------------------------------- #
+# Caller-supplied local path expansion (_local_path)
+# --------------------------------------------------------------------------- #
+
+
+def test_local_path_expands_and_returns_a_plain_path() -> None:
+    assert _local_path("relative/app.apk", what="apk") == Path("relative/app.apk")
+
+
+def test_local_path_maps_an_unresolvable_tilde_to_not_found() -> None:
+    # ``~someone`` with no home makes expanduser() raise RuntimeError, not
+    # OSError; the raw type would slip past _adb_wrap's AdbError arm into a
+    # _failure internal_error incident.
+    with pytest.raises(AdbError) as exc:
+        _local_path("~nosuchuser-headless-re/app.apk", what="apk")
+    assert exc.value.code == "not_found"
+    assert exc.value.details["path"] == "~nosuchuser-headless-re/app.apk"
+
+
+def test_install_maps_an_unresolvable_tilde_apk_path_to_not_found() -> None:
+    # install validates the local file before touching the adb server, so this
+    # raises from _local_path with no device or adbutils in play. Before the
+    # guard it raised a bare RuntimeError.
+    backend = AdbBackend()
+    with pytest.raises(AdbError) as exc:
+        backend.install("emulator-5554", "~nosuchuser-headless-re/app.apk")
+    assert exc.value.code == "not_found"
+
+
+def test_push_maps_an_unresolvable_tilde_local_path_to_not_found() -> None:
+    backend = AdbBackend()
+    with pytest.raises(AdbError) as exc:
+        backend.push("emulator-5554", "~nosuchuser-headless-re/blob", "/sdcard/blob")
+    assert exc.value.code == "not_found"
+
+
+def test_ensure_frida_server_maps_an_unresolvable_tilde_binary_to_not_found() -> None:
+    dev = _FridaDev({("ps", "-A"): "", ("ps",): ""})
+    with pytest.raises(AdbError) as exc:
+        _backend_with_dev(dev).ensure_frida_server(
+            "emulator-5554", server_binary="~nosuchuser-headless-re/frida-server"
+        )
+    assert exc.value.code == "not_found"
 
 
 # --------------------------------------------------------------------------- #
