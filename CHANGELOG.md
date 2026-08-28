@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **306（188 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **307（189 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -390,6 +390,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `end`、`size`、`permissions`——rwx 串、`read`/`write`/`execute` 布尔、`initialized`——无文件字节的
   .bss 类块为 false、`overlay`)、`count`、`has_more`。导出失败是错误,不是"没有内存"。大二进制耗时以
   分钟计;需 `HEADLESS_RE_GHIDRA_HOME`。
+- 新增 `ghidra.callgraph`:给出 address 所在函数四周的调用边。`ghidra.xrefs` 只列到某地址的原始入引用,
+  这个把外层函数解析出来,给分析员据以导航的两条调用图边:callees(这个函数调用了谁)与 callers(谁调用了
+  它)——不必读反汇编就能上溯到入口点或下钻进 helper。address 可落在函数体任意处,不限入口。回 `found`
+  (无函数含该地址时为 false,此时空的 callees/callers 意为"这里没函数"而非叶子)、`function`/`entry`
+  (解析出的函数名与入口)、`callees`/`callers`(每条带 `name`/`entry`/`external`——库/导入目标为 true)、
+  `callee_count`/`caller_count`,以及某侧填满上限时的 `callees_has_more`/`callers_has_more`。导出失败是
+  错误,不是"没有调用边"。大二进制耗时以分钟计;需 `HEADLESS_RE_GHIDRA_HOME`。
 - 新增 `ghidra.data`:列出 Ghidra 定型的已定义数据项,是数据视图里 `ghidra.strings` 之外的另一半。
   `ghidra.strings` 只留字符串型数据,这个列出每一条已定义数据——指针、数组、结构体、数值常量、vtable
   与配置块——带上分析器给的标签与类型。跳表、函数指针数组、硬编码密钥都躺在这里而非字符串视图里,是看完

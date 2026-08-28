@@ -178,6 +178,35 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.ghidra_xrefs(session_id, address, limit=limit, timeout=timeout))
 
+    @tools.tool(name="ghidra.callgraph")
+    def ghidra_callgraph(
+        session_id: str,
+        address: str,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
+    ) -> dict[str, Any]:
+        """The call edges around the function containing address.
+
+        Where ghidra.xrefs lists raw incoming references to one address, this
+        resolves the enclosing function and gives the two call-graph edges an
+        analyst navigates by: callees (the functions this one calls) and callers
+        (the functions that call it). The fast way to walk up to an entry point
+        or down into a helper without reading the disassembly. address may land
+        anywhere inside the function body, not just its entry.
+
+        Answers with found (false when no function contains address, so empty
+        callees/callers then means "no function here" rather than a leaf),
+        function and entry (the resolved function's name and entry point),
+        callees and callers (each an entry carrying name, entry and external --
+        true for an imported/library target), callee_count, caller_count, and
+        callees_has_more / callers_has_more when a side filled the limit. A
+        failed export is an error, not a function with no edges. Minutes on a
+        large binary; requires HEADLESS_RE_GHIDRA_HOME.
+        """
+        return _dump(
+            analysis.ghidra_callgraph(session_id, address, limit=limit, timeout=timeout)
+        )
+
     @tools.tool(name="ghidra.decompile")
     def ghidra_decompile(
         session_id: str,

@@ -584,6 +584,31 @@ def test_ghidra_data_passes_the_data_mode_to_the_post_script(
     assert listed["export_path"]
 
 
+def test_ghidra_callgraph_passes_the_callgraph_mode_and_address(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = (
+        '{"mode": "callgraph", "found": true, "function": "parse_config",'
+        ' "entry": "004011a0",'
+        ' "callees": [{"name": "malloc", "entry": "00401050", "external": true}],'
+        ' "callers": [{"name": "main", "entry": "00401000", "external": false}],'
+        ' "callee_count": 1, "caller_count": 1}'
+    )
+    calls = _capture_mode_run(monkeypatch, payload)
+    client = _client(tmp_path)
+
+    listed = client.callgraph(_binary(tmp_path), tmp_path / "project", "0x004011a8")
+
+    assert "callgraph" in calls[0]
+    assert "0x004011a8" in calls[0]
+    assert listed["found"] is True
+    assert listed["function"] == "parse_config"
+    assert listed["callees"][0]["name"] == "malloc"
+    assert listed["callees"][0]["external"] is True
+    assert listed["callers"][0]["name"] == "main"
+    assert listed["export_path"]
+
+
 def test_ghidra_imports_and_strings_descriptions_name_their_fields() -> None:
     imports = _tool_docstring("ghidra.imports")
     assert "library" in imports
@@ -609,3 +634,8 @@ def test_ghidra_imports_and_strings_descriptions_name_their_fields() -> None:
     assert "label" in data
     assert "is_pointer" in data
     assert "has_more" in data
+
+    callgraph = _tool_docstring("ghidra.callgraph")
+    assert "callees" in callgraph
+    assert "callers" in callgraph
+    assert "found" in callgraph

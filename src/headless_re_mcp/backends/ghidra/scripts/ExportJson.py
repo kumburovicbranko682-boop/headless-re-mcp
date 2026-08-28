@@ -163,6 +163,50 @@ elif mode == "memory_map":
         except Exception:
             continue
     payload["items"] = items
+elif mode == "callgraph":
+    callees = []
+    callers = []
+    found = False
+    if address_arg:
+        addr = _addr(address_arg)
+        fn = fm.getFunctionContaining(addr) if addr is not None else None
+        if fn is not None:
+            found = True
+            payload["function"] = fn.getName()
+            payload["entry"] = str(fn.getEntryPoint())
+            try:
+                for callee in fn.getCalledFunctions(monitor):
+                    if len(callees) >= limit:
+                        payload["callees_has_more"] = True
+                        break
+                    callees.append(
+                        {
+                            "name": callee.getName(),
+                            "entry": str(callee.getEntryPoint()),
+                            "external": bool(callee.isExternal()),
+                        }
+                    )
+            except Exception:
+                pass
+            try:
+                for caller in fn.getCallingFunctions(monitor):
+                    if len(callers) >= limit:
+                        payload["callers_has_more"] = True
+                        break
+                    callers.append(
+                        {
+                            "name": caller.getName(),
+                            "entry": str(caller.getEntryPoint()),
+                            "external": bool(caller.isExternal()),
+                        }
+                    )
+            except Exception:
+                pass
+    payload["found"] = found
+    payload["callees"] = callees
+    payload["callers"] = callers
+    payload["callee_count"] = len(callees)
+    payload["caller_count"] = len(callers)
 elif mode == "data":
     items = []
     for data in listing.getDefinedData(True):

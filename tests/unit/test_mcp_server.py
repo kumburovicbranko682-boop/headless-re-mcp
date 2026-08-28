@@ -152,6 +152,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "ghidra.data",
         "ghidra.symbols",
         "ghidra.xrefs",
+        "ghidra.callgraph",
         "ghidra.decompile",
         "frida.attach",
         "frida.modules",
