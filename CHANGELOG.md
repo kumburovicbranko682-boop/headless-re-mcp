@@ -91,6 +91,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（unpack 会话超时非有限/超大时未 fail-closed，报成 internal_error）
+
+- `create_unpack_session` 把 `timeout_seconds` 经 `now + timedelta(seconds=timeout_seconds)` 转成截止时刻：
+  `inf`/超大值会让 `timedelta` 抛 `OverflowError`、`NaN` 抛 `ValueError`。MCP 路径上 pydantic 的
+  `Field(gt=0, le=...)` 先行拦掉这些，但 agent 传输是直接用模型参数调 handler
+  （`CommandCatalog.invoke` → `spec.handler`），于是 agent 下发的超时未经校验直达此处，`OverflowError`
+  逃出 `_failure` 的 `ValueError` 分支、给本属畸形输入的东西记一条假的 `internal_error` 事故。现把校验前移到
+  这里：拒绝布尔、非数值、非有限、以及不在 `0 < t <= 86400` 内的值，所有传输一视同仁。
+
+### 修复（成功 unpack 的状态快照落盘失败反把整个操作判成失败）
+
+- `persist_state_snapshot` 与紧邻的 `write_timeline_jsonl` 同处一步、且记录的是**已经发生**的 unpack。
+  磁盘写满、根只读、Windows 共享冲突等在这里抛出的 `OSError` 之前会直接冒泡：未命名的 `OSError` 映射成
+  `internal_error` 并记一条事故——一个明明 dump 成功的操作被判失败，且内存态已推进到超过落盘的点。此文件也
+  无人回读（unpack 会话绑定活的被调试进程，重启无可恢复处）。现改为报告写失败而不抛（返回 `str | None`），
+  并给 partial 文件带上唯一后缀（`uuid4`），使第二个写者或共享产物根的第二个进程不会替换掉第一个仍打开的文件。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
