@@ -1129,6 +1129,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   manifest 的 zip 魔数识别、`.apk` 非 zip 或缺 `AndroidManifest.xml` 报结构化 ValueError、
   伪造 MZ/PE 头与不支持的 machine 各自 fail-closed;本地 `.js` 资产建会话时哈希入册,
   远程 URL 不碰磁盘。
+- **外部工具发现与校验的护栏成套固定**（`config.py` 82%→100%）：idalib/x64dbg 的发现逻辑
+  决定服务器会加载并执行哪个外部二进制,现在在临时目录里把宿主平台钉住后跨平台直测:
+  Windows 注册表指向的 IDA 目录若缺 idalib 运行时(GUI-only 安装)不会被交给加载器、
+  注册文件损坏安静回落文件系统扫描、Program Files 双根去重、POSIX 家目录扫描跳过
+  消失的根;`validate_ida_home` 四种结构化裁决(空路径/非目录/缺 idalib/可用)各自直测,
+  缺件裁决必须说出期望的文件名。x64dbg headless 只认 x86/x64 且大小写空白宽容;
+  已有 config.json 读不动时 `update_config_values` 报错并保证不覆写原文件。
+  `_as_int`/`_as_float` 对垃圾值回退而非炸掉启动,负值一律钳到 0;`_as_command`
+  的 env 覆盖默认、字符串默认按操作员写法切 argv、数组默认丢弃空片段。
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
   `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
   分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。
