@@ -16,7 +16,7 @@ import os
 import socket
 import threading
 import time
-from collections import OrderedDict, deque
+from collections import Counter, OrderedDict, deque
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -47,6 +47,9 @@ _MAX_FLOW_HEADERS = 100
 _MAX_HEADER_VALUE_BYTES = 4 * 1024
 _MAX_FLOW_HEADERS_TOTAL_BYTES = 64 * 1024
 _OMITTED_BODY = object()
+# proxy.stats top-N ceiling: a capture can touch thousands of hosts, so the
+# ranked host/content-type lists are capped even when the caller asks for more.
+_MAX_TOP_STATS = 50
 
 
 class ProxyError(RuntimeError):
@@ -298,6 +301,68 @@ def _bounded_headers(part: Any) -> tuple[dict[str, str], bool]:
         total += entry_bytes
         out[name] = text
     return out, truncated
+
+
+def summarize_flows(
+    items: list[JsonObject], *, dropped: int = 0, top: int = 10
+) -> JsonObject:
+    """Fold a flow snapshot into the aggregate a capture triage reads first.
+
+    Pure over the summary rows the recorder already produces (id/method/url/
+    host/status/content_type/response_size, plus error/body_omitted), so it
+    needs no proxy instance and stays testable in isolation. content_type is
+    normalised to the bare media type (the ``; charset=...`` tail is dropped)
+    and host is taken as recorded; both ranked lists are capped at ``top``.
+    """
+    top = max(1, min(int(top), _MAX_TOP_STATS))
+    methods: Counter[str] = Counter()
+    status_classes: Counter[str] = Counter()
+    hosts: Counter[str] = Counter()
+    content_types: Counter[str] = Counter()
+    errors = 0
+    body_omitted = 0
+    total_response_bytes = 0
+    for row in items:
+        methods[str(row.get("method") or "").upper() or "?"] += 1
+        status = row.get("status")
+        if isinstance(status, int):
+            status_classes[f"{status // 100}xx"] += 1
+        else:
+            # An errored or still-pending flow carries a null status; it is a
+            # class of its own, not folded into any numeric bucket.
+            status_classes["none"] += 1
+        host = str(row.get("host") or "")
+        if host:
+            hosts[host] += 1
+        ctype = str(row.get("content_type") or "").split(";", 1)[0].strip().lower()
+        if ctype:
+            content_types[ctype] += 1
+        if row.get("error"):
+            errors += 1
+        if row.get("body_omitted"):
+            body_omitted += 1
+        size = row.get("response_size")
+        if isinstance(size, int) and size > 0:
+            total_response_bytes += size
+
+    def _ranked(counter: Counter[str]) -> list[tuple[str, int]]:
+        return sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[:top]
+
+    return {
+        "total": len(items),
+        "dropped": dropped,
+        "methods": dict(sorted(methods.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "status_classes": dict(sorted(status_classes.items())),
+        "top_hosts": [{"host": h, "count": c} for h, c in _ranked(hosts)],
+        "host_count": len(hosts),
+        "top_content_types": [
+            {"content_type": t, "count": c} for t, c in _ranked(content_types)
+        ],
+        "content_type_count": len(content_types),
+        "errors": errors,
+        "body_omitted": body_omitted,
+        "total_response_bytes": total_response_bytes,
+    }
 
 
 class _FlowRecorder:
@@ -643,6 +708,14 @@ class ProxyBackend:
             "has_more": start + len(window) < len(items),
             "dropped": dropped,
         }
+
+    def stats(self, session_id: str, *, top: int = 10) -> JsonObject:
+        inst = self._get(session_id)
+        items = inst.recorder.snapshot()
+        dropped = 0
+        if items:
+            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
+        return summarize_flows(items, dropped=dropped, top=top)
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
         inst = self._get(session_id)

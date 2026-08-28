@@ -74,6 +74,28 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="proxy.stats")
+    def proxy_stats(
+        session_id: str,
+        top: Annotated[int, Field(ge=1, le=50)] = 10,
+    ) -> dict[str, Any]:
+        """Aggregate the captured flows into a one-look triage summary.
+
+        Folds the same rows proxy.flows pages, so it needs no export. Answers
+        with total and dropped (how many the ring already evicted -- a nonzero
+        dropped means the tallies cover only the retained window), methods (a
+        method->count map, busiest first), status_classes (2xx/3xx/4xx/5xx and
+        none for errored or still-pending flows with a null status), top_hosts
+        and top_content_types (each a ranked [{host|content_type, count}] list
+        capped at top, default 10), host_count and content_type_count (the
+        distinct totals behind those lists), errors and body_omitted (flow
+        counts, not byte sizes), and total_response_bytes (summed decoded
+        response sizes). content_type is the bare media type; the charset tail
+        is dropped before counting. There is no flows or items field here --
+        use proxy.flows to read individual rows.
+        """
+        return _dump(analysis.proxy_stats(session_id, top=top))
+
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
         """Fetch one flow's headers and bodies (large or binary bodies spill).

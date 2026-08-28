@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **267（150 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **268（151 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -391,6 +391,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   会正确跳过 active/passive/显式内存索引三类数据段的偏移常量表达式,数据段拆不开时置
   `malformed`,无数据段时 `has_data_section=false`。
 
+### 新增（抓包聚合）
+
+- 新增 `proxy.stats`:把 `proxy.flows` 分页读取的同一批流折叠成一眼可读的三角:`total`
+  与 `dropped`(环已淘汰多少;非零意味着聚合只覆盖保留窗口),`methods`(方法→计数,按热度
+  排序),`status_classes`(2xx/3xx/4xx/5xx,错误或未完成的空状态归入 `none`),`top_hosts`
+  与 `top_content_types`(排序后各取前 `top` 条,默认 10,上限 50)及其背后的 `host_count` /
+  `content_type_count`,`errors` 与 `body_omitted`(按流计数),`total_response_bytes`(解码后
+  响应体字节之和)。聚合逻辑抽成纯函数 `summarize_flows`,不依赖运行中的代理实例,可独立
+  单测;`content_type` 计数前先剥掉 `; charset=...` 只留裸媒体类型。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
@@ -562,8 +572,8 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。
-- **抓包**：`proxy.*` 8 个工具，mitmproxy 以 addon 形式跑在独立线程，Web 与 Android 共用，
-  含 `proxy.ca.install_android`。
+- **抓包**：`proxy.*` 9 个工具，mitmproxy 以 addon 形式跑在独立线程，Web 与 Android 共用，
+  含 `proxy.ca.install_android` 与 `proxy.stats`（把捕获流折叠成方法/状态段/热点主机聚合）。
 
 ### 修复（HAR 导出规范与边界）
 
