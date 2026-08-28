@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（apk.decompile 截断 Java 源码却不报完整大小,和 web.script.source 不一致)
+
+- `apk.decompile`(jadx 反编译出的单个类 Java 源码)是 Android 线上与 `web.script.source` 对位的读取——都取"某一项可能很大的
+  源码"并在 `_MAX_SOURCE_BYTES`(400 KB)处截断——但它只回带 `source`/`truncated`,不报完整大小,调用方看到被截断也无从判断这
+  个类到底多大;而 `web.script.source` 截断时回带 `bytes`(完整字节数),`web.dom.snapshot`/`wasm.*` 也已统一回带 `bytes`。这里
+  的读取有意只读 `_MAX_SOURCE_BYTES + 1` 字节以免把超大类整个读进内存,所以完整大小拿不到——现用 `os.fstat` 量出磁盘上 .java
+  的完整字节数作为 `bytes` 回带(fstat 不可用时兜底为已读字节数),既保留有界读取、又让截断变得可判断。工具文档同步写明
+  `bytes`。新增/扩展测试:能装下的类 `bytes` 等于磁盘大小且不判截断、被截断时 `bytes` 报完整大小(400080)而 `source` 仍为
+  400000 字符、`apk.decompile` 文档点名 `bytes`。纯附加字段,不改任何既有字段含义。
+
 ### 修复（web.dom.snapshot 截断 HTML 却不报完整大小,和 web.script.source/wasm.* 不一致)
 
 - `web.dom.snapshot` 在浏览器内把 outerHTML 截到 200 KB 并置 `truncated`,却不回带完整大小,调用方看到被截断也无从判断这页

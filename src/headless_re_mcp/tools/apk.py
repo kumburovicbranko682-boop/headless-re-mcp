@@ -161,11 +161,12 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Decompile one class to Java via jadx (requires jadx + JRE).
 
-        Answers with class_name, path and source, plus truncated when the
-        Java was cut at the buffer. There is no java, code or text field. If
-        jadx exited non-zero on the whole-APK pass but still wrote this class,
-        the reply carries exit_code, tool_failed and stderr so a partial
-        decompile is not read as complete.
+        Answers with class_name, path and source, plus bytes (the full on-disk
+        size) and truncated when the Java was cut at the buffer -- bytes tells
+        you how large the class really is even when source is clipped. There is
+        no java, code or text field. If jadx exited non-zero on the whole-APK
+        pass but still wrote this class, the reply carries exit_code, tool_failed
+        and stderr so a partial decompile is not read as complete.
         """
         return _dump(analysis.apk_decompile(session_id, class_name, timeout=timeout))
 

@@ -347,10 +347,11 @@ def test_apk_decompile_names_source_and_says_when_it_was_cut(
 ) -> None:
     """The catalog said Java and never named the payload.
 
-    Measured: truncated True, source 400000 chars (the cap), no java, code
-    or text field. Looking for those after a successful call reads as a
-    missing class, and a 400000-char string with no truncated flag reads
-    as the whole file.
+    Measured: truncated True, source 400000 chars (the cap), bytes 400080 (the
+    full on-disk size), no java, code or text field. Looking for those after a
+    successful call reads as a missing class, and a 400000-char string with no
+    truncated flag reads as the whole file, and a truncated source with no bytes
+    gives no scale at all.
     """
     from headless_re_mcp.backends.jadx.client import _MAX_SOURCE_BYTES, JadxClient
 
@@ -369,9 +370,11 @@ def test_apk_decompile_names_source_and_says_when_it_was_cut(
     assert payload["truncated"] is True
     assert payload["class_name"] == "com.example.Foo"
     assert len(payload["source"]) == _MAX_SOURCE_BYTES
+    assert payload["bytes"] == _MAX_SOURCE_BYTES + 80
     doc = _tool_docstring("apk.decompile")
     assert "source" in doc
     assert "truncated" in doc
+    assert "bytes" in doc
 
 def test_apk_export_sources_says_when_the_java_list_was_cut(
     tmp_path: Path, monkeypatch: Any

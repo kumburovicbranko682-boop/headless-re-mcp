@@ -136,6 +136,23 @@ def test_decompile_falls_back_to_a_unique_simple_name_match(tmp_path: Path) -> N
     assert payload["path"] == str(out / "sources" / "pkg" / "Main.java")
 
 
+def test_decompile_reports_the_on_disk_size_as_bytes(tmp_path: Path) -> None:
+    """A class that fits carries bytes equal to its on-disk size, not truncated.
+
+    bytes is the full size fstat measured, so a caller reads the class's true
+    scale -- the same signal web.script.source carries -- even though the read
+    is bounded to keep a huge class out of memory.
+    """
+    client, apk, out = _jadx(tmp_path)
+
+    with patch(_RUN_BOUNDED, _writes(out, "sources/pkg/Main.java")):
+        payload = client.decompile(apk, out, "com.example.Main")
+
+    assert payload["source"] == "class Main {}"
+    assert payload["bytes"] == len(b"class Main {}")
+    assert payload["truncated"] is False
+
+
 def test_decompile_skips_a_match_that_cannot_be_resolved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

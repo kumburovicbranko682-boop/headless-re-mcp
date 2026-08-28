@@ -167,6 +167,15 @@ class JadxClient:
         try:
             with candidate.open("rb") as handle:
                 raw = handle.read(_MAX_SOURCE_BYTES + 1)
+                # bytes is the full on-disk size so truncated is actionable: the
+                # read above is deliberately bounded to keep a huge class out of
+                # memory, so fstat is the only way to say how large the source
+                # really is -- the same size signal web.script.source carries.
+                # Fall back to the bytes read if fstat is unavailable.
+                try:
+                    full_bytes = int(os.fstat(handle.fileno()).st_size)
+                except OSError:
+                    full_bytes = len(raw)
         except OSError as exc:
             raise JadxError("backend_error", f"failed to read source: {exc}") from exc
         truncated = len(raw) > _MAX_SOURCE_BYTES
@@ -175,6 +184,7 @@ class JadxClient:
             "class_name": target,
             "path": str(candidate),
             "source": source,
+            "bytes": full_bytes,
             "truncated": truncated,
         }
         # The named class may have decompiled cleanly even when jadx choked on
