@@ -136,7 +136,16 @@ class ArtifactRetention:
             return None
         if self._failing:
             self._failing = False
-            record_alert("artifact_collection_recovered", fields={"detail": "collection succeeded"})
+            # info, not the default warning: a collector working again is good
+            # news, and mislabelling it warning both contradicts the taxonomy
+            # every other recovery follows (artifact_usage_measurement_recovered,
+            # event_drain_recovered, the watchdog recoveries) and, once severity
+            # drives the log level, pages an operator on a recovery.
+            record_alert(
+                "artifact_collection_recovered",
+                severity="info",
+                fields={"detail": "collection succeeded"},
+            )
         return collected
 
 

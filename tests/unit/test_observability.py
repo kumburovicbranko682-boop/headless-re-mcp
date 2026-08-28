@@ -231,9 +231,11 @@ def test_a_collector_that_has_stopped_working_says_so(
     """
     from headless_re_mcp.core import retention as retention_module
 
-    alerts: list[str] = []
+    alerts: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        retention_module, "record_alert", lambda kind, **kwargs: alerts.append(kind)
+        retention_module,
+        "record_alert",
+        lambda kind, *, severity="warning", **kwargs: alerts.append((kind, severity)),
     )
 
     class Broken:
@@ -250,11 +252,19 @@ def test_a_collector_that_has_stopped_working_says_so(
 
     assert policy.maybe_collect(collector) is None
     assert policy.maybe_collect(collector) is None
-    assert alerts == ["artifact_collection_failing"], f"once, not per call: {alerts}"
+    # A collector that stopped enforcing the budget is a real problem, so the
+    # failing alert is a warning -- and fires once, not once per call.
+    assert alerts == [("artifact_collection_failing", "warning")], (
+        f"once, not per call: {alerts}"
+    )
 
     collector.works = True
     assert policy.maybe_collect(collector) is not None
-    assert alerts[-1] == "artifact_collection_recovered", "and says when it is working again"
+    # Recovery is good news: info, matching every other recovery alert, so a
+    # collector working again does not read (or page) like a fault.
+    assert alerts[-1] == ("artifact_collection_recovered", "info"), (
+        "and says, at info, when it is working again"
+    )
 
 
 def test_routine_stdio_logs_do_not_go_on_the_pipe_a_client_may_not_read(

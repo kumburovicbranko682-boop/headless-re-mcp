@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（artifact_collection_recovered 归为 info，与其余恢复告警对齐）
+
+- `core/retention.py`：`artifact_collection_recovered`（回收器恢复正常）此前用默认
+  `severity="warning"` 发出，而它的同类——`artifact_usage_measurement_recovered`、
+  `event_drain_recovered`、watchdog 的各恢复告警——都用 `info`。回收器重新开始工作是好
+  消息，标成 warning 既与告警分级自相矛盾，一旦 severity 决定日志级别，还会把一条“恢复
+  正常”当成故障去 page 运维。改为 `severity="info"`。
+- 加强 `tests/unit/test_observability.py::test_a_collector_that_has_stopped_working_says_so`：
+  改为同时捕获 kind 与 severity，钉死 failing 为 `warning`、recovered 为 `info`。非空验证：
+  去掉 `severity="info"` 后 recovered 落回 warning，断言即失败。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
