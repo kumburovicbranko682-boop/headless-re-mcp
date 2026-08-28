@@ -8,6 +8,14 @@ from headless_re_mcp.core.models import Address, Architecture
 
 JsonObject = dict[str, Any]
 _MAX_ITEMS = 4096
+# How many '['/'{' openers to probe before giving up. r2's -q0 JSON is the
+# first valid value in the output (the banner is suppressed), so a real payload
+# returns on the first opener; the cap only bites on unparseable output, whose
+# answer is "no JSON here" regardless. Without it, a truncated payload whose
+# bytes are mostly '[' -- trivially placed in a crafted binary's string table,
+# echoed by izj and cut at the output cap so the root array never closes --
+# turned this into an O(n) walk of thousands of deep-nesting parse attempts.
+_MAX_JSON_SCAN_STARTS = 256
 # Enough for any PE header: the DOS stub and the optional header live in the
 # first pages. The second read below covers the pathological ones.
 _HEADER_WINDOW = 64 * 1024
@@ -106,12 +114,20 @@ def parse_r2_json(raw: str) -> Any | None:
     if not text:
         return None
     decoder = json.JSONDecoder()
+    attempts = 0
     for index, char in enumerate(text):
         if char not in "[{":
             continue
+        attempts += 1
+        if attempts > _MAX_JSON_SCAN_STARTS:
+            break
         try:
             value, _end = decoder.raw_decode(text, index)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
+            # RecursionError: the whitelisted r2 commands emit flat arrays of
+            # objects, so anything nested thousands deep is crafted string
+            # content from the analysed binary, not the payload. Skip it like a
+            # decode miss rather than letting it escape as an internal_error.
             continue
         return value
     return None

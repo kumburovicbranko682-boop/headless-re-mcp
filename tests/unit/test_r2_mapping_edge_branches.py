@@ -189,6 +189,36 @@ def test_parse_r2_json_returns_none_when_nothing_decodes() -> None:
     assert parse_r2_json("[ not json at all") is None
 
 
+def test_parse_r2_json_does_not_crash_on_deeply_nested_brackets() -> None:
+    """A truncated izj payload whose crafted string is a long run of '[' used to
+    raise RecursionError (a RuntimeError, so the ``except JSONDecodeError`` in
+    the scan missed it) and escape as an internal_error. It must degrade to
+    "no JSON here" instead."""
+    payload = '[{"vaddr":4096,"string":"' + "[" * 40000
+    assert parse_r2_json(payload) is None
+
+
+def test_parse_r2_json_scan_is_bounded_on_a_bracket_heavy_body() -> None:
+    """The scan probes at most a fixed number of openers, so a body that is
+    almost entirely '[' cannot turn the first-valid-JSON search into an O(n)
+    walk of deep-nesting parse attempts."""
+    import time
+
+    text = "x" + "[" * 500_000
+    started = time.monotonic()
+    assert parse_r2_json(text) is None
+    # Generous: the point is that it returns promptly rather than spending
+    # seconds walking half a million parse attempts.
+    assert time.monotonic() - started < 2.0
+
+
+def test_parse_r2_json_still_finds_json_after_a_short_bracket_banner() -> None:
+    """The opener cap must not stop the scan from skipping a normal banner and
+    returning the real payload that follows."""
+    assert parse_r2_json('[note] [x] {"k": 5}') == {"k": 5}
+    assert parse_r2_json('[warn]\n[{"vaddr": 4096}]') == [{"vaddr": 4096}]
+
+
 # --- enrich_r2_payload ------------------------------------------------------
 
 
