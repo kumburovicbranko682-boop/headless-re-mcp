@@ -120,7 +120,9 @@ class SessionRegistry:
             metadata: dict[str, Any] = {}
             if kind is TargetKind.PE:
                 architecture = detect_pe_architecture(path)
-            elif kind is TargetKind.APK:
+            # WEB is handled above, so a non-WEB file target is always PE or APK;
+            # the elif never falls through.
+            elif kind is TargetKind.APK:  # pragma: no branch
                 metadata = describe_apk(path)
             session = Session(
                 target=kind,
@@ -223,7 +225,10 @@ class SessionRegistry:
             if session.state != SessionState.CLOSED:
                 raise InvalidStateTransition("only closed sessions can be removed")
             del self._sessions[session_id]
-            if session_id in self._closed_order:
+            # A CLOSED session is always tracked in _closed_order (retire/adopt
+            # add it, and trimming drops it from both maps together), so the
+            # guard only shields deque.remove from an impossible ValueError.
+            if session_id in self._closed_order:  # pragma: no branch
                 self._closed_order.remove(session_id)
 
     def _require(self, session_id: str) -> Session:
