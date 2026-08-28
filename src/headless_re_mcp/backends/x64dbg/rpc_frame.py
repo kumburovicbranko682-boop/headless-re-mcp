@@ -34,7 +34,14 @@ def parse_rpc_frame(data: bytes) -> dict[str, Any]:
     raw = data[4 : 4 + size]
     try:
         response = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        # The 8 MiB frame cap leaves ample room for JSON nested past the C
+        # decoder's recursion ceiling (~100k brackets is 200 KB), which raises
+        # RecursionError rather than JSONDecodeError. This is the documented
+        # fuzz target and its one contract is to raise only XdbgRpcError, so a
+        # bare RecursionError escaping here would both break that contract and
+        # let a hostile frame read as an internal incident instead of a clean
+        # protocol error.
         raise XdbgRpcError(
             "rpc_protocol_error", "RPC response is not valid UTF-8 JSON"
         ) from exc

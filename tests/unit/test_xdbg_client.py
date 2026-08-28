@@ -170,6 +170,50 @@ def _success_response(result: JsonObject) -> JsonObject:
     }
 
 
+class ReplayTransport:
+    """A transport that returns one caller-supplied response frame verbatim."""
+
+    def __init__(self, response_frame: bytes) -> None:
+        self._reads: deque[bytes] = deque()
+        self._frame = response_frame
+        self.closed = False
+
+    def write_all(self, data: bytes, *, timeout: float) -> None:
+        del data, timeout
+        self._reads.append(self._frame[:4])
+        self._reads.append(self._frame[4:])
+
+    def read_exact(self, size: int, *, timeout: float) -> bytes:
+        del timeout
+        value = self._reads.popleft()
+        assert len(value) == size
+        return value
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_request_maps_a_deeply_nested_response_to_a_protocol_error() -> None:
+    """The live decode path shares the fuzz target's recursion gap.
+
+    request() reads a size-prefixed frame off the pipe and json.loads it under
+    an ``except (UnicodeDecodeError, json.JSONDecodeError)`` that does not name
+    RecursionError. The frame cap is 8 MiB, so a 200 KB array nested past the C
+    decoder's ceiling parses under the limit yet raises RecursionError, which
+    escaped request() and _failure filed it as an internal incident instead of
+    the clean rpc_protocol_error a malformed frame is supposed to produce.
+    """
+    depth = 100_000
+    body = (b"[" * depth) + (b"]" * depth)
+    frame = len(body).to_bytes(4, "little") + body
+    assert len(frame) - 4 <= client_module._MAX_FRAME_BYTES
+    client = _client(ReplayTransport(frame))  # type: ignore[arg-type]
+
+    with pytest.raises(XdbgRpcError) as exc_info:
+        client._request("debug.state", {}, timeout=1)
+    assert exc_info.value.code == "rpc_protocol_error"
+
+
 def test_request_frames_are_bounded_and_ids_are_monotonic() -> None:
     transport = ScriptedTransport()
     client = _client(transport)

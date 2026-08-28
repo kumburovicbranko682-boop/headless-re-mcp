@@ -24,6 +24,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（x64dbg RPC 帧解码把深嵌套 JSON 误记为内部事故）
+
+- `backends/x64dbg/rpc_frame.py` 的 `parse_rpc_frame`(docstring 自述为 fuzz target)与
+  `backends/x64dbg/client.py` 的实时 `request()` 解码路径都用
+  `except (UnicodeDecodeError, json.JSONDecodeError)` 守 `json.loads`,但帧上限是
+  8 MiB——远超击穿 C 级解码器递归上限所需的约 200 KB(`[`×100000 的深嵌套数组在字节
+  上限内即可让 `json.loads` 抛 `RecursionError`,而非 `JSONDecodeError`)。该异常逃逸后
+  被 `results._failure` 归入 `internal_error` 并落一条事故日志,而畸形帧本应一律读作干净的
+  `rpc_protocol_error`——这正是 `parse_rpc_frame` 被 fuzz 测试钉住的唯一契约(测试
+  `test_frame_fuzz_random_lengths` 明确断言「只能抛 XdbgRpcError」,但其只用非 JSON body
+  未覆盖深嵌套)。威胁模型真实:被调试的实时恶意样本与插件共享分析机,会话级命名管道可被
+  同会话进程连接并发送构造帧。两处解码均把 `RecursionError` 纳入同一 except,映射为
+  `rpc_protocol_error`。新增两条「修复前必失败」回归:fuzz target 层(`parse_rpc_frame`
+  直接吃深嵌套帧)与实时客户端层(经 `ScriptedTransport` 风格的 `ReplayTransport` 驱动真实
+  `request()` 解码路径)。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、

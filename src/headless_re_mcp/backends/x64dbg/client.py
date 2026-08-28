@@ -1202,7 +1202,14 @@ class XdbgClient:
 
         try:
             response = json.loads(response_raw)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+            # response_size is capped at _MAX_FRAME_BYTES (8 MiB), which is far
+            # more than the ~200 KB it takes to nest a valid-JSON array past the
+            # C decoder's recursion ceiling: that raises RecursionError, not
+            # JSONDecodeError. Left uncaught it escaped request() and _failure
+            # filed it as an internal incident, when a malformed frame from the
+            # pipe should always read as a clean rpc_protocol_error (the same
+            # contract rpc_frame.parse_rpc_frame is fuzzed against).
             raise XdbgRpcError(
                 "rpc_protocol_error", "RPC response is not valid UTF-8 JSON"
             ) from exc
