@@ -12,7 +12,8 @@ from typing import Any
 import pytest
 
 import headless_re_mcp.backends.ghidra.client as ghidra_client
-from headless_re_mcp.backends.common.bounded_run import Completed
+from headless_re_mcp.backends.common.bounded_run import Completed, TimedOut
+from headless_re_mcp.core.models import Architecture
 from headless_re_mcp.tools.ghidra import build_ghidra_tools
 
 
@@ -268,3 +269,219 @@ def test_ghidra_reports_corrupt_export_as_a_backend_error(
     assert caught.value.code == "backend_error"
     assert caught.value.message == "export JSON invalid"
     assert error_type in str(caught.value.details["error"])
+
+
+# --- configuration and input guards -----------------------------------------
+#
+# Everything below drives the adapter without a real analyzeHeadless: the guards
+# refuse before any spawn, the export failure branches map each backend outcome
+# to a structured code, and discovery/carve degrade rather than raise. These are
+# the ELF/Mach-O line's error contract, proven on a device- and Ghidra-free VM.
+
+
+def test_an_unconfigured_client_is_unavailable_and_declines(tmp_path: Path) -> None:
+    # home=None means analyzeHeadless is never found, so the client is
+    # unavailable regardless of whether a java happens to sit on PATH; both the
+    # analyze and the export entry points must refuse with capability_unavailable
+    # before attempting to spawn anything.
+    client = ghidra_client.GhidraClient(home=None)
+    assert client.available is False
+    with pytest.raises(ghidra_client.GhidraError) as analyze:
+        client.analyze_binary(_binary(tmp_path), tmp_path / "project")
+    assert analyze.value.code == "capability_unavailable"
+    with pytest.raises(ghidra_client.GhidraError) as export:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+    assert export.value.code == "capability_unavailable"
+
+
+def test_a_missing_binary_is_not_found_before_any_spawn(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    missing = tmp_path / "gone.bin"
+    with pytest.raises(ghidra_client.GhidraError) as analyze:
+        client.analyze_binary(missing, tmp_path / "project")
+    assert analyze.value.code == "not_found"
+    with pytest.raises(ghidra_client.GhidraError) as export:
+        client.functions(missing, tmp_path / "project")
+    assert export.value.code == "not_found"
+
+
+def test_symbols_xrefs_and_decompile_each_run_through_the_shared_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The three thin wrappers forward to _export with their own mode; drive each
+    # so the mode threads through and the enriched payload comes back with the
+    # export path the tool layer surfaces.
+    _capture_run(monkeypatch)
+    client = _client(tmp_path)
+    binary = _binary(tmp_path)
+    project = tmp_path / "project"
+    assert client.symbols(binary, project)["export_path"]
+    assert client.xrefs(binary, project, 0x1000)["export_path"]
+    assert client.decompile(binary, project, 0x1000)["export_path"]
+
+
+def test_analyze_binary_maps_a_nonzero_exit_to_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del cmd, kwargs
+        return Completed(3, b"", b"analyze blew up")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.analyze_binary(_binary(tmp_path), tmp_path / "project")
+    assert caught.value.code == "backend_error"
+    assert caught.value.details["exit_code"] == 3
+
+
+def test_analyze_binary_without_delete_keeps_the_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # delete_project=False must drop the -deleteProject flag so a caller can
+    # inspect the project afterwards; the default True path is pinned elsewhere.
+    calls = _capture_run(monkeypatch)
+    client = _client(tmp_path)
+    client.analyze_binary(_binary(tmp_path), tmp_path / "project", delete_project=False)
+    assert "-deleteProject" not in calls[0]
+
+
+def test_export_failure_with_no_output_is_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del cmd, kwargs
+        return Completed(1, b"", b"import failed")  # non-zero and writes no json
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+    assert caught.value.code == "backend_error"
+    assert caught.value.details["exit_code"] == 1
+
+
+def test_export_missing_json_after_a_clean_exit_is_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del cmd, kwargs
+        return Completed(0, b"ok", b"")  # clean exit but the postScript wrote nothing
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+    assert caught.value.code == "backend_error"
+    assert "missing after postScript" in caught.value.message
+
+
+def test_export_unreadable_json_is_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The postScript wrote a real file, but reading it back raises OSError; the
+    # adapter maps that to backend_error rather than letting it escape.
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(arg).write_text('{"items": []}', encoding="utf-8")
+        return Completed(0, b"ok", b"")
+
+    real_open = Path.open
+
+    def boom_open(self: Path, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        if self.suffix == ".json" and "r" in mode and "b" in mode:
+            raise OSError("EIO")
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    monkeypatch.setattr(Path, "open", boom_open)
+    client = _client(tmp_path)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+    assert caught.value.code == "backend_error"
+    assert "unreadable" in caught.value.message
+
+
+def test_export_non_object_payload_is_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(arg).write_text("[1, 2, 3]", encoding="utf-8")  # a JSON array
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+    assert caught.value.code == "backend_error"
+    assert "must be an object" in caught.value.message
+
+
+def test_export_missing_script_is_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The packaged ExportJson.py is the postScript; if it is not on disk the
+    # adapter refuses up front rather than launching a headless run that would
+    # find no script to execute.
+    monkeypatch.setattr(ghidra_client, "_SCRIPT_DIR", tmp_path / "no-scripts")
+    client = _client(tmp_path)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+    assert caught.value.code == "backend_error"
+    assert "ExportJson.py missing" in caught.value.message
+
+
+def test_a_deadline_maps_to_timeout_with_the_killed_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del cmd
+        raise TimedOut(kwargs.get("timeout", 1.0), [4321])
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+    assert caught.value.code == "timeout"
+    assert caught.value.details["killed_pids"] == [4321]
+
+
+# --- discovery and fat-slice carving ----------------------------------------
+
+
+def test_find_analyze_headless_returns_none_when_absent(tmp_path: Path) -> None:
+    # A home with a support/ dir but no launcher: neither the support layout nor
+    # the flattened root matches, so discovery falls through to None and the
+    # client reports itself unavailable rather than binding a phantom path.
+    empty = tmp_path / "ghidra-empty"
+    (empty / "support").mkdir(parents=True)
+    client = ghidra_client.GhidraClient(home=empty)
+    assert client.analyze is None
+    assert client.available is False
+
+
+def test_carve_slice_maps_an_os_error_to_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A valid slice span, but the copy raises OSError: carving must surface
+    # backend_error rather than let the read escape the adapter.
+    monkeypatch.setattr(ghidra_client, "macho_slice_span", lambda binary, arch: (0, 16))
+    binary = tmp_path / "fat.bin"
+    binary.write_bytes(b"\x00" * 32)
+    real_open = Path.open
+
+    def boom_open(self: Path, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        if "b" in mode:
+            raise OSError("EIO")
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", boom_open)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        ghidra_client._carve_slice(binary, tmp_path / "project", Architecture.X64)
+    assert caught.value.code == "backend_error"
+    assert "carving fat slice failed" in caught.value.message
