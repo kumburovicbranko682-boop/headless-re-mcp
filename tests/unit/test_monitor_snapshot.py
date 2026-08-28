@@ -86,6 +86,31 @@ def test_closed_pe_frame_does_not_call_x64dbg(tmp_path: Path) -> None:
     assert snapshot["dynamic"]["state"] == "closed"
 
 
+def test_a_failing_timeline_read_renders_as_an_error_not_a_crash(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """A frame has to render even when the timeline store is unreadable."""
+    from headless_re_mcp.core.models import Result, RpcError
+
+    service = _service(tmp_path, FakeDynamicWorker())
+    created = service.create_session("https://example.com/app", target="web")
+    assert created.ok and created.data is not None
+    session_id = created.data["session"]["id"]
+
+    def broken(self, session_id, offset=0, limit=48):  # type: ignore[no-untyped-def]
+        return Result(
+            ok=False,
+            error=RpcError(code="timeline_unavailable", message="disk gone"),
+        )
+
+    monkeypatch.setattr(type(service), "timeline_list", broken)
+    snapshot = build_monitor_snapshot(service, session_id)
+
+    assert snapshot["ok"] is True
+    assert snapshot["timeline"]["items"] == []
+    assert snapshot["timeline"]["error"]["code"] == "timeline_unavailable"
+
+
 def test_web_frame_skips_the_debugger(tmp_path: Path) -> None:
     service = _service(tmp_path, FakeDynamicWorker())
     created = service.create_session("https://example.com/app", target="web")

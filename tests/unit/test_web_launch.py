@@ -178,6 +178,116 @@ def test_run_web_chinese_refuse_non_loopback(
     assert "拒绝绑定" in out
 
 
+def _local_settings(tmp_path: Path):  # type: ignore[no-untyped-def]
+    from headless_re_mcp.config import Settings
+
+    return Settings(
+        ida_home=None,
+        x64dbg_source=None,
+        x64dbg_headless_x64=None,
+        x64dbg_headless_x86=None,
+        artifact_root=tmp_path / "artifacts",
+        http_host="127.0.0.1",
+        http_port=8765,
+    )
+
+
+def test_run_web_refuses_a_host_that_is_not_an_ip(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from headless_re_mcp.web.app import run_web
+
+    code = run_web(_local_settings(tmp_path), host="localhost.example")
+    assert code == 2
+    assert "不是合法 IP" in capsys.readouterr().out
+
+
+def test_run_web_reports_a_busy_port_when_auto_fallback_is_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import headless_re_mcp.web.launch_util as launch_util
+    from headless_re_mcp.web.app import run_web
+
+    monkeypatch.setattr(
+        launch_util, "choose_bind_port", lambda *a, **k: (8765, "busy")
+    )
+    code = run_web(_local_settings(tmp_path), auto_port=False)
+    assert code == 3
+    assert "端口已被占用" in capsys.readouterr().out
+
+
+def test_run_web_reports_an_exhausted_port_span(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import headless_re_mcp.web.launch_util as launch_util
+    from headless_re_mcp.web.app import run_web
+
+    monkeypatch.setattr(
+        launch_util, "choose_bind_port", lambda *a, **k: (8765, "exhausted")
+    )
+    code = run_web(_local_settings(tmp_path))
+    assert code == 3
+    assert "端口区间均不可用" in capsys.readouterr().out
+
+
+def test_run_web_refuses_to_share_an_artifact_root_with_another_console(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A second scheduler on the same database corrupts the first one's runs."""
+    from headless_re_mcp.web import app as web_app
+
+    monkeypatch.setattr(web_app, "_claim_artifact_root", lambda _root: None)
+    code = web_app.run_web(_local_settings(tmp_path), port=0)
+    assert code == 78
+    assert "另一个控制台已在使用同一制品目录" in capsys.readouterr().out
+
+
+def test_run_web_banner_names_the_fallback_port(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import uvicorn
+
+    import headless_re_mcp.web.launch_util as launch_util
+    from headless_re_mcp.web import app as web_app
+
+    monkeypatch.setattr(
+        launch_util, "choose_bind_port", lambda *a, **k: (8766, "fallback")
+    )
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    code = web_app.run_web(_local_settings(tmp_path), port=8765, quiet_banner=False)
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "自动改用 8766" in out
+    assert "监控台已启动" in out
+
+
+def test_a_failure_before_the_service_exists_still_releases_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from headless_re_mcp.web import app as web_app
+
+    def refuse(_settings):  # type: ignore[no-untyped-def]
+        raise RuntimeError("token store unavailable")
+
+    monkeypatch.setattr(web_app, "ensure_web_token", refuse)
+    settings = _local_settings(tmp_path)
+    with pytest.raises(RuntimeError, match="token store unavailable"):
+        web_app.run_web(settings, port=0, quiet_banner=True)
+
+    # The single-instance lock must not leak past the failed start.
+    released = web_app._claim_artifact_root(settings.artifact_root)
+    assert released is not None
+    web_app.os.close(released)
+
+
 def test_serve_web_releases_its_analysis_sessions_when_it_stops(tmp_path: Path) -> None:
     """The stdio transport always did this; the web one never did.
 
