@@ -28,6 +28,7 @@ from headless_re_mcp.tools.elf import build_elf_tools
 from headless_re_mcp.tools.frida import build_frida_tools
 from headless_re_mcp.tools.ghidra import build_ghidra_tools
 from headless_re_mcp.tools.js_wasm import build_js_wasm_tools
+from headless_re_mcp.tools.macho import build_macho_tools
 from headless_re_mcp.tools.meta import build_meta_tools
 from headless_re_mcp.tools.proxy import build_proxy_tools
 from headless_re_mcp.tools.r2 import build_r2_tools
@@ -60,6 +61,7 @@ TOOL_FACTORIES: tuple[ToolFactory, ...] = (
     build_apk_tools,
     build_dex_tools,
     build_elf_tools,
+    build_macho_tools,
     build_device_tools,
     build_js_wasm_tools,
     build_web_tools,

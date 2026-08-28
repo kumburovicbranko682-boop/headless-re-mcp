@@ -12,6 +12,7 @@ from headless_re_mcp.mcp.routes.elf import register_elf_tools
 from headless_re_mcp.mcp.routes.frida import register_frida_tools
 from headless_re_mcp.mcp.routes.ghidra import register_ghidra_tools
 from headless_re_mcp.mcp.routes.js_wasm import register_js_wasm_tools
+from headless_re_mcp.mcp.routes.macho import register_macho_tools
 from headless_re_mcp.mcp.routes.meta import register_meta_tools
 from headless_re_mcp.mcp.routes.proxy import register_proxy_tools
 from headless_re_mcp.mcp.routes.r2 import register_r2_tools
@@ -37,6 +38,7 @@ def register_remaining_tools(server: FastMCP[None], analysis: AnalysisService) -
     register_apk_tools(server, analysis)
     register_dex_tools(server, analysis)
     register_elf_tools(server, analysis)
+    register_macho_tools(server, analysis)
     register_device_tools(server, analysis)
     register_js_wasm_tools(server, analysis)
     register_web_tools(server, analysis)

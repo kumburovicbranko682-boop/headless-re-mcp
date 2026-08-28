@@ -56,6 +56,11 @@ DEX_SUMMARY_MAX_BYTES = 64 * 1024 * 1024
 # especially), so the ceiling is higher; a file above it is refused before the
 # read is paid.
 ELF_SUMMARY_MAX_BYTES = 128 * 1024 * 1024
+
+# macho.summary reads a whole Mach-O into memory to walk its load commands.
+# Universal binaries carry one full image per architecture, so the ceiling
+# matches the ELF one; a file above it is refused before the read is paid.
+MACHO_SUMMARY_MAX_BYTES = 128 * 1024 * 1024
 _DIR_SIZE_FILE_CAP = 4096
 
 

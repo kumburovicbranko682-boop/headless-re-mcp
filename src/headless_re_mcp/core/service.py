@@ -104,6 +104,7 @@ from headless_re_mcp.core.service_ext import (
 )
 from headless_re_mcp.core.service_frida import FridaDeviceMixin
 from headless_re_mcp.core.service_jsre import JsReAnalysisMixin
+from headless_re_mcp.core.service_macho import MachoAnalysisMixin
 from headless_re_mcp.core.service_proxy import ProxyAnalysisMixin
 from headless_re_mcp.core.service_static import StaticAnalysisMixin
 from headless_re_mcp.core.service_trace import (
@@ -332,6 +333,7 @@ class AnalysisService(
     WorkflowAnalysisMixin,
     ApkAnalysisMixin,
     ElfAnalysisMixin,
+    MachoAnalysisMixin,
     DeviceAnalysisMixin,
     FridaDeviceMixin,
     JsReAnalysisMixin,
