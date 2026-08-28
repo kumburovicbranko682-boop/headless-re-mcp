@@ -115,6 +115,30 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_disasm(session_id, address, count=count, timeout=timeout))
 
+    @tools.tool(name="r2.decompile")
+    def r2_decompile(
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Pseudo-C for the function at address (pdc) -- no Ghidra needed.
+
+        Runs analysis, then pdcj @ address: radare2's built-in pseudo-
+        decompiler, so unlike ghidra.decompile it needs no Ghidra install or
+        plugin, only r2 itself. Answers with code, a C-like rendering of the
+        whole function -- control flow as if/goto and loop comments, register
+        and variable assignments, resolved callee names, inline loc_0x..
+        labels and XREF/string comments -- plus address (va/rva/module) and
+        address_va (the integer that was asked). Fidelity is below a true
+        decompiler (types and some names are heuristic), but it reads far
+        faster than raw disassembly; drop to r2.disasm_function when exact
+        instructions matter. Empty code means no function at address; run
+        r2.functions first. code is capped at 200000 chars -- code_truncated
+        and code_length (the full size) appear only when it was cut. There is
+        no items, count, pseudo, decompilation or integer address field.
+        """
+        return _dump(analysis.r2_decompile(session_id, address, timeout=timeout))
+
     @tools.tool(name="r2.xrefs")
     def r2_xrefs(
         session_id: str,

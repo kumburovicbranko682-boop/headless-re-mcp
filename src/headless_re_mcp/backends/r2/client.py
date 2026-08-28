@@ -37,7 +37,12 @@ _ALLOWED = frozenset(
     }
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+_PDCJ_COMMAND = re.compile(r"pdcj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 _AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+# Pseudo-C for a very large function can be sizeable; the run() buffer already
+# caps raw output, but bound the decoded code string too so a caller sees an
+# explicit code_truncated rather than a silently clipped listing.
+_MAX_DECOMPILE_CHARS = 200_000
 
 
 class R2Error(RuntimeError):
@@ -53,6 +58,8 @@ def _require_allowed_command(command: str) -> None:
         return
     pdj = _PDJ_COMMAND.fullmatch(command)
     if pdj is not None and int(pdj.group(1)) <= 512:
+        return
+    if _PDCJ_COMMAND.fullmatch(command) is not None:
         return
     if _AXJ_COMMAND.fullmatch(command) is not None:
         return
@@ -97,6 +104,40 @@ class R2Client:
         data["address"] = address
         data["count"] = count
         return enrich_r2_payload(data, binary=binary)
+
+    def decompile(
+        self,
+        binary: Path,
+        address: int,
+        *,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """Pseudo-C for the function at ``address`` via r2's built-in pdc.
+
+        pdcj returns an object ({code, annotations}), not the arrays enrich
+        maps, so the code string is lifted out here. This is r2's own
+        pseudo-decompiler -- no r2ghidra/r2dec plugin required -- so it works
+        anywhere r2 does, at lower fidelity than a full decompiler.
+        """
+        if type(address) is not int or address < 0:
+            raise R2Error("invalid_params", "address must be a non-negative int")
+        cmd = f"pdcj @ {address}"
+        data = self.run(binary, ["aa", cmd], timeout=timeout)
+        data = dict(data)
+        data["address"] = address
+        enriched = enrich_r2_payload(data, binary=binary)
+        info = enriched.get("info")
+        obj = info if isinstance(info, dict) else {}
+        code = obj.get("code")
+        code_str = code if isinstance(code, str) else ""
+        enriched.pop("info", None)
+        if len(code_str) > _MAX_DECOMPILE_CHARS:
+            enriched["code"] = code_str[:_MAX_DECOMPILE_CHARS]
+            enriched["code_truncated"] = True
+            enriched["code_length"] = len(code_str)
+        else:
+            enriched["code"] = code_str
+        return enriched
 
     def xrefs(
         self,

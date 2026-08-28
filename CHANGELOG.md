@@ -5,7 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
+### 新增（r2.decompile：radare2 内建伪 C 反编译，无需 Ghidra）
+
+- 新工具 `r2.decompile(session_id, address)`：先跑分析再执行 `pdcj @ address`，
+  用 radare2 自带的 pdc 伪反编译器把整个函数渲染成类 C 伪代码——if/goto 控制流、
+  循环注释、寄存器/变量赋值、解析出的被调名、内联 `loc_0x..` 标签与 XREF/字符串
+  注释。与 `ghidra.decompile` 互补：后者保真度更高但要装 Ghidra，前者只要有 r2
+  就能用（不依赖 r2ghidra/r2dec 插件）。返回 `code`（上限 200000 字符，截断时
+  给 `code_truncated` 与 `code_length`）加映射后的 `address` 与 `address_va`；
+  `code` 为空即该地址无已定义函数。`pdcj @ <addr>` 进入命令白名单；地址仍走
+  非负整数校验。工具总数 265→266（只读 148→149）。
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
   `_ProxyInstance.start()/_run()` 的串行化 bring-up 改造（`_STARTUP_LOCK` +
