@@ -75,6 +75,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   底层探针确认可运行才 READY(探针在源模块里以接缝形式打桩);并补上 `probe_upx` 里
   `test_doctor` 未覆盖的两条分支(配置路径不存在、探针抛 OSError)。`doctor.py` 行覆盖
   63% → 78%(余量为 IDA/x64dbg/native 工具链/ghidra 等平台相关探针)。
+### 测试（de4dot 适配器 fail-closed 合同）
+
+- `dotnet/de4dot.py` 的共享 `_capture_process` 已由跨适配器捕获测试覆盖,但核心
+  `run_de4dot` 的 argv 白名单、不覆盖输入规则、运行前后摘要校验与部分产物回收仍未测。
+  新增 `tests/unit/test_de4dot_adapter.py`:校验类错误在执行前抛出,故跨平台运行(缺可执行
+  文件、目录型输入、超过 `max_file_size`、输出已存在、运行前摘要变更);需要真实子进程的
+  诚实性检查用脚本化假 CLI(`#!/usr/bin/env python3`,POSIX 专属):干净运行返回带双摘要的
+  结果、工具篡改原始输入被 `INPUT_MUTATED` 拦截、stdout 洪泛触发 `OUTPUT_LIMIT` 并删除
+  部分产物、非零退出记 `PROCESS_FAILED` 且删除产物并标记 retryable、报成功却无产物文件记
+  `OUTPUT_MISSING`;`probe_de4dot_version` 覆盖缺文件、含 de4dot 横幅、无横幅的干净退出、
+  不可执行文件逐形态 OSError 兜底、所有 argv 形态都非 de4dot 时保持 fail-closed。行覆盖
+  66% → 92%(余量为 Windows 专有的创建标志/后代枚举与捕获内部边界分支)。
 
 ### 新增（监控台工作台）
 
