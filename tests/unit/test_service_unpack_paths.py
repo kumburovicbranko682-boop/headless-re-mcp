@@ -271,3 +271,91 @@ def test_confirm_oep_auto_dump_requires_a_module_base(tmp_path: Path) -> None:
 
     assert not result.ok and result.error is not None
     assert result.error.code == "invalid_params"
+
+
+# --- unpack_plan / unpack_start orchestration --------------------------------
+
+
+def test_unpack_plan_builds_a_non_authoritative_plan(tmp_path: Path) -> None:
+    service, _worker, session_id = _open_session(tmp_path)
+
+    result = service.unpack_plan(session_id, use_die=False)
+
+    assert result.ok and result.data is not None
+    assert result.data["claims_universal_unpack"] is False
+    assert isinstance(result.data["plan"], dict)
+    assert "recommendation" in result.data
+
+
+def test_unpack_start_generic_dynamic_route_probes_the_runtime(tmp_path: Path) -> None:
+    service, worker, session_id = _open_session(tmp_path)
+
+    result = service.unpack_start(
+        session_id, use_die=False, force_route="generic_dynamic"
+    )
+
+    assert result.ok and result.data is not None
+    probe = result.data["bounded_probe"]
+    assert probe["dynamic_open"] is True
+    assert probe["module_base"] == worker.module_base
+    assert probe["oep_scored"] is True
+    assert result.data["unpack"]["phase"] == UnpackPhase.RUNNING.value
+
+
+def test_unpack_start_none_route_prefers_static(tmp_path: Path) -> None:
+    service, _worker, session_id = _open_session(tmp_path)
+
+    result = service.unpack_start(session_id, use_die=False, force_route="none")
+
+    assert result.ok and result.data is not None
+    assert result.data.get("bounded_probe") is None
+    assert result.data["unpack"]["route"] == "none"
+
+
+def test_unpack_start_dotnet_route_hands_off_to_inspect(tmp_path: Path) -> None:
+    service, _worker, session_id = _open_session(tmp_path)
+
+    result = service.unpack_start(session_id, use_die=False, force_route="dotnet")
+
+    assert result.ok and result.data is not None
+    assert result.data["bounded_probe"]["route"] == "dotnet"
+
+
+def test_unpack_start_upx_route_fails_closed_without_a_upx_tool(tmp_path: Path) -> None:
+    service, _worker, session_id = _open_session(tmp_path)
+
+    result = service.unpack_start(
+        session_id, use_die=False, force_route="upx", execute_upx=True
+    )
+
+    assert result.ok and result.data is not None
+    assert result.data["unpack"]["phase"] == UnpackPhase.FAILED.value
+
+
+def test_unpack_start_rejects_a_non_boolean_replace(tmp_path: Path) -> None:
+    service, _worker, session_id = _open_session(tmp_path)
+
+    result = service.unpack_start(session_id, replace="please")  # type: ignore[arg-type]
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
+
+
+def test_unpack_start_refuses_an_active_session_without_replace(tmp_path: Path) -> None:
+    service, _worker, session_id = _open_session(tmp_path)
+    _plant_phase(service, session_id, UnpackPhase.RUNNING)
+
+    result = service.unpack_start(session_id, use_die=False)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "unpack_already_active"
+
+
+def test_unpack_start_restarts_a_terminal_session(tmp_path: Path) -> None:
+    service, _worker, session_id = _open_session(tmp_path)
+    _plant(service, session_id, cancelled=True)
+
+    result = service.unpack_start(session_id, use_die=False, force_route="none")
+
+    assert result.ok and result.data is not None
+    assert result.data["unpack"]["route"] == "none"
