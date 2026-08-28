@@ -16,10 +16,12 @@ from typing import Any
 from headless_re_mcp.backends.web.client import (
     _MAX_CONSOLE,
     _MAX_CONSOLE_TEXT,
+    _MAX_STACK_FRAMES,
     WebBackend,
     _clip_console_text,
     _clip_exception_text,
     _console_call_site,
+    _stack_frames,
 )
 
 
@@ -83,6 +85,61 @@ def test_an_uncaught_error_lands_in_the_console_ring() -> None:
     assert entry["text"].startswith("Uncaught Error: boom")
     assert entry["url"] == "https://x/app.js"
     assert entry["line"] == 0
+
+
+def test_an_uncaught_error_carries_its_call_stack() -> None:
+    """The chain of functions that led to the throw is the first triage read."""
+    handle = _wire()
+    handle.cdp.handlers["Runtime.exceptionThrown"](
+        {
+            "exceptionDetails": {
+                "text": "Uncaught",
+                "url": "https://x/app.js",
+                "lineNumber": 3,
+                "exception": {"className": "Error", "description": "Error: boom"},
+                "stackTrace": {
+                    "callFrames": [
+                        {"functionName": "decrypt", "url": "https://x/app.js", "lineNumber": 3},
+                        {"functionName": "", "url": "https://x/vendor.js", "lineNumber": 42},
+                    ]
+                },
+            }
+        }
+    )
+    entry = handle.console[-1]
+    assert entry["stack"] == [
+        {"function": "decrypt", "url": "https://x/app.js", "line": 3},
+        {"function": "", "url": "https://x/vendor.js", "line": 42},
+    ]
+
+
+def test_an_uncaught_error_without_a_stack_omits_it() -> None:
+    handle = _wire()
+    handle.cdp.handlers["Runtime.exceptionThrown"](
+        {"exceptionDetails": {"text": "Uncaught", "exception": {"value": "nope"}}}
+    )
+    assert "stack" not in handle.console[-1]
+
+
+def test_stack_frames_bounds_and_degrades() -> None:
+    # A deep stack is cut to the frame cap.
+    deep = {
+        "callFrames": [
+            {"functionName": f"f{i}", "url": "https://x/a.js", "lineNumber": i}
+            for i in range(_MAX_STACK_FRAMES + 20)
+        ]
+    }
+    frames = _stack_frames(deep)
+    assert len(frames) == _MAX_STACK_FRAMES
+    assert frames[0] == {"function": "f0", "url": "https://x/a.js", "line": 0}
+    # A non-numeric line degrades to None but keeps the frame's url/function.
+    odd = _stack_frames({"callFrames": [{"functionName": "g", "url": "https://x/b.js"}]})
+    assert odd == [{"function": "g", "url": "https://x/b.js", "line": None}]
+    # Missing or malformed stacks yield an empty list, never an exception.
+    assert _stack_frames(None) == []
+    assert _stack_frames({}) == []
+    assert _stack_frames({"callFrames": None}) == []
+    assert _stack_frames({"callFrames": [None, 7]}) == []
 
 
 def test_a_thrown_primitive_uses_its_value() -> None:

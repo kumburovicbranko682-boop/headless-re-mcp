@@ -144,7 +144,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         when one was present, so a logged line can be traced to its script.
         Uncaught errors and unhandled promise rejections -- which never reach
         console.* -- are folded into the same buffer as error entries flagged
-        uncaught, with the throw site url/line when the engine reported one.
+        uncaught, with the throw site url/line when the engine reported one and
+        a stack list ([{function, url, line}], top frames, 0-based lines) when
+        the engine reported the call chain, so the failure can be placed in the
+        code, not just named.
         """
         return _dump(analysis.web_console(session_id, limit=limit, type_filter=type_filter))
 

@@ -39,6 +39,9 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 # CDP caps console previews at a handful of members; bound our own render too.
 _MAX_PREVIEW_PROPS = 50
+# An uncaught error's call chain: keep the top frames so a deep or recursive
+# stack cannot bloat the console ring, and flatten (no async parent walk).
+_MAX_STACK_FRAMES = 32
 # Inline copy of a request body kept on the ring for har.export. Small on
 # purpose -- the on-demand web.network.get path fetches the full body -- so
 # 3000 retained requests cannot each pin a large payload in memory.
@@ -292,6 +295,41 @@ def _console_call_site(params: JsonObject) -> tuple[str, int | None]:
     url, _ = _bounded_metadata(top.get("url"), _MAX_URL_BYTES)
     line = top.get("lineNumber")
     return url, line if isinstance(line, int) else None
+
+
+def _stack_frames(stack: object) -> list[JsonObject]:
+    """A bounded ``[{function, url, line}]`` list from a CDP ``stackTrace``.
+
+    ``exceptionDetails.stackTrace.callFrames`` is the chain of calls that led to
+    an uncaught error -- the functions involved, not just the throw site the
+    entry already carries -- which is the first thing an analyst reads to place
+    the failure. Only the top ``_MAX_STACK_FRAMES`` are kept, each field
+    bounded; line numbers are surfaced 0-based as CDP reports them (matching the
+    throw site and ``Debugger.scriptParsed``). An anonymous frame keeps its
+    empty ``function``. A missing or oddly shaped stack yields ``[]`` rather
+    than breaking capture; the async ``parent`` chain is deliberately not walked
+    so the list stays flat and bounded.
+    """
+    if not isinstance(stack, dict):
+        return []
+    frames = stack.get("callFrames")
+    if not isinstance(frames, list):
+        return []
+    out: list[JsonObject] = []
+    for frame in frames[:_MAX_STACK_FRAMES]:
+        if not isinstance(frame, dict):
+            continue
+        function, _ = _bounded_metadata(frame.get("functionName"), _MAX_METADATA_BYTES)
+        url, _ = _bounded_metadata(frame.get("url"), _MAX_URL_BYTES)
+        line = frame.get("lineNumber")
+        out.append(
+            {
+                "function": function,
+                "url": url,
+                "line": line if isinstance(line, int) else None,
+            }
+        )
+    return out
 
 
 def _clip_exception_text(params: JsonObject) -> tuple[str, bool]:
@@ -834,6 +872,11 @@ class WebBackend:
                 line = details.get("lineNumber")
                 if isinstance(line, int):
                     entry["line"] = line
+                # The call chain that led here (functions, not just the throw
+                # site) is the first thing read to place an uncaught error.
+                stack = _stack_frames(details.get("stackTrace"))
+                if stack:
+                    entry["stack"] = stack
             record_console(entry)
 
         cdp.on("Network.requestWillBeSent", on_request)

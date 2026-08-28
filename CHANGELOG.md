@@ -291,6 +291,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `_console_call_site` 从栈顶帧还原 `url`/`line`（0 基，与 `Debugger.scriptParsed` 一致）并附到每条 console 记录上，
   于是一条日志可回溯到发出它的脚本（尤其是 `web.scripts` 现在会标记的匿名/运行时生成脚本）；栈缺失或结构异常时退化为不带
   位置而非中断采集。
+- **未捕获异常只记了抛出点，丢了导致它的调用链**。`exceptionThrown` 条目此前只带 `text` 和抛出点 `url`/`line`，但排查一个
+  未捕获错误（反调试 throw、混淆代码里炸开的地方）时，最先要看的是「哪条函数链走到了这里」，而 CDP 的
+  `exceptionDetails.stackTrace.callFrames` 本就带着这条链。新增 `_stack_frames`，把它整理成有界的 `stack` 列表
+  （每项 `{function, url, line}`，行号 0 基、与抛出点及 `Debugger.scriptParsed` 一致），只取栈顶 `_MAX_STACK_FRAMES`（32）
+  帧、每个字段有界、匿名帧保留空 `function`、不追异步 `parent` 以保持扁平有界；栈缺失或结构异常时给出空列表而非中断采集。
+  于是一个未捕获错误能被定位到代码里的具体调用路径，而不只是有个名字。`console.*` 与既有抛出点字段不变。
 - **HAR 导出的 `serverIPAddress` 一直为空，命中的真实服务器 IP 丢失**。该字段按 HAR 规范就是本次请求实际连到的服务器地址——
   一个域名背后真正的 C2/CDN 主机，是做基础设施关联（域前置、快速通量、同 IP 归并）时 URL 给不出的关键旋转点。web 侧 CDP 的
   `Network.responseReceived` 就带 `remoteIPAddress`/`remotePort`，proxy 侧 mitmproxy 的 `server_conn.ip_address` 也记着
