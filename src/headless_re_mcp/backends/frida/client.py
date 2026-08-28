@@ -65,13 +65,42 @@ Java.perform(function () {
 rpc.exports = { ping: function () { return 'ssl_unpin_loaded'; } };
 """,
     "android_crypto_monitor": """
+// How many *input* bytes a Cipher.doFinal call processed, by overload shape:
+//   doFinal(byte[] input)                    -> input.length
+//   doFinal(byte[] in, int off, int len)     -> len (the third argument)
+//   doFinal(byte[] in, int off, int len, ..) -> len (the third argument)
+//   doFinal() and doFinal(byte[] out, int)   -> input came from prior update()
+//                                               calls, so the count is unknown
+//                                               here and is reported as -1.
+function headlessReCipherInputLen(args) {
+  if (args.length === 1 && args[0] && args[0].length != null) {
+    return args[0].length;
+  }
+  if (args.length >= 3 && typeof args[2] === 'number') {
+    return args[2];
+  }
+  return -1;
+}
 Java.perform(function () {
   try {
     var Cipher = Java.use('javax.crypto.Cipher');
-    Cipher.doFinal.overload('[B').implementation = function (data) {
-      send({ tag: 'crypto', algo: this.getAlgorithm(), len: data.length });
-      return this.doFinal(data);
-    };
+    // Every doFinal overload, not just doFinal(byte[]): apps that stream
+    // through update()+doFinal(), or call the (input, offset, len) and
+    // output-buffer forms, produced no events at all and read as "no crypto
+    // happening" -- a false negative for the very thing this monitor exists to
+    // surface. Iterating .overloads catches each completion path.
+    Cipher.doFinal.overloads.forEach(function (ovl) {
+      ovl.implementation = function () {
+        send({
+          tag: 'crypto',
+          algo: this.getAlgorithm(),
+          len: headlessReCipherInputLen(arguments)
+        });
+        // Calling the captured overload runs the original implementation, the
+        // same pattern android_ssl_unpin uses for SSLContext.init above.
+        return ovl.apply(this, arguments);
+      };
+    });
   } catch (e) {}
 });
 rpc.exports = { ping: function () { return 'crypto_monitor_loaded'; } };
