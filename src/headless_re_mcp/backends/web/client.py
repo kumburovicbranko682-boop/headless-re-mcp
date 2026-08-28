@@ -78,6 +78,11 @@ _MAX_FRAMES = 200
 # hidden field can hold a large token) and overflow is announced.
 _MAX_FORMS = 100
 _MAX_FORM_FIELDS = 200
+# The page head's <meta> and <link> elements. A generated page can carry a long
+# tail of preload/prefetch links and OG/analytics meta tags, so both lists are
+# capped and each value is bounded like other metadata.
+_MAX_META_ITEMS = 200
+_MAX_LINK_ITEMS = 200
 # Kept in the per-request entry but stripped from network.list rows so a page of
 # the list stays cheap; network.get returns them in full.
 _HEADER_KEYS = ("request_headers", "response_headers")
@@ -1611,6 +1616,131 @@ class WebBackend:
                 "count": len(forms),
                 "total": total,
                 "has_more": total > len(forms),
+            }
+
+        return self._runner(handle).call(work)
+
+    def meta(self, session_id: str) -> JsonObject:
+        """The page head's identity: title/charset/base plus <meta> and <link>.
+
+        dom.query returns a flat element list and dom.snapshot the raw HTML;
+        neither assembles the head intelligence an analyst reads first. This
+        collects the document title, character set and any <base href> (which
+        silently rebases every relative URL on the page), then every <meta>
+        (name/property/http-equiv with its content -- so og:*/twitter:* identity,
+        a http-equiv=refresh client-side redirect, and a http-equiv=
+        Content-Security-Policy all surface) and every <link> (rel/href/type --
+        canonical, manifest, icons, preload/prefetch). Values are bounded and the
+        two lists are capped with the cut announced.
+        """
+        handle = self._get(session_id)
+
+        # Read the head in one pass. Each attribute is fetched behind a guard so
+        # one exotic element cannot sink the call; the lists are sliced in-page
+        # so a head with thousands of preload hints never floods the bridge.
+        script = """
+        (cfg) => {
+          const attr = (el, name) => {
+            try { const v = el.getAttribute(name); return v == null ? null : String(v); }
+            catch (e) { return null; }
+          };
+          const read = (fn) => { try { return String(fn() || ""); } catch (e) { return ""; } };
+          let base = "";
+          try { const b = document.querySelector("base"); if (b) base = String(b.href || ""); }
+          catch (e) { base = ""; }
+          const metaEls = document.querySelectorAll("meta");
+          const linkEls = document.querySelectorAll("link");
+          const metas = [];
+          const nm = Math.min(metaEls.length, cfg.maxMetas);
+          for (let i = 0; i < nm; i++) {
+            const m = metaEls[i];
+            metas.push({
+              name: attr(m, "name"),
+              property: attr(m, "property"),
+              http_equiv: attr(m, "http-equiv"),
+              content: attr(m, "content"),
+              charset: attr(m, "charset"),
+            });
+          }
+          const links = [];
+          const nl = Math.min(linkEls.length, cfg.maxLinks);
+          for (let i = 0; i < nl; i++) {
+            const l = linkEls[i];
+            links.push({
+              rel: attr(l, "rel"),
+              href: read(() => l.href) || attr(l, "href") || "",
+              type: attr(l, "type"),
+            });
+          }
+          return {
+            url: read(() => window.location.href),
+            title: read(() => document.title),
+            charset: read(() => document.characterSet),
+            base: base,
+            metas: metas,
+            meta_total: metaEls.length,
+            links: links,
+            link_total: linkEls.length,
+          };
+        }
+        """
+
+        def work() -> JsonObject:
+            try:
+                raw = handle.page.evaluate(
+                    script,
+                    {"maxMetas": _MAX_META_ITEMS, "maxLinks": _MAX_LINK_ITEMS},
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"meta read failed: {exc}") from exc
+            if not isinstance(raw, dict):
+                raw = {}
+
+            metas_in = raw.get("metas")
+            metas: list[JsonObject] = []
+            for item in metas_in if isinstance(metas_in, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                entry: JsonObject = {
+                    "content": _bounded_metadata(item.get("content"), _MAX_DOM_VALUE_BYTES)[0]
+                }
+                # Only surface the identifying key a given <meta> actually set, so
+                # an entry is not padded with three nulls.
+                for key in ("name", "property", "http_equiv", "charset"):
+                    value = item.get(key)
+                    if value is not None:
+                        entry[key] = _bounded_metadata(value, _MAX_METADATA_BYTES)[0]
+                metas.append(entry)
+
+            links_in = raw.get("links")
+            links: list[JsonObject] = []
+            for item in links_in if isinstance(links_in, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                link: JsonObject = {
+                    "href": _bounded_metadata(item.get("href"), _MAX_URL_BYTES)[0]
+                }
+                for key in ("rel", "type"):
+                    value = item.get(key)
+                    if value is not None:
+                        link[key] = _bounded_metadata(value, _MAX_METADATA_BYTES)[0]
+                links.append(link)
+
+            meta_total = int(raw.get("meta_total") or 0)
+            link_total = int(raw.get("link_total") or 0)
+            return {
+                "url": _bounded_metadata(raw.get("url"), _MAX_URL_BYTES)[0],
+                "title": _bounded_metadata(raw.get("title"), _MAX_METADATA_BYTES)[0],
+                "charset": _bounded_metadata(raw.get("charset"), _MAX_METADATA_BYTES)[0],
+                "base": _bounded_metadata(raw.get("base"), _MAX_URL_BYTES)[0],
+                "metas": metas,
+                "meta_count": len(metas),
+                "meta_total": meta_total,
+                "metas_truncated": meta_total > len(metas),
+                "links": links,
+                "link_count": len(links),
+                "link_total": link_total,
+                "links_truncated": link_total > len(links),
             }
 
         return self._runner(handle).call(work)

@@ -12,6 +12,7 @@ import json
 import socket
 import threading
 import time
+import urllib.parse
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -1264,6 +1265,102 @@ def test_web_forms_reads_a_login_form_off_a_real_page() -> None:
             search = next(f for f in data["forms"] if f["action"].endswith("/search"))
             assert search["method"] == "get"
             assert any(field["name"] == "q" for field in search["fields"])
+        finally:
+            service.close_all()
+
+
+_META_PAGE = (
+    b"<!doctype html><html><head>"
+    b'<meta charset="utf-8">'
+    b"<title>meta-gate</title>"
+    b'<base href="/app/">'
+    b'<meta name="description" content="a triage target">'
+    b'<meta property="og:url" content="https://brand.example/">'
+    b'<meta http-equiv="refresh" content="300;url=/expired">'
+    b'<link rel="canonical" href="/canonical-page">'
+    b'<link rel="manifest" href="/site.webmanifest" type="application/manifest+json">'
+    b"</head><body>meta gate</body></html>"
+)
+
+
+@contextmanager
+def _meta_site() -> Iterator[str]:
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(_META_PAGE)))
+            self.end_headers()
+            self.wfile.write(_META_PAGE)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+
+
+@pytest.mark.integration
+def test_web_meta_reads_the_head_off_a_real_page() -> None:
+    """The head's identity signals were scattered across raw dom.query calls.
+
+    A <base href> that rebases the page, a http-equiv=refresh redirect, the
+    og:url brand claim and the canonical link each needed their own query and
+    reassembly. Serve a page carrying all four and assert web.meta returns them
+    in one structured answer, with link hrefs resolved against the base.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web meta Gate not run (skip != pass)")
+    with _meta_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=40.0)
+            if not opened.ok:
+                pytest.skip(
+                    f"chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+
+            res = service.web_meta(session_id)
+            assert res.ok, res.error
+            data = res.data
+            assert data["title"] == "meta-gate"
+            assert data["charset"].lower() in ("utf-8", "utf8")
+            # <base href="/app/"> resolves absolute against the origin.
+            assert data["base"] == urllib.parse.urljoin(url, "/app/")
+
+            assert data["meta_total"] == data["meta_count"] == 4
+            assert data["metas_truncated"] is False
+            by_key: dict[str, dict[str, Any]] = {}
+            for entry in data["metas"]:
+                for key in ("name", "property", "http_equiv", "charset"):
+                    if key in entry:
+                        by_key[f"{key}={entry[key]}"] = entry
+            assert by_key["charset=utf-8"]["content"] == ""
+            assert by_key["name=description"]["content"] == "a triage target"
+            assert by_key["property=og:url"]["content"] == "https://brand.example/"
+            # The client-side redirect is the point of surfacing http-equiv.
+            assert by_key["http_equiv=refresh"]["content"] == "300;url=/expired"
+
+            assert data["link_total"] == data["link_count"] == 2
+            rels = {link["rel"]: link for link in data["links"]}
+            # link.href resolves in the browser, and against the <base>, so the
+            # relative /canonical-page comes back absolute on this origin.
+            assert rels["canonical"]["href"] == urllib.parse.urljoin(url, "/canonical-page")
+            assert rels["manifest"]["href"] == urllib.parse.urljoin(url, "/site.webmanifest")
+            assert rels["manifest"]["type"] == "application/manifest+json"
+
+            assert data["url"].startswith(url)
         finally:
             service.close_all()
 

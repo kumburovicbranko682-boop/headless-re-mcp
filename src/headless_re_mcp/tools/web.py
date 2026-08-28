@@ -364,6 +364,28 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_forms(session_id))
 
+    @tools.tool(name="web.meta")
+    def web_meta(session_id: str) -> dict[str, Any]:
+        """The page head's identity: title/charset/base plus meta and link tags.
+
+        web.dom.query returns a flat element list and web.dom.snapshot the raw
+        HTML; neither assembles the head intelligence read first when triaging a
+        page. This collects the document title, charset and any base href (which
+        silently rebases every relative URL on the page), then every meta and
+        link tag.
+
+        Answers with url, title, charset, base, and two lists. metas holds each
+        meta tag as {content, and whichever of name/property/http_equiv/charset
+        it set} -- so og:*/twitter:* identity, a http_equiv=refresh client-side
+        redirect, and a http_equiv=Content-Security-Policy all surface. links
+        holds each link tag as {href, rel, type} -- canonical, manifest, icons,
+        preload/prefetch. Also meta_count/meta_total/metas_truncated and
+        link_count/link_total/links_truncated so a head capped at 200 of either
+        is not read as all of them. Values are bounded; there is no html field --
+        use web.dom.snapshot for raw markup.
+        """
+        return _dump(analysis.web_meta(session_id))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.

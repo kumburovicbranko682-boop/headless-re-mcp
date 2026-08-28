@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **294（174 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **295（175 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -666,6 +666,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不移动函数索引空间，故转导出的导入在索引 0 仍解析为导入函数类型）、内部名挂接与非函数导出无签名字段，并另有 wat2wasm
   交叉校验（缺 wabt 时 skip≠pass）；单测另覆盖过滤、`signature_unknown`、空导出、4096 截断与非模块拒绝。该工具计入读效果，
   工具面因此 292→293。
+- **页面 head 里的身份信号只能靠 dom.query 一条条拼**。`<base href>`（悄悄改写全页相对 URL 的解析基准）、
+  `http-equiv=refresh`（客户端跳转——钓鱼页最爱）、`og:url`（页面自称的品牌身份）与 `rel=canonical/manifest` 各要一次
+  `web.dom.query` 再自行组装；`web.dom.snapshot` 只给生 HTML。新增只读的 `web.meta`：一次拿齐页面 head 的情报。回
+  `url`（当前地址）、`title`、`charset`、`base`（有 `<base href>` 时为解析后的绝对地址，否则空串），加两个列表：`metas`
+  每条带 `content` 与它实际设置的那个识别键（`name`/`property`/`http_equiv`/`charset` 中之一，不设的键不出现——条目
+  不被三个 null 填充），`links` 每条带 `href`（浏览器解析后的绝对地址，且吃 `<base>` 的重定基）与设置了的 `rel`/`type`。
+  两列表各按 200 截断，`meta_count`/`meta_total`/`metas_truncated` 与 `link_count`/`link_total`/`links_truncated` 把截断
+  说出来；值一律按元数据上限截断。没有 html 字段——要生标记去 `web.dom.snapshot`。活体门起本地页面同时埋
+  `<base href="/app/">`、utf-8 charset meta、description、`og:url`、`http-equiv=refresh` 跳转与 canonical/manifest 链接，
+  断言四类 meta 各自带对识别键、refresh 的 content 原样带回、相对 href 按 base 解析成绝对地址且 manifest 的 type 在；
+  单测另覆盖识别键裁剪、双列表截断旗标、裸页、非 dict 载荷、evaluate 崩溃映射 `backend_error`、上限透传与 docstring
+  形状。该工具计入读效果，工具面因此 294→295。
 - **抓包看不到「这个 app 到底打了哪些端点」——只有逐请求的流和主机级的聚合**。`proxy.flows` 是逐请求列表（每次打
   `/api/user` 都是单独一行），`proxy.stats` 只聚合到主机级；要拿逆向后端时真正想要的那张站点图（distinct 端点），两者都答不了。
   新增只读的 `proxy.endpoints`：把整条 ring 折叠成 distinct 的 method+host+path 键（query 串被剥掉，故 `/api/user?id=1` 与
