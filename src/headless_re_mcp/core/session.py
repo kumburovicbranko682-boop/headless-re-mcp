@@ -191,6 +191,14 @@ class SessionRegistry:
                 # a REPRO debug entry turns the stamp into a content hash, so
                 # the UTC rendering is offered only while it is still a time.
                 metadata["pe"].update(_pe_build_time(path))
+                # The optional header's declared CheckSum against the file's
+                # actual sum -- the PE self-integrity fact, the pair to the
+                # DEX header checksum. A wrong value means bytes changed
+                # after linking (patched or infected); zero means the linker
+                # never declared one, so there is nothing to validate.
+                checksum = _pe_checksum(path)
+                if checksum is not None:
+                    metadata["pe"]["checksum"] = checksum
                 # VS_VERSIONINFO -- the self-declared identity (versions,
                 # CompanyName/ProductName strings); a claim, not a verdict.
                 metadata["pe"].update(_pe_version_info(path))
@@ -6317,6 +6325,75 @@ def _pe_debug_fingerprint(path: Path) -> dict[str, Any]:
             }
         }
     return {}
+
+
+_PE_CHECKSUM_MAX_FILE = 128 * 1024 * 1024
+_PE_CHECKSUM_OPT_OFF = 64  # CheckSum sits at +64 in both PE32 and PE32+ layouts
+
+
+def _pe_checksum(path: Path) -> dict[str, Any] | None:
+    """The declared optional-header CheckSum and whether it matches, or None.
+
+    The PE self-integrity fact, the pair to the DEX header's adler32
+    ``checksum_ok``: the linker's 16-bit end-around-carry sum over the whole
+    file (imagehlp's CheckSumMappedFile, the value Windows enforces for
+    drivers and critical DLLs). ``declared`` 0 means the linker never wrote
+    one -- common and unremarkable, so ``valid`` is None; a non-zero value
+    that does not match the recomputed sum means the bytes changed after
+    linking (patched, infected, or resource-edited). None -- fact absent --
+    for anything that is not a PE with a full optional header.
+    """
+    try:
+        if path.stat().st_size > _PE_CHECKSUM_MAX_FILE:
+            return None
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if len(raw) < 0x40 or raw[:2] != b"MZ":
+        return None
+    e_lfanew = int.from_bytes(raw[0x3C:0x40], "little")
+    if e_lfanew < 0 or e_lfanew + 24 > len(raw) or raw[e_lfanew : e_lfanew + 4] != b"PE\x00\x00":
+        return None
+    opt_size = int.from_bytes(raw[e_lfanew + 20 : e_lfanew + 22], "little")
+    opt_start = e_lfanew + 24
+    checksum_off = opt_start + _PE_CHECKSUM_OPT_OFF
+    if opt_size < _PE_CHECKSUM_OPT_OFF + 4 or checksum_off + 4 > len(raw):
+        return None
+    magic = int.from_bytes(raw[opt_start : opt_start + 2], "little")
+    if magic not in (0x10B, 0x20B):
+        return None
+    declared = int.from_bytes(raw[checksum_off : checksum_off + 4], "little")
+    if declared == 0:
+        return {"declared": 0, "valid": None}
+    return {"declared": declared, "valid": _pe_compute_checksum(raw, checksum_off) == declared}
+
+
+def _pe_compute_checksum(raw: bytes, checksum_off: int) -> int:
+    """imagehlp's CheckSumMappedFile over ``raw``.
+
+    The 16-bit end-around-carry (one's-complement) sum of the file as little-
+    endian dwords with the CheckSum field itself zeroed -- zero bytes add
+    nothing, so zeroing equals the reference "skip the field" walk without
+    assuming the field is dword-aligned -- plus the file length.
+    """
+    import array
+    import sys
+
+    zeroed = bytearray(raw)
+    zeroed[checksum_off : checksum_off + 4] = b"\x00\x00\x00\x00"
+    if len(zeroed) % 4:
+        zeroed += b"\x00" * (4 - len(zeroed) % 4)
+    words = array.array("I")
+    words.frombytes(bytes(zeroed))
+    if sys.byteorder == "big":
+        words.byteswap()
+    total = sum(words)
+    while total > 0xFFFFFFFF:
+        total = (total & 0xFFFFFFFF) + (total >> 32)
+    total = (total & 0xFFFF) + (total >> 16)
+    total += total >> 16
+    total &= 0xFFFF
+    return total + len(raw)
 
 
 def _pe_build_time(path: Path) -> dict[str, Any]:

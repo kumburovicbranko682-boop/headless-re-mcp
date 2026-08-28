@@ -32,6 +32,8 @@ from headless_re_mcp.core.session import (
     _pe_authenticode,
     _pe_build_time,
     _pe_capability_surface,
+    _pe_checksum,
+    _pe_compute_checksum,
     _pe_debug_fingerprint,
     _pe_hardening_facts,
     _pe_high_entropy_sections,
@@ -1184,6 +1186,61 @@ class TestPeHardeningFacts:
         facts = _pe_hardening_facts(path)
         assert "entry" in facts
         assert facts["entry_section"] is None
+
+    def _with_checksum(self, data: bytes, value: int) -> bytes:
+        e_lfanew = int.from_bytes(data[0x3C:0x40], "little")
+        out = bytearray(data)
+        struct.pack_into("<I", out, e_lfanew + 24 + 64, value)
+        return bytes(out)
+
+    def test_a_zero_checksum_reads_declared_but_unvalidatable(self, tmp_path: Path) -> None:
+        # Linkers write 0 unless asked (/RELEASE); nothing to validate, and
+        # inventing a False here would smear every ordinary build.
+        path = tmp_path / "plain.exe"
+        path.write_bytes(_pe_with_posture(entry_rva=0x1000))
+        assert _pe_checksum(path) == {"declared": 0, "valid": None}
+
+    def test_a_correct_checksum_validates(self, tmp_path: Path) -> None:
+        # The declared value matching the recomputed sum must read True; the
+        # gate proves the sum itself against pefile's independent algorithm.
+        base = _pe_with_posture(entry_rva=0x1000)
+        e_lfanew = int.from_bytes(base[0x3C:0x40], "little")
+        good = _pe_compute_checksum(base, e_lfanew + 24 + 64)
+        path = tmp_path / "good.exe"
+        path.write_bytes(self._with_checksum(base, good))
+        assert _pe_checksum(path) == {"declared": good, "valid": True}
+
+    def test_a_wrong_checksum_reads_invalid(self, tmp_path: Path) -> None:
+        base = _pe_with_posture(entry_rva=0x1000)
+        e_lfanew = int.from_bytes(base[0x3C:0x40], "little")
+        good = _pe_compute_checksum(base, e_lfanew + 24 + 64)
+        path = tmp_path / "patched.exe"
+        path.write_bytes(self._with_checksum(base, good + 1))
+        assert _pe_checksum(path) == {"declared": good + 1, "valid": False}
+
+    def test_an_appended_byte_breaks_a_valid_checksum(self, tmp_path: Path) -> None:
+        # The sum covers the whole file (it folds the length in): one byte of
+        # overlay flips a valid image to invalid -- the infection signal.
+        base = _pe_with_posture(entry_rva=0x1000)
+        e_lfanew = int.from_bytes(base[0x3C:0x40], "little")
+        good = _pe_compute_checksum(base, e_lfanew + 24 + 64)
+        path = tmp_path / "infected.exe"
+        path.write_bytes(self._with_checksum(base, good) + b"X")
+        assert _pe_checksum(path) == {"declared": good, "valid": False}
+
+    def test_a_non_pe_reads_no_checksum(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _pe_checksum(path) is None
+
+    def test_session_over_a_checksummed_pe_carries_the_verdict(self, tmp_path: Path) -> None:
+        base = _pe_with_posture(entry_rva=0x1000)
+        e_lfanew = int.from_bytes(base[0x3C:0x40], "little")
+        good = _pe_compute_checksum(base, e_lfanew + 24 + 64)
+        path = tmp_path / "app.exe"
+        path.write_bytes(self._with_checksum(base, good))
+        session = SessionRegistry().create(str(path))
+        assert session.metadata["pe"]["checksum"] == {"declared": good, "valid": True}
 
     def test_the_upx_fixtures_split_on_the_entry_owner(self) -> None:
         # The same program, before and after upx: the entry owner flips from
@@ -2782,6 +2839,7 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
             "tls": {"present": False, "callbacks": 0},
             "link_time": 0,
             "reproducible": False,
+            "checksum": {"declared": 0, "valid": None},
             "manifest": {"present": False},
             "wx_sections": [],
             "high_entropy_sections": [],
