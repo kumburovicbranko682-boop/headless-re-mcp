@@ -28,7 +28,8 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         truncated, output_bytes and returned_bytes when the text was cut at
         the 1_000_000-byte buffer. There are no format, arch, bits,
         endianness or entry fields; architecture and image_base come from
-        the PE header, not from this listing.
+        the binary's own header -- the PE optional header or the ELF program
+        headers -- not from this listing.
         """
         return _dump(analysis.r2_info(session_id, timeout=timeout))
 

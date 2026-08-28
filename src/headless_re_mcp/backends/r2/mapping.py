@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from headless_re_mcp.core.models import Address, Architecture
 
@@ -55,6 +55,76 @@ def pe_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
     if image_base <= 0:
         return architecture, None
     return architecture, image_base
+
+
+# ELF e_machine values the two-arch Architecture enum can name. Any other
+# machine (ARM, AArch64, RISC-V, ...) keeps the load base but gets no arch tag
+# rather than a wrong one -- the address mapping still yields va and rva.
+_ELF_MACHINE = {3: Architecture.X86, 62: Architecture.X64}
+_PT_LOAD = 1
+
+
+def elf_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
+    """Read an ELF's load base and architecture without spawning r2.
+
+    The r2 tools run on whatever binary the session opened, and on Linux that is
+    usually an ELF, not a PE. ``pe_preferred_base`` returns nothing for one, so
+    every ELF address used to come back va-only -- no rva, no module -- yet rva
+    is the coordinate a caller correlating r2 output against a loader map needs.
+    The load base is the lowest ``p_vaddr`` among the ``PT_LOAD`` program
+    headers, exactly what r2 reports as ``baddr``. A position-independent ELF
+    (``ET_DYN``) whose first load segment sits at vaddr 0 has no fixed base, so
+    this returns ``None`` for the base there -- honest va-only -- rather than
+    inventing ``rva == va``. ``e_machine`` maps to the arch enum where it can;
+    an unrepresentable machine keeps the base and drops the arch. Malformed
+    headers degrade to ``(arch-if-known, None)`` the way the PE reader does,
+    because this runs for every r2 payload and must never raise.
+    """
+    try:
+        with binary.open("rb") as stream:
+            head = stream.read(64)
+            if len(head) < 64 or head[:4] != b"\x7fELF":
+                return None, None
+            is64 = head[4] == 2
+            byteorder: Literal["little", "big"] = "big" if head[5] == 2 else "little"
+            machine = int.from_bytes(head[0x12:0x14], byteorder)
+            architecture = _ELF_MACHINE.get(machine)
+            if is64:
+                e_phoff = int.from_bytes(head[0x20:0x28], byteorder)
+                e_phentsize = int.from_bytes(head[0x36:0x38], byteorder)
+                e_phnum = int.from_bytes(head[0x38:0x3A], byteorder)
+                vaddr_off, vaddr_len = 16, 8
+            else:
+                e_phoff = int.from_bytes(head[0x1C:0x20], byteorder)
+                e_phentsize = int.from_bytes(head[0x2A:0x2C], byteorder)
+                e_phnum = int.from_bytes(head[0x2C:0x2E], byteorder)
+                vaddr_off, vaddr_len = 8, 4
+            min_phent = vaddr_off + vaddr_len
+            table_bytes = e_phentsize * e_phnum
+            # e_phnum can be PN_XNUM (0xffff, real count in the section header):
+            # a table that large is either that sentinel or a corrupt field, so
+            # bound it like the PE reader bounds its header and give up honestly.
+            if e_phoff <= 0 or e_phentsize < min_phent or table_bytes == 0:
+                return architecture, None
+            if table_bytes > _MAX_HEADER:
+                return architecture, None
+            stream.seek(e_phoff)
+            table = stream.read(table_bytes)
+    except OSError:
+        return None, None
+    base: int | None = None
+    for index in range(e_phnum):
+        entry = table[index * e_phentsize : (index + 1) * e_phentsize]
+        if len(entry) < min_phent:
+            break
+        if int.from_bytes(entry[0:4], byteorder) != _PT_LOAD:
+            continue
+        vaddr = int.from_bytes(entry[vaddr_off : vaddr_off + vaddr_len], byteorder)
+        if base is None or vaddr < base:
+            base = vaddr
+    if base is None or base <= 0:
+        return architecture, None
+    return architecture, base
 
 
 def _needed_header_bytes(head: bytes) -> int | None:
@@ -138,8 +208,16 @@ def enrich_r2_payload(
 ) -> JsonObject:
     """Parse *j payloads into items with unified Address fields."""
     module = binary.name
-    pe_arch, image_base = pe_preferred_base(binary)
-    arch = architecture or pe_arch
+    detected_arch, image_base = pe_preferred_base(binary)
+    if detected_arch is None and image_base is None:
+        # Not a PE. The r2 tools run on whatever the session opened, and on Linux
+        # that is usually an ELF; fall back to its load base so ELF addresses
+        # carry rva/module too, not only va. Both being None means the PE reader
+        # made no claim at all (magic mismatch), so trying ELF cannot override a
+        # real PE finding -- a PE with a zero ImageBase keeps its arch and skips
+        # this branch.
+        detected_arch, image_base = elf_preferred_base(binary)
+    arch = architecture or detected_arch
     raw = str(data.get("raw") or "")
     commands = list(data.get("commands") or [])
     parsed = parse_r2_json(raw)

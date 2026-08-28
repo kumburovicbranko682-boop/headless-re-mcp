@@ -15,6 +15,7 @@ import headless_re_mcp.backends.r2.client as r2_client
 from headless_re_mcp.backends.common.bounded_run import Completed
 from headless_re_mcp.backends.r2.mapping import (
     address_dict,
+    elf_preferred_base,
     enrich_r2_payload,
     parse_r2_json,
     pe_preferred_base,
@@ -48,11 +49,134 @@ def _minimal_pe(tmp_path: Path, *, x64: bool = True) -> Path:
     return path
 
 
+def _minimal_elf(
+    tmp_path: Path,
+    *,
+    is64: bool = True,
+    machine: int = 62,
+    load_vaddr: int = 0x400000,
+    big_endian: bool = False,
+) -> Path:
+    """Tiny valid-enough ELF: header + one PT_LOAD program header.
+
+    Enough for elf_preferred_base to read the class, endianness, machine and the
+    load segment's p_vaddr; not a runnable ELF. load_vaddr 0 models a PIE whose
+    first load segment has no fixed base.
+    """
+    order = "big" if big_endian else "little"
+    path = tmp_path / ("demo64.elf" if is64 else "demo32.elf")
+    if is64:
+        phentsize, phoff = 56, 64
+        vaddr_off = 16
+    else:
+        phentsize, phoff = 32, 52
+        vaddr_off = 8
+    data = bytearray(phoff + phentsize)
+    data[0:4] = b"\x7fELF"
+    data[4] = 2 if is64 else 1
+    data[5] = 2 if big_endian else 1
+    data[6] = 1
+    data[0x10:0x12] = (2).to_bytes(2, order)  # e_type = ET_EXEC
+    data[0x12:0x14] = machine.to_bytes(2, order)
+    if is64:
+        data[0x20:0x28] = phoff.to_bytes(8, order)
+        data[0x36:0x38] = phentsize.to_bytes(2, order)
+        data[0x38:0x3A] = (1).to_bytes(2, order)
+    else:
+        data[0x1C:0x20] = phoff.to_bytes(4, order)
+        data[0x2A:0x2C] = phentsize.to_bytes(2, order)
+        data[0x2C:0x2E] = (1).to_bytes(2, order)
+    phdr = phoff
+    data[phdr : phdr + 4] = (1).to_bytes(4, order)  # p_type = PT_LOAD
+    data[phdr + vaddr_off : phdr + vaddr_off + (8 if is64 else 4)] = load_vaddr.to_bytes(
+        8 if is64 else 4, order
+    )
+    path.write_bytes(bytes(data))
+    return path
+
+
 def _stub_executable(tmp_path: Path) -> Path:
     """A file that exists, so the client considers r2 available without one."""
     path = tmp_path / "r2"
     path.write_bytes(b"")
     return path
+
+
+def test_elf_preferred_base_reads_the_lowest_load_segment_and_the_machine(
+    tmp_path: Path,
+) -> None:
+    """An ELF's base is the lowest PT_LOAD p_vaddr, its arch its e_machine.
+
+    The r2 tools run on whatever the session opened; on Linux that is usually an
+    ELF, for which the PE reader makes no claim. Without this an ELF address came
+    back va-only. A 64-bit ET_EXEC at 0x400000 must yield x64 and that base; a
+    32-bit x86 ELF must yield x86 and its own base.
+    """
+    x64 = _minimal_elf(tmp_path, is64=True, machine=62, load_vaddr=0x400000)
+    assert elf_preferred_base(x64) == (Architecture.X64, 0x400000)
+    x86 = _minimal_elf(tmp_path, is64=False, machine=3, load_vaddr=0x8048000)
+    assert elf_preferred_base(x86) == (Architecture.X86, 0x8048000)
+
+
+def test_elf_preferred_base_reads_a_big_endian_header(tmp_path: Path) -> None:
+    """EI_DATA is honoured: a big-endian ELF's fields are not read as little.
+
+    A big-endian ELF read little-endian yields a byte-swapped garbage base, so
+    the endianness byte has to drive every multi-byte read.
+    """
+    be = _minimal_elf(tmp_path, is64=True, machine=62, load_vaddr=0x400000, big_endian=True)
+    assert elf_preferred_base(be) == (Architecture.X64, 0x400000)
+
+
+def test_elf_preferred_base_keeps_the_base_but_drops_an_unknown_machine(
+    tmp_path: Path,
+) -> None:
+    """An arch the two-value enum cannot name yields base without a wrong tag.
+
+    AArch64 (e_machine 183) is a real ELF the enum has no value for; the base is
+    still knowable, so it must survive while architecture stays None rather than
+    being forced to x86/x64.
+    """
+    arm = _minimal_elf(tmp_path, is64=True, machine=183, load_vaddr=0x400000)
+    assert elf_preferred_base(arm) == (None, 0x400000)
+
+
+def test_elf_preferred_base_reports_no_fixed_base_for_a_pie(tmp_path: Path) -> None:
+    """A load segment at vaddr 0 (PIE) has no fixed base: honest va-only.
+
+    Inventing rva == va for a position-independent ELF would be a fabricated
+    coordinate; the arch is still known, the base is not.
+    """
+    pie = _minimal_elf(tmp_path, is64=True, machine=62, load_vaddr=0x0)
+    assert elf_preferred_base(pie) == (Architecture.X64, None)
+
+
+def test_elf_preferred_base_degrades_on_a_non_elf(tmp_path: Path) -> None:
+    """Runs for every r2 payload, so a non-ELF or missing file must not raise."""
+    plain = tmp_path / "plain.bin"
+    plain.write_bytes(b"not an elf at all" * 8)
+    assert elf_preferred_base(plain) == (None, None)
+    assert elf_preferred_base(tmp_path / "missing.elf") == (None, None)
+
+
+def test_enrich_maps_elf_addresses_through_the_load_base(tmp_path: Path) -> None:
+    """The r2 enrichment gives ELF items rva/module/arch, not only va.
+
+    This is the end-to-end payoff: an aflj-shaped payload against an ELF binary
+    must come back with each function's rva computed from the ELF load base and
+    the module named, exactly as a PE payload does -- the fix that made r2 useful
+    on Linux targets, not just PE ones.
+    """
+    binary = _minimal_elf(tmp_path, is64=True, machine=62, load_vaddr=0x400000)
+    raw = json.dumps([{"offset": 0x401000, "name": "main", "size": 16}])
+    enriched = enrich_r2_payload({"raw": raw, "commands": ["aa", "aflj"]}, binary=binary)
+    assert enriched["parsed"] is True
+    assert enriched["architecture"] == "x64"
+    assert enriched["image_base"] == 0x400000
+    item = enriched["items"][0]
+    assert item["address"]["rva"] == 0x1000
+    assert item["address"]["va"] == 0x401000
+    assert item["address"]["module"] == "demo64.elf"
 
 
 def test_output_cut_at_the_buffer_says_it_was_cut(

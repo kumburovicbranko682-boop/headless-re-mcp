@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -97,3 +99,73 @@ def test_m11_r2_live_address_mapping() -> None:
     assert any(
         isinstance(row.get("lib"), str) and row["lib"] for row in import_items
     ), "no import carried the documented lib key"
+
+
+@pytest.mark.integration
+def test_m11_r2_live_elf_address_mapping(tmp_path: Path) -> None:
+    """r2 on an ELF gets rva/module/arch, not the PE-only enrichment it used to.
+
+    The PE gate above only ever proved the mapping on Windows' native format;
+    on Linux the session target is usually an ELF, for which the enrichment used
+    to read no load base and hand back va-only addresses. Compile a real non-PIE
+    ELF (ET_EXEC at a fixed base, so rva is meaningful; a PIE would legitimately
+    be base-less and va-only) and drive the same aa+aac+aflj the r2.functions
+    tool runs, then assert the load base the ELF program headers declare threads
+    through to a real function's rva. Measured against the installed r2, this is
+    what catches an ELF-specific parse or key drift the synthetic unit fixture
+    cannot. Skips honestly (skip != pass) when r2 or a C compiler is absent.
+    """
+    client = R2Client()
+    if not client.available:
+        pytest.skip("radare2/rizin not installed — live Gate not run (skip≠pass)")
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    if gcc is None:
+        pytest.skip("no C compiler to build an ELF fixture — live Gate not run (skip≠pass)")
+
+    source = tmp_path / "elf_fixture.c"
+    source.write_text("int helper(int x){return x+1;}\nint main(void){return helper(41);}\n")
+    fixture = tmp_path / "elf_fixture"
+    build = subprocess.run(
+        [gcc, "-no-pie", "-O0", "-o", str(fixture), str(source)],
+        capture_output=True,
+        text=True,
+        timeout=120.0,
+    )
+    if build.returncode != 0 or not fixture.is_file():
+        # -no-pie can be unsupported on a hardened toolchain (some distros build
+        # gcc PIE-only). That is a toolchain limitation, not an r2 regression, so
+        # skip rather than fail -- the unit tests still pin the parser.
+        pytest.skip(f"could not build a non-PIE ELF ({build.stderr.strip()[:200]}) — skip≠pass")
+
+    funcs = client.run(fixture, ["aa", "aac", "aflj"], timeout=60.0)
+    assert funcs.get("parsed") is True
+    assert funcs.get("count", 0) >= 1
+    # The ELF program headers put ET_EXEC's first PT_LOAD at a fixed base (the
+    # SysV x86-64 default is 0x400000); the enrichment must have read it from the
+    # ELF, not from a PE header it does not have.
+    image_base = funcs.get("image_base")
+    assert isinstance(image_base, int) and image_base > 0, funcs.get("image_base")
+    assert funcs.get("architecture") == "x64", funcs.get("architecture")
+
+    # At least one recovered function must carry an rva computed from that base,
+    # with the module named -- the coordinate the PE path already produced and
+    # the ELF path used to drop. Data-independent: every function in an ET_EXEC
+    # sits above the load base, so the mapping applies regardless of which
+    # functions r2's analysis happens to name.
+    mapped = [
+        item
+        for item in funcs["items"]
+        if isinstance(item.get("address"), dict) and "rva" in item["address"]
+    ]
+    assert mapped, "no ELF function carried an rva mapped through the load base"
+    sample = mapped[0]
+    assert sample["address"]["module"] == fixture.name
+    assert sample["address"]["va"] - image_base == sample["address"]["rva"]
+
+    # disasm at a real ELF function entry round-trips the request address through
+    # the same mapping, proving the parameterized pdj path works on ELF too.
+    va = sample["address"]["va"]
+    disasm = client.disasm(fixture, va, count=4, timeout=60.0)
+    assert disasm.get("parsed") is True
+    assert disasm.get("address_va") == va
+    assert disasm["address"]["rva"] == va - image_base
