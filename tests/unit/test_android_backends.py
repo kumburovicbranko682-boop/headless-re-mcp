@@ -1607,6 +1607,85 @@ class TestApkAppendedStash:
         assert _apk_appended_size(blob) is None
 
 
+def _apk_with_members(tmp_path: Path, members: dict[str, bytes]) -> Path:
+    """A copy of the fixture APK with extra members appended to the archive."""
+    path = tmp_path / "planted.apk"
+    path.write_bytes(_APK_FIXTURE.read_bytes())
+    with zipfile.ZipFile(path, "a") as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
+    return path
+
+
+class TestApkEmbeddedPayloads:
+    """describe_apk lists executable magic living outside its canonical home.
+
+    A DEX under assets/ (a runtime DexClassLoader's stage two), a raw ELF
+    shipped as a data file, a nested APK for later install: the dropper
+    census. classes*.dex at the root and lib/<abi>/*.so are the canonical
+    homes with dedicated facts, so they are never listed here.
+    """
+
+    def test_the_committed_fixture_carries_no_stowaways(self) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        facts = describe_apk(_APK_FIXTURE)["apk"]
+        assert facts["embedded_payload_count"] == 0
+        assert facts["embedded_payloads"] == []
+
+    def test_each_planted_kind_reads_under_its_own_name(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        planted = {
+            "assets/second_stage.bin": b"dex\n035\x00" + b"\x00" * 96,
+            "assets/native_blob.dat": b"\x7fELF" + b"\x00" * 60,
+            "assets/inner.apk": b"PK\x03\x04" + b"\x00" * 26,
+            "res/raw/tool.dat": b"MZ" + b"\x90" * 62,
+        }
+        facts = describe_apk(_apk_with_members(tmp_path, planted))["apk"]
+        assert facts["embedded_payload_count"] == 4
+        listed = {entry["path"]: entry for entry in facts["embedded_payloads"]}
+        assert listed["assets/second_stage.bin"]["kind"] == "dex"
+        assert listed["assets/native_blob.dat"]["kind"] == "elf"
+        assert listed["assets/inner.apk"]["kind"] == "zip"
+        assert listed["res/raw/tool.dat"]["kind"] == "pe"
+        # The size is the member's uncompressed size, for triage without
+        # extraction.
+        assert listed["assets/second_stage.bin"]["size"] == 104
+
+    def test_canonical_homes_are_never_listed(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        # A multidex root member and another ABI's library are canonical; the
+        # same DEX bytes under assets/ are not.
+        planted = {
+            "classes2.dex": b"dex\n035\x00" + b"\x00" * 96,
+            "lib/armeabi-v7a/libextra.so": b"\x7fELF" + b"\x00" * 60,
+            "assets/classes.dex": b"dex\n035\x00" + b"\x00" * 96,
+        }
+        facts = describe_apk(_apk_with_members(tmp_path, planted))["apk"]
+        assert facts["embedded_payload_count"] == 1
+        assert facts["embedded_payloads"][0]["path"] == "assets/classes.dex"
+
+    def test_prose_opening_with_mz_is_not_an_executable(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        facts = describe_apk(
+            _apk_with_members(tmp_path, {"assets/note.txt": b"MZ curve analysis"})
+        )["apk"]
+        assert facts["embedded_payload_count"] == 0
+
+    def test_the_list_is_bounded_but_the_count_exact(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        planted = {
+            f"assets/stage_{i}.bin": b"dex\n035\x00" + b"\x00" * 96 for i in range(40)
+        }
+        facts = describe_apk(_apk_with_members(tmp_path, planted))["apk"]
+        assert facts["embedded_payload_count"] == 40
+        assert len(facts["embedded_payloads"]) == 32
+
+
 class TestApkNativeLibFacts:
     """describe_apk parses each bundled lib/<abi>/*.so with the ELF reader.
 

@@ -927,6 +927,7 @@ def describe_apk(path: Path) -> dict[str, Any]:
         }
     )
     signed_v2, signed_v3, signers = _apk_signature_schemes(path)
+    payloads, payload_count = _apk_embedded_payloads(path)
     return {
         "apk": {
             "format": "apk",
@@ -953,6 +954,11 @@ def describe_apk(path: Path) -> dict[str, Any]:
             # The JNI surface of each bundled .so, parsed with the same ELF
             # reader a native session gets -- the Java<->native boundary.
             "native_libs": _apk_native_lib_facts(path),
+            # Executable/container magic in members outside its canonical
+            # home -- a DEX or ELF under assets/ is the dropper stage-two
+            # shape. The count is exact; the listed sample is bounded.
+            "embedded_payloads": payloads,
+            "embedded_payload_count": payload_count,
         }
     }
 
@@ -1463,6 +1469,70 @@ def _apk_appended_size(path: Path) -> int | None:
             continue
         return len(tail) - declared_end
     return None
+
+
+# Executable/container magic worth flagging when found outside its canonical
+# home inside an APK. MZ additionally requires a DOS-header-sized head so two
+# letters of prose cannot read as a Windows executable.
+_APK_PAYLOAD_KINDS: tuple[tuple[bytes, str], ...] = (
+    (b"dex\n", "dex"),
+    (b"\x7fELF", "elf"),
+    (b"PK\x03\x04", "zip"),
+    (b"MZ", "pe"),
+)
+# The places a DEX and an ELF legitimately live: classesN.dex at the archive
+# root (covered by the dex facts) and lib/<abi>/*.so (covered by native_libs).
+_APK_CANONICAL_DEX_RE = re.compile(r"classes\d*\.dex")
+_APK_MAX_PAYLOAD_MEMBERS = 4096
+_APK_MAX_PAYLOADS = 32
+
+
+def _apk_embedded_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
+    """Members whose bytes open with executable magic outside its home.
+
+    The dropper stage-two shape: a second DEX under ``assets/`` for a runtime
+    DexClassLoader, a raw ELF shipped as a "data" file, a whole APK nested for
+    later install. The canonical locations -- ``classes*.dex`` at the root and
+    ``lib/<abi>/*.so`` -- already have dedicated facts, so only members
+    *outside* them are listed. This is a census, not a verdict: a legitimate
+    ZIP-based asset appears here too, named and sized, for the analyst to
+    triage.
+
+    Bounded and fail-closed: at most the first 0x40 bytes of each member are
+    read (streamed, not fully decompressed), the member scan and the reported
+    list are capped, and an unreadable member (encrypted, exotic compression)
+    is skipped rather than raised on.
+    """
+    payloads: list[dict[str, Any]] = []
+    count = 0
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for info in archive.infolist()[:_APK_MAX_PAYLOAD_MEMBERS]:
+                name = info.filename
+                if info.is_dir():
+                    continue
+                if _APK_CANONICAL_DEX_RE.fullmatch(name):
+                    continue
+                if name.startswith("lib/") and name.endswith(".so"):
+                    continue
+                try:
+                    with archive.open(info) as member:
+                        head = member.read(0x40)
+                except (OSError, RuntimeError, NotImplementedError, zipfile.BadZipFile):
+                    continue
+                kind = next(
+                    (k for magic, k in _APK_PAYLOAD_KINDS if head.startswith(magic)), None
+                )
+                if kind == "pe" and len(head) < 0x40:
+                    kind = None
+                if kind is None:
+                    continue
+                count += 1
+                if len(payloads) < _APK_MAX_PAYLOADS:
+                    payloads.append({"path": name, "kind": kind, "size": info.file_size})
+    except (OSError, zipfile.BadZipFile):
+        return [], 0
+    return payloads, count
 
 
 def _apk_signature_schemes(path: Path) -> tuple[bool, bool, list[dict[str, Any]]]:
