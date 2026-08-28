@@ -14,6 +14,7 @@ import dataclasses
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.unpack.session import (
     UnpackPhase,
@@ -359,3 +360,33 @@ def test_unpack_start_restarts_a_terminal_session(tmp_path: Path) -> None:
 
     assert result.ok and result.data is not None
     assert result.data["unpack"]["route"] == "none"
+
+
+def test_unpack_start_generic_dynamic_skips_probe_without_a_debugger(tmp_path: Path) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = _service(tmp_path, FakeDynamicWorker())
+    created = service.create_session(str(binary))
+    assert created.data is not None
+    session_id = str(created.data["session"]["id"])
+    # No open_dynamic: the bounded probe must record the skip, not raise.
+
+    result = service.unpack_start(
+        session_id, use_die=False, force_route="generic_dynamic"
+    )
+
+    assert result.ok and result.data is not None
+    assert result.data["bounded_probe"]["dynamic_open"] is False
+
+
+def test_confirm_oep_reports_a_failed_auto_dump(tmp_path: Path) -> None:
+    service, worker, session_id = _open_session(tmp_path)
+    _plant_phase(service, session_id, UnpackPhase.RUNNING)
+    # A backend that now rejects every request makes the auto-dump fail.
+    worker.failure = XdbgRpcError("worker_gone", "backend unreachable")
+
+    result = service.unpack_confirm_oep(
+        session_id, oep_rva=0x1000, module_base=worker.module_base, auto_dump=True
+    )
+
+    assert not result.ok and result.error is not None
