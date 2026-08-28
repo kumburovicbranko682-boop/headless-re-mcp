@@ -40,6 +40,7 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_INTERFACES = 256
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -524,6 +525,69 @@ class AdbBackend:
             "count": len(pkgs),
             "has_more": has_more,
             "third_party_only": third_party_only,
+        }
+
+    def netdev(self, serial: str, *, limit: int = 256) -> JsonObject:
+        """List network interfaces and their counters from ``/proc/net/dev``.
+
+        The interface inventory the endpoint views (connections/arp/routes) do
+        not give: every interface the kernel knows -- loopback, wifi, the
+        cellular ``rmnet``/``radio`` links, VPN ``tun``/``ppp`` -- each with its
+        receive and transmit byte, packet, error, and drop counters. A nonzero
+        counter is the honest signal that an interface is actually carrying
+        traffic, which a name alone cannot show.
+
+        Honesty: a line is accepted only when it splits into an interface name
+        and the kernel's full 16-column counter row, so the two header lines and
+        any adb host-error text parse to nothing. A live kernel always exposes
+        at least ``lo``; parsing zero interfaces therefore means the read failed
+        (missing file, permission denied, offline device) and is reported as a
+        ``backend_error`` rather than an empty inventory. The list is capped and
+        flags ``has_more`` when the device holds more interfaces than the cap.
+        """
+        dev = self._device(serial)
+        capped = max(1, min(int(limit), _MAX_INTERFACES))
+        text = str(_device_shell(dev, "cat /proc/net/dev"))
+        interfaces: list[JsonObject] = []
+        has_more = False
+        for line in text.splitlines():
+            name, sep, rest = line.partition(":")
+            if not sep:
+                continue
+            name = name.strip()
+            if not name:
+                continue
+            columns = rest.split()
+            if len(columns) < 16:
+                continue
+            try:
+                counters = [int(value) for value in columns[:16]]
+            except ValueError:
+                continue
+            if len(interfaces) >= capped:
+                has_more = True
+                break
+            interfaces.append(
+                {
+                    "name": name,
+                    "rx_bytes": counters[0],
+                    "rx_packets": counters[1],
+                    "rx_errs": counters[2],
+                    "rx_drop": counters[3],
+                    "tx_bytes": counters[8],
+                    "tx_packets": counters[9],
+                    "tx_errs": counters[10],
+                    "tx_drop": counters[11],
+                }
+            )
+        if not interfaces:
+            raise AdbError(
+                "backend_error", "reading /proc/net/dev failed", output=text[:800]
+            )
+        return {
+            "interfaces": interfaces,
+            "count": len(interfaces),
+            "has_more": has_more,
         }
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:

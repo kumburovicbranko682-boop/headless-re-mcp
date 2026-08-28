@@ -89,6 +89,27 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="device.netdev")
+    def device_netdev(
+        serial: str, limit: Annotated[int, Field(ge=1, le=256)] = 256
+    ) -> dict[str, Any]:
+        """List network interfaces and counters from /proc/net/dev.
+
+        The interface inventory the endpoint views (connections/arp/routes) do
+        not give. Answers with interfaces (each entry: name plus rx_bytes,
+        rx_packets, rx_errs, rx_drop, tx_bytes, tx_packets, tx_errs, tx_drop),
+        count, and has_more so a page that filled the cap is not read as every
+        interface. A nonzero counter is the honest sign an interface is
+        actually carrying traffic.
+
+        Honesty: only lines that split into a name and the kernel's full
+        16-column counter row are accepted, so headers and adb host-error text
+        parse to nothing. A live kernel always exposes at least lo, so parsing
+        zero interfaces is a failure (missing file, permission denied, offline
+        device), not an empty inventory.
+        """
+        return _dump(analysis.device_netdev(serial, limit=limit))
+
     @tools.tool(name="device.install")
     def device_install(
         serial: str, apk_path: str, reinstall: bool = True

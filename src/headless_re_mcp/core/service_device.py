@@ -171,6 +171,9 @@ class DeviceAnalysisMixin:
             "packages", serial=serial, third_party_only=third_party_only, limit=limit
         )
 
+    def device_netdev(self, serial: str, limit: int = 256) -> Result[JsonObject]:
+        return self._adb_wrap("netdev", serial=serial, limit=limit)
+
     def device_install(
         self, serial: str, apk_path: str, reinstall: bool = True
     ) -> Result[JsonObject]:

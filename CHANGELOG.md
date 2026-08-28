@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -127,6 +127,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 PE / 截断的 COFF 头 / 截断的可选头 / 可选头 magic 不符 / 镜像基址为 0 分别报
   `module_file_invalid`；并补 `RuntimeModuleCatalog` 与 `RebasedModuleMapping` 的 `to_dict`
   序列化。模块覆盖率 88% → 99%。
+
+### 新增（`device.netdev` 从 `/proc/net/dev` 列网络接口清单与收发计数）
+
+- 新增只读工具 `device.netdev`，解析 `/proc/net/dev`，给出端点视图（connections/arp/
+  routes）没有的接口清单：内核已知的每个接口——回环、wifi、蜂窝 `rmnet`/`radio`、VPN
+  `tun`/`ppp`——各自的收发字节、包、错误、丢弃计数（`rx_bytes`/`rx_packets`/`rx_errs`/
+  `rx_drop`/`tx_bytes`/`tx_packets`/`tx_errs`/`tx_drop`）。非零计数是接口确实在承载流量的
+  诚实信号，只看名字看不出来。诚实边界:只有能拆成「接口名 + 内核完整 16 列计数行」的行才被
+  接受，故两行表头与任何 adb 主机错误文本都解析为空;活着的内核至少暴露 `lo`，因此解析到零个
+  接口即读取失败（文件缺失、权限拒绝、设备离线），如实报 `backend_error` 而非空清单。列表有界
+  并在超过上限时置 `has_more`。新增 `tests/unit/test_device_netdev_fields.py` 以固定桩覆盖
+  接口与计数解析、表头跳过、分页截断,以及零接口/主机错误报错等分支。工具面 265 → 266
+  （只读 148 → 149）。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
