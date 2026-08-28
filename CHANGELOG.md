@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（未测量的 code_nonzero_ratio 被报成实测 0.0，进而凭空拒掉 IAT 重建）
+
+- `analyze_dump_stub_coupling` 过去用 `code_nonzero / max(code_total, 1)` 收尾：当没有任何代码节
+  落在 dump 内、`code_total` 为 0 时，比值算出 0.0，与"CODE 节确实全零"完全无法区分。这个区分
+  决定 IAT 重建是否放行——`service_unpack` 把任何低于 0.05 的比值转成 `code_not_decrypted` 理由、
+  清掉 `rebuild_allowed`、把 `iat_recoverable` 降级为 `iat_insufficient`，其中一条路径更直接以
+  `iat_rebuild_blocked` 拒掉整个调用；`assess_pause_quality` 同样把 `quality` 钉成
+  `code_not_ready`。三处消费者本来就把 `None` 当"未知"处理，于是"找不到代码节"的 dump 是在
+  **从未采集的证据**上被定罪。现在 `code_total` 为 0 时比值报 `None`，`code_bytes` 如实报读了多少。
+- 同一处的非零字节循环把预算检查排在越界检查之后，并且在第一个落在 dump 之外的节上 `break` 掉
+  整个测量。E8/FF 扫描器对同一份节列表是跳过继续的，于是一个越界的节头就能让 `code_bytes` 报 0、
+  同时 `e8_total` 非零——自相矛盾的输出。现在只在字节预算耗尽时 `break`，越界的节 `continue`
+  跳过，两个循环对"哪些节可达"达成一致。
+- `code_section_ranges` 与"最大可执行节"兜底都接受了 `vmp_like_section_ranges` 早就按无效几何
+  拒掉的负 `virtual_address`。负 RVA 会让 `data[rva : rva + take]` 从 dump **末尾**切片，把无关的
+  尾部字节当代码测量、当调用计数；`count_stub_vs_api_calls` 现在也一并跳过负范围。
+- 新增测试中 7 个在改动前失败；其余为对照，钉死"确实全零且落在 dump 内的节仍报 0.0 并仍然定罪"
+  与"扫描字节预算仍会停止测量"。
+
 ### 修复（NETReactorSlayer 输出别名测试的同款 Windows-only 路径炸裂）
 
 - 与 de4dot 同批落地的 `test_net_reactor_slayer_paths.py::test_output_equal_to_input_is_refused`
