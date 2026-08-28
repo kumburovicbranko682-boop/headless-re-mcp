@@ -283,6 +283,22 @@ def test_backend_clamps_the_limit_to_the_page_cap(
     assert page["has_more"] is True
 
 
+def test_backend_clamps_a_negative_offset_and_zero_limit(tmp_path: Path) -> None:
+    """The agent/bridge transports bypass the schema's ``offset >= 0`` /
+    ``limit >= 1`` bound and call read_har directly, so it re-enforces both with
+    ``max(0, offset)`` and ``max(1, min(limit, _MAX_PAGE))``. Without the clamp
+    ``offset=-1`` would tail-slice ``entries[-1:...]`` -- a wrong page still
+    claiming has_more, the same paging bug apk's _clamp_page fixed. network_list
+    and scripts pin this; read_har shares the same defensive lines, so pin it too.
+    """
+    path = _write_har(tmp_path, _entries(6))
+    page = WebBackend().read_har(str(path), offset=-10, limit=0)
+    assert page["offset"] == 0
+    assert page["count"] == 1
+    assert page["has_more"] is True
+    assert page["entries"][0]["url"] == "https://a.test/0"
+
+
 # ---- AnalysisService.web_har_read: the mixin ------------------------------
 
 

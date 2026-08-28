@@ -44,6 +44,8 @@ Android 线的包名校验现在跨 adb 与 frida 两后端锁定一致。`devic
 
 `apk.methods` 现在与 `apk.classes`/`apk.strings` 一样在切分页窗口前先排序。这三个读取器共用同一套 offset 分页（`_clamp_page` + `items[start:start+cap]` + `has_more`），classes 与 strings 在切片前分别 `names.sort()` / `sorted(seen)`，唯独 methods 直接按 androguard `get_methods()` 的原始迭代顺序切片——而该顺序是未文档化的实现细节：一次「先取第 1 页、再取第 2 页」的调用若在两页之间发生缓存淘汰并重解析 APK，methods 可能以不同顺序返回，导致 offset 分页重叠或漏行（classes/strings 因已排序而不受影响）。现按 `(name, descriptor, access)` 这一确定性键排序后再切片，使 offset 分页跨重解析稳定、并与两个兄弟读取器一致（重载方法在同名下按 descriptor 归组）。`test_apk_page_clamp.py` 新增 `test_methods_are_sorted_before_the_page_so_offset_paging_is_stable`：喂入乱序方法，断言每页按 `(name, descriptor)` 排序、且两个半页拼接恰好无重叠无遗漏地覆盖整类（验证方式：删掉那行 `sort`，该测试即转红）。
 
+补齐两个 web 读取器「源头钳取负 offset / 非正 limit」的回归钉子。agent 与 OpenAI-bridge 两条传输直接调后端、从不跑 MCP schema 上 `offset >= 0` / `limit >= 1` 的 pydantic 校验，所以每个 offset 分页读取器都在源头用 `max(0, int(offset))` 与 `max(1, min(int(limit), cap))` 复核一遍——否则 `offset=-1` 会退化成尾部切片（`values[-1:...]`），返回一个空的或错位的页却仍报 `has_more`，正是当初 `_clamp_page` 为 apk 修掉的那个分页 bug。`network_list` 早有 `test_web_fields.py` 钉住（`offset=-10, limit=0` → offset 归零、count 1、has_more True），apk 三个读取器也有 `test_apk_page_clamp.py` 钉住，但共用同一套防御代码的 `web.scripts`（连带 `web.wasm.list`）与上一轮新增的 `web.har.read` 却没有——防御代码一旦被重构删掉，只有 apk/network_list 会转红，这两个会静默回退。现分别在 `test_web_fields.py` 加 `test_web_scripts_clamps_a_negative_offset_and_zero_limit_at_the_backend`、在 `test_web_har_read.py` 加 `test_backend_clamps_a_negative_offset_and_zero_limit`，均以 `offset=-10, limit=0` 断言 offset 归零、count 恰为 1（limit 被抬到底线 1）、has_more True；两处都已验证非空洞——把源头 `max(0, …)` / `max(1, …)` 去掉后测试即转红。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、

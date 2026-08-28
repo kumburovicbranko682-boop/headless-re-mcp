@@ -198,3 +198,22 @@ def test_web_wasm_list_puts_modules_in_scripts_not_modules(
     assert "Answers with scripts" in doc
     assert "no modules field" in doc
     assert "has_more" in doc
+
+
+def test_web_scripts_clamps_a_negative_offset_and_zero_limit_at_the_backend(
+    monkeypatch: Any,
+) -> None:
+    """The agent and OpenAI-bridge transports call the reader directly and never
+    run the ``offset >= 0`` / ``limit >= 1`` pydantic bound the MCP schema
+    advertises, so ``scripts`` re-enforces both with ``max(0, offset)`` and
+    ``max(1, min(limit, _MAX_PAGE))``. Without that clamp ``offset=-1`` would be
+    a tail slice (``values[-1:...]``) -- an empty or wrong page still claiming
+    ``has_more`` -- exactly the apk paging bug ``_clamp_page`` fixed. network_list
+    pins this already; scripts shares the same defensive lines, so pin it too.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _FakeHandle(10))
+    normalized = backend.scripts("s", offset=-10, limit=0)
+    assert normalized["offset"] == 0
+    assert normalized["count"] == 1
+    assert normalized["has_more"] is True
