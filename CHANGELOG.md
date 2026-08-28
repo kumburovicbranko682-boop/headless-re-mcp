@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **337（219 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **338（220 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -368,6 +368,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
   `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
   `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
+
+### 新增（抓包：上游 TLS 握手）
+
+- 新增 `proxy.tls`:给抓包线补上传输层安全这一刀。`proxy.hosts` 说"跟谁通信过",这个说"怎么通信的"
+  ——按 host 汇总每个上游 TLS 握手:协商的 TLS 版本与密码套件、ALPN、SNI,以及服务器出示的叶证书。
+  数据从 mitmproxy 的 `server_conn`(代理<->目标那一段)读,所以版本/套件/证书是目标服务器的,不是浏览器<->
+  代理那一跳。两个标志承载结论:cleartext(该 host 至少有一次走明文 http)与 weak(协商到 SSLv3/TLS 1.0/1.1
+  这类过时版本)。与 `proxy.security_headers`(应用层姿态)互补,这是其下的加密层。握手快照在录制时抽到与
+  `_timings` 同形的旁置侧表,随 ring 同步淘汰,故 body 被丢弃后仍在。回 hosts(按 flow 数排序)、count、total、
+  truncated、total_flows 与 aggregate(total_hosts/tls_hosts/cleartext_hosts/weak_hosts);每个 host 带 host、
+  flows、tls、cleartext、weak、versions/ciphers/alpn/sni(去重排序)与 cert(叶证书摘要:subject、issuer、serial、
+  not_before、not_after、altnames、altnames_truncated;服务器未出示证书时为 null)。cleartext 或 weak 的 host
+  就是要追的那个。只读,只在 `pe` 方向随 `proxy.*` 隐藏。
 
 ### 新增（JavaScript 请求端点）
 

@@ -197,6 +197,33 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_hosts(session_id, limit=limit))
 
+    @tools.tool(name="proxy.tls")
+    def proxy_tls(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Fold the capture's upstream TLS handshakes into a per-host inventory.
+
+        The transport-security cut of a capture: proxy.hosts says who the app
+        talked to, this says how -- for each host, which TLS versions and
+        ciphers were negotiated with the real server, the ALPN and SNI seen, and
+        the leaf certificate it presented. Read from mitmproxy's server_conn (the
+        proxy<->target leg), so the version/cipher/cert are the target's, not the
+        browser<->proxy hop. Two flags carry the finding: cleartext (the host was
+        reached over plain http at least once) and weak (an obsolete SSLv3/TLS
+        1.0/1.1 was negotiated). Complementary to proxy.security_headers (the
+        application-layer posture); this is the crypto layer beneath it.
+
+        Answers with hosts (ranked by flow count), count, total (distinct hosts),
+        truncated, total_flows and an aggregate (total_hosts, tls_hosts,
+        cleartext_hosts, weak_hosts). Each host carries host, flows, tls,
+        cleartext, weak, versions/ciphers/alpn/sni (sorted distinct lists) and
+        cert -- the leaf certificate summary (subject, issuer, serial,
+        not_before, not_after, altnames, altnames_truncated) or null when the
+        server presented none. A cleartext or weak host is the one to chase.
+        """
+        return _dump(analysis.proxy_tls(session_id, limit=limit))
+
     @tools.tool(name="proxy.content_types")
     def proxy_content_types(
         session_id: str,

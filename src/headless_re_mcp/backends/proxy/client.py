@@ -382,6 +382,26 @@ _SECRET_SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
 # proxy.endpoints result cap: distinct endpoints are bounded by the flow ring,
 # but the returned page is still capped like every other list.
 _MAX_ENDPOINTS_PAGE = 1000
+# proxy.tls caps: the certificate SAN list can be large, so it is bounded, and
+# the versions/ciphers/alpn/sni sets folded per host stay small on their own.
+_MAX_TLS_ALTNAMES = 50
+# TLS/SSL versions weak enough to be a finding on their own. mitmproxy renders
+# TLS 1.0 as "TLSv1"; the dotted and spaced spellings are here for robustness
+# across versions and for a caller passing a normalised string.
+_WEAK_TLS_VERSIONS = frozenset(
+    {
+        "SSLV2",
+        "SSLV3",
+        "TLSV1",
+        "TLSV1.0",
+        "TLSV1.1",
+        "TLS 1.0",
+        "TLS 1.1",
+        "TLS1",
+        "TLS1.0",
+        "TLS1.1",
+    }
+)
 # proxy.cookies caps: a response can carry many Set-Cookie headers and each
 # value can be a long token, so the header scan, each value, and the inventory
 # are all bounded.
@@ -1001,6 +1021,209 @@ def fold_hosts(rows: list[JsonObject], *, limit: int = 100) -> JsonObject:
     }
 
 
+def _tls_str(value: object) -> str | None:
+    """Coerce a TLS attribute to a bounded string, or None when it is empty.
+
+    mitmproxy renders these as str already, but ALPN comes as bytes and a
+    cipher can arrive as a tuple across versions, so anything is stringified
+    defensively and clipped to the metadata cap.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        text = bytes(value).decode("utf-8", errors="replace")
+    else:
+        text = str(value)
+    text = text.strip()
+    if not text:
+        return None
+    bounded, _ = _bounded_metadata(text, _MAX_METADATA_BYTES)
+    return bounded
+
+
+def _cert_issuer_cn(cert: Any) -> str | None:
+    """Pull the issuer common name out of a mitmproxy Certificate.
+
+    ``issuer`` is a list of (oid, value) pairs; the CN is the human-readable
+    "who signed this". Falls back to the whole issuer rendering when no CN pair
+    is present, so a self-signed or oddly-shaped cert still reports something.
+    """
+    issuer = getattr(cert, "issuer", None)
+    if issuer is None:
+        return None
+    try:
+        pairs = list(issuer)
+    except TypeError:
+        return _tls_str(issuer)
+    for pair in pairs:
+        try:
+            key, value = pair
+        except (TypeError, ValueError):
+            continue
+        if str(key).upper() in {"CN", "COMMONNAME"}:
+            return _tls_str(value)
+    return _tls_str(issuer) if pairs else None
+
+
+def _cert_summary(server_conn: Any) -> JsonObject | None:
+    """Summarise the leaf certificate the upstream server presented, if any.
+
+    Certificate objects vary across mitmproxy versions and can raise on
+    attribute access, so every field is read defensively and a failure yields a
+    null field rather than losing the whole cert. Returns None when the server
+    connection presented no certificate (a cleartext flow, or a handshake that
+    never completed).
+    """
+    if server_conn is None:
+        return None
+    certs = getattr(server_conn, "certificate_list", None)
+    leaf: Any = None
+    if certs:
+        try:
+            leaf = list(certs)[0]
+        except (TypeError, IndexError):
+            leaf = None
+    if leaf is None:
+        leaf = getattr(server_conn, "cert", None)
+    if leaf is None:
+        return None
+
+    subject = _tls_str(getattr(leaf, "cn", None))
+    if subject is None:
+        subject = _tls_str(getattr(leaf, "subject", None))
+    altnames_raw = getattr(leaf, "altnames", None) or []
+    altnames: list[str] = []
+    try:
+        for name in list(altnames_raw)[:_MAX_TLS_ALTNAMES]:
+            coerced = _tls_str(name)
+            if coerced is not None:
+                altnames.append(coerced)
+    except TypeError:
+        altnames = []
+    return {
+        "subject": subject,
+        "issuer": _cert_issuer_cn(leaf),
+        "serial": _tls_str(getattr(leaf, "serial", None)),
+        "not_before": _tls_str(getattr(leaf, "notbefore", None)),
+        "not_after": _tls_str(getattr(leaf, "notafter", None)),
+        "altnames": altnames,
+        "altnames_truncated": len(altnames_raw) > _MAX_TLS_ALTNAMES
+        if hasattr(altnames_raw, "__len__")
+        else False,
+    }
+
+
+def _extract_tls(flow: Any, host: str, scheme: str) -> JsonObject:
+    """Snapshot the upstream TLS handshake of one flow.
+
+    Reads mitmproxy's ``server_conn`` -- the proxy<->target leg, which carries
+    the target's real negotiated version, cipher, ALPN, the SNI the client
+    asked for and the certificate the server presented. A cleartext http flow
+    records tls=False with null crypto fields so proxy.tls can still report that
+    the host was reached in the clear.
+    """
+    server_conn = getattr(flow, "server_conn", None)
+    established = bool(getattr(server_conn, "tls_established", False))
+    version = _tls_str(getattr(server_conn, "tls_version", None))
+    cipher = _tls_str(getattr(server_conn, "cipher", None))
+    if cipher is None:
+        cipher = _tls_str(getattr(server_conn, "cipher_name", None))
+    sni = _tls_str(getattr(server_conn, "sni", None))
+    alpn = _tls_str(getattr(server_conn, "alpn", None))
+    tls = established or scheme == "https" or version is not None
+    return {
+        "host": host or "?",
+        "scheme": scheme or "",
+        "tls": tls,
+        "version": version,
+        "cipher": cipher,
+        "sni": sni,
+        "alpn": alpn,
+        "cert": _cert_summary(server_conn),
+    }
+
+
+def fold_tls(tls_rows: list[JsonObject], *, limit: int = 100) -> JsonObject:
+    """Fold per-flow TLS snapshots into a per-host handshake inventory.
+
+    The transport-security cut of a capture: for every host the flows reached,
+    which TLS versions and ciphers were negotiated, the ALPN and SNI seen, and
+    the leaf certificate the server presented -- with two headline flags,
+    cleartext (the host was talked to over plain http at least once) and weak
+    (an obsolete TLS/SSL version was negotiated). Ranked by flow count.
+
+    Each host carries host, flows (count), tls (TLS was seen), cleartext, weak,
+    versions/ciphers/alpn/sni (sorted distinct lists) and cert (the first
+    non-null leaf-cert summary seen for the host). The aggregate reports
+    total_hosts, tls_hosts, cleartext_hosts and weak_hosts.
+    """
+    buckets: dict[str, JsonObject] = {}
+    for row in tls_rows:
+        host = str(row.get("host") or "?")
+        bucket = buckets.get(host)
+        if bucket is None:
+            bucket = {
+                "host": host,
+                "flows": 0,
+                "tls": False,
+                "cleartext": False,
+                "weak": False,
+                "_versions": set(),
+                "_ciphers": set(),
+                "_alpn": set(),
+                "_sni": set(),
+                "cert": None,
+            }
+            buckets[host] = bucket
+        bucket["flows"] += 1
+        is_tls = bool(row.get("tls"))
+        if is_tls:
+            bucket["tls"] = True
+        else:
+            bucket["cleartext"] = True
+        version = row.get("version")
+        if version:
+            bucket["_versions"].add(str(version))
+            if str(version).upper() in _WEAK_TLS_VERSIONS:
+                bucket["weak"] = True
+        cipher = row.get("cipher")
+        if cipher:
+            bucket["_ciphers"].add(str(cipher))
+        alpn = row.get("alpn")
+        if alpn:
+            bucket["_alpn"].add(str(alpn))
+        sni = row.get("sni")
+        if sni:
+            bucket["_sni"].add(str(sni))
+        if bucket["cert"] is None and row.get("cert") is not None:
+            bucket["cert"] = row["cert"]
+
+    hosts: list[JsonObject] = []
+    for bucket in buckets.values():
+        bucket["versions"] = sorted(bucket.pop("_versions"))
+        bucket["ciphers"] = sorted(bucket.pop("_ciphers"))
+        bucket["alpn"] = sorted(bucket.pop("_alpn"))
+        bucket["sni"] = sorted(bucket.pop("_sni"))
+        hosts.append(bucket)
+    hosts.sort(key=lambda h: (-h["flows"], str(h["host"])))
+    cap = max(1, min(int(limit), _MAX_ENDPOINTS_PAGE))
+    window = hosts[:cap]
+    aggregate = {
+        "total_hosts": len(hosts),
+        "tls_hosts": sum(1 for h in hosts if h["tls"]),
+        "cleartext_hosts": sum(1 for h in hosts if h["cleartext"]),
+        "weak_hosts": sum(1 for h in hosts if h["weak"]),
+    }
+    return {
+        "hosts": window,
+        "count": len(window),
+        "total": len(hosts),
+        "truncated": len(window) < len(hosts),
+        "total_flows": len(tls_rows),
+        "aggregate": aggregate,
+    }
+
+
 def _headers_text(headers: dict[str, str]) -> str:
     return "\n".join(f"{name}: {value}" for name, value in headers.items())
 
@@ -1237,6 +1460,10 @@ class _FlowRecorder:
         # Per-flow wall-clock timestamps for proxy.timings, kept off the summary
         # rows (so proxy.flows stays lean) and evicted in lockstep with the ring.
         self._timings: OrderedDict[str, JsonObject] = OrderedDict()
+        # Per-flow upstream TLS handshake snapshots for proxy.tls, kept in the
+        # same side-table shape as _timings so they survive body omission and
+        # are evicted in lockstep with the ring.
+        self._tls: OrderedDict[str, JsonObject] = OrderedDict()
         self._lock = threading.RLock()
 
     def _omit_retained(self, flow_id: str) -> None:
@@ -1290,6 +1517,8 @@ class _FlowRecorder:
         # content size instead of the -1 "unknown" sentinel.
         response_size = _content_len(resp)
         error_text, error_truncated = _bounded_metadata(error_msg, _MAX_METADATA_BYTES)
+        scheme = str(getattr(req, "scheme", "") or "")
+        tls_entry = _extract_tls(flow, host, scheme)
         with self._lock:
             self._seq += 1
             flow_id = str(getattr(flow, "id", None) or self._seq)
@@ -1345,6 +1574,9 @@ class _FlowRecorder:
                 self._timings[flow_id] = timing
                 while len(self._timings) > self._capacity:
                     self._timings.popitem(last=False)
+            self._tls[flow_id] = tls_entry
+            while len(self._tls) > self._capacity:
+                self._tls.popitem(last=False)
 
     def snapshot(self) -> list[JsonObject]:
         with self._lock:
@@ -1357,6 +1589,10 @@ class _FlowRecorder:
     def timings_snapshot(self) -> dict[str, JsonObject]:
         with self._lock:
             return {flow_id: dict(value) for flow_id, value in self._timings.items()}
+
+    def tls_snapshot(self) -> list[JsonObject]:
+        with self._lock:
+            return [dict(value) for value in self._tls.values()]
 
     def count(self) -> int:
         with self._lock:
@@ -1379,6 +1615,7 @@ class _FlowRecorder:
             self._raw.clear()
             self._raw_sizes.clear()
             self._timings.clear()
+            self._tls.clear()
             self._retained_bytes = 0
             self._seq = 0
             return cleared
@@ -1625,6 +1862,10 @@ class ProxyBackend:
         return fold_timings(
             inst.recorder.snapshot(), inst.recorder.timings_snapshot(), limit=limit
         )
+
+    def tls(self, session_id: str, *, limit: int = 100) -> JsonObject:
+        inst = self._get(session_id)
+        return fold_tls(inst.recorder.tls_snapshot(), limit=limit)
 
     def cookies(self, session_id: str, *, limit: int = 200) -> JsonObject:
         inst = self._get(session_id)
