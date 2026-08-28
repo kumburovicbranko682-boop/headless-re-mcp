@@ -390,9 +390,16 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 81 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
-  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
+  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄、
+  会话生命周期「易误读」运维安全经真实 MCP 端到端(裸机无后端确定性)：三处陷阱一一钉住——
+  sessions.unclean 不是「可安全清理」清单:干净只由 session.close 置位，故一个此刻开着在跑的会话
+  在里面与被死进程遗弃者长得一模一样(closed_cleanly=0)、且同一 id 同时在 session.list 里活着，
+  盲清会杀掉在跑会话，关闭才置干净并使其掉出;session.health 在什么都没开时 healthy 为 null 而非
+  健康证明，连一个没开后端的活会话也是 null(「没后端可查」不等于「后端都健康」);session.recover
+  在没有死掉 worker 时保留原 id(replaced=false、无 previous_session_id)，未知 id 报 session_not_found
+  而非静默成功）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
   wabt（1）、以及 2 个有文档说明的故意跳过
 - 264 个工具（全部 265 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回

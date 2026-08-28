@@ -18,6 +18,8 @@ CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服�
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
+会话生命周期「易误读」运维工具的安全契约新增经真实 MCP stdio 服务的端到端 Gate（`tests/integration/test_session_lifecycle_safety_gate.py`）。无人值守的操作者用来决定「清理什么」的那几个工具都诚实、却容易被误读，一个照单全收的自动清理器会把在跑的活儿删掉。本 gate 在裸机无后端上把三处陷阱钉在 stdio 上：`sessions.unclean` **不是**「可安全清理」的会话清单——干净只由 `session.close` 置位，所以一个此刻开着、正在干活的会话，在里面与一个被死掉的进程遗弃者长得一模一样（`closed_cleanly == 0`），而且**同一个 id 同时**在 `session.list` 里活着；把 `sessions.unclean` 返回的东西全清了，就会拆掉一个在跑的会话——关闭会话才是把它置干净、并让它掉出这份清单的动作。`session.health` 在什么都没开时答 `healthy: null`，而 null 不是一张健康证明：一个刚建、尚未打开任何后端的会话也是 null——「没有后端可查」不是「所有后端都健康」，据一个真值 `healthy` 行事的清理器绝不能把 null 读成 true。`session.recover` 在没有 worker 死掉时保留原 id：`replaced` 为 false、没有 `previous_session_id`，所以一个总是期待拿到新 id 的调用方会把一次健康的「保留」误读成会话丢失；未知 id 是 `session_not_found`，而不是一个会被读成成功的静默空操作。纯 stdlib PE 夹具、stdio 回环、无后端、任意平台。
+
 CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去在 `with subprocess.Popen(...)` 里跑工具，其 `__exit__` 会在调用线程上关闭 stdout/stderr——当被启动进程派生的孙进程继承了这对管道并存活时，读取线程仍阻塞在 `read()` 上持有缓冲区锁，`close()` 便永久阻塞，有界超时变成永久挂起。现不再用上下文管理器：每个读取线程自持其流并在 `read()` 返回后关闭，主线程只回收进程、绝不碰管道。POSIX 下还让工具独立成会话，超时/取消时按进程组整体发信号（限组长，避免误杀服务自身的进程组），从而杀掉 ppid 遍历看不到、已被 init 收养的孙进程（如残留的 JVM/helper）。
 
 die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛：读取线程自持自闭管道、捕获线程只在读取线程已结束时才关句柄，POSIX 下工具独立成会话。de4dot（及复用它的 NETReactorSlayer）正常退出后遗留的 runner 子进程（JVM/dotnet，常被 init 收养）以前 ppid 遍历看不到而泄漏；新增 `collect_process_group` / `terminate_process_group` 按会话组枚举并逐个按各自 `pgrp` 击杀，避免组长 pid 复用误伤无关进程组。
