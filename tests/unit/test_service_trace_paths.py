@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from threading import RLock
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -88,6 +88,11 @@ def test_instruction_pointer_variants() -> None:
 # --------------------------------------------------------------------------- #
 
 
+# Unbound mixin calls need a stand-in self; none of these arcs touch it.
+def _mixin_self() -> TraceMixin:
+    return cast(TraceMixin, object())
+
+
 def _state(
     tmp_path: Path, session_id: str = "s", *, content: bytes | None = b"", **over: Any
 ) -> _TraceArtifactState:
@@ -128,14 +133,18 @@ def _valid_status(state: _TraceArtifactState, **over: Any) -> dict[str, Any]:
 
 def test_validate_status_rejects_non_object(tmp_path: Path) -> None:
     with pytest.raises(XdbgRpcError) as info:
-        TraceMixin._validate_trace_status(object(), _state(tmp_path), ["not", "a", "dict"])
+        TraceMixin._validate_trace_status(
+            _mixin_self(), _state(tmp_path), cast(dict[str, Any], ["not", "a", "dict"])
+        )
     assert info.value.code == "rpc_protocol_error"
 
 
 def test_validate_status_requires_boolean_recording(tmp_path: Path) -> None:
     state = _state(tmp_path)
     with pytest.raises(XdbgRpcError) as info:
-        TraceMixin._validate_trace_status(object(), state, _valid_status(state, recording="yes"))
+        TraceMixin._validate_trace_status(
+            _mixin_self(), state, _valid_status(state, recording="yes")
+        )
     assert "boolean recording" in str(info.value)
 
 
@@ -143,12 +152,12 @@ def test_validate_status_enforces_required_recording_state(tmp_path: Path) -> No
     state = _state(tmp_path)
     with pytest.raises(XdbgRpcError) as start:
         TraceMixin._validate_trace_status(
-            object(), state, _valid_status(state, recording=False), require_recording=True
+            _mixin_self(), state, _valid_status(state, recording=False), require_recording=True
         )
     assert start.value.code == "trace_start_failed"
     with pytest.raises(XdbgRpcError) as stop:
         TraceMixin._validate_trace_status(
-            object(), state, _valid_status(state, recording=True), require_recording=False
+            _mixin_self(), state, _valid_status(state, recording=True), require_recording=False
         )
     assert stop.value.code == "trace_stop_failed"
 
@@ -156,7 +165,7 @@ def test_validate_status_enforces_required_recording_state(tmp_path: Path) -> No
 def test_validate_status_rejects_unresolvable_path(tmp_path: Path) -> None:
     state = _state(tmp_path)
     with pytest.raises(XdbgRpcError) as info:
-        TraceMixin._validate_trace_status(object(), state, _valid_status(state, path="\x00"))
+        TraceMixin._validate_trace_status(_mixin_self(), state, _valid_status(state, path="\x00"))
     assert "invalid artifact path" in str(info.value)
 
 
@@ -164,7 +173,7 @@ def test_validate_status_rejects_foreign_path(tmp_path: Path) -> None:
     state = _state(tmp_path)
     other = str((tmp_path / "elsewhere.trace").resolve())
     with pytest.raises(XdbgRpcError) as info:
-        TraceMixin._validate_trace_status(object(), state, _valid_status(state, path=other))
+        TraceMixin._validate_trace_status(_mixin_self(), state, _valid_status(state, path=other))
     assert "does not match the session-owned artifact" in str(info.value)
 
 
@@ -172,7 +181,7 @@ def test_validate_status_rejects_wrong_quota_field(tmp_path: Path) -> None:
     state = _state(tmp_path)
     with pytest.raises(XdbgRpcError) as info:
         TraceMixin._validate_trace_status(
-            object(), state, _valid_status(state, max_events=state.max_events + 1)
+            _mixin_self(), state, _valid_status(state, max_events=state.max_events + 1)
         )
     assert "invalid max_events" in str(info.value)
 
@@ -180,14 +189,16 @@ def test_validate_status_rejects_wrong_quota_field(tmp_path: Path) -> None:
 def test_validate_status_rejects_negative_counter(tmp_path: Path) -> None:
     state = _state(tmp_path)
     with pytest.raises(XdbgRpcError) as info:
-        TraceMixin._validate_trace_status(object(), state, _valid_status(state, events_written=-1))
+        TraceMixin._validate_trace_status(
+            _mixin_self(), state, _valid_status(state, events_written=-1)
+        )
     assert "invalid events_written" in str(info.value)
 
 
 def test_validate_status_fills_omitted_optionals(tmp_path: Path) -> None:
     state = _state(tmp_path)
     payload = {"recording": True, "path": str(state.path)}
-    data = TraceMixin._validate_trace_status(object(), state, payload)
+    data = TraceMixin._validate_trace_status(_mixin_self(), state, payload)
     assert data["max_events"] == state.max_events
     assert data["events_written"] == 0
     assert data["stop_reason"] == "none"
@@ -196,14 +207,16 @@ def test_validate_status_fills_omitted_optionals(tmp_path: Path) -> None:
 def test_validate_status_flags_quota_violation(tmp_path: Path) -> None:
     state = _state(tmp_path, max_events=5)
     with pytest.raises(XdbgRpcError) as info:
-        TraceMixin._validate_trace_status(object(), state, _valid_status(state, events_written=6))
+        TraceMixin._validate_trace_status(
+            _mixin_self(), state, _valid_status(state, events_written=6)
+        )
     assert info.value.code == "trace_quota_violation"
 
 
 def test_validate_status_flags_file_byte_quota(tmp_path: Path) -> None:
     state = _state(tmp_path, content=b"x" * 20, max_file_bytes=8)
     with pytest.raises(XdbgRpcError) as info:
-        TraceMixin._validate_trace_status(object(), state, _valid_status(state, file_bytes=0))
+        TraceMixin._validate_trace_status(_mixin_self(), state, _valid_status(state, file_bytes=0))
     assert info.value.code == "trace_quota_violation"
 
 
@@ -214,7 +227,7 @@ def test_validate_status_flags_file_byte_quota(tmp_path: Path) -> None:
 
 def test_trace_result_payload_marks_session_ownership(tmp_path: Path) -> None:
     state = _state(tmp_path, artifact_id="art-9", artifact_size=12, active=False)
-    payload = TraceMixin._trace_result_payload(object(), state, {"recording": False})
+    payload = TraceMixin._trace_result_payload(_mixin_self(), state, {"recording": False})
     assert payload["session_owned"] is True
     assert payload["artifact_registered"] is True
     assert payload["artifact_pending"] is False
@@ -225,7 +238,7 @@ def test_trace_result_payload_marks_session_ownership(tmp_path: Path) -> None:
 def test_attach_trace_artifact_details_copies_state(tmp_path: Path) -> None:
     state = _state(tmp_path, artifact_id="art-1", artifact_sha256="abc", artifact_size=7)
     error = XdbgRpcError("trace_stop_failed", "stop failed")
-    TraceMixin._attach_trace_artifact_details(object(), error, state)
+    TraceMixin._attach_trace_artifact_details(_mixin_self(), error, state)
     assert error.details["artifact_id"] == "art-1"
     assert error.details["artifact_sha256"] == "abc"
     assert error.details["artifact_size"] == 7
@@ -399,14 +412,14 @@ class _StopWorker:
 def test_stop_after_failure_returns_false_without_capability(tmp_path: Path) -> None:
     svc = _TraceService(tmp_path)
     runtime = SimpleNamespace(lock=RLock(), worker=_StopWorker((), {"recording": False}))
-    assert svc._stop_trace_after_failure(runtime, _state(tmp_path)) is False
+    assert svc._stop_trace_after_failure(cast(Any, runtime), _state(tmp_path)) is False
 
 
 def test_stop_after_failure_returns_false_when_still_recording(tmp_path: Path) -> None:
     svc = _TraceService(tmp_path)
     worker = _StopWorker(("trace.stop",), {"recording": True})
     runtime = SimpleNamespace(lock=RLock(), worker=worker)
-    assert svc._stop_trace_after_failure(runtime, _state(tmp_path)) is False
+    assert svc._stop_trace_after_failure(cast(Any, runtime), _state(tmp_path)) is False
 
 
 def test_stop_after_failure_true_on_clean_stop(tmp_path: Path) -> None:
@@ -414,7 +427,7 @@ def test_stop_after_failure_true_on_clean_stop(tmp_path: Path) -> None:
     state = _state(tmp_path)
     worker = _StopWorker(("trace.stop",), {"recording": False, "stop_reason": "cancelled"})
     runtime = SimpleNamespace(lock=RLock(), worker=worker)
-    assert svc._stop_trace_after_failure(runtime, state) is True
+    assert svc._stop_trace_after_failure(cast(Any, runtime), state) is True
     assert state.active is False
 
 
@@ -422,7 +435,7 @@ def test_stop_after_failure_swallows_worker_exception(tmp_path: Path) -> None:
     svc = _TraceService(tmp_path)
     worker = _StopWorker(("trace.stop",), RuntimeError("dead"))
     runtime = SimpleNamespace(lock=RLock(), worker=worker)
-    assert svc._stop_trace_after_failure(runtime, _state(tmp_path)) is False
+    assert svc._stop_trace_after_failure(cast(Any, runtime), _state(tmp_path)) is False
 
 
 # --------------------------------------------------------------------------- #
@@ -481,7 +494,7 @@ class _ApiArgsService:
 )
 def test_api_arguments_argument_guards(kwargs: dict[str, Any], message: str) -> None:
     svc = _ApiArgsService()
-    result = TraceMixin.trace_api_arguments(svc, "s", **kwargs)
+    result = TraceMixin.trace_api_arguments(cast(TraceMixin, svc), "s", **kwargs)
     assert result.ok is False
     assert result.error is not None
     assert result.error.code == "invalid_request"
@@ -495,7 +508,9 @@ def test_api_arguments_x64_register_capture() -> None:
         _ok({"rip": 0x1000, "rcx": 1, "rdx": 2}),
         _ok({"rip": 0x1000, "rcx": 3, "rdx": 4}),
     ]
-    result = TraceMixin.trace_api_arguments(svc, "s", address=0x1000, max_hits=2, argument_count=2)
+    result = TraceMixin.trace_api_arguments(
+        cast(TraceMixin, svc), "s", address=0x1000, max_hits=2, argument_count=2
+    )
     assert result.ok is True
     assert result.data is not None
     assert result.data["hit_count"] == 2
@@ -512,7 +527,9 @@ def test_api_arguments_x86_stack_capture() -> None:
     svc.stacks = [
         _ok({"entries": [{"value": 0}, {"value": 0xA}, {"value": 0xB}], "pointer_size": 4})
     ]
-    result = TraceMixin.trace_api_arguments(svc, "s", address=0x1000, max_hits=1, argument_count=2)
+    result = TraceMixin.trace_api_arguments(
+        cast(TraceMixin, svc), "s", address=0x1000, max_hits=1, argument_count=2
+    )
     assert result.ok is True
     assert result.data is not None
     assert result.data["convention"] == "x86_stack_arguments"
@@ -524,7 +541,9 @@ def test_api_arguments_resolves_symbol_expression() -> None:
     svc.symbols = _ok({"address": 0x2000})
     svc.resumes = [_ok({})]
     svc.registers = [_ok({"rip": 0x2000, "rcx": 7})]
-    result = TraceMixin.trace_api_arguments(svc, "s", expression="malloc", max_hits=1)
+    result = TraceMixin.trace_api_arguments(
+        cast(TraceMixin, svc), "s", expression="malloc", max_hits=1
+    )
     assert result.ok is True
     assert result.data is not None
     assert result.data["target"]["address"] == 0x2000
@@ -534,7 +553,7 @@ def test_api_arguments_resolves_symbol_expression() -> None:
 def test_api_arguments_passes_through_symbol_failure() -> None:
     svc = _ApiArgsService(Architecture.X64)
     svc.symbols = _err("symbol_not_found")
-    result = TraceMixin.trace_api_arguments(svc, "s", expression="nope")
+    result = TraceMixin.trace_api_arguments(cast(TraceMixin, svc), "s", expression="nope")
     assert result.ok is False
     assert result.error is not None
     assert result.error.code == "symbol_not_found"
@@ -544,7 +563,7 @@ def test_api_arguments_passes_through_symbol_failure() -> None:
 def test_api_arguments_rejects_non_address_resolution() -> None:
     svc = _ApiArgsService(Architecture.X64)
     svc.symbols = _ok({"address": "0x2000"})
-    result = TraceMixin.trace_api_arguments(svc, "s", expression="weird")
+    result = TraceMixin.trace_api_arguments(cast(TraceMixin, svc), "s", expression="weird")
     assert result.ok is False
     assert result.error is not None
     assert result.error.code == "invalid_request"
@@ -554,7 +573,7 @@ def test_api_arguments_rejects_non_address_resolution() -> None:
 def test_api_arguments_returns_breakpoint_failure() -> None:
     svc = _ApiArgsService(Architecture.X64)
     svc.bp_set = _err("breakpoint_failed")
-    result = TraceMixin.trace_api_arguments(svc, "s", address=0x1000)
+    result = TraceMixin.trace_api_arguments(cast(TraceMixin, svc), "s", address=0x1000)
     assert result.ok is False
     assert result.error is not None
     assert result.error.code == "breakpoint_failed"
@@ -565,7 +584,7 @@ def test_api_arguments_stops_on_foreign_break() -> None:
     svc = _ApiArgsService(Architecture.X64)
     svc.resumes = [_ok({})]
     svc.registers = [_ok({"rip": 0x9999})]
-    result = TraceMixin.trace_api_arguments(svc, "s", address=0x1000, max_hits=3)
+    result = TraceMixin.trace_api_arguments(cast(TraceMixin, svc), "s", address=0x1000, max_hits=3)
     assert result.ok is True
     assert result.data is not None
     assert result.data["stopped_elsewhere"] is True
@@ -576,7 +595,7 @@ def test_api_arguments_stops_on_foreign_break() -> None:
 def test_api_arguments_breaks_on_resume_failure() -> None:
     svc = _ApiArgsService(Architecture.X64)
     svc.resumes = [_err("resume_failed")]
-    result = TraceMixin.trace_api_arguments(svc, "s", address=0x1000, max_hits=3)
+    result = TraceMixin.trace_api_arguments(cast(TraceMixin, svc), "s", address=0x1000, max_hits=3)
     assert result.ok is True
     assert result.data is not None
     assert result.data["hit_count"] == 0
