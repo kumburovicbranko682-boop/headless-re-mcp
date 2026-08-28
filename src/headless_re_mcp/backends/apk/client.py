@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -54,6 +55,63 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
         items.append(str(item))
     items.sort()
     return items, has_more
+
+
+# The stock Android debug keystore signs every cert with this common name. An
+# app shipped under it was never re-signed for release -- a real triage flag.
+_ANDROID_DEBUG_CN = "android debug"
+_SIG_FAMILY = {
+    "rsassa_pkcs1v15": "RSA",
+    "rsassa_pss": "RSA",
+    "ecdsa": "ECDSA",
+    "dsa": "DSA",
+}
+
+
+def _cert_details(cert: Any) -> JsonObject:
+    """Key strength, validity window and signature algorithm for one signer.
+
+    Everything here is best-effort: androguard hands back asn1crypto
+    certificate objects whose shape varies by version, so each field is guarded
+    and simply omitted when it cannot be read rather than raised. The high-value
+    signals are a weak public key (RSA under 2048 bits is forgeable), an expired
+    or not-yet-valid window, and the stock Android debug certificate.
+    """
+    out: JsonObject = {}
+    try:
+        public_key = cert.public_key
+        out["key_algorithm"] = str(public_key.algorithm)
+        out["key_size"] = int(public_key.bit_size)
+    except Exception:  # noqa: BLE001 - asn1crypto shapes vary by version
+        pass
+    try:
+        family = _SIG_FAMILY.get(str(cert.signature_algo), str(cert.signature_algo).upper())
+        out["signature_algorithm"] = f"{str(cert.hash_algo).upper()}with{family}"
+    except Exception:  # noqa: BLE001 - as above
+        pass
+    now = datetime.now(UTC)
+    try:
+        not_before = cert.not_valid_before
+        out["not_valid_before"] = not_before.isoformat()
+        if not_before.tzinfo is None:
+            not_before = not_before.replace(tzinfo=UTC)
+        out["not_yet_valid"] = now < not_before
+    except Exception:  # noqa: BLE001 - as above
+        pass
+    try:
+        not_after = cert.not_valid_after
+        out["not_valid_after"] = not_after.isoformat()
+        if not_after.tzinfo is None:
+            not_after = not_after.replace(tzinfo=UTC)
+        out["expired"] = now > not_after
+    except Exception:  # noqa: BLE001 - as above
+        pass
+    try:
+        common_name = cert.subject.native.get("common_name", "")
+        out["is_debug_certificate"] = str(common_name).strip().lower() == _ANDROID_DEBUG_CN
+    except Exception:  # noqa: BLE001 - as above
+        pass
+    return out
 
 
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
@@ -268,16 +326,16 @@ class ApkClient:
                 certs_more = True
                 break
             try:
-                items.append(
-                    {
-                        "subject": str(getattr(cert, "subject", "")),
-                        "issuer": str(getattr(cert, "issuer", "")),
-                        "serial": str(getattr(cert, "serial_number", "")),
-                        "sha256": cert.sha256_fingerprint
-                        if hasattr(cert, "sha256_fingerprint")
-                        else "",
-                    }
-                )
+                item: JsonObject = {
+                    "subject": str(getattr(cert, "subject", "")),
+                    "issuer": str(getattr(cert, "issuer", "")),
+                    "serial": str(getattr(cert, "serial_number", "")),
+                    "sha256": cert.sha256_fingerprint
+                    if hasattr(cert, "sha256_fingerprint")
+                    else "",
+                }
+                item.update(_cert_details(cert))
+                items.append(item)
             except Exception:  # noqa: BLE001 - certificate objects vary by version
                 continue
         return {

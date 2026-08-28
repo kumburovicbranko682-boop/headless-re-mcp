@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（apk.certificates 暴露签名证书的密钥强度、有效期与 debug 证书标记）
+
+- `apk.certificates` 的每个证书项在 subject/issuer/serial/sha256 之外，新增（尽力而为）
+  `key_algorithm`、`key_size`（RSA 低于 2048 位即可伪造）、`signature_algorithm`（Java 风格，
+  如 `SHA256withRSA`）、`not_valid_before` / `not_valid_after` 及派生的 `expired` /
+  `not_yet_valid`，以及 `is_debug_certificate`（用系统自带的 Android debug 密钥
+  `CN=Android Debug` 签名——绝不该进生产）。这些是 Android 签名分诊最先看的加密信号，
+  此前完全没有暴露。取值全部来自 androguard 交回的 asn1crypto 证书对象，逐字段 try/except，
+  读不到就省略而非报错；tz-naive 的有效期按 UTC 处理。已用 apksigner 签名的真实 APK 实测：
+  RSA-2048 正常证书、RSA-1024 弱密钥、`CN=Android Debug` 的 debug 证书均正确识别。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

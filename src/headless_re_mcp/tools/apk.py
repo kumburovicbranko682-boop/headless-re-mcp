@@ -53,11 +53,16 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.certificates")
     def apk_certificates(session_id: str) -> dict[str, Any]:
-        """List signing certificates and v1 signature files.
+        """List signing certificates (with key/validity) and v1 signature files.
 
-        Answers with certificates (subject, issuer, serial, sha256),
-        signature_files, v1_signed, and has_more so a list that filled the
-        cap is not read as every signer. There is no certs or signatures field.
+        Answers with certificates, signature_files, v1_signed, and has_more so
+        a list that filled the cap is not read as every signer. Each
+        certificate carries subject, issuer, serial, sha256, plus (best-effort)
+        key_algorithm and key_size (RSA under 2048 bits is forgeable),
+        signature_algorithm (Java-style, e.g. SHA256withRSA), not_valid_before
+        and not_valid_after with derived expired / not_yet_valid, and
+        is_debug_certificate (signed with the stock Android debug key, never
+        meant for release). There is no certs or signatures field.
         """
         return _dump(analysis.apk_certificates(session_id))
 
