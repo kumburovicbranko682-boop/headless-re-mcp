@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from headless_re_mcp.core.models import Architecture, TargetKind
-from headless_re_mcp.core.session import SessionRegistry, describe_pe_clr
+from headless_re_mcp.core.session import SessionRegistry, _pe_authenticode, describe_pe_clr
 
 _DOTNET_FIXTURE = (
     Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
@@ -108,6 +108,90 @@ def test_corflags_bits_are_decoded_from_the_cor20_header(tmp_path: Path) -> None
     assert cleared["strong_name_signed"] is False
 
 
+def _sign_native_pe(
+    *,
+    cert_type: int = 0x0002,
+    revision: int = 0x0200,
+    within: bool = True,
+    payload: bytes = b"cert",
+) -> bytes:
+    """A native PE whose security directory points at an appended WIN_CERTIFICATE.
+
+    The directory's first field is a file offset (not an RVA), so the blob is
+    glued to the tail and the entry made to point at it -- exactly how a signed
+    PE carries its Authenticode PKCS#7. ``within=False`` makes the declared size
+    run past the file, the truncated-signature shape.
+    """
+    base = bytearray(_native_pe())
+    blob = struct.pack("<IHH", 8 + len(payload), revision, cert_type) + payload
+    cert_offset = len(base)
+    declared = len(blob) + (4096 if not within else 0)
+    # Optional header starts at 0x40 + 24; PE32 data directories begin at +96,
+    # so the security entry (index 4) is at optional[96 + 4*8 : +8].
+    security_entry = 0x40 + 24 + 96 + _PE_SECURITY_DIR * 8
+    struct.pack_into("<II", base, security_entry, cert_offset, declared)
+    return bytes(base) + blob
+
+
+_PE_SECURITY_DIR = 4
+
+
+def test_authenticode_absent_reads_unsigned(tmp_path: Path) -> None:
+    # A native PE with an all-zero security directory: a real verdict, not
+    # absent metadata -- the common unsigned case.
+    path = tmp_path / "unsigned.exe"
+    path.write_bytes(_native_pe())
+    assert _pe_authenticode(path) == {"signed": False}
+
+
+def test_authenticode_present_reports_the_certificate_range(tmp_path: Path) -> None:
+    path = tmp_path / "signed.exe"
+    raw = _sign_native_pe(payload=b"PKCS7-BODY")
+    path.write_bytes(raw)
+    info = _pe_authenticode(path)
+    assert info is not None
+    assert info["signed"] is True
+    # The blob is at the file tail: offset is where the native PE ended, size
+    # its whole WIN_CERTIFICATE length, and it fits the file.
+    assert info["offset"] == len(_native_pe())
+    assert info["size"] == len(raw) - len(_native_pe())
+    assert info["within_file"] is True
+    assert info["type"] == "pkcs_signed_data"
+    assert info["authenticode"] is True
+    assert info["revision"] == "2.0"
+
+
+def test_a_non_authenticode_certificate_type_is_named_not_claimed(tmp_path: Path) -> None:
+    # wCertificateType 0x0001 (x509) is a certificate, but not the Authenticode
+    # PKCS#7 shape -- signed stays True, authenticode goes False.
+    path = tmp_path / "x509.exe"
+    path.write_bytes(_sign_native_pe(cert_type=0x0001))
+    info = _pe_authenticode(path)
+    assert info is not None
+    assert info["signed"] is True
+    assert info["type"] == "x509"
+    assert info["authenticode"] is False
+
+
+def test_a_signature_running_past_eof_is_flagged(tmp_path: Path) -> None:
+    # A directory whose declared size overruns the file: still reported as
+    # signed (the claim is there) but within_file False, and the header fields
+    # are not read from a range that is not fully present.
+    path = tmp_path / "truncated.exe"
+    path.write_bytes(_sign_native_pe(within=False))
+    info = _pe_authenticode(path)
+    assert info is not None
+    assert info["signed"] is True
+    assert info["within_file"] is False
+    assert "type" not in info
+
+
+def test_authenticode_is_none_for_a_non_pe(tmp_path: Path) -> None:
+    path = tmp_path / "notpe.bin"
+    path.write_bytes(b"not a PE")
+    assert _pe_authenticode(path) is None
+
+
 def test_native_pe_has_no_dotnet_block(tmp_path: Path) -> None:
     path = tmp_path / "native.exe"
     path.write_bytes(_native_pe())
@@ -131,10 +215,21 @@ def test_session_over_the_dotnet_fixture_carries_the_facts() -> None:
     assert session.metadata["dotnet"]["metadata_version"] == "v4.0.30319"
 
 
-def test_session_over_a_native_pe_has_empty_metadata(tmp_path: Path) -> None:
+def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path: Path) -> None:
     path = tmp_path / "native.exe"
     path.write_bytes(_native_pe())
     session = SessionRegistry().create(str(path))
     assert session.target is TargetKind.PE
     assert session.architecture is Architecture.X86
-    assert session.metadata == {}
+    # A native PE has no .NET block, but it does now carry the whole-PE
+    # Authenticode verdict -- unsigned here, a real answer rather than empty.
+    assert session.metadata == {"pe": {"authenticode": {"signed": False}}}
+
+
+def test_session_over_a_signed_pe_carries_the_authenticode_range(tmp_path: Path) -> None:
+    path = tmp_path / "signed.exe"
+    path.write_bytes(_sign_native_pe(payload=b"PKCS7-BODY"))
+    session = SessionRegistry().create(str(path))
+    assert session.target is TargetKind.PE
+    assert session.metadata["pe"]["authenticode"]["signed"] is True
+    assert session.metadata["pe"]["authenticode"]["authenticode"] is True

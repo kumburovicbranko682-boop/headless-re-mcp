@@ -134,6 +134,12 @@ class SessionRegistry:
             if kind is TargetKind.PE:
                 architecture = detect_pe_architecture(path)
                 metadata = describe_pe_clr(path)
+                # Authenticode is a whole-PE fact, native or managed, so it
+                # rides alongside the .NET facts under its own key rather than
+                # inside them -- a native signed PE gets a verdict too.
+                authenticode = _pe_authenticode(path)
+                if authenticode is not None:
+                    metadata["pe"] = {"authenticode": authenticode}
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             elif kind is TargetKind.NATIVE:
@@ -2872,6 +2878,18 @@ def detect_pe_architecture(path: Path) -> Architecture:
 # in dotnet.inspect; this only reads the headers via seeks (no hash, no full
 # read), so it never regresses session creation over a large native PE.
 _PE_COM_DESCRIPTOR_DIR = 14
+# The security data directory (IMAGE_DIRECTORY_ENTRY_SECURITY). Unlike every
+# other directory its first field is a *file offset*, not an RVA, to the
+# WIN_CERTIFICATE table that carries the Authenticode PKCS#7 blob at the file
+# tail. wCertificateType 0x0002 is WIN_CERT_TYPE_PKCS_SIGNED_DATA (Authenticode).
+_PE_SECURITY_DIR = 4
+_WIN_CERT_TYPE_PKCS_SIGNED_DATA = 0x0002
+_WIN_CERT_TYPES = {
+    0x0001: "x509",
+    0x0002: "pkcs_signed_data",
+    0x0003: "reserved_1",
+    0x0004: "ts_stack_signed",
+}
 _PE_MAX_SECTIONS = 96
 _CLR_METADATA_MAGIC = b"BSJB"
 _CLR_MAX_VERSION_LEN = 256
@@ -2961,6 +2979,79 @@ def describe_pe_clr(path: Path) -> dict[str, Any]:
             ),
         }
     }
+
+
+def _pe_authenticode(path: Path) -> dict[str, Any] | None:
+    """Whether a PE carries an embedded Authenticode signature, and its range.
+
+    The Windows analogue of the Mach-O code-signature and APK-signer facts:
+    the first triage question for a Windows binary is *is it signed*, answered
+    tool-free from the security data directory. That directory (index 4) is
+    unique -- its first field is a file offset, not an RVA, to the
+    WIN_CERTIFICATE table appended at the file tail -- so no section mapping is
+    needed. Reports whether a signature is present, where it sits
+    (offset/size), the certificate type (Authenticode is pkcs_signed_data) and
+    revision, and whether the declared blob actually fits the file, which a
+    truncated or lying directory would fail.
+
+    Returns None only for a non-PE or an unreadable header, so a valid PE
+    always gets a verdict -- ``{"signed": False}`` for the common unsigned
+    case, distinct from metadata a native reader never produced.
+    """
+    try:
+        with path.open("rb") as stream:
+            dos = stream.read(0x40)
+            if len(dos) < 0x40 or dos[:2] != b"MZ":
+                return None
+            stream.seek(int.from_bytes(dos[0x3C:0x40], "little"))
+            coff = stream.read(24)
+            if len(coff) < 24 or coff[:4] != b"PE\x00\x00":
+                return None
+            optional = stream.read(int.from_bytes(coff[20:22], "little"))
+            magic = int.from_bytes(optional[0:2], "little") if len(optional) >= 2 else 0
+            if magic == 0x10B:  # PE32
+                dir_count_off = 92
+            elif magic == 0x20B:  # PE32+
+                dir_count_off = 108
+            else:
+                return None
+            if dir_count_off + 4 > len(optional):
+                return None
+            dir_count = int.from_bytes(optional[dir_count_off : dir_count_off + 4], "little")
+            if dir_count <= _PE_SECURITY_DIR:
+                return {"signed": False}
+            entry = dir_count_off + 4 + _PE_SECURITY_DIR * 8
+            if entry + 8 > len(optional):
+                return {"signed": False}
+            cert_offset = int.from_bytes(optional[entry : entry + 4], "little")
+            cert_size = int.from_bytes(optional[entry + 4 : entry + 8], "little")
+            if cert_offset == 0 or cert_size == 0:
+                return {"signed": False}
+            file_size = path.stat().st_size
+            within_file = cert_offset + cert_size <= file_size
+            revision: int | None = None
+            cert_type: int | None = None
+            if within_file:
+                # WIN_CERTIFICATE: dwLength (u32), wRevision (u16), wCertificateType (u16).
+                stream.seek(cert_offset)
+                header = stream.read(8)
+                if len(header) >= 8:
+                    revision = int.from_bytes(header[4:6], "little")
+                    cert_type = int.from_bytes(header[6:8], "little")
+    except OSError:
+        return None
+    result: dict[str, Any] = {
+        "signed": True,
+        "offset": cert_offset,
+        "size": cert_size,
+        "within_file": within_file,
+    }
+    if cert_type is not None:
+        result["type"] = _WIN_CERT_TYPES.get(cert_type, f"type_{cert_type}")
+        result["authenticode"] = cert_type == _WIN_CERT_TYPE_PKCS_SIGNED_DATA
+    if revision is not None:
+        result["revision"] = f"{revision >> 8}.{revision & 0xFF}"
+    return result
 
 
 def _pe_sections(table: bytes) -> list[tuple[int, int, int, int]]:
