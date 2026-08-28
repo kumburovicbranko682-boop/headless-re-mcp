@@ -71,6 +71,22 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
+    @tools.tool(name="device.partitions")
+    def device_partitions(serial: str) -> dict[str, Any]:
+        """List block devices and partitions (/proc/partitions).
+
+        The device's full block-storage map -- every block device the kernel
+        sees, including partitions that are not mounted (the other A/B slot,
+        boot, vendor, recovery, raw disks) -- which device.mounts (only mounted
+        filesystems) cannot show. Answers with partitions (each carrying name,
+        major, minor, blocks, and size_bytes = blocks x 1024), count, and
+        has_more. /proc/partitions is world-readable so no root is needed; the
+        header and any non-numeric line are skipped so error text is never a
+        partition, the list is capped with has_more, and a read yielding no
+        partitions is an error rather than an empty list.
+        """
+        return _dump(analysis.device_partitions(serial))
+
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,

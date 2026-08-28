@@ -40,6 +40,7 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_PARTITIONS = 512
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -524,6 +525,67 @@ class AdbBackend:
             "count": len(pkgs),
             "has_more": has_more,
             "third_party_only": third_party_only,
+        }
+
+    def partitions(self, serial: str) -> JsonObject:
+        """List block devices and partitions from /proc/partitions.
+
+        The device's full block-storage map: every block device the kernel
+        sees, including partitions that are not mounted -- the other A/B slot,
+        boot, vendor, recovery, and the raw disks themselves -- which is what
+        device.mounts (only mounted filesystems) cannot show. An RE session uses
+        this to understand the storage layout and slot scheme before pulling or
+        reasoning about images. /proc/partitions is world-readable, so no root
+        is needed.
+
+        Each entry carries name, major, minor, blocks (the kernel's 1024-byte
+        block count) and size_bytes (blocks x 1024) so a size is unambiguous.
+        The header and any non-numeric line are skipped by requiring integer
+        major/minor/blocks, so error text is never mistaken for a partition. The
+        list is capped with has_more, and a read that yields no partitions --
+        which a live device never has -- is an error rather than an empty list.
+        """
+        dev = self._device(serial)
+        raw = _device_shell(dev, "cat /proc/partitions")
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError(
+                "backend_error", "reading /proc/partitions failed", output=text[:800]
+            )
+        partitions: list[JsonObject] = []
+        has_more = False
+        for line in text.splitlines():
+            fields = line.split()
+            if len(fields) < 4:
+                continue
+            try:
+                major = int(fields[0])
+                minor = int(fields[1])
+                blocks = int(fields[2])
+            except ValueError:
+                continue
+            if len(partitions) >= _MAX_PARTITIONS:
+                has_more = True
+                break
+            partitions.append(
+                {
+                    "name": fields[3],
+                    "major": major,
+                    "minor": minor,
+                    "blocks": blocks,
+                    "size_bytes": blocks * 1024,
+                }
+            )
+        if not partitions:
+            raise AdbError(
+                "backend_error",
+                "reading /proc/partitions returned no partitions",
+                output=text[:800],
+            )
+        return {
+            "partitions": partitions,
+            "count": len(partitions),
+            "has_more": has_more,
         }
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
