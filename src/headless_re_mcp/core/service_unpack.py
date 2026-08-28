@@ -916,6 +916,17 @@ class UnpackMixin:
         try:
             session = self.registry.get(session_id)
             session.require_pe()
+            # path is schema-typed as a string, but the agent and OpenAI-bridge
+            # transports bind it straight from model output with no pydantic
+            # coercion. Path(path) raises a raw TypeError on a non-str value
+            # (int, list, None) that the except below filed as a logged
+            # internal_error incident -- unlike the invalid_params the
+            # ownership check right after answers for a bad *string* path.
+            if not isinstance(path, str):
+                return Result[JsonObject](
+                    ok=False,
+                    error=RpcError(code="invalid_params", message="path must be a string"),
+                )
             target = Path(path).expanduser().resolve(strict=True)
             from headless_re_mcp.core.service import _session_owns_artifact_path
 

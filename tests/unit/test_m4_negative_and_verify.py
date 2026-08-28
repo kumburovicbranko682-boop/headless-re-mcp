@@ -171,3 +171,29 @@ def test_unpack_verify_refuses_a_host_pe(tmp_path: Path) -> None:
     assert verified.ok is False
     assert verified.error is not None
     assert verified.error.code == "invalid_params"
+
+
+def test_unpack_verify_refuses_a_non_string_path(tmp_path: Path) -> None:
+    """A non-string path is the caller's mistake, not an internal_error incident.
+
+    path is schema-typed as a string, but the agent transport binds it straight
+    from model output, and Path(path) raised a raw TypeError on an int, list or
+    None that the method's BaseException envelope filed as a logged
+    internal_error -- unlike the invalid_params the artifact-ownership check
+    already answers for a bad *string* path.
+    """
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = _service(tmp_path, FakeDynamicWorker())
+    created = service.create_session(str(binary))
+    assert created.ok and created.data is not None
+    session_id = created.data["session"]["id"]
+
+    for bad_path in (5, 1.5, None, ["dump.bin"], {"path": "dump.bin"}, b"dump.bin"):
+        verified = service.unpack_verify(
+            session_id, bad_path, use_die=False, open_ida=False  # type: ignore[arg-type]
+        )
+        assert verified.ok is False
+        assert verified.error is not None
+        assert verified.error.code == "invalid_params"
+        assert "path must be a string" in verified.error.message
