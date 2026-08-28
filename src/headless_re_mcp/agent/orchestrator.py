@@ -20,6 +20,7 @@ from headless_re_mcp.agent.models import (
     RUN_DEADLINE_EXCEEDED,
     RUN_ROUNDS_EXHAUSTED,
     TERMINAL_RUN_STATUSES,
+    AgentMessage,
     RunStatus,
 )
 from headless_re_mcp.agent.providers import (
@@ -371,6 +372,80 @@ class AgentOrchestrator:
         self.store.transition(run_id, RunStatus.CANCELLED, error="cancelled")
         self.store.append_event(run_id, "run.cancelled", {"status": RunStatus.CANCELLED.value})
 
+    def _replayable_conversation(self, stored_messages: list[AgentMessage]) -> list[JsonObject]:
+        """Rebuild a provider-valid message list from stored history.
+
+        Tool results are persisted, but the assistant turn that requested them
+        is not: only its visible text is stored, and a turn with no text is not
+        stored at all. Replaying the rows verbatim therefore puts a role="tool"
+        message after an assistant message that has no ``tool_calls`` (or after a
+        user message), which an OpenAI-compatible API rejects with a 400 --
+        killing the second and every later run on any thread that ever called a
+        tool, including a multi-run mission that fails as soon as it reruns.
+
+        Reattach each result to the call it answers by rebuilding the missing
+        ``tool_calls`` from the tool_calls table, folding a run of consecutive
+        results onto the assistant turn just before them (or a synthesized one
+        when that turn produced no text). Adjacent results from separate rounds
+        collapse into one parallel-call turn, which the exact round boundaries
+        the rows do not record cannot improve on and the provider accepts.
+        """
+        conversation: list[JsonObject] = []
+        index = 0
+        total = len(stored_messages)
+        while index < total:
+            message = stored_messages[index]
+            if message.role != "tool":
+                conversation.append({"role": message.role, "content": message.content})
+                index += 1
+                continue
+            group: list[AgentMessage] = []
+            while index < total and stored_messages[index].role == "tool":
+                group.append(stored_messages[index])
+                index += 1
+            tool_calls = [self._replay_tool_call(item) for item in group]
+            previous = conversation[-1] if conversation else None
+            if previous is not None and previous.get("role") == "assistant" and "tool_calls" not in previous:
+                previous["tool_calls"] = tool_calls
+                if not previous.get("content"):
+                    previous["content"] = None
+            else:
+                conversation.append({"role": "assistant", "content": None, "tool_calls": tool_calls})
+            for item in group:
+                conversation.append(
+                    {"role": "tool", "tool_call_id": item.tool_call_id, "content": item.content}
+                )
+        return conversation
+
+    def _replay_tool_call(self, message: AgentMessage) -> JsonObject:
+        """The assistant ``tool_calls`` entry that a stored result answers.
+
+        The name and arguments come from the tool_calls table so the replayed
+        turn matches what the model actually asked for. A call refused before it
+        was proposed (arguments over the size cap) still stored its result but
+        never wrote that row, so fall back to a placeholder that keeps the turn
+        well-formed rather than dropping the result the model needs to see.
+        """
+        name = "tool"
+        arguments = "{}"
+        if message.run_id and message.tool_call_id:
+            try:
+                record = self.store.get_tool_call(message.run_id, message.tool_call_id)
+            except (KeyError, ValueError):
+                record = None
+            if record is not None:
+                name = str(record.get("name") or "tool")
+                arguments = json.dumps(
+                    record.get("arguments") if record.get("arguments") is not None else {},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+        return {
+            "id": message.tool_call_id,
+            "type": "function",
+            "function": {"name": name, "arguments": arguments},
+        }
+
     async def _run_loop(self, run_id: str) -> None:
         run = self.store.get_run(run_id)
         if run is None:
@@ -381,10 +456,7 @@ class AgentOrchestrator:
         if thread is None:
             raise KeyError(run.thread_id)
         stored_messages = self.store.list_messages(run.thread_id)
-        conversation: list[JsonObject] = [
-            {"role": message.role, "content": message.content, **({"tool_call_id": message.tool_call_id} if message.tool_call_id else {})}
-            for message in stored_messages
-        ]
+        conversation = self._replayable_conversation(stored_messages)
         conversation.insert(0, {"role": "system", "content": thread_system_prompt(thread.session_id, self.persona_provider() if self.persona_provider else None)})
         self.store.transition(run_id, RunStatus.STREAMING)
         self.store.append_event(run_id, "run.started", {"status": RunStatus.STREAMING.value})

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from collections.abc import AsyncIterator, Sequence
@@ -13,7 +14,7 @@ import pytest
 from headless_re_mcp.agent.autonomy import AutonomyPolicy
 from headless_re_mcp.agent.config import ProviderConfigStore, ProviderProfile
 from headless_re_mcp.agent.context import compact_messages
-from headless_re_mcp.agent.models import RunStatus
+from headless_re_mcp.agent.models import AgentMessage, RunStatus
 from headless_re_mcp.agent.orchestrator import AgentOrchestrator, thread_system_prompt
 from headless_re_mcp.agent.providers.base import ProviderEvent, ProviderToolCall
 from headless_re_mcp.agent.redaction import redact
@@ -633,6 +634,133 @@ def test_context_compaction_and_nested_redaction() -> None:
             {"nested": {"providerApiKeys": "***REDACTED***"}},
         ]
     }
+
+
+class _RecordingProvider(FakeProvider):
+    """A FakeProvider that also remembers the messages each round was sent."""
+
+    def __init__(self, calls: list[tuple[ProviderToolCall, ...]]) -> None:
+        super().__init__(calls)
+        self.seen: list[list[JsonObject]] = []
+
+    def stream_chat(
+        self,
+        *,
+        messages: Sequence[JsonObject],
+        tools: Sequence[JsonObject],
+        model: str,
+        enable_thinking: bool = False,
+        reasoning_effort: str | None = None,
+    ) -> AsyncIterator[ProviderEvent]:
+        self.seen.append([dict(message) for message in messages])
+        return super().stream_chat(
+            messages=messages,
+            tools=tools,
+            model=model,
+            enable_thinking=enable_thinking,
+            reasoning_effort=reasoning_effort,
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_second_run_replays_prior_tool_calls_without_orphaning_results(
+    tmp_path: Path,
+) -> None:
+    """A tool result from one run must reach the next run paired with its call.
+
+    Only the assistant's visible text is persisted, never its tool_calls, so a
+    naive replay of the stored rows put a role="tool" message after an assistant
+    that has no tool_calls. An OpenAI-compatible API 400s on that, so the second
+    run -- and every rerun of a multi-run mission -- died on any thread that had
+    ever called a tool. The rebuilt history must pair each result with its call.
+    """
+    executed: list[str] = []
+
+    def note(session_id: str = "") -> JsonObject:
+        executed.append(session_id)
+        return {"ok": True, "data": {"value": 1}}
+
+    store = AgentStore(tmp_path / "replay.db")
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "use the tool")
+    first = _RecordingProvider(
+        [(ProviderToolCall("call-1", "test.tool", {"session_id": "s"}),), ()]
+    )
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(note)]),
+        _configs(tmp_path),
+        provider_factory=lambda _: first,
+    )
+    run1 = await runner.start_run(thread.id)
+    assert await _wait_status(
+        store, run1["id"], {RunStatus.COMPLETED, RunStatus.FAILED}
+    ) is RunStatus.COMPLETED
+    assert executed == ["s"]
+
+    store.add_message(thread.id, "user", "now summarize")
+    second = _RecordingProvider([()])
+    runner2 = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(note)]),
+        _configs(tmp_path),
+        provider_factory=lambda _: second,
+    )
+    run2 = await runner2.start_run(thread.id)
+    assert await _wait_status(
+        store, run2["id"], {RunStatus.COMPLETED, RunStatus.FAILED}
+    ) is RunStatus.COMPLETED
+
+    replayed = second.seen[0]
+    for position, message in enumerate(replayed):
+        if message.get("role") == "tool":
+            previous = replayed[position - 1]
+            assert previous.get("role") == "assistant", "a result must follow an assistant turn"
+            offered = {call["id"] for call in previous.get("tool_calls") or []}
+            assert message["tool_call_id"] in offered, "the turn must offer the id it answers"
+    rebuilt = next(m for m in replayed if m.get("role") == "assistant" and m.get("tool_calls"))
+    call = rebuilt["tool_calls"][0]
+    assert call["function"]["name"] == "test.tool", "the real name is rebuilt from the table"
+    assert json.loads(call["function"]["arguments"]) == {"session_id": "s"}
+
+
+def test_replay_synthesizes_a_call_turn_and_tolerates_a_missing_row(tmp_path: Path) -> None:
+    """_replayable_conversation pairs results even with no stored call rows.
+
+    Consecutive results fold onto the assistant turn before them; a result that
+    opens the history gets a synthesized turn instead of being left an orphan;
+    and a result whose call row is absent (arguments refused before the row was
+    written) still yields a well-formed placeholder call rather than a 400.
+    """
+    store = AgentStore(tmp_path / "replay-unit.db")
+    thread = store.create_thread()
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path),
+        provider_factory=lambda _: FakeProvider([]),
+    )
+
+    paired = runner._replayable_conversation(
+        [
+            AgentMessage("m1", thread.id, "user", "hi", None, None, "t"),
+            AgentMessage("m2", thread.id, "assistant", "let me look", "r1", None, "t"),
+            AgentMessage("m3", thread.id, "tool", '{"ok": true}', "r1", "call-a", "t"),
+            AgentMessage("m4", thread.id, "tool", '{"ok": true}', "r1", "call-b", "t"),
+        ]
+    )
+    assert [m["role"] for m in paired] == ["user", "assistant", "tool", "tool"]
+    offered = {call["id"] for call in paired[1]["tool_calls"]}
+    assert offered == {"call-a", "call-b"}, "the text turn absorbs both adjacent results"
+    assert all(call["function"]["name"] == "tool" for call in paired[1]["tool_calls"])
+    assert all(call["function"]["arguments"] == "{}" for call in paired[1]["tool_calls"])
+
+    synthesized = runner._replayable_conversation(
+        [AgentMessage("solo", thread.id, "tool", "{}", "r1", "solo", "t")]
+    )
+    assert synthesized[0]["role"] == "assistant" and synthesized[0]["content"] is None
+    assert synthesized[0]["tool_calls"][0]["id"] == "solo"
+    assert synthesized[1]["role"] == "tool"
 
 
 def test_compaction_never_orphans_a_tool_result_from_its_tool_call() -> None:
