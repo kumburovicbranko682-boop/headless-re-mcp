@@ -274,17 +274,25 @@ def _apk_package_name(path: Path) -> str | None:
             return match.group(1)
     except Exception:  # noqa: BLE001
         pass
-    decoded = data.decode("utf-16-le", errors="ignore")
-    window = decoded
-    marker = decoded.find("package")
-    if marker >= 0:
-        window = decoded[marker : marker + 400]
-    for blob in (window, decoded):
-        for candidate in _PACKAGE_IN_TEXT.findall(blob):
-            if candidate.startswith("android.") or candidate.startswith("com.android."):
-                continue
-            if _PACKAGE_RE.match(candidate):
-                return str(candidate)
+    # Binary AXML stores its strings in a pool that is UTF-16LE in classic builds
+    # and UTF-8 in aapt2's default for many modern ones. Decoding only UTF-16LE
+    # left the package string unreadable in a UTF-8-pool APK, so device.install
+    # hedged to "package name not readable" on an install that actually
+    # succeeded. Try both encodings; the ASCII-only token regexes cannot match
+    # the byte-paired noise a UTF-16LE read makes of a UTF-8 pool (or the reverse),
+    # so the wrong decode contributes no false package rather than a garbage one.
+    for encoding in ("utf-16-le", "utf-8"):
+        decoded = data.decode(encoding, errors="ignore")
+        window = decoded
+        marker = decoded.find("package")
+        if marker >= 0:
+            window = decoded[marker : marker + 400]
+        for blob in (window, decoded):
+            for candidate in _PACKAGE_IN_TEXT.findall(blob):
+                if candidate.startswith("android.") or candidate.startswith("com.android."):
+                    continue
+                if _PACKAGE_RE.match(candidate):
+                    return str(candidate)
     return None
 
 

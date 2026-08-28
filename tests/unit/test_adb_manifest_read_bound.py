@@ -6,6 +6,12 @@ member first, so a bomb-compressed AndroidManifest.xml -- a few KiB on disk that
 inflates to gigabytes -- would exhaust memory before the slice ran. The read is
 now streamed and capped; these tests hold it to that bound while proving the
 package id is still parsed.
+
+The manifest inside a real APK is not text but binary AXML, whose string pool is
+UTF-16LE in classic builds and UTF-8 in aapt2's default for many modern ones.
+The parser has to read the package id out of either pool -- reading only UTF-16LE
+made every UTF-8-pool APK report ``installed: null`` ("package name not
+readable") on a successful install -- so both encodings are pinned here too.
 """
 
 from __future__ import annotations
@@ -67,3 +73,35 @@ def test_a_missing_manifest_returns_none(tmp_path: Path) -> None:
     with zipfile.ZipFile(apk, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("classes.dex", b"not a manifest")
     assert _apk_package_name(apk) is None
+
+
+# The first four bytes stand in for the binary AXML chunk header (RES_XML_TYPE,
+# headerSize) so the blob is not the plain-text ``package="..."`` form the first
+# decode path handles -- forcing the string-pool scan under test.
+_AXML_HEADER = b"\x03\x00\x08\x00"
+
+
+def test_reads_the_package_from_a_binary_utf16_pool_manifest(tmp_path: Path) -> None:
+    """Classic AXML: the pool is UTF-16LE, and the id is read from that decode."""
+    pool = "package\x00com.example.legacy\x00".encode("utf-16-le")
+    apk = tmp_path / "utf16.apk"
+    _write_apk(apk, _AXML_HEADER + pool)
+    assert _apk_package_name(apk) == "com.example.legacy"
+
+
+def test_reads_the_package_from_a_binary_utf8_pool_manifest(tmp_path: Path) -> None:
+    """Modern AXML: a UTF-8 pool the UTF-16LE-only reader used to miss entirely,
+    leaving install verification to hedge on a successful install."""
+    pool = b"package\x00com.example.utf8only\x00"
+    apk = tmp_path / "utf8.apk"
+    _write_apk(apk, _AXML_HEADER + pool)
+    assert _apk_package_name(apk) == "com.example.utf8only"
+
+
+def test_binary_pool_scan_skips_framework_packages(tmp_path: Path) -> None:
+    """A pool lists framework ids (permissions, features) before the app's own;
+    android.* / com.android.* must be skipped so the app package wins."""
+    pool = b"package\x00android.permission.INTERNET\x00com.example.realapp\x00"
+    apk = tmp_path / "framework.apk"
+    _write_apk(apk, _AXML_HEADER + pool)
+    assert _apk_package_name(apk) == "com.example.realapp"

@@ -59,6 +59,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   即“无事可查”地失败。以把 `service_ext` 某处退回重包裹形态验证非空:守卫精确报出 `('service_ext','FridaError',517)`,
   还原后转绿——这条守卫本可在上一轮就自动逮住那个 `service_ext` 缺口。
 
+### `device.install` 校验现在能读出 UTF-8 字符串池的 APK 包名（此前只解 UTF-16LE，aapt2 默认产出的现代 APK 一律读不出包名，成功安装被降级成 `installed: null`）
+
+- `device.install` 装完后从会话 APK 里读回包名,再用 `pm path` 校验是否真的落到设备上。`_apk_package_name` 走的是“不拉
+  androguard 进来”的轻量路径:先按纯文本试 `package="..."`(真机里 AndroidManifest.xml 是二进制 AXML,没有这个字面量,必然
+  落空),再把整段数据当二进制 AXML 的字符串池扫描。问题在于扫描只按 `utf-16-le` 解一次——而 AXML 字符串池只有 aapt 经典
+  构建才是 UTF-16LE,aapt2 的默认(以及很多现代构建)是 **UTF-8 池**。UTF-8 池按 UTF-16LE 解出来是逐字节错位的乱码,包名
+  token 一个都匹配不到,于是 `_apk_package_name` 返回 `None`,`install` 只能吐 `installed: null` + “package name not
+  readable from the APK”——对一次其实成功的安装,无人值守的 agent 拿到的是“装没装成不知道”。
+- 二进制路径改为对 `utf-16-le` 与 `utf-8` 两种编码各扫一遍(经典池命中前者、现代池命中后者):包名/token 两个正则都只认
+  ASCII 点分标识符,而错误编码把另一种池解出的只是成对错位的非 ASCII 噪声,匹配不出任何点分标识符,所以“解错的那一遍”只会
+  一无所获、绝不会伪造出一个假包名。`android.*` / `com.android.*` 框架 id 仍在两种编码下一致跳过,让应用自身包名胜出。
+- 二进制 AXML 路径此前无任何单元测试(现存用例全走纯文本 `package="..."`)。`test_adb_manifest_read_bound.py` 新增三例,
+  用带 AXML chunk 头前缀的合成串迫使走字符串池扫描:UTF-16LE 池读出 `com.example.legacy`(钉经典行为)、UTF-8 池读出
+  `com.example.utf8only`(钉本次修复——旧的“只解 UTF-16LE”对该串返回 `None`,已离线验证,故新用例非空)、以及池内先列
+  `android.permission.INTERNET` 再列应用包时跳过框架 id 取到 `com.example.realapp`。
+
 ### `apk.export_sources` 的 `java_file_count` 在走查触顶时如实标注为下界（对齐兄弟工具 `js.unpack` 的双信号，不再把两种截断混成一个 `has_more`）
 
 - jadx 的 `_capped_java_listing` 沿两个轴设限:返回名单的页大小(`_MAX_LISTED_FILES`)与走查的文件总数上限
