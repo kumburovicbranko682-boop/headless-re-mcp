@@ -147,6 +147,8 @@ def test_last_json_line_takes_the_last_object_and_skips_noise() -> None:
     assert _last_json_line(text) == {"ok": True, "stage": "final"}
     assert _last_json_line("") == {"error": "worker returned no JSON object"}
     assert _last_json_line("not json at all") == {"error": "worker returned no JSON object"}
+    # A trailing non-object JSON line (array) is skipped so the last object wins.
+    assert _last_json_line('{"ok": true}\n[1, 2, 3]') == {"ok": True}
 
 
 def test_gate_result_to_dict_lists_windows() -> None:

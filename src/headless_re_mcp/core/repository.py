@@ -526,7 +526,9 @@ class InMemoryAnalysisRepository:
                 if path.is_file():
                     path.unlink()
             parent = path.parent
-            if parent != self.artifact_root:
+            # session_timeline_path always nests under <root>/sessions/<sid>, so
+            # parent is that per-session directory and never the artifact root.
+            if parent != self.artifact_root:  # pragma: no branch - parent is sessions/<sid>
                 with suppress(OSError):
                     parent.rmdir()
             events = self.artifact_root / "debug-events" / sid
