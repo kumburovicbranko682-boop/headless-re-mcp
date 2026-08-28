@@ -1254,6 +1254,29 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   使判定落在认证而非 schema 上;同时钉死三个刻意的未认证例外(`/healthz` 活性、
   `/readyz`/`/metrics` 监督探针,设计上免 token 以免把控制台 token 交给 supervisor),
   并断言三者的响应体都不含 token。
+- **Agent 工作台浏览器冒烟 gate 修复其"永远到不了审批 UI"的空转**：
+  `test_agent_browser_smoke.py` 是唯一端到端驱动监控台工作台的用例（Playwright 真起
+  uvicorn + SPA），但它对着一份早已漂移的界面写死了断言，且只在手动 Windows job 里跑、
+  Linux 单元 CI 从不收集，于是长期红而无人看见。三类问题叠加：① 浏览器启动写死
+  `executable_path=r"C:\Program Files\Google\Chrome\Application\chrome.exe"`，在任何非
+  Windows 机、甚至 Chrome 装在别处的 Windows 上都是硬失败（launch error），而不是兄弟
+  web gate 那样"没浏览器就诚实 skip"；② 界面早已中文化并重排 DOM，用例仍等
+  `你想逆向什么？`/`Agent analysis`/`Message`/`Send`/`Provider & setup`/`Base URL`/`Model`/
+  `API key`/`Save server-side`/`Approve once`/`Reject` 这些不复存在的英文串，且断言
+  `tool.completed`/`run.rejected` 这类改版后不再内联打印的原始事件文本；③ **最致命的**——
+  用例用 `workflow.cancel` 当"危险操作"来触发审批卡片，可 `Settings.load()` 默认套用
+  packed-analysis 预设自动批准全部 `state_change` 效果，而 `workflow.cancel` 正是
+  `state_change`，于是两轮 danger 流根本不弹审批卡就直接跑掉——本 gate 存在的意义
+  （审批的批准/拒绝 UI）从未被执行。修法：浏览器启动改为"先试 Playwright 自带 chromium、
+  再退回 `channel="chrome"` 的系统 Chrome、两者都起不来就 `pytest.skip`"，与同目录 web gate
+  的诚实 skip 一致，不再按平台硬失败；locator 全量对齐当前中文界面并按 `dialog` 作用域消歧
+  （`模型与设置` 对话框的 aria-label 含"模型"，否则会与型号输入框歧义）；把被测 app 钉到
+  `agent_auto_approve_effects=()` / `agent_auto_approve_tools=()` 的 **request 模式**（这是
+  `SettingsModal.tsx` 里真实存在的操作员档位，只读的 `doctor` 轮因 `decide` 无条件放行
+  read-only 基线仍照常自动跑），让 `workflow.cancel` 确定性地停在审批卡上；断言从"原始事件
+  文本"改为"审批卡消失 / `/reject` 回 200 / 秘密不落 DOM·localStorage·响应体"等真正可观测的
+  代理量。本机装齐 chromium 后固定序连跑 4 次全绿（约 3s/次）、ruff 干净；只动这一条集成
+  测试，不碰生产代码。
 
 ### 变更（Android 后端清理）
 

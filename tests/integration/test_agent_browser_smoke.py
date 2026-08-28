@@ -63,6 +63,33 @@ def _port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _launch_smoke_browser(playwright: Any) -> Any:
+    """Launch a browser for the smoke gate on whatever this machine has.
+
+    The gate is not marked Windows-only (see tests/integration/conftest.py), so
+    it is expected to run wherever the suite runs. Pinning
+    ``executable_path=r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"``
+    made it hard-fail on every non-Windows machine -- and even on Windows if
+    Chrome sits anywhere else -- with a launch error rather than the honest skip
+    the sibling web gates give when no browser is present. Try Playwright's
+    bundled Chromium first (``playwright install chromium``), then a
+    system Chrome located per-OS via the channel mechanism instead of a
+    hardcoded path, and skip (never fail) when neither can launch.
+    """
+    args = ["--disable-gpu", "--no-first-run"]
+    attempts: tuple[dict[str, Any], ...] = ({}, {"channel": "chrome"})
+    last_error: Exception | None = None
+    for extra in attempts:
+        try:
+            return playwright.chromium.launch(headless=True, args=args, **extra)
+        except Exception as exc:  # noqa: BLE001 - try the next launch strategy
+            last_error = exc
+    pytest.skip(
+        f"no chromium/chrome could launch (install one with "
+        f"'playwright install chromium'): {last_error} — skip != pass"
+    )
+
+
 # Each wait below covers a real round trip -- SSE, a run, and for the read-only
 # case an actual `doctor` execution that stats every configured backend path.
 # Alone that takes a few seconds; in a loaded full-suite run it has exceeded 15s
@@ -73,7 +100,21 @@ _ROUND_TRIP_MS = 45_000
 @pytest.mark.integration
 def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
-    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    # Pin the workbench to request mode. Settings.load() otherwise applies the
+    # packed-analysis preset, which auto-approves every state_change effect --
+    # and workflow.cancel is a state_change, so the "danger" rounds below would
+    # run without ever raising an approval card and the approve/reject UI this
+    # gate exists to smoke-test would never appear. Request mode is a real
+    # operator switch (webui/src/components/SettingsModal.tsx), so clearing the
+    # grants here exercises the product path rather than a contrived one; the
+    # read-only doctor round still auto-runs because the read-only baseline is
+    # granted unconditionally in AutonomyPolicy.decide.
+    settings = replace(
+        Settings.load(),
+        artifact_root=tmp_path / "artifacts",
+        agent_auto_approve_effects=(),
+        agent_auto_approve_tools=(),
+    )
     token = "browser-web-token-0123456789"
     app = create_app(AnalysisService(settings), token=token, settings=settings)
     app.state.agent_orchestrator.provider_factory = lambda _profile: BrowserFakeProvider()
@@ -91,11 +132,7 @@ def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.Monke
     secret = "browser-provider-secret-value"
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(
-                headless=True,
-                executable_path=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                args=["--disable-gpu", "--no-first-run"],
-            )
+            browser = _launch_smoke_browser(playwright)
             page = browser.new_page()
 
             def capture(response: Response) -> None:
@@ -108,9 +145,14 @@ def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.Monke
                     response_bodies.append(response.text())
 
             page.on("response", capture)
-            # A fresh profile lands on the work-direction screen first.
+            # A fresh profile lands on the work-direction screen first. This
+            # heading tracks WorkspaceLanding.tsx's <h1>; it was renamed to
+            # "开始一段分析" there and in the committed SPA, but this gate still
+            # waited for the old "你想逆向什么？" and so timed out here before it
+            # could exercise anything -- invisible because integration gates run
+            # only on the manual Windows job, never in the Linux unit CI.
             page.goto(f"http://127.0.0.1:{port}/?token={token}")
-            expect(page.get_by_role("heading", name="你想逆向什么？")).to_be_visible()
+            expect(page.get_by_role("heading", name="开始一段分析")).to_be_visible()
 
             # Skip past it for the agent flow. Seeding the stored choice rather
             # than clicking keeps this gate from persisting a workspace profile
@@ -118,42 +160,63 @@ def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.Monke
             # webui/src/components/WorkspaceLanding.test.tsx.
             page.evaluate("localStorage.setItem('headless_ws_profile','full')")
             page.goto(f"http://127.0.0.1:{port}/?token={token}")
-            expect(page.get_by_role("heading", name="Agent analysis")).to_be_visible()
+            # The agent screen's <h1> is the selected thread title, and a fresh
+            # profile has no thread yet, so it reads "新对话" until the first
+            # send names a thread after the message. The old English "Agent
+            # analysis" heading no longer exists.
+            expect(page.get_by_role("heading", name="新对话")).to_be_visible()
             assert "token=" not in page.url
 
-            page.get_by_label("Message").fill("run read-only tool")
-            page.get_by_role("button", name="Send").click()
-            expect(page.get_by_text("tool round finished")).to_be_visible(timeout=_ROUND_TRIP_MS)
-            expect(page.get_by_text("tool.completed").first).to_be_visible()
+            page.get_by_label("消息").fill("run read-only tool")
+            page.get_by_role("button", name="发送").click()
+            # "tool round finished" only appears after the read-only tool actually
+            # ran and its result was fed back, so it stands in for the old raw
+            # "tool.completed" event text the reworked UI no longer prints inline.
+            # ``.first`` is deliberate: a finished round leaves the finalized
+            # assistant message plus a hidden streaming remnant with the same
+            # text, and only the first (finalized) copy is the visible one.
+            expect(page.get_by_text("tool round finished").first).to_be_visible(timeout=_ROUND_TRIP_MS)
 
-            page.get_by_role("button", name="Provider & setup").click()
-            page.get_by_label("Base URL").fill("https://example.invalid/v1")
-            page.get_by_label("Model").fill("browser-fake")
-            page.get_by_label("API key").fill(secret)
-            page.get_by_role("button", name="Save server-side").click()
+            page.get_by_role("button", name="设置").click()
+            # Scope field lookups to the dialog: the dialog's own aria-label
+            # "模型与设置" contains "模型", so an unscoped get_by_label("模型")
+            # would match both the dialog and the model input.
+            dialog = page.get_by_role("dialog")
+            dialog.get_by_label("接口地址").fill("https://example.invalid/v1")
+            dialog.get_by_label("模型", exact=True).fill("browser-fake")
+            dialog.get_by_label("API 密钥").fill(secret)
+            dialog.get_by_role("button", name="保存模型").click()
+            # Saving now confirms with a note and leaves the dialog open (it used
+            # to close on save), so close it explicitly before asserting it is
+            # gone -- the point is that the secret round-trips server-side.
+            expect(page.get_by_text("模型设置已保存到本机服务。")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            dialog.get_by_role("button", name="×").click()
             expect(page.get_by_role("dialog")).not_to_be_visible()
 
-            page.get_by_label("Message").fill("danger approve")
-            page.get_by_role("button", name="Send").click()
-            expect(page.get_by_role("button", name="Approve once")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            page.get_by_label("消息").fill("danger approve")
+            page.get_by_role("button", name="发送").click()
+            expect(page.get_by_role("button", name="批准一次")).to_be_visible(timeout=_ROUND_TRIP_MS)
             prior_seq = int(page.evaluate("window.history.state.runSeq"))
             assert prior_seq > 0
             page.reload()
-            expect(page.get_by_role("button", name="Approve once")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            expect(page.get_by_role("button", name="批准一次")).to_be_visible(timeout=_ROUND_TRIP_MS)
             assert "token=" not in page.url
-            page.get_by_role("button", name="Approve once").click()
-            expect(page.get_by_text("tool round finished")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            page.get_by_role("button", name="批准一次").click()
+            # The card clearing is this run's own proof the approved tool ran to
+            # completion; a "tool round finished" message already sits in the
+            # transcript from the read-only round, so it cannot discriminate here.
+            expect(page.get_by_role("button", name="批准一次")).not_to_be_visible(timeout=_ROUND_TRIP_MS)
             assert any(f"after={prior_seq}" in url for url in sse_urls)
 
-            page.get_by_label("Message").fill("danger reject")
-            page.get_by_role("button", name="Send").click()
-            expect(page.get_by_role("button", name="Reject", exact=True)).to_be_visible(timeout=_ROUND_TRIP_MS)
+            page.get_by_label("消息").fill("danger reject")
+            page.get_by_role("button", name="发送").click()
+            expect(page.get_by_role("button", name="拒绝", exact=True)).to_be_visible(timeout=_ROUND_TRIP_MS)
             with page.expect_response(
                 lambda response: response.url.endswith("/reject"), timeout=_ROUND_TRIP_MS
             ) as rejected_response:
-                page.get_by_role("button", name="Reject", exact=True).click()
+                page.get_by_role("button", name="拒绝", exact=True).click()
             assert rejected_response.value.status == 200
-            expect(page.get_by_text("run.rejected")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            expect(page.get_by_role("button", name="拒绝", exact=True)).not_to_be_visible(timeout=_ROUND_TRIP_MS)
 
             providers = page.evaluate(
                 """async ({token}) => (await fetch('/api/providers', {headers:{Authorization:`Bearer ${token}`}})).text()""",
