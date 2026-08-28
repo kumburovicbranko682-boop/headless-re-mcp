@@ -434,7 +434,17 @@ def test_instance_start_returns_once_the_port_accepts(
     monkeypatch.setattr(proxy_client, "_port_bindable", lambda host, port: True)
     release = threading.Event()
     inst = _ProxyInstance("127.0.0.1", 8080)
-    inst._run = lambda: release.wait(5.0)  # type: ignore[method-assign, assignment]
+
+    def fake_run() -> None:
+        # The serialised bring-up variant of start() also waits on a _ready
+        # event that the real _run sets via a running()-phase addon; mimic it
+        # when present so this test drives both shapes of the instance.
+        ready = getattr(inst, "_ready", None)
+        if ready is not None:
+            ready.set()
+        release.wait(5.0)
+
+    inst._run = fake_run  # type: ignore[method-assign]
     try:
         inst.start(timeout=2.0)
     finally:
@@ -521,7 +531,9 @@ def test_instance_run_drives_a_master_to_completion(
     assert inst._started.is_set()
     master = inst._master
     assert isinstance(master, _FakeDumpMaster)
-    assert master.added == [inst.recorder]
+    # The recorder is always the first addon; the serialised bring-up variant
+    # of _run appends a readiness marker after it, so pin order not equality.
+    assert master.added[0] is inst.recorder
     assert master.kwargs == {"loop": inst._loop, "with_termlog": False, "with_dumper": False}
     assert inst._loop is not None and inst._loop.is_closed()
 
