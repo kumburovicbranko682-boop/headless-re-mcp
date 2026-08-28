@@ -80,6 +80,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（裸 `pytest` 收集失败:26 个测试文件依赖 CI 独有的 sys.path 形态）
+
+- 26 个测试模块以 `from tests.unit.x import ...` 复用共享夹具,这要求仓库根
+  在 `sys.path` 上。CI 跑的是 `python -m pytest`(隐式把 cwd 加进去)所以
+  一直绿;开发者惯用的裸 `pytest` 则 20+ 文件收集报错
+  `No module named 'tests'`,连带 `-k` 过滤的子集运行整个中止
+  (collection error 是硬失败)。在 `[tool.pytest.ini_options]` 固定
+  `pythonpath = ["."]`(pytest 内建,按 rootdir 解析),两种拼法自此等价;
+  实测裸 `pytest` 从仓库根与任意 cwd 均可完整收集 5845 项、零错误。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、

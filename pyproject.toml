@@ -87,6 +87,11 @@ exclude = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# 26 test modules import shared fixtures as `from tests.unit.x import ...`,
+# which needs the repo root on sys.path. `python -m pytest` (what CI runs)
+# adds the cwd implicitly; a bare `pytest` does not, and fails collection of
+# all 26 files. Pin the root explicitly so both spellings work.
+pythonpath = ["."]
 addopts = "-ra"
 asyncio_default_fixture_loop_scope = "function"
 # Backstop for hangs pytest-timeout cannot interrupt: its thread method needs
