@@ -65,11 +65,21 @@ def test_parses_imports_exports_and_counts(tmp_path: Path) -> None:
 
     assert data["module"] == "m.wasm"
     assert data["version"] == 1
+    # The func import and func export both resolve to the sole type () -> ().
     assert data["imports"] == [
-        {"module": "env", "name": "log", "kind": "func", "type_index": 0},
+        {
+            "module": "env",
+            "name": "log",
+            "kind": "func",
+            "type_index": 0,
+            "signature": "() -> ()",
+        },
         {"module": "env", "name": "mem", "kind": "memory"},
     ]
-    assert data["exports"] == [{"name": "run", "kind": "func", "index": 0}]
+    assert data["exports"] == [
+        {"name": "run", "kind": "func", "index": 0, "type_index": 0, "signature": "() -> ()"}
+    ]
+    assert data["types"] == ["() -> ()"]
     assert data["import_count"] == 2
     assert data["export_count"] == 1
     assert data["global_count"] == 1
@@ -77,6 +87,74 @@ def test_parses_imports_exports_and_counts(tmp_path: Path) -> None:
     assert data["sections"] == {"type": 1, "import": 2, "export": 1, "global": 1}
     assert "imports_truncated" not in data
     assert "exports_truncated" not in data
+
+
+def test_resolves_function_signatures_across_import_and_defined_space(
+    tmp_path: Path,
+) -> None:
+    # Two types: (i32) -> i32 and () -> (). An imported func takes the second,
+    # a defined func takes the first, and both are exported -- so resolving the
+    # export signatures only works if the func index space (imports then defined)
+    # and the type table are both walked correctly.
+    type_sec = _section(
+        1,
+        _uleb(2)
+        + b"\x60\x01\x7f\x01\x7f"  # type 0: (i32) -> i32
+        + b"\x60\x00\x00",  # type 1: () -> ()
+    )
+    import_sec = _section(
+        2, _uleb(1) + _name("env") + _name("cb") + b"\x00" + _uleb(1)  # func import, type 1
+    )
+    function_sec = _section(3, _uleb(1) + _uleb(0))  # 1 defined func, type 0
+    export_sec = _section(
+        7,
+        _uleb(2)
+        + _name("run") + b"\x00" + _uleb(1)  # func index 1 (the defined func)
+        + _name("cb_export") + b"\x00" + _uleb(0),  # func index 0 (the imported func)
+    )
+
+    data = _summary(tmp_path, _module(type_sec, import_sec, function_sec, export_sec))
+
+    assert data["types"] == ["(i32) -> i32", "() -> ()"]
+    assert data["imports"] == [
+        {
+            "module": "env",
+            "name": "cb",
+            "kind": "func",
+            "type_index": 1,
+            "signature": "() -> ()",
+        }
+    ]
+    exports = {e["name"]: e for e in data["exports"]}
+    assert exports["run"] == {
+        "name": "run",
+        "kind": "func",
+        "index": 1,
+        "type_index": 0,
+        "signature": "(i32) -> i32",
+    }
+    assert exports["cb_export"]["signature"] == "() -> ()"
+    assert exports["cb_export"]["type_index"] == 1
+
+
+def test_missing_type_table_leaves_signature_absent(tmp_path: Path) -> None:
+    # An export that names a func with no Type/Function section to resolve it
+    # keeps index but carries no signature -- never a wrong or fabricated one.
+    export_sec = _section(7, _uleb(1) + _name("run") + b"\x00" + _uleb(0))
+    data = _summary(tmp_path, _module(export_sec))
+    assert data["exports"] == [{"name": "run", "kind": "func", "index": 0}]
+    assert data["types"] == []
+
+
+def test_multi_result_and_wide_valtypes_render(tmp_path: Path) -> None:
+    # A type with an i64/f64 param pair and two results exercises the value-type
+    # table and the multi-result rendering "(..)".
+    type_sec = _section(1, _uleb(1) + b"\x60\x02\x7e\x7c\x02\x7f\x7d")
+    function_sec = _section(3, _uleb(1) + _uleb(0))
+    export_sec = _section(7, _uleb(1) + _name("f") + b"\x00" + _uleb(0))
+    data = _summary(tmp_path, _module(type_sec, function_sec, export_sec))
+    assert data["types"] == ["(i64, f64) -> (i32, f32)"]
+    assert data["exports"][0]["signature"] == "(i64, f64) -> (i32, f32)"
 
 
 def test_table_and_global_import_kinds_advance_correctly(tmp_path: Path) -> None:

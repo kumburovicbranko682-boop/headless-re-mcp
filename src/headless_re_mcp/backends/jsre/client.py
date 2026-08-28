@@ -232,15 +232,69 @@ _WASM_SECTION_NAMES = {
     11: "data",
     12: "data_count",
 }
+# WebAssembly value types (spec 5.3.1) plus the two reference types, used to
+# render a function signature like "(i32, i32) -> i32".
+_WASM_VALTYPES = {
+    0x7F: "i32",
+    0x7E: "i64",
+    0x7D: "f32",
+    0x7C: "f64",
+    0x7B: "v128",
+    0x70: "funcref",
+    0x6F: "externref",
+}
 # Cap the import/export lists so a crafted module with a huge vec count cannot
 # make one summary build an unbounded envelope; the declared count is still
 # reported so the truncation is disclosed.
 _MAX_WASM_ITEMS = 4096
+# The function index space can legitimately be large, so signature resolution
+# tracks more entries than the display cap -- but still bounded so a crafted
+# Function section cannot make the index map grow without limit.
+_MAX_WASM_FUNCS = 200_000
 _MAX_WASM_NAME = 512
 
 
 class _WasmParseError(Exception):
     """A structural fault in the module bytes, mapped to a clean JsReError."""
+
+
+def _read_wasm_valtypes(data: bytes, pos: int, end: int) -> tuple[list[str], int]:
+    count, pos = _read_uleb128(data, pos)
+    out: list[str] = []
+    for _ in range(count):
+        if pos >= end:
+            raise _WasmParseError("valtype overruns section")
+        vt = data[pos]
+        pos += 1
+        out.append(_WASM_VALTYPES.get(vt, f"0x{vt:02x}"))
+    return out, pos
+
+
+def _read_wasm_functype(data: bytes, pos: int, end: int) -> tuple[str, int]:
+    if pos >= end:
+        raise _WasmParseError("type entry truncated")
+    form = data[pos]
+    pos += 1
+    if form != 0x60:
+        # Only ordinary function types carry a param/result signature; the GC
+        # proposal's struct/array/rec forms cannot be rendered this way, so bail
+        # out of type detailing rather than misread their bytes.
+        raise _WasmParseError(f"unsupported type form 0x{form:02x}")
+    params, pos = _read_wasm_valtypes(data, pos, end)
+    results, pos = _read_wasm_valtypes(data, pos, end)
+    if not results:
+        rendered = "()"
+    elif len(results) == 1:
+        rendered = results[0]
+    else:
+        rendered = "(" + ", ".join(results) + ")"
+    return f"({', '.join(params)}) -> {rendered}", pos
+
+
+def _wasm_sig_for(type_index: int, types: list[str]) -> str | None:
+    if 0 <= type_index < len(types):
+        return types[type_index]
+    return None
 
 
 def _read_uleb128(data: bytes, pos: int) -> tuple[int, int]:
@@ -295,8 +349,13 @@ def _parse_wasm_summary(data: bytes, *, module: str) -> JsonObject:
     counts: dict[str, int] = {}
     imports: list[JsonObject] = []
     exports: list[JsonObject] = []
+    types: list[str] = []
+    # Function index -> type index, imported funcs first then defined funcs, so an
+    # export's index can be resolved to a signature.
+    func_types: list[int] = []
     imports_truncated = False
     exports_truncated = False
+    types_truncated = False
     try:
         while pos < n:
             sec_id = data[pos]
@@ -314,7 +373,26 @@ def _parse_wasm_summary(data: bytes, *, module: str) -> JsonObject:
                 continue
             count, body = _read_uleb128(data, pos)
             counts[name] = count
-            if sec_id == 2:  # Import
+            if sec_id == 1:  # Type: the module's function signatures
+                p = body
+                # A type-table fault is local: stop detailing signatures rather
+                # than failing the whole summary, since imports/exports still read.
+                with suppress(_WasmParseError):
+                    for _ in range(count):
+                        if len(types) >= _MAX_WASM_ITEMS:
+                            types_truncated = True
+                            break
+                        sig, p = _read_wasm_functype(data, p, sec_end)
+                        types.append(sig)
+            elif sec_id == 3:  # Function: one type index per defined function
+                p = body
+                with suppress(_WasmParseError):
+                    for _ in range(count):
+                        if len(func_types) >= _MAX_WASM_FUNCS:
+                            break
+                        ti, p = _read_uleb128(data, p)
+                        func_types.append(ti)
+            elif sec_id == 2:  # Import
                 p = body
                 for _ in range(count):
                     mod_name, p = _read_wasm_name(data, p, sec_end)
@@ -330,6 +408,13 @@ def _parse_wasm_summary(data: bytes, *, module: str) -> JsonObject:
                     }
                     if kind == 0:  # func: type index
                         entry["type_index"], p = _read_uleb128(data, p)
+                        # An imported function occupies the low func index space,
+                        # so record its type before any defined function.
+                        if len(func_types) < _MAX_WASM_FUNCS:
+                            func_types.append(int(entry["type_index"]))
+                        import_sig = _wasm_sig_for(int(entry["type_index"]), types)
+                        if import_sig is not None:
+                            entry["signature"] = import_sig
                     elif kind == 1:  # table: elem type byte + limits
                         p = _skip_wasm_limits(data, p + 1)
                     elif kind == 2:  # memory: limits
@@ -351,14 +436,21 @@ def _parse_wasm_summary(data: bytes, *, module: str) -> JsonObject:
                     kind = data[p]
                     p += 1
                     idx, p = _read_uleb128(data, p)
+                    export: JsonObject = {
+                        "name": exp_name,
+                        "kind": _WASM_EXTERNAL_KINDS.get(kind, str(kind)),
+                        "index": idx,
+                    }
+                    if kind == 0 and idx < len(func_types):
+                        # Canonical section order puts Type/Import/Function before
+                        # Export, so the func index map is complete here.
+                        type_index = func_types[idx]
+                        export_sig = _wasm_sig_for(type_index, types)
+                        if export_sig is not None:
+                            export["type_index"] = type_index
+                            export["signature"] = export_sig
                     if len(exports) < _MAX_WASM_ITEMS:
-                        exports.append(
-                            {
-                                "name": exp_name,
-                                "kind": _WASM_EXTERNAL_KINDS.get(kind, str(kind)),
-                                "index": idx,
-                            }
-                        )
+                        exports.append(export)
                     else:
                         exports_truncated = True
             # Resync at the declared section boundary either way, so a malformed
@@ -375,6 +467,7 @@ def _parse_wasm_summary(data: bytes, *, module: str) -> JsonObject:
         "version": version,
         "imports": imports,
         "exports": exports,
+        "types": types,
         "import_count": counts.get("import", 0),
         "export_count": counts.get("export", 0),
         "function_count": counts.get("function", 0),
@@ -388,6 +481,8 @@ def _parse_wasm_summary(data: bytes, *, module: str) -> JsonObject:
         result["imports_truncated"] = True
     if exports_truncated:
         result["exports_truncated"] = True
+    if types_truncated:
+        result["types_truncated"] = True
     return result
 
 
@@ -415,8 +510,11 @@ class WasmClient:
         read, this parses the module binary itself into machine-readable lists --
         what the module imports from its host (the JS glue, ``env.<name>``) and
         what it exports back (the functions and memory a page calls) -- the
-        WebAssembly analogue of a PE/ELF import and export table. It reads the
-        bytes directly, so it needs no wabt installed and cannot drift with a wabt
+        WebAssembly analogue of a PE/ELF import and export table. Function imports
+        and exports also carry a resolved ``signature`` (e.g. ``(i32, i32) -> i32``)
+        and ``type_index`` recovered from the Type and Function sections, and
+        ``types`` lists the module's whole signature table. It reads the bytes
+        directly, so it needs no wabt installed and cannot drift with a wabt
         version; a malformed module faults cleanly rather than crashing. ``timeout``
         is accepted for signature symmetry with the wabt-backed readers but the
         parse is a bounded in-process walk.

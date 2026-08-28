@@ -117,18 +117,21 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Where wasm.info returns wasm-objdump's text and wasm.wat/decompile return
         code text, this parses the module binary itself into machine-readable
-        lists: imports (module, name, kind, and type_index for functions) -- what
-        the module needs from its JS host (env.<name>) -- and exports (name, kind,
-        index) -- the functions and memory a page calls. It is the WebAssembly
+        lists: imports (module, name, kind, and for functions type_index plus a
+        resolved signature) -- what the module needs from its JS host (env.<name>)
+        -- and exports (name, kind, index; for functions also type_index and
+        signature) -- the functions and memory a page calls. It is the WebAssembly
         analogue of a PE/ELF import and export table, the seam from "there is a
-        wasm module" to "here is its API". kind is func, table, memory or global.
-        Also answers with version, per-kind counts (import_count, export_count,
-        function_count, memory_count, global_count, table_count, type_count) and
-        sections (every section's declared entry count). Reads the bytes directly,
-        so it works with no wabt installed; a malformed module is a clean
-        backend_error. imports_truncated / exports_truncated mark a module whose
-        lists were longer than the 4096 cap (import_count/export_count stay the
-        real totals). An input over 16 MiB is refused as too_large.
+        wasm module" to "here is its API". kind is func, table, memory or global; a
+        function signature reads like "(i32, i32) -> i32". Also answers with
+        version, types (the module's whole signature table), per-kind counts
+        (import_count, export_count, function_count, memory_count, global_count,
+        table_count, type_count) and sections (every section's declared entry
+        count). Reads the bytes directly, so it works with no wabt installed; a
+        malformed module is a clean backend_error. imports_truncated /
+        exports_truncated / types_truncated mark a module whose lists were longer
+        than the 4096 cap (the counts stay the real totals). An input over 16 MiB
+        is refused as too_large.
         """
         return _dump(analysis.wasm_summary(path, timeout=timeout))
 

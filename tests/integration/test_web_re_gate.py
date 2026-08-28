@@ -1475,7 +1475,13 @@ def test_wasm_summary_reads_the_module_surface_without_wabt() -> None:
         assert data["import_count"] == 0
         exports = {e["name"]: e for e in data["exports"]}
         assert exports["add"]["kind"] == "func"
+        # The Type + Function sections resolve the exported func's signature, so
+        # "add" reads as (i32, i32) -> i32, not just a bare index.
+        assert exports["add"]["signature"] == "(i32, i32) -> i32", exports["add"]
+        assert exports["add"]["type_index"] == 0
+        assert data["types"] == ["(i32, i32) -> i32"]
         assert exports["mem"]["kind"] == "memory"
+        assert "signature" not in exports["mem"]
         assert data["export_count"] == 2
         assert data["function_count"] == 1
         assert data["memory_count"] == 1
