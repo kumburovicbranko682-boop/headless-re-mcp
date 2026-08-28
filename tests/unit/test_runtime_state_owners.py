@@ -27,6 +27,46 @@ def test_popping_an_absent_backend_returns_none_and_stays_absent() -> None:
     assert owner.phase("s", BackendKind.IDA) is BackendRuntimePhase.ABSENT
 
 
+def test_failing_after_pop_session_does_not_resurrect_a_phase() -> None:
+    """A close that wins the race against an open must stay forgotten.
+
+    close() reaps the session with pop_session while the backend is still
+    inside its factory; the completing open then unwinds through fail(). That
+    fail() used to write a fresh FAILED phase for a session that never
+    reopens, so a server closing sessions all day accumulated one phantom
+    entry per lost race -- the exact leak pop_session exists to prevent.
+    """
+    owner: BackendRuntimeOwner[object] = BackendRuntimeOwner()
+    owner.begin_open("s", BackendKind.X64DBG)
+    assert owner.pop_session("s") == []  # close ran before put(); nothing live
+    assert owner.fail("s", BackendKind.X64DBG) is None
+    assert owner.phase("s", BackendKind.X64DBG) is BackendRuntimePhase.ABSENT
+    assert owner.phases == {}
+
+
+def test_failing_a_never_opened_backend_stays_absent() -> None:
+    owner: BackendRuntimeOwner[object] = BackendRuntimeOwner()
+    assert owner.fail("s", BackendKind.IDA) is None
+    assert owner.phase("s", BackendKind.IDA) is BackendRuntimePhase.ABSENT
+
+
+def test_failing_a_claimed_or_ready_backend_still_marks_failed() -> None:
+    owner: BackendRuntimeOwner[object] = BackendRuntimeOwner()
+
+    # An open that dies in its factory: the OPENING claim must turn FAILED so
+    # the operator can see what went wrong and a retry can reclaim the key.
+    owner.begin_open("s", BackendKind.IDA)
+    assert owner.fail("s", BackendKind.IDA) is None
+    assert owner.phase("s", BackendKind.IDA) is BackendRuntimePhase.FAILED
+
+    # A live runtime failing later must still be handed back for teardown.
+    owner.begin_open("s", BackendKind.X64DBG)
+    runtime = object()
+    owner.put("s", BackendKind.X64DBG, runtime)
+    assert owner.fail("s", BackendKind.X64DBG) is runtime
+    assert owner.phase("s", BackendKind.X64DBG) is BackendRuntimePhase.FAILED
+
+
 def test_clear_terminal_drops_only_the_terminal_snapshot() -> None:
     owner: WorkflowStateOwner[str] = WorkflowStateOwner()
     owner.put("s", "live")

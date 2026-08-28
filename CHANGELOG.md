@@ -5,7 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
+### 修复（关闭赢下打开竞态后 fail() 复活幽灵 phase 条目）
+
+- `BackendRuntimeOwner.fail()` 此前无条件写入 `FAILED` phase。当 close 在后端仍在
+  factory 里打开时抢先拿到锁，`pop_session` 已把该会话的全部 phase 收割干净；随后
+  完成的 open 经 `_abandon_open` 回卷调用 `fail()`，又为这个永不会重开的已关闭会话
+  重新写入一条 `FAILED` phase——每输一次竞态就积累一个幽灵条目，恰好复现了
+  `pop_session` 文档里声明要避免的"服务器记住它关过的每个会话"式无界内存增长
+  （`snapshot()`/`active_session_ids()` 也会一直扫到这些死键）。现在 `fail()` 仅在
+  该键仍被跟踪（items 或 phases 里存在；item 必有 phase，因为 `begin_open` 先于
+  `put`）时才标记 `FAILED`，对已被整体遗忘的键直接返回 `None` 不留痕迹。正常路径
+  不变：factory 失败时 OPENING 声明仍转 FAILED 供重试回收，存活 runtime 失败时仍
+  交还给调用方做拆除。新增回归测试钉住三条路径（pop_session 后 fail 不复活、从未
+  打开过的键保持 ABSENT、OPENING/READY 仍正常转 FAILED）。
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
   `_ProxyInstance.start()/_run()` 的串行化 bring-up 改造（`_STARTUP_LOCK` +

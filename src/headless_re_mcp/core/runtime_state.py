@@ -78,6 +78,16 @@ class BackendRuntimeOwner(Generic[RuntimeT]):
         with self.lock:
             key = (session_id, kind)
             runtime = self.items.pop(key, None)
+            # Mark FAILED only while the backend is still tracked. When a close
+            # wins the race against an in-flight open, pop_session has already
+            # reaped this key; the completing open then unwinds through fail(),
+            # which used to write a fresh FAILED phase for a session that never
+            # reopens -- recreating, one closed session at a time, exactly the
+            # unbounded memory pop_session exists to reclaim. An item always has
+            # a phase (begin_open precedes put), so "absent from phases" alone
+            # means the key is wholly forgotten and there is nothing to fail.
+            if runtime is None and key not in self.phases:
+                return None
             self.phases[key] = BackendRuntimePhase.FAILED
             return runtime
 
