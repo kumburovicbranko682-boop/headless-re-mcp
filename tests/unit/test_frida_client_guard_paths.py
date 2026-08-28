@@ -344,7 +344,7 @@ def test_exports_rejects_a_blank_module_name() -> None:
 
 
 def test_exports_rejects_a_non_dict_payload() -> None:
-    api = _Api(exports=lambda name, count: ["not", "a", "dict"])
+    api = _Api(exports=lambda name, offset, count: ["not", "a", "dict"])
     client = _local_client(_LocalFrida(session=_Session(api=api)))
 
     with pytest.raises(FridaError) as caught:
@@ -355,7 +355,7 @@ def test_exports_rejects_a_non_dict_payload() -> None:
 
 def test_exports_skips_non_dict_rows() -> None:
     api = _Api(
-        exports=lambda name, count: {
+        exports=lambda name, offset, count: {
             "found": True,
             "module": name,
             "base": "0x1",

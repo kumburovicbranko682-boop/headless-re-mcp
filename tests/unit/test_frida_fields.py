@@ -111,15 +111,19 @@ def test_frida_modules_offset_pages_past_a_filled_limit() -> None:
     assert negative["has_more"] is True
 
 class _ExportApi:
-    def exports(self, name: str, count: int) -> dict[str, Any]:
+    def exports(self, name: str, offset: int = 0, count: int = 64) -> dict[str, Any]:
+        # Emulate the real probe: skip offset on the target and report the true
+        # total, so the client's offset/total/has_more contract is exercised.
+        alle = [
+            {"name": f"e{index}", "address": "0x2", "type": "function"}
+            for index in range(25)
+        ]
         return {
             "found": True,
             "module": name,
             "base": "0x1",
-            "exports": [
-                {"name": f"e{index}", "address": "0x2", "type": "function"}
-                for index in range(int(count))
-            ],
+            "exports": alle[offset : offset + count],
+            "total": len(alle),
         }
 
 
@@ -146,19 +150,50 @@ class _ExportFrida:
 def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     """The catalog named found, module, base and exports, and stopped there.
 
-    Measured: 11 exports requested for a page of 10 -> count 10, has_more
-    True. An overnight pass that treated exports as the whole table had no
-    field to notice the rest.
+    Measured: 25 exports, a page of 10 -> count 10, total 25, offset 0, has_more
+    True. An overnight pass that treated exports as the whole table had no field
+    to notice the rest.
     """
     client = FridaClient()
     client._available = True
     client._frida = _ExportFrida()
     payload = client.exports(1, "ntdll.dll", allowed_pid=1, limit=10)
     assert payload["count"] == 10
+    assert payload["total"] == 25
+    assert payload["offset"] == 0
     assert len(payload["exports"]) == 10
     assert payload["has_more"] is True
     doc = _tool_docstring("frida.exports")
     assert "has_more" in doc
+    assert "offset" in doc
+
+
+def test_frida_exports_offset_pages_past_a_filled_limit() -> None:
+    """offset reaches the exports a filled first page hides.
+
+    frida.exports advertised has_more but took no offset and caps at 512, while a
+    real module's export table runs to thousands of symbols -- so has_more True
+    left every export past the first page unreachable, the same broken contract
+    frida.modules had. With 25 exports, offset 20 limit 10 must return the final
+    five (offset 20, count 5, total 25, has_more False), and a negative offset
+    (the agent/OpenAI transports bypass the schema's offset >= 0 bound) must clamp
+    to the head.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _ExportFrida()
+
+    tail = client.exports(1, "ntdll.dll", allowed_pid=1, offset=20, limit=10)
+    assert tail["offset"] == 20
+    assert tail["count"] == 5
+    assert tail["total"] == 25
+    assert tail["has_more"] is False
+    assert [e["name"] for e in tail["exports"]] == [f"e{i}" for i in range(20, 25)]
+
+    negative = client.exports(1, "ntdll.dll", allowed_pid=1, offset=-5, limit=10)
+    assert negative["offset"] == 0
+    assert [e["name"] for e in negative["exports"]] == [f"e{i}" for i in range(0, 10)]
+    assert negative["has_more"] is True
 
 
 class _Dev:

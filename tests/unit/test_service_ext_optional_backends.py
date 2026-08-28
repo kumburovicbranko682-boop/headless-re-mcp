@@ -455,9 +455,15 @@ class _FakeFridaProbe:
         return {"modules": [], "count": 0}
 
     def exports(
-        self, pid: int, module_name: str, *, allowed_pid: int, limit: int = 64
+        self,
+        pid: int,
+        module_name: str,
+        *,
+        allowed_pid: int,
+        offset: int = 0,
+        limit: int = 64,
     ) -> dict[str, Any]:
-        del pid, allowed_pid, limit
+        del pid, allowed_pid, offset, limit
         return {"module": module_name, "exports": [], "count": 0}
 
     def memory_read(self, pid: int, address: int, size: int, *, allowed_pid: int) -> dict[str, Any]:

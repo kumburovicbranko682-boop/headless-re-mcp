@@ -117,18 +117,31 @@ rpc.exports = {
     }
     return {modules: items, total: all.length};
   },
-  exports: function (moduleName, limit) {
+  exports: function (moduleName, offset, limit) {
     var mod = Process.findModuleByName(moduleName);
     if (mod === null) {
-      return {found: false, exports: []};
+      return {found: false, exports: [], total: 0};
     }
+    // Skip `offset` on the target so a page past the first is a real slice of
+    // the export table, not a re-fetch of the head: enumerateExports walks the
+    // module's dynamic symbol table in a stable order and the table is fixed in
+    // the loaded binary, so offset paging over two short probe attaches is
+    // coherent. total is always the full count so has_more is exact.
     var all = mod.enumerateExports();
     var items = [];
-    for (var i = 0; i < all.length && items.length < limit; i++) {
+    var start = Math.max(0, offset);
+    var cap = Math.max(0, limit);
+    for (var i = start; i < all.length && items.length < cap; i++) {
       var e = all[i];
       items.push({name: e.name, address: e.address.toString(), type: e.type});
     }
-    return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
+    return {
+      found: true,
+      module: mod.name,
+      base: mod.base.toString(),
+      exports: items,
+      total: all.length
+    };
   },
   read: function (address, size) {
     // Read through the NativePointer method, not the legacy Memory.read* free
@@ -398,22 +411,34 @@ class FridaClient:
         module_name: str,
         *,
         allowed_pid: int,
+        offset: int = 0,
         limit: int = 64,
     ) -> JsonObject:
         self._require(pid, allowed_pid)
         if not isinstance(module_name, str) or not module_name.strip():
             raise FridaError("invalid_params", "module_name is required")
+        # exports once reported only has_more (a cursorless top-N) but its cap is
+        # 512, and a real module's export table is far larger (libc/libart/libssl
+        # run to thousands of symbols), so has_more True left every export past
+        # the first page unreachable -- the same broken contract frida.modules
+        # had. Window on the target and report total so callers can page the whole
+        # table. Clamp offset defensively because the agent/OpenAI transports
+        # bypass the schema's offset >= 0 bound.
+        start = max(0, int(offset))
         capped = max(1, min(int(limit), 512))
         session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
-            raw = script.exports_sync.exports(module_name.strip(), capped + 1)
+            raw = script.exports_sync.exports(module_name.strip(), start, capped)
             if not isinstance(raw, dict):
                 raise FridaError("backend_error", "unexpected frida exports payload")
-            page, has_more = _page(list(raw.get("exports") or []), capped)
+            held = list(raw.get("exports") or [])
+            # Degraded older-script shape (no total): assume the window is the
+            # tail so has_more stays False rather than paging forever.
+            total = int(raw.get("total") or (start + len(held)))
             items = []
-            for item in page:
+            for item in held[:capped]:
                 if not isinstance(item, dict):
                     continue
                 items.append(
@@ -429,7 +454,9 @@ class FridaClient:
                 "base": str(raw.get("base") or ""),
                 "exports": items,
                 "count": len(items),
-                "has_more": has_more,
+                "total": total,
+                "offset": start,
+                "has_more": start + len(items) < total,
             }
         finally:
             with contextlib.suppress(Exception):

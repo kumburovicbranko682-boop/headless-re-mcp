@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（frida.exports 报 has_more 却没有 offset，翻不到第一页之后的导出）
+
+- 与之前修的 frida.modules / frida.applications 同一个缺陷：`frida.exports` 只回 `count`/`has_more`（游标式
+  top-N，无 total/offset），但它的上限是 512，而真实模块的导出表动辄数千个符号（libc/libart/libssl 都是），
+  于是导出多于一页的模块会 `has_more=True`，可除了把 limit 顶到 512 外根本没办法读到后面的导出——正是
+  frida.modules 当初的那个"报 has_more 却翻不动"的问题。按仓库自己的判据（游标式仅当上限 ≥ 现实总量时才
+  自洽，如 adb.packages 的 2000），512 明显不够。现升级为完整分页：目标侧 `_ENUM_SCRIPT.exports(moduleName,
+  offset, limit)` 先跳过 offset 再收集（`enumerateExports` 走模块的动态符号表、顺序稳定且加载后不变，两次短
+  探针 attach 之间分页自洽），并回真实 `total`；客户端 `FridaClient.exports` 增 `offset`（防御性 clamp，因
+  agent/OpenAI 传输绕过 schema 的 `offset >= 0`），回 `total`/`offset` 且 `has_more = offset+count < total`；
+  service `frida_exports` 与工具 `frida.exports`（`Field(ge=0)`）透传 offset，文案改为"advance offset by the
+  returned count"。测试：改掉三处旧 mock 签名（含 `_ExportApi` 现按 offset 切片并回 total），字段层用例加断
+  offset/total，新增 offset 分页用例（含末页 has_more False、负 offset 归零到头页）。`frida.java.*` 仍维持
+  游标式+filter 不动：`enumerateLoadedClasses` 的枚举顺序不保证跨 attach 稳定，无法可靠地按 offset 翻页，
+  用 filter 收窄才是其契约。
+
 ### 修复（apk.components / apk.permissions 先截断后排序，超过 256 项的清单不是真正的字母序头部）
 
 - 与刚修的 jadx / device.packages 同一类缺陷：`_cap_names`（`apk.components` 的
