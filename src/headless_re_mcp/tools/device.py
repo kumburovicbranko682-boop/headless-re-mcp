@@ -71,6 +71,23 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
+    @tools.tool(name="device.users")
+    def device_users(
+        serial: str, limit: Annotated[int, Field(ge=1, le=256)] = 100
+    ) -> dict[str, Any]:
+        """List Android users and profiles (pm list users).
+
+        Multi-user and work-profile layout, so an RE session knows a managed
+        profile is present and that an app's data may live under
+        /data/user/<id> rather than only user 0. Answers with users (each
+        carrying id, name, running, the raw flags hex as pm prints it, and
+        flag_names decoding the recognised bits), count, and has_more. An
+        unrecognised flag bit is kept in flags rather than dropped, a capped
+        page says has_more, and a read yielding no users is an error rather
+        than an empty list.
+        """
+        return _dump(analysis.device_users(serial, limit=limit))
+
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,

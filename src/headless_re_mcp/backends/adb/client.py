@@ -40,7 +40,28 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_USERS = 256
 _MAX_DEVICES = 64
+# UserInfo flag bits from AOSP UserInfo.java; stable across releases. The raw
+# hex is always reported, so an unrecognised bit is preserved rather than lost.
+_USER_FLAGS: tuple[tuple[int, str], ...] = (
+    (0x00000001, "PRIMARY"),
+    (0x00000002, "ADMIN"),
+    (0x00000004, "GUEST"),
+    (0x00000008, "RESTRICTED"),
+    (0x00000010, "INITIALIZED"),
+    (0x00000020, "MANAGED_PROFILE"),
+    (0x00000040, "DISABLED"),
+    (0x00000080, "QUIET_MODE"),
+    (0x00000100, "EPHEMERAL"),
+    (0x00000200, "DEMO"),
+    (0x00000400, "FULL"),
+    (0x00000800, "SYSTEM"),
+    (0x00001000, "PROFILE"),
+    (0x00002000, "FOR_TESTING"),
+    (0x00004000, "MAIN"),
+)
+_USER_INFO_RE = re.compile(r"UserInfo\{(\d+):(.*):([0-9a-fA-F]+)\}(.*)$")
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
@@ -525,6 +546,52 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def users(self, serial: str, *, limit: int = 100) -> JsonObject:
+        """List Android users and profiles from ``pm list users``.
+
+        Multi-user and work-profile layout: which user ids exist, their names,
+        whether each is running, and the decoded flag names -- so an RE session
+        knows a managed profile is present and that an app's data lives under
+        /data/user/<id> rather than only user 0. Each entry carries id, name,
+        running, the raw flags hex exactly as pm prints it, and flag_names
+        decoding the recognised bits; an unrecognised bit is kept in flags
+        rather than dropped. The list is capped with has_more, and a read that
+        yields no users -- which a live device never has, it always has user 0
+        -- is an error rather than an empty list.
+        """
+        dev = self._device(serial)
+        capped = max(1, min(int(limit), _MAX_USERS))
+        raw = _device_shell(dev, "pm list users")
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "pm list users failed", output=text[:800])
+        users: list[JsonObject] = []
+        has_more = False
+        for line in text.splitlines():
+            match = _USER_INFO_RE.search(line.strip())
+            if match is None:
+                continue
+            if len(users) >= capped:
+                has_more = True
+                break
+            flags_value = int(match.group(3), 16)
+            users.append(
+                {
+                    "id": int(match.group(1)),
+                    "name": match.group(2),
+                    "flags": match.group(3),
+                    "flag_names": [
+                        name for bit, name in _USER_FLAGS if flags_value & bit
+                    ],
+                    "running": "running" in match.group(4),
+                }
+            )
+        if not users:
+            raise AdbError(
+                "backend_error", "pm list users returned no users", output=text[:800]
+            )
+        return {"users": users, "count": len(users), "has_more": has_more}
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a
