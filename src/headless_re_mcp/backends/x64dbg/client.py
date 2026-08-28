@@ -962,7 +962,7 @@ class XdbgClient:
                 raise XdbgRpcError("rpc_protocol_error", f"x64dbg returned an invalid {key}")
         if not isinstance(result.get("stop_reason"), str) or not result["stop_reason"]:
             result["stop_reason"] = "none"
-        if not isinstance(result.get("stop_reason"), str):
+        if not isinstance(result.get("stop_reason"), str):  # pragma: no cover - set to a str above
             raise XdbgRpcError("rpc_protocol_error", "x64dbg returned no trace stop reason")
 
     def modules_dump(
