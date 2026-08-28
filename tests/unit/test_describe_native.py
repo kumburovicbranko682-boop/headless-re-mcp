@@ -1093,6 +1093,58 @@ def test_imported_symbols_list_undefined_globals_and_weaks(tmp_path: Path) -> No
     assert "imported_symbols" not in describe_native(defined_only)["native"]
 
 
+def test_weak_imports_name_the_optional_capability_subset(tmp_path: Path) -> None:
+    # A weakly bound undefined symbol is optional capability the loader leaves
+    # null when unresolved -- the ELF pair to a Mach-O weak dylib / PE delay
+    # import. It stays in imported_symbols (the full set) and is named apart
+    # in weak_imports; a hard undefined GLOBAL is an import but not weak.
+    path = _write(
+        tmp_path,
+        "a.bin",
+        _elf64_with_dynsym(
+            [
+                ("hard_puts", _STB_GLOBAL, _STT_FUNC, _SHN_UNDEF),
+                ("weak_pthread_once", _STB_WEAK, _STT_FUNC, _SHN_UNDEF),
+                ("weak_gmon_start", _STB_WEAK, _STT_NOTYPE, _SHN_UNDEF),
+            ]
+        ),
+    )
+    facts = describe_native(path)["native"]
+    # The full import set keeps both bindings...
+    assert facts["imported_symbols"] == ["hard_puts", "weak_gmon_start", "weak_pthread_once"]
+    # ...and the subset names only the weakly bound ones.
+    assert facts["weak_imports"] == ["weak_gmon_start", "weak_pthread_once"]
+
+
+def test_all_hard_imports_read_an_empty_weak_subset(tmp_path: Path) -> None:
+    # A weakly *defined* export is not a weak import: weak_imports is the
+    # undefined-and-weak intersection, so an image whose only undefined
+    # symbols are hard GLOBALs reports an empty (but present) subset.
+    path = _write(
+        tmp_path,
+        "a.bin",
+        _elf64_with_dynsym(
+            [
+                ("hard_puts", _STB_GLOBAL, _STT_FUNC, _SHN_UNDEF),
+                ("weak_export", _STB_WEAK, _STT_OBJECT, 10),  # defined, so an export
+            ]
+        ),
+    )
+    facts = describe_native(path)["native"]
+    assert facts["imported_symbols"] == ["hard_puts"]
+    assert facts["weak_imports"] == []
+    assert facts["exported_symbols"] == ["weak_export"]
+
+
+def test_no_dynsym_leaves_the_weak_import_fact_out_too(tmp_path: Path) -> None:
+    # weak_imports rides with imported_symbols: no .dynsym, no import fact of
+    # any kind, so the subset is absent rather than an empty list.
+    path = _write(tmp_path, "a.bin", _elf64_static_with_symtab())
+    facts = describe_native(path)["native"]
+    assert "imported_symbols" not in facts
+    assert "weak_imports" not in facts
+
+
 def test_no_dynsym_leaves_the_export_fact_out(tmp_path: Path) -> None:
     # An image with section headers but no .dynsym (a static binary keeps only
     # .symtab) exports nothing through the dynamic table; the facts are omitted

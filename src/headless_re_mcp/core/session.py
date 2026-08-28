@@ -5825,11 +5825,18 @@ def _elf_layout_facts(
     # at symbol granularity, that DT_NEEDED only gives per library). Either
     # fact is present only when non-empty, so a static binary with no .dynsym
     # omits both.
-    exports, imports = _elf_dynamic_symbols(stream, order, bits, shoff, shentsize, shnum)
+    exports, imports, weak_imports = _elf_dynamic_symbols(
+        stream, order, bits, shoff, shentsize, shnum
+    )
     if exports:
         facts["exported_symbols"] = exports
     if imports:
         facts["imported_symbols"] = imports
+        # The weakly bound subset of those imports -- optional capability the
+        # loader leaves null when unresolved, the ELF pair to a Mach-O weak
+        # dylib and a PE delay import. Present only alongside imports; an
+        # empty list is a real "every import is hard" answer.
+        facts["weak_imports"] = weak_imports
     # Appended data past everything the headers map -- the PE overlay analogue,
     # where self-extractors and droppers park payloads. Absent means none.
     overlay = _elf_overlay(stream, order, bits, phoff, phentsize, phnum, shoff, shentsize, shnum)
@@ -6398,20 +6405,23 @@ def _elf_is_stripped(
 
 def _elf_dynamic_symbols(
     stream: BinaryIO, order: str, bits: int, shoff: int, shentsize: int, shnum: int
-) -> tuple[list[str], list[str]]:
-    """The (exported, imported) names of the globally/weakly bound dynamic symbols.
+) -> tuple[list[str], list[str], list[str]]:
+    """The (exported, imported, weak-imported) globally/weakly bound dyn symbols.
 
     Locates .dynsym through the section headers (SHT_DYNSYM), reads its linked
     string table (sh_link -> .dynstr), and splits the GLOBAL/WEAK symbols the
     way readelf --dyn-syms does: a real section index means defined here (an
     export, the object's public API surface); SHN_UNDEF means the loader must
     resolve it elsewhere (an import -- the symbol-granular capability signal
-    DT_NEEDED only gives per library). Both lists are sorted for determinism.
-    Every step is bounded (section count, symbol scan, string read, per-list
-    cap) so a hostile or symbol-heavy image degrades to shorter lists rather
-    than a large read, and any structural surprise yields empty lists.
+    DT_NEEDED only gives per library). The third list is the subset of imports
+    that are weakly bound (STB_WEAK + SHN_UNDEF): optional capability the loader
+    leaves null when unresolved rather than failing to start -- the ELF pair to
+    a Mach-O weak dylib and a PE delay import. All three lists are sorted for
+    determinism. Every step is bounded (section count, symbol scan, string read,
+    per-list cap) so a hostile or symbol-heavy image degrades to shorter lists
+    rather than a large read, and any structural surprise yields empty lists.
     """
-    nothing: tuple[list[str], list[str]] = ([], [])
+    nothing: tuple[list[str], list[str], list[str]] = ([], [], [])
     if shoff <= 0 or shnum <= 0 or shnum > _ELF_MAX_SHNUM:
         return nothing
     want = 64 if bits == 64 else 40
@@ -6475,6 +6485,7 @@ def _elf_dynamic_symbols(
     syms = stream.read(sym_stride * count)
     exports: set[str] = set()
     imports: set[str] = set()
+    weak_imports: set[str] = set()
     for i in range(count):
         rec = syms[i * sym_stride : i * sym_stride + sym_stride]
         if len(rec) < sym_stride:
@@ -6489,7 +6500,8 @@ def _elf_dynamic_symbols(
             st_shndx = int.from_bytes(rec[14:16], order)  # type: ignore[arg-type]
         # Only externally visible symbols matter; a reserved section index
         # (SHN_ABS and friends) is neither a plain definition nor an import.
-        if (st_info >> 4) not in (_STB_GLOBAL, _STB_WEAK):
+        binding = st_info >> 4
+        if binding not in (_STB_GLOBAL, _STB_WEAK):
             continue
         if st_shndx >= _SHN_LORESERVE:
             continue
@@ -6501,7 +6513,12 @@ def _elf_dynamic_symbols(
         name = name_at(st_name)
         if name:
             bucket.add(name)
-    return sorted(exports), sorted(imports)
+            # A weakly bound undefined symbol is optional runtime capability:
+            # record it in the subset too (it stays in imports, like a Mach-O
+            # weak dylib stays in the full dylib list).
+            if binding == _STB_WEAK and st_shndx == _SHN_UNDEF:
+                weak_imports.add(name)
+    return sorted(exports), sorted(imports), sorted(weak_imports)
 
 
 def _native_sniff_kind(head: bytes) -> str | None:
