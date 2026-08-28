@@ -315,6 +315,44 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.js_endpoints(path, offset=offset, limit=limit))
 
+    @tools.tool(name="js.functions")
+    def js_functions(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Map the function and class definitions a JavaScript file declares.
+
+        The structural map the other JS reads lack: js.endpoints says what a
+        script calls and js.api_usage what it can do; this says what it
+        *defines*, so a large or deobfuscated bundle can be navigated by
+        definition rather than scrolled. Finds named function declarations
+        (``function f()``, incl. async and generator), function expressions and
+        arrow functions bound to a name (``const f = function...`` / ``const f =
+        () =>``), and class declarations (``class C extends B``) together with
+        their method-syntax members (constructor, methods, static, get/set,
+        async, generator). It reads a comment/string/regex-aware scan, so a
+        ``function`` or ``class`` keyword inside a string or comment is not
+        counted. Deobfuscate/beautify a minified bundle first for the richest
+        result.
+
+        Answers with items (paged, in source order by line), count, total,
+        offset, has_more, a kinds tally (function/arrow/class/method),
+        class_count and scan_capped (the definition cap was hit). Each item
+        carries name, kind, line, and -- for a function/arrow/method -- params
+        (best-effort names), param_count, async and generator; a top-level
+        definition also carries exported (it sits behind an export/export
+        default). A class carries superclass (or null) and method_count (with
+        methods_truncated when a class had more members than the cap); each
+        method additionally carries parent (its class), static, accessor
+        (get/set or null) and constructor. Limits: object-literal methods,
+        arrow/function class *fields*, and prototype assignments are not
+        enumerated, and only the first binding of a multi-declarator statement
+        is seen. A file over 16 MiB is refused as too_large and a missing one as
+        not_found.
+        """
+        return _dump(analysis.js_functions(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0

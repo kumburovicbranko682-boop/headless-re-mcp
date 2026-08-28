@@ -332,6 +332,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "js.secrets",
         "js.blobs",
         "js.endpoints",
+        "js.functions",
         "wasm.info",
         "wasm.functions",
         "wasm.globals",

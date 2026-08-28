@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **339（221 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **340（222 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -411,6 +411,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   method(WebSocket/EventSource 为 null)、kind、dynamic(URL 是带 `${...}` 的模板,插值折叠成该标记)、absolute、host、
   count、lines(至多 5 条采样行)与 url_truncated。词法扫描:拼接出的或存在变量里的 URL 不解析,方法用变量传时按
   调用默认。纯 Python,无需 Node;文件超 16 MiB 回 too_large,缺失回 not_found。
+
+### 新增（JavaScript 定义地图）
+
+- 新增 `js.functions`:把 JS 静态线补上"这脚本定义了什么"这一层——`js.endpoints` 说它调什么、
+  `js.api_usage` 说它能干什么,唯独没有一张*定义*地图,大体积或反混淆后的 bundle 只能靠滚。这个从源码里
+  抽出:命名函数声明(`function f()`,含 async/generator)、绑定到名字的函数表达式与箭头函数(`const f =
+  function...` / `const f = () =>`),以及类声明(`class C extends B`)连同其方法体成员(constructor、普通方法、
+  static、get/set、async、generator),给出每处定义的行号、参数与标志,能按定义导航。走注释/字符串/正则感知
+  的扫描:字符串或注释里的 `function`/`class` 关键字不计入;`var f = function g(` 内层的 `function` 不会被当成
+  第二处声明重复计数;类体成员按花括号深度判定,只认直接成员——方法体内形如 `foo()` 的调用与 `if(`/`for(`
+  不会误当成员。回 items(分页,按源码行序)、count/total/offset/has_more、kinds 统计
+  (function/arrow/class/method)、class_count 与 scan_capped(定义上限)。每条带 name、kind、line;函数/箭头/方法
+  另带 params(尽力还原的名字)、param_count、async、generator;顶层定义带 exported(位于 export/export default 之后)。
+  类带 superclass(或 null)与 method_count(成员超上限时 methods_truncated);每个方法另带 parent(所属类)、static、
+  accessor(get/set 或 null)、constructor。局限:对象字面量方法、箭头/函数形式的类*字段*、prototype 赋值不枚举,
+  多声明符语句只取首个绑定。纯 Python,无需 Node;文件超 16 MiB 回 too_large,缺失回 not_found。
 
 ### 新增（radare2 类结构）
 

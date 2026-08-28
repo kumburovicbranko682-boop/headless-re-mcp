@@ -2,7 +2,7 @@
 
 Where js.deobfuscate / js.beautify shell out to webcrack (and go
 capability_unavailable when Node is absent), these read the file text
-themselves, so they answer on any host. Seven reads:
+themselves, so they answer on any host. Eight reads:
 
 - ``extract_js_strings`` walks the source with a small state machine that
   understands line/block comments, single/double/template string literals and
@@ -29,6 +29,11 @@ themselves, so they answer on any host. Seven reads:
   XMLHttpRequest.open, jQuery $.get/$.ajax, sendBeacon, new WebSocket) and pulls
   each request's target and method, catching the relative API paths a bare-URL
   scan misses -- the "what does this script talk to" view.
+- ``extract_js_functions`` maps the function and class *definitions* a script
+  declares -- named function declarations, named function expressions and arrow
+  functions, and class declarations with their methods -- with each definition's
+  line, params and async/generator/exported flags, the "how is this bundle laid
+  out" view for navigating a large or deobfuscated file.
 
 extract_js_api_usage and extract_js_imports share ``_noise_spans``, which marks
 the byte ranges that are comments, string literals or regex literals so a match
@@ -45,7 +50,7 @@ import gzip
 import json
 import re
 import zlib
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import Counter, OrderedDict
 from typing import Any
 from urllib.parse import urlsplit
@@ -1290,4 +1295,412 @@ def extract_js_endpoints(
         "host_count": len(host_counts),
         "scan_capped": scan_capped,
         "endpoints_capped": endpoints_capped,
+    }
+
+
+# js.functions caps: a generated bundle can define tens of thousands of
+# functions, so the collected set, params per definition, methods per class,
+# the class-body member scan and the page are all bounded.
+_MAX_FUNCTIONS_COLLECT = 20_000
+_MAX_FUNCTIONS_PAGE = 2000
+_MAX_FN_PARAMS = 40
+_MAX_FN_PARAM_LEN = 80
+_MAX_FN_NAME_LEN = 200
+_MAX_CLASS_METHODS = 1000
+_MAX_MEMBER_SCAN = 100_000
+# Walk ceiling for one paren/brace match, so a pathological unbalanced input
+# cannot make the delimiter matcher run the length of a huge file repeatedly.
+_MAX_DELIM_STEPS = 2_000_000
+
+_FN_DECL = re.compile(
+    r"(?:\b(async)\s+)?\bfunction(\s*\*)?\s+(#?[A-Za-z_$][A-Za-z0-9_$]*)\s*\("
+)
+_FN_EXPR = re.compile(
+    r"\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*"
+    r"(async\s+)?function(\s*\*)?\s*(?:[A-Za-z_$][A-Za-z0-9_$]*\s*)?\("
+)
+_ARROW = re.compile(
+    r"\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(async\s+)?"
+    r"(?:\(([^()]{0,300})\)|([A-Za-z_$][A-Za-z0-9_$]*))\s*=>"
+)
+_CLASS = re.compile(
+    r"\bclass\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:extends\s+([A-Za-z0-9_$.]+)\s*)?\{"
+)
+# A class-body member header: optional static/async/*/get|set, then the member
+# name, then its parameter list. Anchored per candidate position, gated by
+# brace depth so it only fires for a direct member, never inside a method body.
+_MEMBER_HEADER = re.compile(
+    r"(?:(static)\s+)?(?:(async)\s+)?(\*)?\s*(?:(get|set)\s+)?"
+    r"(#?[A-Za-z_$][A-Za-z0-9_$]*|constructor)\s*\("
+)
+_EXPORT_PREFIX = re.compile(r"\bexport\s+(?:default\s+)?$")
+_WS = " \t\r\n\f\v"
+
+
+def _js_line(text: str, index: int) -> int:
+    return text.count("\n", 0, index) + 1
+
+
+def _param_name(part: str) -> str:
+    """Best-effort parameter name from one param source fragment."""
+    stripped = part.strip()
+    if not stripped:
+        return ""
+    # A destructuring param has no single name; keep it whole (clipped).
+    if stripped[0] in "{[":
+        return stripped[:_MAX_FN_PARAM_LEN]
+    # Otherwise the name is whatever precedes the default-value '='.
+    return stripped.split("=", 1)[0].strip()[:_MAX_FN_PARAM_LEN]
+
+
+def _split_params(src: str) -> list[str]:
+    """Split a parameter list into best-effort names, respecting nesting/quotes."""
+    src = src.strip()
+    if not src:
+        return []
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    quote: str | None = None
+    i = 0
+    n = len(src)
+    while i < n and len(parts) < _MAX_FN_PARAMS:
+        c = src[i]
+        if quote is not None:
+            buf.append(c)
+            if c == "\\" and i + 1 < n:
+                buf.append(src[i + 1])
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+            i += 1
+            continue
+        if c in "\"'`":
+            quote = c
+            buf.append(c)
+        elif c in "([{":
+            depth += 1
+            buf.append(c)
+        elif c in ")]}":
+            depth = max(0, depth - 1)
+            buf.append(c)
+        elif c == "," and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(c)
+        i += 1
+    if buf and len(parts) < _MAX_FN_PARAMS:
+        parts.append("".join(buf))
+    names: list[str] = []
+    for part in parts:
+        name = _param_name(part)
+        if name:
+            names.append(name)
+    return names
+
+
+def _match_delim(
+    text: str,
+    spans: list[tuple[int, int]],
+    starts: list[int],
+    open_idx: int,
+    open_ch: str,
+    close_ch: str,
+    limit_idx: int,
+) -> int | None:
+    """Index just past the delimiter matching the one at open_idx, or None.
+
+    Skips characters inside comment/string/regex spans so a brace or paren in a
+    string does not throw the count off. Bounded so an unbalanced input cannot
+    spin.
+    """
+    depth = 0
+    i = open_idx
+    n = min(limit_idx, len(text))
+    steps = 0
+    while i < n:
+        steps += 1
+        if steps > _MAX_DELIM_STEPS:
+            return None
+        if _in_noise(starts, spans, i):
+            pos = bisect_right(starts, i) - 1
+            i = spans[pos][1]
+            continue
+        c = text[i]
+        if c == open_ch:
+            depth += 1
+        elif c == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return None
+
+
+def _skip_ws_noise(
+    text: str, spans: list[tuple[int, int]], starts: list[int], i: int, limit: int
+) -> int:
+    """Advance past whitespace and comment/string spans to the next code char."""
+    while i < limit:
+        if _in_noise(starts, spans, i):
+            pos = bisect_right(starts, i) - 1
+            i = spans[pos][1]
+            continue
+        if text[i] in _WS:
+            i += 1
+            continue
+        break
+    return i
+
+
+def _class_method_items(
+    text: str,
+    spans: list[tuple[int, int]],
+    starts: list[int],
+    brace_open_idx: int,
+    parent: str,
+) -> tuple[list[JsonObject], bool]:
+    """Enumerate the direct method members of one class body.
+
+    Scans for method-syntax members (``name(params) {``, incl. constructor,
+    static, get/set, async and generator) at brace depth 0 of the class body;
+    arrow/function class *fields* are not treated as methods. Depth is tracked
+    off a brace-point index so a method-shaped token inside another method's
+    body is never mistaken for a member.
+    """
+    body_end = _match_delim(text, spans, starts, brace_open_idx, "{", "}", len(text))
+    if body_end is None:
+        return [], False
+    point_pos: list[int] = []
+    point_depth: list[int] = []
+    depth = 0
+    i = brace_open_idx + 1
+    limit = body_end - 1
+    steps = 0
+    while i < limit:
+        steps += 1
+        if steps > _MAX_DELIM_STEPS:
+            break
+        if _in_noise(starts, spans, i):
+            pos = bisect_right(starts, i) - 1
+            i = spans[pos][1]
+            continue
+        c = text[i]
+        if c == "{":
+            depth += 1
+            point_pos.append(i)
+            point_depth.append(depth)
+        elif c == "}":
+            depth -= 1
+            point_pos.append(i)
+            point_depth.append(depth)
+        i += 1
+
+    methods: list[JsonObject] = []
+    truncated = False
+    scanned = 0
+    for match in _MEMBER_HEADER.finditer(text, brace_open_idx + 1, body_end):
+        scanned += 1
+        if scanned > _MAX_MEMBER_SCAN:
+            truncated = True
+            break
+        start = match.start()
+        if _in_noise(starts, spans, start):
+            continue
+        if start > 0 and (text[start - 1].isalnum() or text[start - 1] in "_$."):
+            continue
+        k = bisect_left(point_pos, start) - 1
+        if (point_depth[k] if k >= 0 else 0) != 0:
+            continue
+        close = _match_delim(text, spans, starts, match.end() - 1, "(", ")", body_end)
+        if close is None:
+            continue
+        after = _skip_ws_noise(text, spans, starts, close, body_end)
+        if after >= body_end or text[after] != "{":
+            continue
+        name = match.group(5)[:_MAX_FN_NAME_LEN]
+        params = _split_params(text[match.end() : close - 1])
+        methods.append(
+            {
+                "_start": start,
+                "name": name,
+                "kind": "method",
+                "line": _js_line(text, start),
+                "params": params,
+                "param_count": len(params),
+                "async": bool(match.group(2)),
+                "generator": bool(match.group(3)),
+                "parent": parent,
+                "static": bool(match.group(1)),
+                "accessor": match.group(4) or None,
+                "constructor": name == "constructor",
+            }
+        )
+        if len(methods) >= _MAX_CLASS_METHODS:
+            truncated = True
+            break
+    return methods, truncated
+
+
+def extract_js_functions(
+    text: str, *, offset: int = 0, limit: int = 200
+) -> JsonObject:
+    """Map the function and class definitions a script declares, with location.
+
+    The structural/navigational read the other JS scans lack: where
+    extract_js_endpoints says what a script calls and extract_js_api_usage what
+    it can do, this says what it *defines* -- named function declarations,
+    function expressions and arrow functions bound to a name, and class
+    declarations with their methods -- so a large or deobfuscated bundle can be
+    navigated by definition. Reads a comment/string/regex-aware scan, so a
+    ``function`` keyword inside a string or comment is not counted.
+    """
+    spans = _noise_spans(text)
+    starts = [s for s, _ in spans]
+
+    def _exported(start: int) -> bool:
+        return bool(_EXPORT_PREFIX.search(text[max(0, start - 40) : start]))
+
+    # (start, header_end, record, class_brace_open_or_None)
+    candidates: list[tuple[int, int, JsonObject, int | None]] = []
+
+    for match in _FN_DECL.finditer(text):
+        if _in_noise(starts, spans, match.start()):
+            continue
+        close = _match_delim(text, spans, starts, match.end() - 1, "(", ")", len(text))
+        params = _split_params(text[match.end() : close - 1]) if close else []
+        candidates.append(
+            (
+                match.start(),
+                match.end(),
+                {
+                    "_start": match.start(),
+                    "name": match.group(3)[:_MAX_FN_NAME_LEN],
+                    "kind": "function",
+                    "line": _js_line(text, match.start()),
+                    "params": params,
+                    "param_count": len(params),
+                    "async": bool(match.group(1)),
+                    "generator": bool(match.group(2)),
+                    "exported": _exported(match.start()),
+                },
+                None,
+            )
+        )
+
+    for match in _FN_EXPR.finditer(text):
+        if _in_noise(starts, spans, match.start()):
+            continue
+        close = _match_delim(text, spans, starts, match.end() - 1, "(", ")", len(text))
+        params = _split_params(text[match.end() : close - 1]) if close else []
+        candidates.append(
+            (
+                match.start(),
+                match.end(),
+                {
+                    "_start": match.start(),
+                    "name": match.group(1)[:_MAX_FN_NAME_LEN],
+                    "kind": "function",
+                    "line": _js_line(text, match.start()),
+                    "params": params,
+                    "param_count": len(params),
+                    "async": bool(match.group(2)),
+                    "generator": bool(match.group(3)),
+                    "exported": _exported(match.start()),
+                },
+                None,
+            )
+        )
+
+    for match in _ARROW.finditer(text):
+        if _in_noise(starts, spans, match.start()):
+            continue
+        if match.group(3) is not None:
+            params = _split_params(match.group(3))
+        elif match.group(4):
+            params = [match.group(4)[:_MAX_FN_PARAM_LEN]]
+        else:
+            params = []
+        candidates.append(
+            (
+                match.start(),
+                match.end(),
+                {
+                    "_start": match.start(),
+                    "name": match.group(1)[:_MAX_FN_NAME_LEN],
+                    "kind": "arrow",
+                    "line": _js_line(text, match.start()),
+                    "params": params,
+                    "param_count": len(params),
+                    "async": bool(match.group(2)),
+                    "generator": False,
+                    "exported": _exported(match.start()),
+                },
+                None,
+            )
+        )
+
+    for match in _CLASS.finditer(text):
+        if _in_noise(starts, spans, match.start()):
+            continue
+        candidates.append(
+            (
+                match.start(),
+                match.end(),
+                {
+                    "_start": match.start(),
+                    "name": match.group(1)[:_MAX_FN_NAME_LEN],
+                    "kind": "class",
+                    "line": _js_line(text, match.start()),
+                    "superclass": (match.group(2) or None),
+                    "exported": _exported(match.start()),
+                },
+                match.end() - 1,
+            )
+        )
+
+    # Drop a header that overlaps an earlier-starting one -- e.g. the `function`
+    # keyword inside `var f = function g(` would otherwise be counted a second
+    # time as its own declaration.
+    candidates.sort(key=lambda c: (c[0], -(c[1] - c[0])))
+    items: list[JsonObject] = []
+    scan_capped = False
+    claimed_until = -1
+    for start, end, rec, brace_open in candidates:
+        if start < claimed_until:
+            continue
+        claimed_until = max(claimed_until, end)
+        if len(items) >= _MAX_FUNCTIONS_COLLECT:
+            scan_capped = True
+            break
+        items.append(rec)
+        if rec["kind"] == "class" and brace_open is not None:
+            methods, method_more = _class_method_items(
+                text, spans, starts, brace_open, str(rec["name"])
+            )
+            rec["method_count"] = len(methods)
+            rec["methods_truncated"] = method_more
+            for method in methods:
+                if len(items) >= _MAX_FUNCTIONS_COLLECT:
+                    scan_capped = True
+                    break
+                items.append(method)
+
+    items.sort(key=lambda r: int(r["_start"]))
+    for rec in items:
+        rec.pop("_start", None)
+    kinds: Counter[str] = Counter(str(r["kind"]) for r in items)
+    start, cap = _clamp_page(offset, limit, max_limit=_MAX_FUNCTIONS_PAGE)
+    window = items[start : start + cap]
+    return {
+        "items": window,
+        "count": len(window),
+        "total": len(items),
+        "offset": start,
+        "has_more": start + len(window) < len(items),
+        "kinds": dict(kinds),
+        "class_count": kinds.get("class", 0),
+        "scan_capped": scan_capped,
     }
