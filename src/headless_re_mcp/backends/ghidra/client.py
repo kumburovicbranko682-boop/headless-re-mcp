@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -30,6 +31,21 @@ _PROJECT_LOCKS = tuple(RLock() for _ in range(64))
 def _project_lock(project_dir: Path) -> Any:
     key = os.path.normcase(str(project_dir.expanduser().resolve()))
     return _PROJECT_LOCKS[hash(key) % len(_PROJECT_LOCKS)]
+
+
+def _isolated_project_home() -> Path:
+    """A dot-free directory to hold Ghidra's throwaway project.
+
+    Ghidra's ProjectLocator rejects any path element that begins with '.', and
+    the default Linux artifact root is ``~/.local/share/headless-re-mcp`` --
+    whose ``.local`` element made every headless run created under it fail with
+    a ProjectLocator error before analysis even began, on both the Jython and
+    PyGhidra launch paths. The project is disposable (each launch imports the
+    binary and runs under -deleteProject), so keep it in the system temp dir --
+    dot-free on a normal host -- and leave the caller's project_dir purely for
+    the export JSON that is read back.
+    """
+    return Path(tempfile.mkdtemp(prefix="headless_ghidra_"))
 
 
 class GhidraError(RuntimeError):
@@ -340,9 +356,13 @@ class GhidraClient:
         # parses last, still wins.
         existing = env.get("JAVA_TOOL_OPTIONS", "").strip()
         env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap} {existing}".strip()
+        # The Ghidra project lives in a dot-free temp dir, not under project_dir:
+        # a dotted ancestor (the default ~/.local artifact root) makes
+        # ProjectLocator refuse it. project_dir still holds the export JSON.
+        project_home = _isolated_project_home()
         cmd = [
             str(self.analyze),
-            str(project_dir),
+            str(project_home),
             "HeadlessRE",
             "-import",
             str(binary),
@@ -375,6 +395,10 @@ class GhidraClient:
                 "backend_error",
                 f"failed to launch analyzeHeadless: {exc}",
             ) from exc
+        finally:
+            # -deleteProject clears the project's contents; drop the temp holder
+            # itself so a run leaves nothing behind under the system temp dir.
+            shutil.rmtree(project_home, ignore_errors=True)
         stdout = completed.stdout.decode("utf-8", errors="replace")[:_MAX_STDOUT]
         stderr = completed.stderr.decode("utf-8", errors="replace")[:50_000]
         return stdout, stderr, int(completed.returncode)
@@ -394,15 +418,17 @@ class GhidraClient:
         PyGhidra runs a ``.py`` script directly rather than via analyzeHeadless'
         ``-postScript``/``-scriptPath`` machinery, so the analyzeHeadless flags
         are translated into PyGhidra's positional model. The Ghidra project is
-        kept in a private subdirectory so the export JSON the caller reads back
-        (written under ``project_dir``) survives the post-run cleanup, matching
-        the ``-deleteProject`` behaviour of the Jython path.
+        kept in a dot-free temp dir (see _isolated_project_home) so the export
+        JSON the caller reads back (written under ``project_dir``) survives the
+        post-run cleanup, matching the ``-deleteProject`` behaviour of the
+        Jython path.
         """
         script_name, script_args = _split_post_script(extra)
-        # Ghidra's ProjectLocator rejects path elements beginning with '.', so
-        # this holding directory for the throwaway project must be dot-free.
-        proj_home = project_dir / "pyghidra_project"
-        proj_home.mkdir(parents=True, exist_ok=True)
+        # Ghidra's ProjectLocator rejects any path element beginning with '.',
+        # and project_dir lives under the artifact root (~/.local/share on
+        # Linux), so the throwaway project cannot go there. Hold it in a dot-free
+        # temp dir; the export JSON still lands under project_dir for the caller.
+        proj_home = _isolated_project_home()
         if script_name is None:
             # A bare PyGhidra invocation with no script drops into a REPL, which
             # would hang headless. analyze-only callers just want import+analyze,
@@ -452,8 +478,9 @@ class GhidraClient:
                 f"failed to launch pyghidra: {exc}",
             ) from exc
         finally:
-            if delete_project:
-                shutil.rmtree(proj_home, ignore_errors=True)
+            # proj_home is always a throwaway temp dir now, so drop it
+            # unconditionally rather than only under delete_project.
+            shutil.rmtree(proj_home, ignore_errors=True)
         stdout = completed.stdout.decode("utf-8", errors="replace")[:_MAX_STDOUT]
         stderr = completed.stderr.decode("utf-8", errors="replace")[:50_000]
         return stdout, stderr, int(completed.returncode)

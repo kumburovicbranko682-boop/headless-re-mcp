@@ -7,7 +7,10 @@ end across every exposed ghidra tool: the PE test lists functions, pages
 symbols and decompiles; the ELF test compiles a two-function fixture, runs the
 analyze-only path, and resolves the cross-references to a callee, so the one
 ExportJson.py mode with no other live coverage (xrefs) runs against the real
-interpreter too. skip != pass: they
+interpreter too. A third test drives the same ELF through the *service*
+layer -- session.create classifying the ELF, then ghidra.functions on that
+session id -- so the session→require_binary→GhidraClient wiring the client
+tests bypass is proven on a native Linux binary. skip != pass: they
 skip only when HEADLESS_RE_GHIDRA_HOME is unset or names a missing directory,
 or the install is not runnable here (no java, or PyGhidra without its Python
 package) -- and the skip message says which.
@@ -23,6 +26,8 @@ from pathlib import Path
 import pytest
 
 from headless_re_mcp.backends.ghidra.client import GhidraClient
+from headless_re_mcp.config import Settings
+from headless_re_mcp.core.service import AnalysisService
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # analyzeHeadless imports and auto-analyses the whole PE before the export
@@ -202,3 +207,70 @@ def test_m11_ghidra_live_elf_analyze_functions_and_xrefs(tmp_path: Path) -> None
         and main_entry <= va < main_end
     ]
     assert calls, f"no CALL to greet from inside main among {rows}"
+
+
+def _build_elf_or_skip(tmp_path: Path) -> Path:
+    """Compile the two-function ELF fixture, or skip if the toolchain cannot."""
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    if gcc is None:
+        pytest.skip("no C compiler to build an ELF fixture — live Gate not run (skip≠pass)")
+    source = tmp_path / "elf_fixture.c"
+    source.write_text(
+        "int greet(int value) { return value + 1; }\nint main(void) { return greet(41); }\n"
+    )
+    fixture = tmp_path / "elf_fixture"
+    build = subprocess.run(
+        [gcc, "-no-pie", "-O0", "-o", str(fixture), str(source)],
+        capture_output=True,
+        text=True,
+        timeout=120.0,
+    )
+    if build.returncode != 0 or not fixture.is_file():
+        pytest.skip(f"could not build a non-PIE ELF ({build.stderr.strip()[:200]}) — skip≠pass")
+    return fixture
+
+
+@pytest.mark.integration
+def test_m11_ghidra_live_elf_session_reaches_ghidra_functions(tmp_path: Path) -> None:
+    """session.create on an ELF, then ghidra.functions, produces real functions.
+
+    The client tests above call GhidraClient directly; the service unit tests
+    prove an ELF session reaches the portable backends but, with Ghidra absent,
+    only get as far as capability_unavailable -- they cannot prove the analysis
+    itself. This closes that loop with the real launcher: an ELF is classified
+    as its own target with an architecture, and the session id drives
+    service.ghidra_functions all the way through require_binary into a live
+    headless run that names the fixture's own greet(). A stray require_pe() on
+    the ghidra path, or a create() that mis-hydrated the ELF's binary, would
+    surface here where the direct-client gates cannot see it.
+    """
+    home = _ghidra_home()
+    if not GhidraClient(home=home).available:
+        pytest.skip(
+            "Ghidra install not runnable here (no java, or PyGhidra without its "
+            "python package) — live Gate not run (skip≠pass)"
+        )
+    fixture = _build_elf_or_skip(tmp_path)
+
+    settings = Settings.load()
+    assert settings.ghidra_home is not None, "HEADLESS_RE_GHIDRA_HOME did not reach Settings"
+    service = AnalysisService(settings)
+    try:
+        created = service.create_session(str(fixture))
+        assert created.ok and created.data is not None, created.error
+        session = created.data["session"]
+        assert session["target"] == "elf", session["target"]
+        assert session["architecture"] == "x64", session["architecture"]
+        session_id = str(session["id"])
+
+        result = service.ghidra_functions(session_id, limit=64, timeout=_TIMEOUT)
+        assert result.ok, result.error
+        assert result.data is not None
+        names = {
+            item.get("name")
+            for item in result.data.get("items") or []
+            if isinstance(item.get("name"), str)
+        }
+        assert "greet" in names, sorted(names)
+    finally:
+        service.close_session(session_id)

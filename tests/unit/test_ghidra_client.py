@@ -557,8 +557,63 @@ def test_pyghidra_launch_translates_analyzeheadless_flags(
     assert any(arg.endswith("ExportJson.py") for arg in cmd)
     assert "functions" in cmd
     assert "8" in cmd
-    # The throwaway project directory is dot-free and cleaned up after the run.
-    assert not (tmp_path / "project" / "pyghidra_project").exists()
+    # The throwaway project is relocated out of the (possibly dotted) artifact
+    # dir and cleaned up after the run. project_dir keeps only the export JSON.
+    proj_home = Path(cmd[cmd.index("--project-path") + 1])
+    assert (tmp_path / "project") not in proj_home.parents
+    assert not proj_home.exists(), "the throwaway pyghidra project was not cleaned up"
+
+
+def test_pyghidra_keeps_the_project_off_a_dotted_artifact_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dotted element in project_dir must not reach the Ghidra project path.
+
+    Ghidra's ProjectLocator rejects any path element that begins with '.', and
+    the default Linux artifact root is ~/.local/share/headless-re-mcp -- so a
+    project created under project_dir there failed every headless run before
+    analysis began. Regression pin without a live Ghidra: give project_dir a
+    real dotted ancestor and prove the launch's --project-path neither sits
+    under it nor carries a dotted element, while the export JSON the caller
+    reads back still lands under project_dir. The direct-client live gates
+    never caught this because they run under pytest's dot-free tmp_path; only
+    the service, on the real artifact root, hit it.
+    """
+    monkeypatch.setattr(ghidra_client.importlib.util, "find_spec", lambda name: object())
+    home = _fake_pyghidra_home(tmp_path)
+    client = ghidra_client.GhidraClient(home=home)
+    client.java = tmp_path / "java"
+    client.java.write_bytes(b"")
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        argv = [str(part) for part in cmd]
+        calls.append(argv)
+        for arg in argv:
+            if arg.endswith(".json"):
+                Path(arg).write_text(
+                    '{"mode": "functions", "items": [], "count": 0, "has_more": false}',
+                    encoding="utf-8",
+                )
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    # A project_dir with a dotted ancestor, exactly like ~/.local/share/....
+    dotted_root = tmp_path / ".local" / "share" / "hre" / "ghidra" / "sess-1"
+    result = client.functions(_binary(tmp_path), dotted_root, limit=8)
+
+    assert result["mode"] == "functions"
+    # The export JSON the caller reads back is still under the dotted dir.
+    assert Path(result["export_path"]).parent == dotted_root
+    cmd = calls[0]
+    proj_home = Path(cmd[cmd.index("--project-path") + 1])
+    assert dotted_root not in proj_home.parents, "project sat under the dotted artifact dir"
+    assert not any(part.startswith(".") for part in proj_home.parts), (
+        f"the project path carries a dotted element Ghidra would reject: {proj_home}"
+    )
+    assert not proj_home.exists(), "the throwaway project was not cleaned up"
 
 
 def test_pyghidra_preserves_operator_java_tool_options(
@@ -642,8 +697,11 @@ def test_pyghidra_analyze_drives_a_probe_script_instead_of_a_bare_repl(
     # rather than launching pyghidra with no script (which would hang in a REPL).
     assert any(arg.endswith("ExportJson.py") for arg in cmd)
     assert any(arg.endswith("_analyze_probe.json") for arg in cmd)
-    # The throwaway pyghidra project is cleaned up after the analyze run.
-    assert not (project / "pyghidra_project").exists()
+    # The throwaway pyghidra project is relocated off the artifact dir and
+    # cleaned up after the analyze run.
+    proj_home = Path(cmd[cmd.index("--project-path") + 1])
+    assert project not in proj_home.parents
+    assert not proj_home.exists()
 
 
 def test_pyghidra_timeout_is_classified_and_cleans_up_the_project(
@@ -666,8 +724,11 @@ def test_pyghidra_timeout_is_classified_and_cleans_up_the_project(
     client.java.write_bytes(b"")
     assert client.uses_pyghidra is True
 
+    seen: list[list[str]] = []
+
     def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
-        del cmd, kwargs
+        del kwargs
+        seen.append([str(part) for part in cmd])
         raise TimedOut(300.0, [4321])
 
     monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
@@ -677,7 +738,8 @@ def test_pyghidra_timeout_is_classified_and_cleans_up_the_project(
     assert caught.value.code == "timeout"
     assert "pyghidra" in caught.value.message
     assert caught.value.details.get("killed_pids") == [4321]
-    assert not (project / "pyghidra_project").exists()
+    proj_home = Path(seen[0][seen[0].index("--project-path") + 1])
+    assert not proj_home.exists(), "a timed-out run left the throwaway project behind"
 
 
 def test_pyghidra_launch_failure_is_backend_error_and_cleans_up(
@@ -698,8 +760,11 @@ def test_pyghidra_launch_failure_is_backend_error_and_cleans_up(
     client.java.write_bytes(b"")
     assert client.uses_pyghidra is True
 
+    seen: list[list[str]] = []
+
     def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
-        del cmd, kwargs
+        del kwargs
+        seen.append([str(part) for part in cmd])
         raise OSError("interpreter is not executable")
 
     monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
@@ -708,7 +773,8 @@ def test_pyghidra_launch_failure_is_backend_error_and_cleans_up(
         client.functions(_binary(tmp_path), project, limit=8)
     assert caught.value.code == "backend_error"
     assert "failed to launch pyghidra" in caught.value.message
-    assert not (project / "pyghidra_project").exists()
+    proj_home = Path(seen[0][seen[0].index("--project-path") + 1])
+    assert not proj_home.exists(), "a failed launch left the throwaway project behind"
 
 
 def _run_writing(payload: str, *, exit_code: int) -> Any:
