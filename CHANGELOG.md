@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（wasm.wat 拒绝一切 off-by-default 特性的真实模块：tail-call/线程/异常等）
+
+- `wasm.wat` 跑 `wasm2wat <file>`,不带任何特性开关。wasm2wat 只接受 MVP 加少数默认开启的
+  提案,碰到任一默认关闭的特性(tail-call → `unexpected opcode: 0x12`、共享内存/原子 →
+  `memory may not be shared`、异常处理、GC、memory64、multi-memory 等)会非零退出且无输出,
+  在后端表现为 `backend_error: wasm2wat failed`。而真实现代模块大量用到这些:emscripten
+  的 pthreads 构建带共享内存,C++ 异常编译成 EH 提案——反汇编器的职责是读入手上任何合法
+  模块,不是执行某种校验档位。用真实 wabt 的 tail-call/线程模块端到端复现确认。改法:给
+  `wasm2wat` 传 `--enable-all`。**只改 `wat()`**:`wasm-objdump` 没有这个 flag(传了会直接
+  报错退出 1)且本就容忍这些特性,所以 `info()` 刻意不带。此前没被发现,是因为集成 gate
+  只用一个空模块跑 `wasm_wat`、从不含任何特性;单测 fake 了 `run_bounded`。修复附带:
+  集成 gate 新增 `test_wasm_wat_accepts_post_mvp_features`(内嵌 40 字节 tail-call 模块的
+  真机 gate,缺 wabt 则 skip;已验证去掉 `--enable-all` 即以真实 `unexpected opcode` 挂掉),
+  以及 `tests/unit/test_wasm_wat_enable_all.py`(2 例 hermetic:钉死 `wat` 带 `--enable-all`、
+  `info` 不带)。全量单测 5073 通过。
+
 ### 修复（audit trim 测试假设时钟每次调用严格递增）
 
 - main 新落的 `test_repository_inmemory_close_trim.py::test_audit_log_trims_to_the_newest_rows`

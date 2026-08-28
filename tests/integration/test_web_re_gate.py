@@ -97,3 +97,30 @@ def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
         assert "module" in result.data["wat"]
     finally:
         service.close_all()
+
+
+# A 40-byte module whose exported function does `return_call` — the tail-call
+# proposal, off by default in wasm2wat. Without --enable-all wasm2wat bails
+# with "unexpected opcode: 0x12" (exit 1, no output) and the backend raises.
+_TAILCALL_WASM = bytes.fromhex(
+    "0061736d010000000105016000017f0303020000070501016700010a0b020400412a0b040012000b"
+)
+
+
+@pytest.mark.integration
+def test_wasm_wat_accepts_post_mvp_features(tmp_path: Path) -> None:
+    """Real modern WASM uses off-by-default features; the disassembler must read
+    them. This module uses tail-call, which wasm2wat refuses unless every
+    feature is enabled — the exact gap --enable-all closes.
+    """
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm2wat) not installed — WASM feature Gate not run (skip != pass)")
+    module = tmp_path / "tailcall.wasm"
+    module.write_bytes(_TAILCALL_WASM)
+    service = AnalysisService()
+    try:
+        result = service.wasm_wat(str(module))
+        assert result.ok, result.error
+        assert "return_call" in result.data["wat"], result.data["wat"][:200]
+    finally:
+        service.close_all()

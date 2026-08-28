@@ -257,7 +257,18 @@ class WasmClient:
     def wat(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path, self._wasm2wat, "wasm2wat")
         assert self._wasm2wat is not None
-        stdout, stderr, code = _run([str(self._wasm2wat), str(resolved)], timeout=timeout)
+        # wasm2wat only accepts MVP + a handful of on-by-default proposals; it
+        # rejects a module using any off-by-default feature ("unexpected opcode"
+        # for tail-call, "memory may not be shared" for threads/atomics, etc.)
+        # with a non-zero exit and no output, which surfaced as backend_error.
+        # Real modern modules routinely use these -- emscripten pthreads builds
+        # ship shared memory, C++ exceptions compile to the EH proposal. A
+        # disassembler's job is to read whatever it is handed, not to enforce a
+        # validation profile, so enable every feature. (wasm-objdump has no such
+        # flag and already tolerates these, so info() deliberately omits it.)
+        stdout, stderr, code = _run(
+            [str(self._wasm2wat), "--enable-all", str(resolved)], timeout=timeout
+        )
         if code != 0 and not stdout:
             raise JsReError(
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
