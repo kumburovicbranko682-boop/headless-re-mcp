@@ -78,6 +78,48 @@ def test_report_renders_session_and_grouped_findings() -> None:
     assert markdown.endswith("\n")
 
 
+def test_report_title_is_length_bounded_like_every_other_field() -> None:
+    """The H1 heading is the one field that skips _cell, so an unbounded caller
+    title otherwise grew the persisted report without limit. It must be clipped
+    the way _cell clips values (the report's own discipline, and the 200-char cap
+    the agent thread store already applies to titles)."""
+    from headless_re_mcp.reporting import _MAX_TITLE
+
+    markdown = render_markdown_report(
+        session=_SESSION,
+        title="T" * 5000,
+        generated_at="t",
+    )
+    heading = markdown.splitlines()[0]
+    assert heading.startswith("# ")
+    assert heading.endswith("…")
+    # The whole heading line is "# " + clipped title, so bounded near _MAX_TITLE
+    # rather than echoing the 5000-char input.
+    assert len(heading) <= _MAX_TITLE + 2
+    assert "T" * 5000 not in markdown
+
+
+def test_report_title_newlines_cannot_break_out_of_the_heading() -> None:
+    """A newline in the title would otherwise split the `# ` line, injecting
+    arbitrary document structure after the heading. Newlines are neutralised to
+    spaces, like _cell does for table values, so the heading stays one line."""
+    markdown = render_markdown_report(
+        session=_SESSION,
+        title="Real title\n## Injected Section\nbody",
+        generated_at="t",
+    )
+    lines = markdown.splitlines()
+    assert lines[0] == "# Real title ## Injected Section body"
+    # The injected text stayed on the heading line; it did not become its own
+    # markdown heading.
+    assert "## Injected Section" not in lines[1:]
+
+
+def test_report_blank_title_falls_back_to_the_default_heading() -> None:
+    markdown = render_markdown_report(session=_SESSION, title="   \n  ", generated_at="t")
+    assert markdown.startswith("# Analysis report — C:\\samples\\fixture.exe")
+
+
 def test_report_states_empty_sections_explicitly() -> None:
 
     markdown = render_markdown_report(session=_SESSION, generated_at="t")

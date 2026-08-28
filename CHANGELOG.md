@@ -24,6 +24,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（`report.generate` 的 `title` 此前不限长、也不中和换行:Markdown 报告里每个取值都过 `_cell`(裁到 120 字、`|` 转义、`\n`→空格),唯独标题作为 H1(`# {heading}`)绕过 `_cell` 直出。于是一个兆字节 `title` 会把整份报告——落盘为 artifact 且内联回显——撑到无界;带换行的 `title`(`"X\n## 注入段\n..."`)更会从 `# ` 那行“逃逸”,在标题后注入任意文档结构。与报告自身的裁剪纪律、`_note_if_partial` 的诚实上限,以及 agent 线程库对 title 一贯裁到 200 字(注释记载“10 万字 id 曾把库撑到 163 KB”)都不一致）
+
+- 在纯渲染器 `reporting.py` 里给标题上界:新增 `_MAX_TITLE=200` 与 `_heading(title, subject)`——把 `\n`/`\r` 换成空格(与 `_cell` 一致,标题保持单行)、超 200 字裁剪并接省略号、裁空后回退到默认 `Analysis report — {subject}`;渲染主体改调 `_heading`。放在纯函数里,无需数据库/文件即可单测(模块本身的设计目标)。落盘文件与内联回显都随之被界住。
+- 测试:`test_reporting.py` 新增三例——超长标题按 `_MAX_TITLE` 裁剪(断言 5000 字输入不出现在报告里、标题行以 `…` 收尾)、标题里的换行不能撑破 H1(注入的 `## 段`留在标题行、未成为独立标题)、纯空白/换行标题回退默认。带外验证:把渲染主体回退成旧的 `title or ...` 直出后三例如期失败(失败输出里可见旧码把 `#    \n  \n\n...` 换行直接带进标题)——证明有牙。
+
 ### 修复（Android 包名此前只限结构、不限长度:`_check_package`(adb)与 `spawn`(frida)都用 `^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$` 校验包名,该模式约束结构却不封顶长度——与限长的 `_SERIAL_RE{1,128}`/selector 2048B 不同。一个结构合法但兆字节长的 id(`a.a.a...` 重复)能过校验,进而经 Frida RPC 下发到 `device.spawn`、或落到 adb 设备 shell 命令行。frida 侧注释(上一条改写后)把 “package” 列为已遵循该限长纪律的一员,而代码并未落实,是同类“文档声称、代码没做”）
 
 - 两个后端一致封顶包名长度(512 字节,与 frida 的 `_MAX_RPC_NAME_BYTES` 对齐):adb 新增 `_MAX_PACKAGE_LEN=512`,`_check_package` 在跑正则前先判长(超长报 `invalid_params`/`package name too long`/`cap`);frida `spawn` 在正则前调用共享的 `_reject_unbounded_rpc_name(pkg, field="package")`,使限长在 `_resolve_device` 之前完成——超长包名不再触达设备解析,注释里“package 已遵循该纪律”遂成真。长度检查置于正则之前,兆字节输入不会先喂给正则。

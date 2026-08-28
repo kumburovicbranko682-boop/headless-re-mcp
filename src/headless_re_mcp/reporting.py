@@ -22,6 +22,28 @@ JsonObject = dict[str, Any]
 
 _MAX_CELL = 120
 
+_MAX_TITLE = 200
+
+
+def _heading(title: object, subject: object) -> str:
+    """Bound the report title the way ``_cell`` bounds every other value.
+
+    The H1 heading is the one field that skips ``_cell``, so an unbounded caller
+    title made the whole report -- persisted as an artifact and echoed inline --
+    grow without limit, and a title carrying a newline broke out of the ``# ``
+    line into arbitrary document structure. Neutralise newlines and clip to a
+    length a heading never legitimately exceeds (matching the 200-char cap the
+    agent thread store already applies to titles), falling back to the default
+    when nothing usable is left.
+    """
+    default = f"Analysis report — {subject}"
+    if title is None:
+        return default
+    text = str(title).replace("\n", " ").replace("\r", " ").strip()
+    if len(text) > _MAX_TITLE:
+        text = text[: _MAX_TITLE - 1] + "…"
+    return text or default
+
 
 def _cell(value: object) -> str:
 
@@ -109,7 +131,7 @@ def render_markdown_report(
 
     subject = session.get("binary") or session.get("id") or "session"
 
-    heading = title or f"Analysis report — {subject}"
+    heading = _heading(title, subject)
 
     lines: list[str] = [f"# {heading}", ""]
 
