@@ -189,6 +189,70 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="proxy.secrets")
+    def proxy_secrets(
+        session_id: str,
+        kind: str = "",
+        reveal: bool = False,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        status: Annotated[int, Field(ge=0, le=599)] = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=500)] = 100,
+    ) -> dict[str, Any]:
+        """Extract authentication and secret material from the capture.
+
+        Where proxy.search finds a literal a caller already knows, this is the
+        inverse -- it enumerates the credentials flowing through the capture
+        without one: the Authorization/Proxy-Authorization request headers (with
+        their scheme and, for a JWT bearer, the decoded header and registered
+        claims), the common API-key and token request headers, the secret-ish URL
+        query parameters, and the cookies from request Cookie and response
+        Set-Cookie. It is the traffic analogue of a secret scan over a codebase.
+        Identical secrets across flows collapse into one row whose count and hosts
+        grow, so the reply is the set of distinct credentials, ranked by how
+        widely each is used.
+
+        Values are redacted to a first/last-few-chars preview by default -- with
+        value_length and value_sha256 (a 16-hex prefix) so the same secret can be
+        correlated across rows without exposing it; pass reveal true to return the
+        full value for replay. Accepts the same filters as proxy.flows (method
+        exact verb; host, url_contains, content_type case-insensitive substrings;
+        status exact code, 0 means any), plus kind to keep only one category
+        (authorization, api_key_header, query_param, cookie, set_cookie).
+
+        Answers with secrets, each {kind, name, location (request/response),
+        value, value_length, value_sha256, count (distinct flows it appeared in),
+        hosts, example_id} -- plus scheme for an authorization, session and
+        cookie_attributes for a cookie/set_cookie, jwt ({header, claims,
+        claim_names}) for a decoded bearer, and value_clipped when the stored
+        value hit the 4096-char cap. Ranked by count then kind then name and paged
+        with count, total (distinct secrets), offset and has_more. captured is
+        every flow in the ring, dropped how many it evicted, scanned how many
+        flows still had headers retained and headers_unavailable how many were
+        body-omitted or evicted so only their URL query could be read -- so a
+        header secret's absence reads as "not present" versus "not retained".
+        kind_counts tallies the categories and collect_capped marks the
+        5000-distinct ceiling. The list field is secrets, not tokens or results;
+        fetch a secret's flow with proxy.flow.get by its example_id.
+        """
+        return _dump(
+            analysis.proxy_secrets(
+                session_id,
+                kind=kind,
+                reveal=reveal,
+                method=method,
+                host=host,
+                url_contains=url_contains,
+                content_type=content_type,
+                status=status,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
     @tools.tool(name="proxy.flows")
     def proxy_flows(
         session_id: str,
