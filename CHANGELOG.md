@@ -24,6 +24,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（审计持久化脱敏漂移守卫：审计日志是可回读的持久行(`audit.list`),“凭据绝不明文落盘”此前只靠每个 `append_audit` 实现自觉地对 params 与 result 都跑 `redact_audit_payload`——SQLite 存储与内存仓各做一遍、仓门面转发给存储——是纪律而非机制,新存储后端或长出直写的门面都可能把原始载荷写进去而无人察觉）
+
+- 结构化钉住该安全不变式(与 adb shell 命令白名单同门):持久化层里每个非桩 `append_audit` 必须要么把 `params_summary` **与** `result_summary` 都经 `redact`/`redact_audit_payload`,要么转发给另一个 `append_audit`(由后者递归脱敏);Protocol 桩(`...` 空体)因不落盘而豁免。新增 `test_audit_persistence_redaction_guard.py` AST 扫 `core/repository.py` 与 `core/store/sqlite_store.py`,把每个 `append_audit` 判为 stub/redacts/delegates/UNSAFE,断言无 UNSAFE。附带一条:`redact_audit_payload` 必须底层调用 `redact`,使审计脱敏不能悄悄偏离 timeline 用的同一个 masker。
+- 含非空性(须同时扫到两个 redactor、门面 delegator、Protocol 桩)。带外验证:合成的“直写原始载荷”和“只脱敏 params、result 原样直写”两种实现都被判 UNSAFE(后者证明守卫能抓只脱敏其一的偏漏),而“两者都脱敏”“转发”分别判 redacts/delegates。
+
 ### 测试（`meta.*` 分页读取器 schema 上界漂移守卫：非 PE 分页守卫扫的是 web/proxy/device/frida/apk/js/workspace 七个 builder，但共享的 meta 线——`artifacts.list`/`artifacts.read`/`timeline.list`/`sessions.unclean`/`audit.list`/`knowledge.query`——在 `build_meta_tools` 里，那个守卫从不扫它；这些读取器翻的是只增不减的存储，agent/OpenAI 桥直连跳过 pydantic schema 时一个无上界的 `limit` 正是姊妹守卫要防的“取全部”）
 
 - 这些 meta 读取器当下都已正确设界(`artifacts.list`/`timeline.list`/`audit.list` `le=256`、`sessions.unclean` `le=1000`、`knowledge.query` `le=500`、`artifacts.read` `le=262144`),存储层也 `max(1,min(int(limit),MAX))` 兜底,但 schema 这一半(fail-fast、对外声明的契约)此前无守卫,新读取器可无声漏掉上界。
