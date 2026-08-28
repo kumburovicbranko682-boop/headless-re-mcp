@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.service_dynamic_inspect import (
@@ -512,3 +513,82 @@ def test_module_catalog_requires_the_modules_list_capability(tmp_path: Path) -> 
 
     assert not result.ok and result.error is not None
     assert result.error.code == "capability_unavailable"
+
+
+# ---------------------------------------------------------------------------
+# fatal-error arms
+# ---------------------------------------------------------------------------
+
+
+class _FatalListWorker(FakeDynamicWorker):
+    """Raise a fatal protocol error from modules.list."""
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        if command == "modules.list":
+            raise XdbgRpcError("rpc_protocol_error", "corrupt frame")
+        return super().request(command, params, timeout=timeout)
+
+
+def test_module_catalog_fails_the_runtime_on_a_fatal_worker_error(tmp_path: Path) -> None:
+    service, session_id = _worker_session(tmp_path, _FatalListWorker())
+
+    result = service.module_catalog(session_id)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "rpc_protocol_error"
+
+
+def test_pe_headers_runtime_fails_the_runtime_when_hashing_raises_fatally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, session_id = _dynamic_session(tmp_path)
+
+    def explode(path: Path) -> str:
+        raise XdbgRpcError("rpc_protocol_error", "hash interrupted")
+
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_dynamic_inspect.file_sha256",
+        explode,
+    )
+
+    result = service.pe_headers_runtime(session_id, _BASE)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "rpc_protocol_error"
+
+
+def test_imports_scan_maps_snapshot_check_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, session_id = _dynamic_session(tmp_path)
+
+    def fatal(self: AnalysisService, runtime: object, *, operation: str) -> None:
+        raise XdbgRpcError("rpc_protocol_error", "worker wedged")
+
+    monkeypatch.setattr(type(service), "_require_snapshot_fresh_locked", fatal)
+
+    result = service.imports_scan(session_id, _BASE)
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "rpc_protocol_error"
+
+
+def test_imports_scan_maps_unexpected_snapshot_check_crashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, session_id = _dynamic_session(tmp_path)
+
+    def crash(self: AnalysisService, runtime: object, *, operation: str) -> None:
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(type(service), "_require_snapshot_fresh_locked", crash)
+
+    result = service.imports_scan(session_id, _BASE)
+
+    assert not result.ok and result.error is not None
