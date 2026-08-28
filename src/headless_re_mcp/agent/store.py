@@ -322,7 +322,16 @@ class AgentStore:
 
     def list_threads(self, *, limit: int = 100) -> list[AgentThread]:
         with self._reading() as con:
-            rows = con.execute("SELECT * FROM threads ORDER BY updated_at DESC LIMIT ?", (max(1, min(limit, 500)),)).fetchall()
+            # id DESC breaks updated_at ties into a deterministic total, the way
+            # every other timestamp-ordered query in this store already does.
+            # Threads created in one clock tick -- or never re-touched after a
+            # batch create -- share an updated_at, and without the tie-breaker
+            # which of them land in the top `limit`, and their order, was left to
+            # the scan and could differ call to call.
+            rows = con.execute(
+                "SELECT * FROM threads ORDER BY updated_at DESC, id DESC LIMIT ?",
+                (max(1, min(limit, 500)),),
+            ).fetchall()
         return [AgentThread(**dict(row)) for row in rows]
 
     def get_thread(self, thread_id: str) -> AgentThread | None:

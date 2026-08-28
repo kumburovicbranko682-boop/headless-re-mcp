@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（agent store 的 list_threads 缺少 id 次级键，updated_at 相同时结果不确定）
+
+- `agent/store.py::list_threads` 用 `ORDER BY updated_at DESC LIMIT ?` 取“最近的若干线程”，
+  唯独它没有像本文件里其它所有按时间戳排序的查询那样带上 `id DESC` 次级键（消息、运行、
+  任务的列表与各处 trim/删除都用 `ORDER BY ... DESC, id DESC`）。当多个线程 `updated_at`
+  相同（同一时钟节拍内创建、或批量创建后再没被改动过），到底哪些进入前 `limit`、以及它们的
+  顺序，都取决于扫描顺序，可能一次调用一个样子。这是我在 round 20 修 `core/store` 那批
+  分页读取器时的同类问题，只是这里没有 offset，所以表现为“前 N 个线程”在并列边界上不确定，
+  而非跨页重复/漏读。
+- 改为 `ORDER BY updated_at DESC, id DESC`，与本文件既有约定一致，把结果固定成确定的全序。
+- 新增 `tests/unit/test_agent_store.py::test_list_threads_breaks_updated_at_ties_by_id`：直接插入
+  五个 `updated_at` 相同、且 id 降序既不同于插入顺序也不同于其逆序的线程，断言 `limit=3`
+  返回 `["e5","d4","c3"]`。去掉修复后会返回插入顺序的前三个 `["c3","a1","e5"]` 而失败，
+  因此非空。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

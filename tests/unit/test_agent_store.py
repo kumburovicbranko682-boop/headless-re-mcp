@@ -9,6 +9,36 @@ from headless_re_mcp.agent.models import MissionStatus, RunStatus
 from headless_re_mcp.agent.store import AgentStore, canonical_args_sha256
 
 
+def test_list_threads_breaks_updated_at_ties_by_id(tmp_path: Path) -> None:
+    """Threads sharing an updated_at must order by id, like every sibling query.
+
+    list_threads was the only timestamp-ordered reader in the store without the
+    id DESC tie-breaker its neighbours all use, so when threads share an
+    updated_at -- created in one clock tick, or never re-touched after a batch
+    create -- which of them land in the top `limit`, and their order, was left to
+    the scan. The five ids below are inserted in an order whose id-descending sort
+    is neither the insertion order nor its reverse, so a top-3 that comes back in
+    id-DESC order can only have sorted by id, not fallen back to the scan order a
+    missing tie-breaker leaves.
+    """
+    store = AgentStore(tmp_path / "ties.db")
+    same = "2026-01-01T00:00:00+00:00"
+    con = store._connect()
+    try:
+        for thread_id in ("c3", "a1", "e5", "b2", "d4"):
+            con.execute(
+                "INSERT INTO threads(id,title,session_id,created_at,updated_at)"
+                " VALUES(?,?,?,?,?)",
+                (thread_id, f"t-{thread_id}", None, same, same),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+    top3 = store.list_threads(limit=3)
+    assert [thread.id for thread in top3] == ["e5", "d4", "c3"]
+
+
 def test_agent_store_seq_approval_and_restart(tmp_path: Path) -> None:
     path = tmp_path / "agent.db"
     store = AgentStore(path)
