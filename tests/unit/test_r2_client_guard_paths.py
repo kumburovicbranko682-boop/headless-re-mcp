@@ -8,13 +8,13 @@ branches nothing exercised:
   without a usable executable (``capability_unavailable``).
 * ``disasm`` / ``xrefs`` input validation -- a bool or string address, a
   negative address, a count outside 1..512 -- and, on the happy path, the
-  exact ``pdj``/``axj`` script handed to the process plus the echoed
-  address/count fields.
+  exact ``pdj``/``axtj``+``axfj`` script handed to the process plus the
+  echoed address/count fields.
 * ``_discover`` returning the first radare2 binary name found on PATH.
 
 The disasm/xrefs commands matter because they are built from caller input and
-must stay inside the allow-list ``run`` enforces: a change to the format
-string that stops matching ``_PDJ_COMMAND``/``_AXJ_COMMAND`` would reject
+must stay inside the allow-list ``_capture`` enforces: a change to the format
+string that stops matching ``_PDJ_COMMAND``/``_AX_COMMAND`` would reject
 every disasm call at runtime, which these tests would catch immediately.
 """
 
