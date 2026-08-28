@@ -100,7 +100,23 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "apk.androguard",
         "backend": "apk",
         "status_probe": "androguard",
-        "tools": ["apk.open", "apk.manifest", "apk.permissions", "apk.classes", "apk.methods", "apk.strings", "apk.xrefs"],
+        # certificates/components/native_libs go through the same ApkClient parse
+        # layer (_apk_call) as manifest/permissions, so they share the androguard
+        # probe. They were omitted here while the rest of the parse surface was
+        # listed, which left capabilities.describe under-reporting what the
+        # androguard line offers; keep the whole in-process parse surface listed.
+        "tools": [
+            "apk.open",
+            "apk.manifest",
+            "apk.permissions",
+            "apk.certificates",
+            "apk.components",
+            "apk.native_libs",
+            "apk.classes",
+            "apk.methods",
+            "apk.strings",
+            "apk.xrefs",
+        ],
         "summary": "In-process APK static analysis via androguard",
         "optional": True,
     },
@@ -153,7 +169,25 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "web.cdp",
         "backend": "web",
         "status_probe": "playwright",
-        "tools": ["web.open", "web.navigate", "web.network.list", "web.network.get", "web.scripts", "web.script.source", "web.screenshot"],
+        # console/wasm.list/dom.snapshot/har.export are the same CDP observation
+        # surface as network.*/scripts/screenshot and ride the same Playwright
+        # probe; they were left off the list while their siblings were advertised.
+        # web.close is a lifecycle op (no capability lists a close), so it stays
+        # out. web.wasm.list is CDP live-module enumeration -- distinct from the
+        # wabt static line under wasm.wabt -- and belongs here.
+        "tools": [
+            "web.open",
+            "web.navigate",
+            "web.network.list",
+            "web.network.get",
+            "web.har.export",
+            "web.console",
+            "web.scripts",
+            "web.script.source",
+            "web.wasm.list",
+            "web.dom.snapshot",
+            "web.screenshot",
+        ],
         "summary": "Chrome DevTools Protocol driving via Playwright",
         "optional": True,
     },

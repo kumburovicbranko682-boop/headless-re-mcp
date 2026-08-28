@@ -69,6 +69,43 @@ def test_apk_signing_is_probed_by_apksigner_not_apktool() -> None:
     assert by_tool["apk.repack"] == "apktool"
 
 
+def test_androguard_capability_advertises_the_whole_parse_surface() -> None:
+    """apk.androguard must list every ApkClient parse tool, not a subset.
+
+    certificates, components and native_libs route through the same ApkClient
+    parse layer (_apk_call) and androguard probe as manifest/permissions, yet
+    were once omitted from the capability while the rest of the parse surface was
+    listed. That left capabilities.describe("apk.androguard") under-reporting the
+    Android static line -- an agent enumerating the capability would never learn
+    those tools exist. Pin the full androguard-gated parse surface so a later add
+    to service_apk that forgets the catalog fails here.
+    """
+    by_id = {cap["id"]: cap for cap in _CORE_CAPABILITIES}
+    tools = set(by_id["apk.androguard"]["tools"])
+    for name in ("apk.certificates", "apk.components", "apk.native_libs"):
+        assert name in tools, f"{name} is androguard-gated but missing from apk.androguard"
+
+
+def test_web_cdp_capability_advertises_the_cdp_observation_surface() -> None:
+    """web.cdp must list the CDP observation tools that share its probe.
+
+    console, wasm.list, dom.snapshot and har.export are the same Playwright/CDP
+    observation surface as network.*/scripts/screenshot and ride the same
+    playwright probe, but were left off the capability while their siblings were
+    advertised -- so capabilities.describe("web.cdp") under-reported the Web line.
+    web.close is a lifecycle op (no capability advertises a close), so it stays
+    out; pin that too so the boundary is deliberate. web.wasm.list is CDP live
+    enumeration and belongs here, not under the wabt static wasm.wabt line.
+    """
+    by_id = {cap["id"]: cap for cap in _CORE_CAPABILITIES}
+    tools = set(by_id["web.cdp"]["tools"])
+    for name in ("web.console", "web.wasm.list", "web.dom.snapshot", "web.har.export"):
+        assert name in tools, f"{name} is a CDP observation tool missing from web.cdp"
+    assert "web.close" not in tools
+    # web.wasm.list is the CDP capability's, not the wabt static line's.
+    assert "web.wasm.list" not in set(by_id["wasm.wabt"]["tools"])
+
+
 def test_each_capability_has_the_required_shape_and_a_unique_id() -> None:
     seen: set[str] = set()
     for cap in _CORE_CAPABILITIES:
