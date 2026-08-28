@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -536,6 +536,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **静态**：`js.deobfuscate/beautify/unpack_bundle`（webcrack）、`wasm.info/wat`（wabt）。
   WASM 反编译复用现有 `ghidra.*` 加 ghidra-wasm-plugin——wabt 的 `wasm-decompile` 已于
   2026-06 被上游删除，不再作为路径。
+- 新增 `js.sourcemap`：纯 stdlib 读取 JavaScript Source Map v3，**无需 Node/webcrack**。
+  source map 是继 bundle 之后最有价值的 Web 逆向物证——它给出打包前的原始文件树，且常常内嵌
+  原始源码；它本就是纯 JSON，但此前工具面里没有任何东西能打开它：分析者手里拿到一份 `app.js.map`
+  （或顺着 `sourceMappingURL` 存下来的）却没有离线追问「它揭示了哪些原始文件、是否内嵌了源码」的
+  办法，除非开浏览器 devtools。`js.sourcemap` 用 stdlib 精确回答：列出 `sources`（有界）与
+  `sources_total`、`sources_content_embedded` 及 `sources_detail`（每条 source/has_content/
+  content_length），给出 `names_total`、mapping 形状（`mappings_size`/`generated_lines`/
+  `segment_count`）与 `ignore_list`（`x_google_ignoreList`）；flat map 与 v3 index map
+  （`sections`）都支持，后者按段聚合。它是**汇总而非提取**：既不返回源码正文，也不解码 VLQ
+  `mappings`（只按 ';' 分行、',' 分段做精确计数），因此读取器保持精确且廉价。非 JSON 或非
+  source map 报 `invalid_params`，超 16 MiB 上限报 `too_large`，缺文件报 `not_found`。新增
+  真实 MCP stdio Gate（`test_js_sourcemap_gate.py`，无需任何后端，始终执行）与
+  `test_sourcemap_summary.py` 单测覆盖（含 flat/index map、错型成员不崩、路径有界、非 map 拒绝）。
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。
