@@ -106,6 +106,17 @@ def test_last_pid_requires_a_spawned_process() -> None:
     assert sf._last_pid({"pids": [10, 20]}) == 20
 
 
+def test_coerce_pid_accepts_a_numeric_string_but_refuses_garbage() -> None:
+    # A numeric string still works, matching the prior lenient int(pid); a
+    # value that cannot be a pid is a fixable invalid_params, not the
+    # internal_error incident a bare TypeError/ValueError would have produced.
+    assert sf._coerce_pid("4321") == 4321
+    for bad in (["4321"], {"pid": 1}, "not-a-pid", None):
+        with pytest.raises(FridaError) as excinfo:
+            sf._coerce_pid(bad)
+        assert excinfo.value.code == "invalid_params"
+
+
 def test_frida_tools_refuse_a_session_without_a_connected_device(tmp_path: Path) -> None:
     service = _service(tmp_path)
     try:
@@ -253,5 +264,24 @@ def test_frida_java_methods_map_a_frida_error(
         result = service.frida_java_methods(session_id, "com.example.Main")
         assert result.ok is False and result.error is not None
         assert result.error.code == "frida_failed"
+    finally:
+        service.close_all()
+
+
+def test_frida_java_classes_refuses_a_non_numeric_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The agent transport can hand pid a list the schema would have rejected.
+    # int(pid) on it raised TypeError -- an internal_error incident -- before
+    # any frida call. The service must answer invalid_params instead, and never
+    # reach the backend.
+    service = _service(tmp_path)
+    try:
+        session_id = _web_session(service)
+        _authorize(service, session_id, pids=(4321,))
+        monkeypatch.setattr(sf, "FridaClient", _FakeFrida)
+        result = service.frida_java_classes(session_id, pid=["4321"])  # type: ignore[arg-type]
+        assert result.ok is False and result.error is not None
+        assert result.error.code == "invalid_params"
     finally:
         service.close_all()

@@ -194,7 +194,7 @@ class FridaDeviceMixin:
     ) -> Result[JsonObject]:
         try:
             auth = self._frida_auth(session_id)
-            target_pid = int(pid) if pid else _last_pid(auth)
+            target_pid = _coerce_pid(pid) if pid else _last_pid(auth)
             data = FridaClient().java_enumerate(
                 auth.get("device_id"),
                 target_pid,
@@ -222,6 +222,24 @@ def _append_recent(existing: Any, value: Any, *, limit: int = _MAX_AUTHORIZED) -
     items = [item for item in (existing or []) if item != value]
     items.append(value)
     return items[-limit:]
+
+
+def _coerce_pid(pid: Any) -> int:
+    """Coerce a caller-supplied pid to int, or refuse it as invalid_params.
+
+    The java tools type pid as an integer, but the agent and OpenAI-bridge
+    transports call the handler with no pydantic coercion, so a non-numeric
+    string, a list, or a non-finite float reached ``int(pid)`` and raised
+    TypeError/ValueError/OverflowError. None is a FridaError, so ``_java``'s
+    ``except BaseException`` filed an internal_error incident for what is only a
+    bad pid. ``int(pid)`` is kept (not ``type(pid) is int``) so a numeric string
+    the model emits still works, matching the prior lenient behavior; only a
+    value that cannot be a pid is refused.
+    """
+    try:
+        return int(pid)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise FridaError("invalid_params", "pid must be an integer") from exc
 
 
 def _last_pid(auth: JsonObject) -> int:
