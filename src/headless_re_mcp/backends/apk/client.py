@@ -479,6 +479,113 @@ class ApkClient:
             "has_more": has_more,
         }
 
+    def exported_components(self, path: Path) -> JsonObject:
+        """Fold the four component types into the externally-reachable surface.
+
+        components lists names and intent_filters lists filters; this answers the
+        security question they only imply: which activities, services, receivers
+        and providers can another app invoke, and which of those are not guarded
+        by a permission. A component is treated as exported when android:exported
+        says so, or -- when the attribute is absent -- when it declares an
+        intent-filter (the platform default), which is flagged exported_implied.
+        """
+        apk = self._apk(path)
+
+        def _attr(itemtype: str, name: str, attr: str) -> str | None:
+            try:
+                raw = apk.get_attribute_value(itemtype, attr, name=name)
+            except Exception:  # noqa: BLE001 - androguard manifest access varies
+                return None
+            if raw is None or str(raw) == "":
+                return None
+            return str(raw).strip()
+
+        def _exported_flag(itemtype: str, name: str) -> bool | None:
+            raw = _attr(itemtype, name, "exported")
+            if raw is None:
+                return None
+            return raw.lower() == "true"
+
+        components: list[JsonObject] = []
+        exported_total = 0
+        total_components = 0
+        unguarded = 0
+        has_more = False
+        getters: tuple[tuple[str, Any], ...] = (
+            ("activity", apk.get_activities),
+            ("service", apk.get_services),
+            ("receiver", apk.get_receivers),
+            ("provider", getattr(apk, "get_providers", lambda: [])),
+        )
+        for itemtype, getter in getters:
+            try:
+                names = getter() or []
+            except Exception:  # noqa: BLE001
+                names = []
+            for raw_name in names:
+                name = str(raw_name)
+                total_components += 1
+                try:
+                    filt = apk.get_intent_filters(itemtype, name)
+                except Exception:  # noqa: BLE001
+                    filt = {}
+                has_filter = bool(filt)
+                explicit = _exported_flag(itemtype, name)
+                if explicit is None:
+                    effective = has_filter
+                    implied = has_filter
+                else:
+                    effective = explicit
+                    implied = False
+                if not effective:
+                    continue
+                exported_total += 1
+                permission = _attr(itemtype, name, "permission")
+                read_permission = _attr(itemtype, name, "readPermission")
+                write_permission = _attr(itemtype, name, "writePermission")
+                guarded = (
+                    permission is not None
+                    or read_permission is not None
+                    or write_permission is not None
+                )
+                if not guarded:
+                    unguarded += 1
+                if len(components) >= _MAX_INTENT_COMPONENTS:
+                    has_more = True
+                    continue
+                actions = {str(a) for a in (filt.get("action") or [])}
+                categories = {str(c) for c in (filt.get("category") or [])}
+                data_entries = [d for d in (filt.get("data") or []) if isinstance(d, dict)]
+                schemes = sorted({str(d["scheme"]) for d in data_entries if d.get("scheme")})
+                components.append(
+                    {
+                        "type": itemtype,
+                        "name": name,
+                        "exported": explicit,
+                        "effective_exported": True,
+                        "exported_implied": implied,
+                        "has_intent_filter": has_filter,
+                        "permission": permission,
+                        "read_permission": read_permission,
+                        "write_permission": write_permission,
+                        "guarded": guarded,
+                        "launcher": (
+                            "android.intent.action.MAIN" in actions
+                            and "android.intent.category.LAUNCHER" in categories
+                        ),
+                        "deep_link": bool(schemes),
+                        "schemes": schemes[:_MAX_INTENT_ITEMS],
+                    }
+                )
+        return {
+            "components": components,
+            "count": len(components),
+            "exported_total": exported_total,
+            "total_components": total_components,
+            "unguarded_count": unguarded,
+            "has_more": has_more,
+        }
+
     def native_libs(self, path: Path) -> JsonObject:
         apk = self._apk(path)
         libs: list[str] = []

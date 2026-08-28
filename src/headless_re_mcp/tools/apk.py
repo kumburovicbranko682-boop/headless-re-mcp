@@ -245,6 +245,34 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_class_info(session_id, class_name))
 
+    @tools.tool(name="apk.exported_components")
+    def apk_exported_components(session_id: str) -> dict[str, Any]:
+        """Fold the four component types into the externally-reachable surface.
+
+        apk.components lists names and apk.intent_filters lists filters; this
+        answers the security question they only imply: which activities,
+        services, receivers and providers another app can invoke, and which of
+        those lack a permission guard. A component counts as exported when
+        android:exported is true, or -- when the attribute is absent -- when it
+        declares an intent-filter (the platform default), flagged
+        exported_implied.
+
+        Answers with components (only the effectively-exported ones), count,
+        exported_total, total_components (all scanned), unguarded_count (exported
+        with no permission -- the ones to look at first) and has_more. Each
+        component carries type (activity/service/receiver/provider), name,
+        exported (the explicit attribute: true/false, or null when absent),
+        effective_exported (always true here), exported_implied (true when it
+        came from an intent-filter, not an explicit attribute), has_intent_filter,
+        permission, read_permission, write_permission (the provider read/write
+        guards, else null), guarded (any permission is set), launcher (a
+        MAIN/LAUNCHER entry) and deep_link with schemes (custom-scheme handlers).
+        An unguarded exported component is the classic Android attack surface.
+
+        A session that is not an APK is refused target_mismatch.
+        """
+        return _dump(analysis.apk_exported_components(session_id))
+
     @tools.tool(name="apk.strings")
     def apk_strings(
         session_id: str,

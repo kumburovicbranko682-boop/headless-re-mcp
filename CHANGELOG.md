@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **292（174 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **293（175 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -471,6 +471,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   其字段与 method_count 读作空)。每个 fields 行带 `name`、`type`(人类可读,如 java.lang.String、byte[])、
   `descriptor`(原始)、`access` 与字段布尔 is_public/is_private/is_protected/is_static/is_final/
   is_volatile/is_transient/is_enum/is_synthetic。类找不到报 `not_found`;会话不是 APK 报 `target_mismatch`。
+- 新增 `apk.exported_components`:把四类组件折成"对外可达面"。`apk.components` 只列名字、
+  `apk.intent_filters` 只列过滤器,这个回答它们只暗示的安全问题:哪些 activity/service/receiver/provider
+  能被别的应用调起,其中哪些没有权限守卫。判定为导出的条件:android:exported 为 true,或——属性缺失
+  时——组件声明了 intent-filter(平台默认),后者标 `exported_implied`。回 `components`(仅有效导出者)、
+  `count`、`exported_total`、`total_components`(全部扫描数)、`unguarded_count`(导出且无权限——最该先看
+  的)与 `has_more`。每个组件带 `type`(activity/service/receiver/provider)、`name`、`exported`(显式属性:
+  true/false,缺失为 null)、`effective_exported`(此列恒 true)、`exported_implied`(来自 intent-filter 而非
+  显式属性时为 true)、`has_intent_filter`、`permission`、`read_permission`/`write_permission`(provider 读写
+  守卫,否则 null)、`guarded`(任一权限已设)、`launcher`(MAIN/LAUNCHER 入口)与 `deep_link`+`schemes`
+  (自定义 scheme 处理器)。无守卫的导出组件正是经典 Android 攻击面。会话不是 APK 报 `target_mismatch`。
 
 ### 新增（Android 清单元数据）
 
