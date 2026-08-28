@@ -163,7 +163,7 @@ def test_inspect_reads_assembly_name_past_intervening_tables() -> None:
     assert report.mvid == "8b8a2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
     assert report.metadata_stats is not None
     assert report.metadata_stats.type_count == 2
-    assert report.metadata_stats.method_count == 2
+    assert report.metadata_stats.method_count == 3
     # The AssemblyRef table is the managed DT_NEEDED: which assemblies this one
     # links against, with the version each was compiled for. The fixture
     # references the runtime library the way every real compiler output does.
@@ -188,11 +188,17 @@ def test_inspect_reads_assembly_name_past_intervening_tables() -> None:
     # the right blob and derived the token the way the CLR does.
     assert report.public_key_token == "b77a5c561934e089"
     assert report.to_dict()["public_key_token"] == "b77a5c561934e089"
-    # The entry point resolved to a name: token 0x06000002 is MethodDef row 2
+    # The entry point resolved to a name: token 0x06000003 is MethodDef row 3
     # (Run), owned by the TypeDef whose MethodList span covers it (Sample) --
     # the same Sample::Run monodis marks with .entrypoint in the gate.
     assert report.entry_point_name == "Sample::Run"
     assert report.to_dict()["entry_point_name"] == "Sample::Run"
+    # The module initializer: MethodDef row 1 is the static .cctor owned by
+    # <Module> (TypeDef row 1) -- the code the runtime executes at module
+    # load, before Run. The monodis gate cross-checks the same method as its
+    # "global method .cctor".
+    assert report.module_initializer_token == 0x06000001
+    assert report.to_dict()["module_initializer_token"] == 0x06000001
 
 
 def test_inspect_without_a_public_key_reports_no_token(tmp_path: Path) -> None:
@@ -355,6 +361,76 @@ def test_synthetic_verified_image_has_no_pdb(tmp_path: Path) -> None:
     path = tmp_path / "synthetic.exe"
     _write_verified_clr_pe(path)
     assert inspect_dotnet(path).pdb is None
+
+
+def test_a_renamed_module_cctor_is_no_initializer(tmp_path: Path) -> None:
+    # The initializer's identity is the ".cctor" name (II.10.5.3); a static
+    # method on <Module> called anything else is ordinary module-scope code.
+    # Renaming the fixture's string in #Strings must clear the fact -- and
+    # prove the reader matched the name, not just any row in the span.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    raw = bytearray(fixture.read_bytes())
+    assert raw.count(b"\x00.cctor\x00") == 1, "fixture layout changed"
+    raw[raw.index(b"\x00.cctor\x00") + 1] = ord("X")  # ".cctor" -> "Xcctor"
+    path = tmp_path / "renamed_cctor.exe"
+    path.write_bytes(bytes(raw))
+
+    report = inspect_dotnet(path)
+    assert report.module_initializer_token is None
+    # The rest of the assembly still parses -- the initializer read is isolated.
+    assert report.entry_point_name == "Sample::Run"
+
+
+def test_a_non_static_cctor_is_no_initializer(tmp_path: Path) -> None:
+    # ECMA requires a class constructor to be static; a row that carries the
+    # name without the flag is malformed, not a module initializer. The
+    # MethodDef row 1 prefix (RVA is irrelevant here) is ImplFlags 0 +
+    # Flags 0x1811; clearing the Static bit must clear the fact.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    raw = bytearray(fixture.read_bytes())
+    marker = struct.pack("<HH", 0, 0x1811)
+    assert raw.count(marker) == 1, "fixture layout changed"
+    struct.pack_into("<H", raw, raw.index(marker) + 2, 0x1801)  # drop Static
+    path = tmp_path / "instance_cctor.exe"
+    path.write_bytes(bytes(raw))
+
+    assert inspect_dotnet(path).module_initializer_token is None
+
+
+def test_a_cctor_owned_by_a_type_is_no_initializer(tmp_path: Path) -> None:
+    # Only <Module>'s (TypeDef row 1's) .cctor runs at module load; a type's
+    # own static constructor runs at first use of that type. Moving Sample's
+    # MethodList from 2 to 1 hands every method -- the .cctor included -- to
+    # Sample, so the identical row must stop reading as a module initializer.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    raw = bytearray(fixture.read_bytes())
+    sample_flags = struct.pack("<I", 0x00100001)  # TypeDef row 2 (Sample) Flags
+    assert raw.count(sample_flags) == 1, "fixture layout changed"
+    # Row layout: Flags(4) Name(2) Namespace(2) Extends(2) FieldList(2)
+    # MethodList(2) -- the MethodList sits 12 bytes into the row.
+    struct.pack_into("<H", raw, raw.index(sample_flags) + 12, 1)
+    path = tmp_path / "type_cctor.exe"
+    path.write_bytes(bytes(raw))
+
+    report = inspect_dotnet(path)
+    assert report.module_initializer_token is None
+    # Ownership moved, so the entry point's declaring type is unchanged and
+    # the metadata as a whole still parses.
+    assert report.entry_point_name == "Sample::Run"
+
+
+def test_synthetic_verified_image_has_no_module_initializer(tmp_path: Path) -> None:
+    # No #~ tables at all means no MethodDef rows to name an initializer:
+    # None, the same honest absence as the entry-point name.
+    path = tmp_path / "synthetic_no_cctor.exe"
+    _write_verified_clr_pe(path)
+    assert inspect_dotnet(path).module_initializer_token is None
 
 
 def _rowcount_offset(raw: bytes, table_bit: int) -> int:

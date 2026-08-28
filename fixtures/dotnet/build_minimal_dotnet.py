@@ -13,7 +13,9 @@ custom-attribute value (the TargetFrameworkAttribute every compiler stamps on
 an assembly), the assembly's strong-name public key and genuine member
 signatures (monodis asserts on malformed ones, so real blobs are what let it
 fully disassemble the fixture and mark the .entrypoint the entrypoint gate
-cross-checks), and two method bodies with actual CIL. It also carries a
+cross-checks), and three method bodies with actual CIL -- including a
+<Module>::.cctor module initializer (the managed code-before-main the
+monodis gate cross-checks). It also carries a
 CodeView RSDS debug directory (a per-build PDB GUID, age and path) so the
 managed build-fingerprint fact -- the symbol-server key, the analogue of an
 ELF build-id -- has a positive case a strict PE decoder (llvm-readobj /
@@ -90,7 +92,11 @@ TFA_NAMESPACE = "System.Runtime.Versioning"
 PUBLIC_KEY = bytes.fromhex("00000000000000000400000000000000")
 PUBLIC_KEY_TOKEN = "b77a5c561934e089"
 METADATA_VERSION = "v4.0.30319"
-ENTRY_POINT_TOKEN = 0x06000002  # Run
+# MethodDef row 1 is <Module>::.cctor -- the module initializer the runtime
+# executes at load, before the entry point (the managed code-before-main,
+# where obfuscators put their stubs); Add and Run follow as rows 2 and 3.
+MODULE_CCTOR_TOKEN = 0x06000001
+ENTRY_POINT_TOKEN = 0x06000003  # Run
 CALL_TARGET_TOKEN = 0x0A000001  # MemberRef row 1
 # Every compiler stamps a Module Version ID -- a GUID regenerated on each build
 # -- into the #GUID heap, and the Module row's Mvid points at it. A real
@@ -145,6 +151,7 @@ def build() -> bytes:
     i_tfa = add_string(TFA_TYPE_NAME)
     i_tfa_ns = add_string(TFA_NAMESPACE)
     i_ctor = add_string(".ctor")
+    i_cctor = add_string(".cctor")
     i_console = add_string(CONSOLE_TYPE_NAME)
     i_console_ns = add_string(CONSOLE_NAMESPACE)
     i_ns = 0
@@ -177,6 +184,8 @@ def build() -> bytes:
     blob_heap = _pad4(bytes(blob))
 
     # ---- method bodies (tiny format: (code_size << 2) | 0x02) ----
+    il_cctor = bytes([0x2A])  # ret -- the smallest real module initializer
+    body_cctor = _u8((len(il_cctor) << 2) | 0x02) + il_cctor
     il_add = bytes([0x1B, 0x2A])  # ldc.i4.5 ; ret
     body_add = _u8((len(il_add) << 2) | 0x02) + il_add
     il_run = bytes([0x28]) + _u32(CALL_TARGET_TOKEN) + bytes([0x2A])  # call ; ret
@@ -198,6 +207,9 @@ def build() -> bytes:
 
     # ---- section layout: CLR header, method bodies (4-aligned), metadata ----
     cursor = 72  # after the 72-byte COR20 header
+    cursor = (cursor + 3) & ~3
+    rva_cctor = _SECTION_RVA + cursor
+    cursor += len(body_cctor)
     cursor = (cursor + 3) & ~3
     rva_add = _SECTION_RVA + cursor
     cursor += len(body_add)
@@ -228,7 +240,7 @@ def build() -> bytes:
         | (1 << 0x28)  # ManifestResource
     )
     row_counts = {
-        0x00: 1, 0x01: 2, 0x02: 2, 0x04: 1, 0x06: 2, 0x0A: 2, 0x0C: 1,
+        0x00: 1, 0x01: 2, 0x02: 2, 0x04: 1, 0x06: 3, 0x0A: 2, 0x0C: 1,
         0x1A: 1, 0x20: 1, 0x23: 1, 0x28: 1,
     }
 
@@ -249,12 +261,16 @@ def build() -> bytes:
     # (ResolutionScope tag 2, row 1), the way every runtime-library type is.
     tables += _u16((1 << 2) | 2) + _u16(i_tfa) + _u16(i_tfa_ns)
     tables += _u16((1 << 2) | 2) + _u16(i_console) + _u16(i_console_ns)
-    # TypeDef x2: Flags Name Namespace Extends FieldList MethodList
+    # TypeDef x2: Flags Name Namespace Extends FieldList MethodList. <Module>
+    # (row 1) owns MethodDef row 1 (its .cctor); Sample's methods start at 2.
     tables += _u32(0) + _u16(i_type_module) + _u16(i_ns) + _u16(0) + _u16(1) + _u16(1)
-    tables += _u32(0x00100001) + _u16(i_type_sample) + _u16(i_ns) + _u16(0) + _u16(1) + _u16(1)
+    tables += _u32(0x00100001) + _u16(i_type_sample) + _u16(i_ns) + _u16(0) + _u16(1) + _u16(2)
     # Field: Flags Name Signature
     tables += _u16(0x0016) + _u16(i_field) + _u16(b_field_sig)
-    # MethodDef x2: RVA ImplFlags Flags Name Signature ParamList
+    # MethodDef x3: RVA ImplFlags Flags Name Signature ParamList. Row 1 is the
+    # module initializer <Module>::.cctor -- flags Private | Static |
+    # SpecialName | RTSpecialName (0x1811), the shape ECMA II.10.5.3 requires.
+    tables += _u32(rva_cctor) + _u16(0) + _u16(0x1811) + _u16(i_cctor) + _u16(b_void_sig) + _u16(1)
     tables += _u32(rva_add) + _u16(0) + _u16(0x0016) + _u16(i_add) + _u16(b_add_sig) + _u16(1)
     tables += _u32(rva_run) + _u16(0) + _u16(0x0016) + _u16(i_run) + _u16(b_void_sig) + _u16(1)
     # MemberRef x2: Class Name Signature. Row 1 is the WriteLine call target,
@@ -353,6 +369,8 @@ def build() -> bytes:
 
     # ---- assemble the section body ----
     section = bytearray(clr)
+    section += b"\x00" * ((rva_cctor - _SECTION_RVA) - len(section))
+    section += body_cctor
     section += b"\x00" * ((rva_add - _SECTION_RVA) - len(section))
     section += body_add
     section += b"\x00" * ((rva_run - _SECTION_RVA) - len(section))

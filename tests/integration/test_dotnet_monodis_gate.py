@@ -9,8 +9,9 @@ something only our reader accepts. This gate closes that loop with an
 independent parser: Mono's ``monodis`` must parse the same file and agree on
 every identity fact the reader surfaces -- assembly name and version, module
 name, MVID, the dependency lists, the target framework, the strong-name
-public-key token, the type list, and the resolved entry point (the method
-monodis marks ``.entrypoint``). It is the .NET analogue of the native
+public-key token, the type list, the resolved entry point (the method
+monodis marks ``.entrypoint``), and the module initializer (the ``.cctor``
+monodis renders as a global method). It is the .NET analogue of the native
 gate cross-checking the entry point against radare2 and Ghidra, and the proxy
 gate cross-checking the HAR reader against real mitmproxy output.
 
@@ -60,6 +61,14 @@ _PUBKEY_DUMP_RE = re.compile(r"^0x[0-9a-fA-F]+:\s+((?:[0-9a-fA-F]{2}\s+)+)$", re
 # Type::Name"; the block carrying the ".entrypoint" directive is where Mono
 # says execution starts.
 _METHOD_END_RE = re.compile(r"//\s*end of method\s+(\S+)")
+# Module-scope methods (owned by TypeDef row 1, <Module>) are rendered as
+# *global* methods: the header sits outside every .class block under a
+# "// method line N" marker (N is the MethodDef row monodis read it from)
+# and the block closes with "end of global method NAME" -- a type's own
+# .cctor would close with "end of method Type::.cctor" instead.
+_GLOBAL_CCTOR_LINE_RE = re.compile(
+    r"//\s*method line (\d+)\s*\n\s*\.method[^\n]*\n[^\n]*'\.cctor'"
+)
 
 
 def _monodis_public_key(assembly_dump: str) -> bytes:
@@ -246,5 +255,49 @@ def test_entry_point_name_agrees_with_monodis_entrypoint(tmp_path: Path) -> None
         # owning TypeDef's MethodList span; both spell where execution starts
         # identically -- the managed analogue of the WASM start-function name.
         assert report.data["entry_point_name"] == mono_entry == "Sample::Run"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_module_initializer_agrees_with_monodis(tmp_path: Path) -> None:
+    """The tool-free module-initializer fact against Mono's global-method decode.
+
+    The module initializer -- the static .cctor owned by <Module> (TypeDef
+    row 1) -- runs at module load, before the entry point: the managed
+    code-before-main, where obfuscators put their stubs. The reader finds it
+    by walking <Module>'s MethodList span itself; Mono independently resolves
+    the same ownership when it renders the method as a *global* method (a
+    type's .cctor would close as "end of method Type::.cctor" instead), under
+    a "// method line N" marker naming the row it decoded. The two must agree
+    that the initializer exists and sit in the same MethodDef row -- the
+    managed analogue of the ELF gate cross-checking DT_INIT against readelf.
+    """
+    if not _FIXTURE.is_file():
+        pytest.skip(
+            "minimal .NET fixture missing; run fixtures/dotnet/build_minimal_dotnet.py"
+            " (skip != pass)"
+        )
+    if shutil.which("monodis") is None:
+        pytest.skip("monodis (mono-utils) not installed — .NET cross-check not run (skip != pass)")
+
+    # Independent ground truth: Mono places the .cctor at module scope.
+    full_dump = _monodis()
+    assert "end of global method .cctor" in full_dump, full_dump
+    line_match = _GLOBAL_CCTOR_LINE_RE.search(full_dump)
+    assert line_match, full_dump
+    mono_row = int(line_match.group(1))
+
+    service = _service(tmp_path)
+    try:
+        session_id = service.create_session(str(_FIXTURE)).data["session"]["id"]
+        report = service.dotnet_inspect(session_id, require_verified=True)
+        assert report.ok, report.error
+        token = report.data["module_initializer_token"]
+        assert token is not None, "reader found no module initializer where monodis did"
+        # Row for row: the reader's token names the same MethodDef row Mono
+        # printed the global .cctor from.
+        assert token == 0x06000000 | mono_row
+        assert token == 0x06000001
     finally:
         service.close_all()

@@ -71,7 +71,9 @@ def test_reads_the_committed_dotnet_fixture() -> None:
     assert info["is_dotnet"] is True
     assert info["runtime_version"] == "2.5"
     assert info["metadata_version"] == "v4.0.30319"
-    assert info["entry_point_token"] == 0x06000002
+    # Row 3: the fixture's MethodDef table is .cctor (the module initializer,
+    # row 1), Add (row 2), Run (row 3, the entry point).
+    assert info["entry_point_token"] == 0x06000003
     assert info["il_only"] is True
     # The fixture's COR20 Flags is ILONLY only (pedump: "ilonly, 32/64,
     # no-trackdebug, notsigned"); the pedump gate cross-checks this.

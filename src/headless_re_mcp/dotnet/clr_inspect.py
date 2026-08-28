@@ -77,6 +77,18 @@ _PUBLIC_KEY_TOKEN_BYTES = 8
 # analogue of a WASM start function's resolved name or an APK's launcher
 # activity, where the raw token is just a number.
 _TOKEN_TABLE_METHODDEF = 0x06
+# The module initializer: a ".cctor" on TypeDef row 1 (the <Module> pseudo
+# class that owns module-scope code, II.22.37). The runtime executes it when
+# the module loads, before Main or any other code -- the managed code-before-
+# main, the analogue of an ELF DT_INIT / a Mach-O __mod_init_func / an
+# Android custom Application class, and the classic home of an obfuscator's
+# anti-tamper or unpacking stub. ECMA (II.10.5.3) requires it static; the
+# name and the static flag together are its identity.
+_MODULE_CCTOR_NAME = ".cctor"
+_METHOD_FLAG_STATIC = 0x0010
+# <Module> owns a handful of methods in a real image (compilers emit none or
+# one); the cap only bounds a hostile MethodList span, not an honest one.
+_MAX_MODULE_METHOD_SCAN = 4096
 
 
 class DotnetKind(StrEnum):
@@ -167,6 +179,12 @@ class DotnetInspectReport:
     # (token 0), a File-token entry point in another module, or a token the
     # tables cannot back.
     entry_point_name: str | None = None
+    # The module initializer's MethodDef token: a static ".cctor" on the
+    # <Module> type (TypeDef row 1), which the runtime executes at module load
+    # -- before Main and before any other code. The managed code-before-main,
+    # where obfuscators put anti-tamper/unpacking stubs. None when the module
+    # declares none (the common case for an unobfuscated build).
+    module_initializer_token: int | None = None
     # The CodeView PDB reference from the PE debug directory: {"guid", "age",
     # "path", "signature"} where signature is the GUID's 32 hex digits plus the
     # age -- the symbol-server key for the build, the managed analogue of an ELF
@@ -198,6 +216,7 @@ class DotnetInspectReport:
             "target_framework": self.target_framework,
             "public_key_token": self.public_key_token,
             "entry_point_name": self.entry_point_name,
+            "module_initializer_token": self.module_initializer_token,
             "pdb": self.pdb,
             "metadata_stats": (
                 self.metadata_stats.to_dict() if self.metadata_stats is not None else None
@@ -296,6 +315,7 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
     target_framework: str | None = None
     public_key_token: str | None = None
     entry_point_name: str | None = None
+    module_initializer_token: int | None = None
     metadata_stats: MetadataStats | None = None
     verified = False
     note = "COR20 present"
@@ -318,6 +338,7 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
                     target_framework,
                     public_key_token,
                     entry_point_name,
+                    module_initializer_token,
                     metadata_stats,
                 ) = _parse_metadata_root(meta, entry_token)
                 note = "verified COR20 + BSJB metadata"
@@ -352,6 +373,7 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
         target_framework=target_framework,
         public_key_token=public_key_token,
         entry_point_name=entry_point_name,
+        module_initializer_token=module_initializer_token,
         pdb=pdb,
         note=note,
         metadata_stats=metadata_stats,
@@ -487,20 +509,21 @@ def _parse_metadata_root(
     str | None,
     str | None,
     str | None,
+    int | None,
     MetadataStats | None,
 ]:
     if len(meta) < 16 or meta[:4] != _CLR_METADATA_SIG:
-        return None, [], None, None, None, None, (), (), None, None, None, None
+        return None, [], None, None, None, None, (), (), None, None, None, None, None
     version_len = int.from_bytes(meta[12:16], "little")
     if version_len < 0 or 16 + version_len > len(meta):
-        return None, [], None, None, None, None, (), (), None, None, None, None
+        return None, [], None, None, None, None, (), (), None, None, None, None, None
     version_raw = meta[16 : 16 + version_len]
     version = version_raw.split(b"\0", 1)[0].decode("utf-8", errors="replace")
     # Align version block to 4 bytes.
     version_padded = (version_len + 3) & ~3
     cursor = 16 + version_padded
     if cursor + 4 > len(meta):
-        return version, [], None, None, None, None, (), (), None, None, None, None
+        return version, [], None, None, None, None, (), (), None, None, None, None, None
     stream_count = int.from_bytes(meta[cursor + 2 : cursor + 4], "little")
     cursor += 4
     streams: list[str] = []
@@ -530,6 +553,7 @@ def _parse_metadata_root(
     framework: str | None = None
     public_key_token: str | None = None
     entry_name: str | None = None
+    module_cctor: int | None = None
     stats: MetadataStats | None = None
     try:
         (
@@ -542,6 +566,7 @@ def _parse_metadata_root(
             framework,
             public_key_token,
             entry_name,
+            module_cctor,
             stats,
         ) = _parse_tables_and_names(meta, stream_map, entry_token)
     except Exception:
@@ -554,6 +579,7 @@ def _parse_metadata_root(
         framework = None
         public_key_token = None
         entry_name = None
+        module_cctor = None
         stats = None
     return (
         version,
@@ -567,6 +593,7 @@ def _parse_metadata_root(
         framework,
         public_key_token,
         entry_name,
+        module_cctor,
         stats,
     )
 
@@ -631,18 +658,19 @@ def _parse_tables_and_names(
     str | None,
     str | None,
     str | None,
+    int | None,
     MetadataStats | None,
 ]:
     """Best-effort Module/Assembly identity + table row counts from #~ + heaps.
 
     Returns ``(module_name, assembly_name, assembly_version, mvid,
     assembly_refs, module_refs, target_framework, public_key_token,
-    entry_point_name, stats)``.
+    entry_point_name, module_initializer_token, stats)``.
     """
     tables_key = "#~" if "#~" in stream_map else ("#-" if "#-" in stream_map else None)
     strings_key = "#Strings" if "#Strings" in stream_map else None
     if tables_key is None:
-        return None, None, None, None, (), (), None, None, None, None
+        return None, None, None, None, (), (), None, None, None, None, None
     t_off, t_size = stream_map[tables_key]
     tables = meta[t_off : t_off + t_size]
     strings = b""
@@ -661,7 +689,7 @@ def _parse_tables_and_names(
         blob_heap = meta[b_off : b_off + b_size]
     us_heap_bytes = stream_map["#US"][1] if "#US" in stream_map else None
     if len(tables) < 24:
-        return None, None, None, None, (), (), None, None, None, None
+        return None, None, None, None, (), (), None, None, None, None, None
     heap_sizes = tables[6]
     string_index_size = 4 if (heap_sizes & 0x01) else 2
     valid = int.from_bytes(tables[8:16], "little")
@@ -670,7 +698,7 @@ def _parse_tables_and_names(
     for bit in range(64):
         if valid & (1 << bit):
             if cursor + 4 > len(tables):
-                return None, None, None, None, (), (), None, None, None, None
+                return None, None, None, None, (), (), None, None, None, None, None
             row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
             cursor += 4
     # A row count is a number out of the assembly; a claim that could not fit
@@ -753,14 +781,16 @@ def _parse_tables_and_names(
     # The entry-point walk: TypeDef rows (0x02) record (Name, Namespace,
     # MethodList) so the owning type of any method row is known, then the
     # MethodDef row (0x06) the token names yields the method name -- again in
-    # exactly the table order the tables stream comes up in.
+    # exactly the table order the tables stream comes up in. The same spans
+    # give the module-initializer walk <Module>'s (row 1's) method range.
     entry_row = entry_token & 0x00FFFFFF
     wanted_method = entry_row if (entry_token >> 24) == _TOKEN_TABLE_METHODDEF else 0
     typedef_spans: list[tuple[int, int, int]] = []  # (methodlist, name_idx, ns_idx)
     entry_method: str | None = None
     entry_point_name: str | None = None
+    module_cctor: int | None = None
     if not strings:
-        return None, None, None, None, (), (), None, None, None, stats
+        return None, None, None, None, (), (), None, None, None, None, stats
     # Walk the tables in ascending order, sizing each one so the offset lands
     # on the next. The Module table (0x00) is first, but the Assembly table
     # (0x20) sits behind TypeDef/Field/MethodDef and friends -- an assembly
@@ -788,11 +818,13 @@ def _parse_tables_and_names(
                 ns_idx, _ = read_string_index(tables, at + advance)
                 if string_at(name_idx) == _TFA_NAME and string_at(ns_idx) == _TFA_NAMESPACE:
                     tfa_typerefs.add(i + 1)
-        elif bit == 0x02 and wanted_method:  # TypeDef: Flags, Name, Namespace, ...
+        elif bit == 0x02:  # TypeDef: Flags, Name, Namespace, ...
             # ... Extends(coded), FieldList, MethodList. Each row's MethodList
             # is the first MethodDef it owns; the spans locate any method's
-            # declaring type. The scan is bounded by the (clamped) row count
-            # and stops at a truncated row, like every other walk here.
+            # declaring type (for the entry-point name) and bound <Module>'s
+            # own methods (for the module initializer). The scan is bounded by
+            # the (clamped) row count and stops at a truncated row, like every
+            # other walk here.
             extends_size = coded_index_size(row_counts, (0x02, 0x01, 0x1B), 2)
             field_list_size = simple_index_size(row_counts, 0x04)
             mlist_at = 4 + string_index_size * 2 + extends_size + field_list_size
@@ -805,12 +837,33 @@ def _parse_tables_and_names(
                 ns_idx, _ = read_string_index(tables, at + 4 + advance)
                 mlist = int.from_bytes(tables[at + mlist_at : at + mlist_at + mlist_size], "little")
                 typedef_spans.append((mlist, name_idx, ns_idx))
-        elif bit == 0x06 and wanted_method:  # MethodDef: RVA(4), ImplFlags(2), Flags(2), Name...
-            if wanted_method <= rows:
+        elif bit == 0x06:  # MethodDef: RVA(4), ImplFlags(2), Flags(2), Name...
+            if wanted_method and wanted_method <= rows:
                 at = offset + (wanted_method - 1) * row_size
                 if at + row_size <= len(tables):
                     name_idx, _ = read_string_index(tables, at + 8)
                     entry_method = string_at(name_idx)
+            # The module initializer: TypeDef row 1 (<Module>) owns the rows
+            # from its MethodList up to row 2's (II.22.37) -- or the whole
+            # table when it is the only type. A static ".cctor" in that span
+            # runs at module load, before anything else. Bounded like every
+            # walk here: a hostile span is clamped to the table and a cap.
+            if typedef_spans:
+                span_start = typedef_spans[0][0]
+                span_end = typedef_spans[1][0] if len(typedef_spans) > 1 else rows + 1
+                span_end = min(span_end, rows + 1, span_start + _MAX_MODULE_METHOD_SCAN)
+                for rid in range(max(span_start, 1), span_end):
+                    at = offset + (rid - 1) * row_size
+                    if at + row_size > len(tables):
+                        break
+                    flags_2 = int.from_bytes(tables[at + 6 : at + 8], "little")
+                    name_idx, _ = read_string_index(tables, at + 8)
+                    if (
+                        flags_2 & _METHOD_FLAG_STATIC
+                        and string_at(name_idx) == _MODULE_CCTOR_NAME
+                    ):
+                        module_cctor = (_TOKEN_TABLE_METHODDEF << 24) | rid
+                        break
         elif bit == 0x0A and tfa_typerefs:  # MemberRef: Class(coded), Name(str), Sig(blob)
             parent_size = coded_index_size(row_counts, MEMBER_REF_PARENT_TABLES, 3)
             for i in range(min(rows, _MAX_TFA_SCAN_ROWS)):
@@ -917,5 +970,6 @@ def _parse_tables_and_names(
         target_framework,
         public_key_token,
         entry_point_name,
+        module_cctor,
         stats,
     )

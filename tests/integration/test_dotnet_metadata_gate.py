@@ -65,7 +65,7 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
         session_facts = created["metadata"]["dotnet"]
         assert session_facts["is_dotnet"] is True
         assert session_facts["il_only"] is True
-        assert session_facts["entry_point_token"] == 0x06000002
+        assert session_facts["entry_point_token"] == 0x06000003
 
         # inspect: a verified, pure-managed CLR image with real metadata.
         report = _data(service.dotnet_inspect(session_id, require_verified=True))
@@ -73,7 +73,7 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
         assert report["verified_clr"] is True
         assert report["kind"] == "pure_managed"
         assert report["claims_universal_unpack"] is False
-        assert report["entry_point_token"] == 0x06000002
+        assert report["entry_point_token"] == 0x06000003
         assert "ILONLY" in report["flags_decoded"]
         assert "#~" in report["streams"] and "#Strings" in report["streams"]
         assert str(report["metadata_version"]).startswith("v")
@@ -101,6 +101,11 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
         # The entry point resolved to a name, not just a token -- the method
         # monodis marks .entrypoint, which its gate cross-checks.
         assert report["entry_point_name"] == "Sample::Run"
+        # The module initializer: <Module>'s static .cctor (MethodDef row 1),
+        # run at module load before the entry point -- the managed
+        # code-before-main. The monodis gate cross-checks the same row via
+        # Mono's "global method .cctor" rendering.
+        assert report["module_initializer_token"] == 0x06000001
         # The CodeView PDB reference from the debug directory: the per-build
         # GUID/age (the symbol-server key, the managed build-id analogue) and
         # the PDB path the linker baked in. The debug gate cross-checks these
@@ -113,7 +118,7 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
         }
         stats = report["metadata_stats"]
         assert stats["type_count"] == 2
-        assert stats["method_count"] == 2
+        assert stats["method_count"] == 3
         assert stats["field_count"] == 1
         assert stats["resource_count"] == 1
 
@@ -125,10 +130,13 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
         assert {t["name"] for t in types["items"]} == {"<Module>", "Sample"}
 
         methods = _data(service.dotnet_enumerate(session_id, "methods", limit=16))
-        assert methods["total"] == 2
+        assert methods["total"] == 3
         by_name = {m["name"]: m for m in methods["items"]}
-        assert set(by_name) == {"Add", "Run"}
-        assert by_name["Add"]["rva"] > 0
+        assert set(by_name) == {".cctor", "Add", "Run"}
+        # Laid out in row order: the module initializer's body first, then
+        # Sample's two methods.
+        assert by_name[".cctor"]["rva"] > 0
+        assert by_name["Add"]["rva"] > by_name[".cctor"]["rva"]
         assert by_name["Run"]["rva"] > by_name["Add"]["rva"]
 
         fields = _data(service.dotnet_enumerate(session_id, "fields", limit=16))
