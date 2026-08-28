@@ -176,6 +176,15 @@ def disassemble_method_il(
     max_bytes: int = MAX_IL_BYTES,
 ) -> JsonObject:
     """Bounded IL disassembly for MethodDef token 0x06000xxx."""
+    # method_token is schema-typed as an integer, but the agent and OpenAI-bridge
+    # transports bind it straight from model output with no pydantic coercion, so a
+    # non-int (a string, float, list, ...) reaches the ``& 0xFF000000`` mask below
+    # and raises a raw TypeError the service files as an internal_error incident
+    # instead of the invalid_argument a malformed token value already earns. Reject
+    # the wrong type first, before inspect_dotnet does any work; bool is excluded
+    # because a True token is never what the caller meant.
+    if isinstance(method_token, bool) or not isinstance(method_token, int):
+        raise DotnetInspectError("invalid_argument", "method_token must be an integer")
     inspect_dotnet(path, require_verified=require_verified)
     if (method_token & 0xFF000000) != 0x06000000:
         raise DotnetInspectError(

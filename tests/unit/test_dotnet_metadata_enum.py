@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
+from headless_re_mcp.dotnet import DotnetInspectError
 from headless_re_mcp.dotnet.metadata_enum import (
     CAPABILITY,
     _coded_index_size,
     _disassemble_il,
     _simple_index_size,
+    disassemble_method_il,
     enumerate_metadata,
 )
 
@@ -115,6 +118,42 @@ def test_enumerate_empty_tables_is_ok(tmp_path: Path) -> None:
     assert page.total == 0
     assert page.backend == "dotnet_metadata"
     assert page.claims_universal_unpack is False
+
+
+@pytest.mark.parametrize(
+    "method_token", ["0x06000001", 1.5, ["0x06000001"], {"token": 1}, None, True]
+)
+def test_disassemble_il_rejects_a_non_integer_token(method_token: object) -> None:
+    """A non-int method_token is an invalid_argument, not an internal_error incident.
+
+    ``method_token & 0xFF000000`` would raise a raw TypeError the service files as
+    an internal_error; it must read like a malformed token value instead. The type
+    check fires before inspect_dotnet, so no binary is needed.
+    """
+    with pytest.raises(DotnetInspectError) as excinfo:
+        disassemble_method_il(Path("/nonexistent-clr"), cast(Any, method_token))
+    assert excinfo.value.code == "invalid_argument"
+
+
+def test_service_il_reports_a_bad_token_type_as_invalid_argument(tmp_path: Path) -> None:
+    """dotnet_il maps the type guard to a clean invalid_argument, not internal_error."""
+    binary = tmp_path / "empty_tables.exe"
+    _write_minimal_clr(binary)
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    session_id = service.create_session(str(binary)).data["session"]["id"]
+
+    rejected = service.dotnet_il(session_id, cast(Any, "0x06000001"))
+
+    assert not rejected.ok and rejected.error is not None
+    assert rejected.error.code == "invalid_argument"
 
 
 def test_il_branch_and_constant_operands_are_signed() -> None:
