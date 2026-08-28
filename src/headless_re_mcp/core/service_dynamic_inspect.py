@@ -800,6 +800,14 @@ class DynamicInspectMixin:
         *,
         timeout: float = 30.0,
     ) -> Result[JsonObject]:
+        if type(address) is not int or address < 0:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="address must be a non-negative integer",
+                ),
+            )
         return self._dynamic_request(
             session_id,
             "breakpoints.hardware.remove",
@@ -821,6 +829,14 @@ class DynamicInspectMixin:
         bp_type: str = "a",
         timeout: float = 30.0,
     ) -> Result[JsonObject]:
+        if type(address) is not int or address < 0:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="address must be a non-negative integer",
+                ),
+            )
         if bp_type not in {"a", "r", "w", "x", "access", "read", "write", "execute", "rwx"}:
             return Result[JsonObject](
                 ok=False,
@@ -839,6 +855,14 @@ class DynamicInspectMixin:
         *,
         timeout: float = 30.0,
     ) -> Result[JsonObject]:
+        if type(address) is not int or address < 0:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="address must be a non-negative integer",
+                ),
+            )
         return self._dynamic_request(
             session_id,
             "breakpoints.memory.remove",

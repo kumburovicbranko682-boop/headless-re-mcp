@@ -100,7 +100,10 @@ def test_parameter_guards_reject_bad_arguments(tmp_path: Path) -> None:
         service.breakpoints_hardware_set("s1", -1),
         service.breakpoints_hardware_set("s1", 0x1000, bp_type="bad"),
         service.breakpoints_hardware_set("s1", 0x1000, size=3),
+        service.breakpoints_hardware_remove("s1", -1),
         service.breakpoints_memory_set("s1", 0x1000, bp_type="bad"),
+        service.breakpoints_memory_set("s1", -1),
+        service.breakpoints_memory_remove("s1", -1),
         service.breakpoints_condition_set("s1", 0x1000, ""),
         service.breakpoints_condition_set("s1", 0x1000, "a;b"),
         service.breakpoints_condition_set("s1", -1, "rax==1"),
@@ -119,16 +122,20 @@ def test_condition_and_restore_reject_a_non_integer_address(
 ) -> None:
     """The address guard also rejects non-integers, not just negatives.
 
-    breakpoints.condition.set already screened its expression before the
-    round-trip but forwarded the address raw; condition.get and patches.restore
-    forwarded it with no guard at all. Each now rejects a non-integer address as
-    a structured invalid_params the way breakpoints.hardware.set does.
+    These are the mixin methods that used to forward the address raw:
+    breakpoints.condition.set screened only its expression, memory.set only its
+    type, and condition.get/patches.restore/hardware.remove/memory.remove guarded
+    nothing. Each now rejects a non-integer address as a structured invalid_params
+    the way breakpoints.hardware.set does.
     """
     service = _bare(tmp_path)
     calls = [
         service.breakpoints_condition_set("s1", cast(int, bad_address), "rax==1"),
         service.breakpoints_condition_get("s1", cast(int, bad_address)),
         service.patches_restore("s1", cast(int, bad_address)),
+        service.breakpoints_hardware_remove("s1", cast(int, bad_address)),
+        service.breakpoints_memory_set("s1", cast(int, bad_address)),
+        service.breakpoints_memory_remove("s1", cast(int, bad_address)),
     ]
     for result in calls:
         assert result.ok is False and result.error is not None
