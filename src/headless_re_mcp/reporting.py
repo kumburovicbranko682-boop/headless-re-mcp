@@ -297,6 +297,14 @@ def render_markdown_report(
 
         lines.append("")
 
+        # The audit is capped like every other section (report.generate passes
+        # audit_limit, default 30) and list_audit returns the full ``total``, so
+        # a session with more recorded actions than the cap otherwise rendered a
+        # "Recent actions" table that read as the whole history and was not --
+        # the same silent-truncation the Findings and Artifacts sections already
+        # disclose. Say so here too, keyed on the same ``total``.
+        _note_if_partial(lines, audit, shown=len(audit_entries), noun="actions")
+
         lines.extend(
 
             _table(

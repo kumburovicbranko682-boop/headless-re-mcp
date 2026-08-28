@@ -256,6 +256,49 @@ def test_report_includes_audit_when_supplied() -> None:
     assert "failed" in markdown
 
 
+def test_a_capped_audit_section_says_it_is_capped() -> None:
+    """Recent actions is capped like Findings/Artifacts and must disclose it too.
+
+    report.generate passes audit_limit (default 30) and list_audit returns the
+    full ``total``, so a session with more recorded actions than the cap renders
+    a "Recent actions" table that reads as the whole history. The Findings and
+    Artifacts sections already say "Showing N of total"; before this the audit
+    section did not, so the newest N actions looked complete and the older ones
+    were invisible -- indistinguishable from actions never taken. A complete
+    audit (total == shown) still needs no disclaimer.
+    """
+    complete = render_markdown_report(
+        session=_SESSION,
+        audit={
+            "entries": [{"at": "t", "action": "static.open", "ok": True}],
+            "count": 1,
+            "total": 1,
+        },
+        generated_at="t",
+    )
+    assert "## Recent actions" in complete
+    assert "Showing" not in complete
+
+    partial = render_markdown_report(
+        session=_SESSION,
+        audit={
+            "entries": [
+                {"at": f"2026-08-11T00:00:{i:02d}+00:00", "action": "x64dbg.step", "ok": True}
+                for i in range(30)
+            ],
+            "count": 30,
+            "total": 118,
+        },
+        generated_at="t",
+    )
+    assert "Showing 30 of 118 actions" in partial
+    # The note precedes the table so a reader sees the caveat before the rows.
+    lines = partial.splitlines()
+    note_index = next(i for i, line in enumerate(lines) if line.startswith("> Showing 30 of 118"))
+    table_index = next(i for i, line in enumerate(lines) if line.startswith("| At "))
+    assert note_index < table_index
+
+
 def test_a_capped_report_says_it_is_capped() -> None:
     """The report is the artefact someone keeps; it must not read as complete.
 
