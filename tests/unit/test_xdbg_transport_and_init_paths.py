@@ -11,6 +11,7 @@ they are pinned here with fake kernel32 tables and fake processes.
 from __future__ import annotations
 
 import io
+import os
 import types
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,24 @@ _IO_PENDING = 997
 _WAIT_OBJECT_0 = 0
 _WAIT_TIMEOUT = 258
 _OPERATION_ABORTED = 995
+
+
+class _NtOsProxy:
+    """Report ``name == "nt"`` while forwarding everything else to the real os.
+
+    Patching the global ``os.name`` would poison ``pathlib.Path`` on Python
+    3.11, where ``Path()`` picks WindowsPath (uninstantiable on POSIX) from
+    ``os.name``; patching the client module's reference confines the lie.
+    """
+
+    name = "nt"
+
+    def __getattr__(self, attr: str) -> Any:
+        return getattr(os, attr)
+
+
+def _pretend_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(client_module, "os", _NtOsProxy())
 
 
 def _bare_transport(kernel32: Any = None) -> Any:
@@ -98,6 +117,7 @@ def _live_process() -> Any:
     return types.SimpleNamespace(poll=lambda: None, returncode=None)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the platform guard only fires off Windows")
 def test_connect_refuses_off_windows() -> None:
     with pytest.raises(XdbgRpcError) as exc:
         client_module._NamedPipeTransport.connect(
@@ -112,7 +132,7 @@ def test_connect_opens_the_pipe_and_builds_a_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The happy path: wait succeeds, the handle is valid, the event is created."""
-    monkeypatch.setattr(client_module.os, "name", "nt")
+    _pretend_windows(monkeypatch)
     _fake_windll(
         monkeypatch,
         CreateFileW=_ApiFn(lambda *args: 1234),
@@ -131,7 +151,7 @@ def test_connect_opens_the_pipe_and_builds_a_transport(
 def test_connect_reports_a_worker_that_exited_before_the_pipe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(client_module.os, "name", "nt")
+    _pretend_windows(monkeypatch)
     _fake_windll(monkeypatch)
     dead = types.SimpleNamespace(poll=lambda: 9, returncode=9)
 
@@ -145,7 +165,7 @@ def test_connect_reports_a_worker_that_exited_before_the_pipe(
 def test_connect_times_out_when_the_pipe_never_appears(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(client_module.os, "name", "nt")
+    _pretend_windows(monkeypatch)
     _fake_windll(monkeypatch)
 
     with pytest.raises(XdbgRpcError) as exc:
@@ -160,7 +180,7 @@ def test_connect_retries_a_pipe_that_is_not_ready_yet(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """FILE_NOT_FOUND from WaitNamedPipeW means "not created yet", not failure."""
-    monkeypatch.setattr(client_module.os, "name", "nt")
+    _pretend_windows(monkeypatch)
     _fake_last_error(monkeypatch, [2])  # ERROR_FILE_NOT_FOUND
     wait_results = [0, 1]
     _fake_windll(
@@ -179,7 +199,7 @@ def test_connect_retries_a_pipe_that_is_not_ready_yet(
 def test_connect_raises_when_the_wait_fails_outright(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(client_module.os, "name", "nt")
+    _pretend_windows(monkeypatch)
     _fake_last_error(monkeypatch, [5])  # ERROR_ACCESS_DENIED
     _fake_windll(monkeypatch, WaitNamedPipeW=_ApiFn(lambda *args: 0))
 
@@ -192,7 +212,7 @@ def test_connect_raises_when_the_wait_fails_outright(
 def test_connect_retries_a_busy_open_and_raises_on_other_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(client_module.os, "name", "nt")
+    _pretend_windows(monkeypatch)
     invalid = client_module._NamedPipeTransport._INVALID_HANDLE_VALUE
     _fake_last_error(monkeypatch, [231, 5])  # ERROR_PIPE_BUSY then ERROR_ACCESS_DENIED
     _fake_windll(monkeypatch, CreateFileW=_ApiFn(lambda *args: invalid))
