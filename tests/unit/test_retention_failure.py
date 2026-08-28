@@ -7,6 +7,56 @@ from pathlib import Path
 
 import pytest
 
+from headless_re_mcp.core.retention import measure_usage
+
+
+def test_measure_usage_bounds_the_walk_on_a_directory_flood(tmp_path: Path) -> None:
+    """The cap must bound the walk on a tree that is mostly empty directories.
+
+    This runs behind the readiness probe, and the cap exists so the walk never
+    becomes the slowest part of that probe. A files-only cap does not bound the
+    walk it is there to bound: a directory bomb an analysed sample unpacked into
+    the artifact root has few files, so the cap never trips and the walk grows
+    with the tree, and the supervisor restarts a healthy service on the late
+    answer. rglob yields every top-level entry before it descends, so five empty
+    directories against a cap of three spend the budget on directories and the
+    walk stops before it reaches the file nested behind one of them: truncated
+    is set and the file is never counted. A files-only cap skips the
+    directories, descends, and returns a complete, untruncated answer -- so
+    truncated=True and files=0 are exactly the difference the fix makes.
+    """
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    for index in range(5):
+        (root / f"d{index}").mkdir()
+    (root / "d0" / "deep.bin").write_bytes(b"x" * 10)
+
+    usage = measure_usage(root, file_limit=3)
+
+    assert usage.truncated is True
+    assert usage.files == 0
+
+
+def test_measure_usage_counts_a_small_tree_without_truncating(tmp_path: Path) -> None:
+    """A tree comfortably under the cap is summed in full and not flagged.
+
+    Directories now count toward the entry cap, so this pins that counting them
+    did not start truncating an ordinary tree: three files and their two
+    directories are five entries, well under the cap, so every byte is summed
+    and truncated stays false.
+    """
+    root = tmp_path / "artifacts"
+    (root / "sub").mkdir(parents=True)
+    (root / "a.bin").write_bytes(b"x" * 10)
+    (root / "b.bin").write_bytes(b"x" * 20)
+    (root / "sub" / "c.bin").write_bytes(b"x" * 30)
+
+    usage = measure_usage(root, file_limit=100)
+
+    assert usage.truncated is False
+    assert usage.files == 3
+    assert usage.bytes == 60
+
 
 def test_a_failed_usage_walk_is_reported_and_throttled(
     tmp_path: Path,

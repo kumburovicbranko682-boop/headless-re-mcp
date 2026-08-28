@@ -44,7 +44,10 @@ UNREGISTERED_CAPTURE_MAX_ENTRIES = 32
 UNREGISTERED_CAPTURE_MAX_BYTES = 64 * 1024 * 1024
 JSRE_UNPACK_MAX_ENTRIES = 8
 JSRE_UNPACK_MAX_BYTES = 256 * 1024 * 1024
-_DIR_SIZE_FILE_CAP = 4096
+# Bounds the per-directory size walk by every entry it visits, not only files.
+# A files-only bound never trips on a tree that is mostly empty directories, so
+# the walk grows with the tree it exists to bound.
+_DIR_SIZE_ENTRY_CAP = 4096
 
 
 class _MemoryStatusEx(ctypes.Structure):
@@ -160,12 +163,12 @@ def _dir_size(directory: Path) -> int:
     seen = 0
     try:
         for child in directory.rglob("*"):
+            if seen >= _DIR_SIZE_ENTRY_CAP:
+                break
+            seen += 1
             try:
                 if child.is_file():
                     total += child.stat().st_size
-                    seen += 1
-                    if seen >= _DIR_SIZE_FILE_CAP:
-                        break
             except OSError:
                 continue
     except OSError:

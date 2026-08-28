@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（工件目录遍历的上限只数文件，被"目录洪泛"绕过）
+
+- `core/retention.py::measure_usage` 与 `core/limits.py::_dir_size` 的遍历上限此前只在
+  命中文件时自增计数，空目录既不计入 `files/seen` 也不消耗上限，于是一棵几乎全是空目录、
+  文件寥寥的树（例如被分析样本在工件根里解出的"目录炸弹"）永远触不到上限，遍历随目录数
+  无界增长。`measure_usage` 跑在就绪探针背后（`UsageCache._refresh`），文档明写"绝不能成为
+  探针里最慢的一环"；监管进程给探针 5 秒，一次无界遍历会把健康的服务重启掉。
+- 改为按"访问到的每一个条目"（文件与目录都算）计数并判上限：`measure_usage` 循环顶部改判
+  `seen >= file_limit` 并每轮 `seen += 1`，`_dir_size` 同理；常量 `_DIR_SIZE_FILE_CAP`
+  更名为 `_DIR_SIZE_ENTRY_CAP` 以反映其现在约束的是遍历条目数。无论树形如何，遍历都被
+  上限兜住；正常小树仍照常求和且不置 `truncated`。
+- 新增用例（改前红、改后绿，非空洞）：`test_retention_failure.py` 的
+  `test_measure_usage_bounds_the_walk_on_a_directory_flood`（5 个顶层空目录、文件藏在其后，
+  cap=3；rglob 先吐完顶层再下钻，故上限花在目录上、`truncated=True` 且 `files=0`）与
+  `test_measure_usage_counts_a_small_tree_without_truncating`（目录计入上限后不误伤普通树）；
+  `test_core_limits_eviction.py` 把旧的 `_DIR_SIZE_FILE_CAP` 用例改写为
+  `test_dir_size_stops_counting_at_the_entry_cap`，并新增
+  `test_dir_size_bounds_the_walk_when_directories_flood_the_tree`。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

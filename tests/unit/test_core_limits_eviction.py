@@ -217,18 +217,39 @@ def test_prune_sizes_and_evicts_subdirectories(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # _dir_size and _remove_entry                                                 #
 # --------------------------------------------------------------------------- #
-def test_dir_size_stops_counting_at_the_file_cap(
+def test_dir_size_stops_counting_at_the_entry_cap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(limits, "_DIR_SIZE_FILE_CAP", 1)
+    monkeypatch.setattr(limits, "_DIR_SIZE_ENTRY_CAP", 2)
     sub = tmp_path / "tree"
     sub.mkdir()
-    (sub / "nested").mkdir()
-    (sub / "a.bin").write_bytes(b"x" * 10)
-    (sub / "nested" / "b.bin").write_bytes(b"x" * 10)
-    # With the file cap at one, exactly one file's bytes are summed before the
-    # walk bails out; the nested directory entry is skipped, not counted.
-    assert limits._dir_size(sub) == 10
+    # Four equal-sized files at one level. The walk visits entries until the cap
+    # and stops, so exactly two files' bytes are summed -- and because the sizes
+    # are equal, the total is the same whichever two the filesystem hands back.
+    for name in ("a.bin", "b.bin", "c.bin", "d.bin"):
+        (sub / name).write_bytes(b"x" * 10)
+    assert limits._dir_size(sub) == 20
+
+
+def test_dir_size_bounds_the_walk_when_directories_flood_the_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tree that is mostly empty directories must not walk unbounded.
+
+    The cap counts every entry, not only files. rglob yields every top-level
+    entry before it descends, so five empty directories against a cap of three
+    spend the budget on directories and the walk stops before it ever reaches
+    the file nested behind one of them. A files-only cap skips the directories,
+    descends, and sums the file -- which is the directory flood this bound
+    exists to stop, so this returns 0 only once directories count too.
+    """
+    monkeypatch.setattr(limits, "_DIR_SIZE_ENTRY_CAP", 3)
+    sub = tmp_path / "tree"
+    sub.mkdir()
+    for index in range(5):
+        (sub / f"d{index}").mkdir()
+    (sub / "d0" / "deep.bin").write_bytes(b"x" * 10)
+    assert limits._dir_size(sub) == 0
 
 
 def test_dir_size_sums_files_and_skips_nested_directories(tmp_path: Path) -> None:
@@ -237,7 +258,7 @@ def test_dir_size_sums_files_and_skips_nested_directories(tmp_path: Path) -> Non
     (sub / "a.bin").write_bytes(b"x" * 10)
     (sub / "b.bin").write_bytes(b"x" * 20)
     (sub / "nested" / "c.bin").write_bytes(b"x" * 30)
-    # Below the file cap, so the walk visits every entry: the two top-level
+    # Below the entry cap, so the walk visits every entry: the two top-level
     # files and the nested one sum to 60, while the directory entries add zero.
     assert limits._dir_size(sub) == 60
 

@@ -49,13 +49,24 @@ def measure_usage(root: Path, *, file_limit: int = USAGE_FILE_LIMIT) -> DiskUsag
 
     ``truncated`` says the answer is a floor, not the whole story, so a caller
     never reports a reassuring number that just means the walk stopped early.
+
+    The cap counts every entry the walk visits, not only files. A files-only
+    cap does not bound the walk it is there to bound: a tree that is mostly
+    empty directories -- a directory bomb an analysed sample unpacked into the
+    artifact root, say -- has few files, so the cap never trips and the walk
+    grows with the tree. This runs behind the readiness probe, which the
+    supervisor gives five seconds before it counts a strike, so an unbounded
+    walk restarts a healthy service. Counting directories too keeps the walk
+    bounded regardless of the tree's shape.
     """
     total = 0
     files = 0
+    seen = 0
     try:
         for path in root.rglob("*"):
-            if files >= file_limit:
+            if seen >= file_limit:
                 return DiskUsage(bytes=total, files=files, truncated=True)
+            seen += 1
             try:
                 stat = path.stat()
             except OSError:
