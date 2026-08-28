@@ -72,6 +72,18 @@ _NAMED_WASM = _RICH_WASM + bytes.fromhex(
     "070a010007636f756e746572"  # subsec 7: global name "counter" -- skipped
 )
 
+# The same rich module with a "target_features" custom section appended (where
+# LLVM and rustc record which engine features the build assumed): two used
+# ('+') features and one required ('='). wasm-validate clean; everything
+# before the custom section is byte-identical to _RICH_WASM.
+_FEATURED_WASM = _RICH_WASM + bytes.fromhex(
+    "00350f7461726765745f6665617475726573"  # custom section, name "target_features"
+    "03"  # three feature entries
+    "2b0f6d757461626c652d676c6f62616c73"  # [+] mutable-globals
+    "2b087369676e2d657874"  # [+] sign-ext
+    "3d0761746f6d696373"  # [=] atomics
+)
+
 # wasm2wat renders imports as (import "M" "N" (KIND ...)) and exports as
 # (export "N" (KIND ...)); KIND is func/memory/global/table -- the same
 # vocabulary describe_wasm reports, so the two views compare directly.
@@ -88,6 +100,10 @@ _WAT_MEMORY_RE = re.compile(r"\(memory \(;\d+;\) (\d+)(?: (\d+))?")
 # in index order (imports first).
 _WAT_MODULE_NAME_RE = re.compile(r"\(module \$([^\s()]+)")
 _WAT_FUNC_NAME_RE = re.compile(r"\(func \$([^\s()]+) \(type\b")
+# wasm-objdump -x renders the target_features section as one "- [P] name" line
+# per entry (P is the +/-/= prefix byte), directly under its Custom heading --
+# the same prefix and feature the tool-free reader reports.
+_OBJDUMP_FEATURE_RE = re.compile(r"^\s*- \[([-+=])\] (\S+)\s*$", re.MULTILINE)
 
 
 def _browser_available() -> bool:
@@ -339,6 +355,53 @@ def test_wasm_debug_names_agree_with_wabt(tmp_path: Path) -> None:
         # resolution as (start $host_log).
         assert wasm["start_function"] == {"index": 0, "name": "host_log"}
         assert re.search(r"\(start \$host_log\)", wat), wat
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_target_features_agree_with_wabt(tmp_path: Path) -> None:
+    """The tool-free target_features reader and wabt must list the same features.
+
+    The target_features custom section is WASM's minimum-runtime fact: the
+    engine features (simd128, atomics, ...) the module was built to assume,
+    each marked used ('+'), required ('=') or disallowed ('-') -- the analogue
+    of an ELF DT_VERNEED or a Mach-O min_os. describe_wasm now parses it
+    itself, but that parser and the unit fixtures are both ours, so nothing
+    proved its walk matches an independent decoder. wasm-objdump -x decodes
+    the very same section into one "- [P] name" line per entry; this drives a
+    module carrying three features through both and requires they agree entry
+    for entry, prefix and name and order alike. Needs wabt; skip != pass when
+    it is absent.
+    """
+    if not WasmClient().available:
+        pytest.skip(
+            "wabt (wasm-objdump) not installed — WASM feature cross-check not run (skip != pass)"
+        )
+    module = tmp_path / "featured.wasm"
+    module.write_bytes(_FEATURED_WASM)
+    service = AnalysisService()
+    try:
+        # Tool-free facts, straight off the custom section at session creation.
+        created = service.create_session(str(module))
+        assert created.ok, created.error
+        wasm = created.data["session"]["metadata"]["wasm"]
+        assert "target_features" in wasm["custom_sections"]
+        reader_features = [(f["prefix"], f["feature"]) for f in wasm["target_features"]]
+
+        # wabt's independent decode of the same bytes. The bracket-prefix lines
+        # are unique to the target_features rendering, so matching them across
+        # the whole dump reads exactly that section's entries, in order.
+        result = service.wasm_info(str(module))
+        assert result.ok, result.error
+        objdump = result.data["objdump"]
+        assert '- name: "target_features"' in objdump, objdump
+        wabt_features = _OBJDUMP_FEATURE_RE.findall(objdump)
+
+        # Both readers must list the same features -- prefix, name and order.
+        expected = [("+", "mutable-globals"), ("+", "sign-ext"), ("=", "atomics")]
+        assert reader_features == expected
+        assert wabt_features == expected
     finally:
         service.close_all()
 

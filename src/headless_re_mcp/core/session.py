@@ -1701,6 +1701,17 @@ _WASM_MAX_PRODUCER_CHARS = 256
 # names. Its presence is the stripped/unstripped distinction for a module.
 _WASM_NAME_SUBSEC_MODULE = 0
 _WASM_NAME_SUBSEC_FUNCTIONS = 1
+# The "target_features" custom section (tool-conventions Linking.md, emitted by
+# LLVM/clang and rustc) lists the WebAssembly features the module was built
+# against: each entry is a one-byte prefix -- '+' used, '-' disallowed, '='
+# required -- followed by a feature name (simd128, bulk-memory, atomics, ...).
+# The used/required set is the engine capability the module needs to run, so
+# it is WASM's minimum-runtime fact -- the analogue of an ELF DT_VERNEED, a
+# Mach-O min_os or a .NET target_framework. wasm-objdump -x prints the same
+# list, so the WASM gate can cross-check it. Real modules declare well under
+# this many; the cap only bounds a hostile section.
+_WASM_MAX_FEATURES = 64
+_WASM_FEATURE_PREFIXES = {0x2B: "+", 0x2D: "-", 0x3D: "="}
 
 
 def _read_leb_u32(data: bytes, pos: int) -> tuple[int, int, bool]:
@@ -1753,6 +1764,7 @@ def describe_wasm(path: Path) -> dict[str, Any]:
     imports: list[dict[str, Any]] = []
     defined_memories: list[dict[str, Any]] = []
     producers: dict[str, list[str]] | None = None
+    target_features: list[dict[str, Any]] | None = None
     name_facts: dict[str, Any] = {}
     has_start = False
     start_index: int | None = None
@@ -1807,6 +1819,12 @@ def describe_wasm(path: Path) -> dict[str, Any]:
                 # carries. Its absence is what "stripped" means for WASM.
                 elif cname == "name" and not name_facts:
                     name_facts = _wasm_name_section(data, name_pos + name_len, body_end)
+                # "target_features" is the module's minimum-runtime fact: the
+                # engine features it was built to require (simd128, atomics, ...).
+                elif cname == "target_features" and target_features is None:
+                    target_features = _wasm_target_features(
+                        data, name_pos + name_len, body_end
+                    )
         pos = body_end
         walked += 1
     # The module's whole linear-memory footprint: imported memories (which come
@@ -1858,6 +1876,12 @@ def describe_wasm(path: Path) -> dict[str, Any]:
             "memories": memories,
             "custom_sections": custom_sections,
             "producers": producers,
+            # The engine features the module requires (target_features custom
+            # section): WASM's minimum-runtime fact. None when the section is
+            # absent (a build that did not record it); a list otherwise, each
+            # entry a feature name and its prefix ('+' used, '=' required,
+            # '-' disallowed).
+            "target_features": target_features,
             "module_name": name_facts.get("module_name"),
             "function_name_count": name_facts.get("function_name_count"),
             "function_names": name_facts.get("function_names", []),
@@ -2224,6 +2248,32 @@ def _wasm_producers(data: bytes, pos: int, body_end: int) -> dict[str, list[str]
             # position no longer sits at the next field; stop rather than
             # misread the remainder as field names.
             break
+    return out
+
+
+def _wasm_target_features(data: bytes, pos: int, body_end: int) -> list[dict[str, Any]]:
+    """The [prefix, feature] entries from a target_features custom section.
+
+    The layout (tool-conventions Linking.md) is a vector of entries, each a
+    one-byte prefix ('+' used, '-' disallowed, '=' required) followed by a
+    feature name -- the WebAssembly features the module was built against, so
+    the used/required set is the engine capability it needs to run. Bounded and
+    fail-closed like the producers reader: caps on the entry count and name
+    length, an unknown prefix or a malformed tail stops the walk with what
+    parsed cleanly rather than raising.
+    """
+    count, pos, ok = _read_leb_u32(data, pos)
+    if not ok:
+        return []
+    out: list[dict[str, Any]] = []
+    for _ in range(min(count, _WASM_MAX_FEATURES)):
+        if pos >= body_end:
+            break
+        prefix = _WASM_FEATURE_PREFIXES.get(data[pos])
+        name, pos = _read_wasm_name(data, pos + 1)
+        if prefix is None or name is None or pos > body_end:
+            break
+        out.append({"feature": name[:_WASM_MAX_PRODUCER_CHARS], "prefix": prefix})
     return out
 
 

@@ -405,6 +405,73 @@ def test_producers_with_a_hostile_count_keeps_what_parsed(tmp_path: Path) -> Non
     assert info["type_count"] == 3  # the section after the liar still parsed
 
 
+def _target_features_section(entries: list[tuple[str, str]]) -> bytes:
+    body = _name("target_features") + _leb(len(entries))
+    for prefix, feature in entries:
+        body += prefix.encode("ascii") + _name(feature)
+    return _section(0, body)
+
+
+def test_describe_wasm_reads_target_features(tmp_path: Path) -> None:
+    """The target_features section is WASM's minimum-runtime fact.
+
+    It lists the engine features the module was built against, each with a
+    prefix ('+' used, '=' required, '-' disallowed) -- the analogue of an ELF
+    DT_VERNEED or a Mach-O min_os. The wabt gate cross-checks the same list
+    against wasm-objdump -x.
+    """
+    module = _module(
+        [
+            _target_features_section(
+                [("+", "mutable-globals"), ("+", "sign-ext"), ("=", "atomics")]
+            )
+        ]
+    )
+    path = tmp_path / "featured.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["target_features"] == [
+        {"feature": "mutable-globals", "prefix": "+"},
+        {"feature": "sign-ext", "prefix": "+"},
+        {"feature": "atomics", "prefix": "="},
+    ]
+    assert info["custom_sections"] == ["target_features"]
+
+
+def test_no_target_features_section_reads_as_none(tmp_path: Path) -> None:
+    # A module built without recording features has no such section: None,
+    # distinct from a present-but-empty list.
+    path = tmp_path / "add.wasm"
+    path.write_bytes(_ADD_WASM)
+    assert describe_wasm(path)["wasm"]["target_features"] is None
+
+
+def test_target_features_with_a_hostile_count_keeps_what_parsed(tmp_path: Path) -> None:
+    # The vector declares 5000 entries but carries one; the reader keeps the
+    # real entry and stops at the section end rather than allocating for the
+    # claim or misreading past it, and the section after it still parses.
+    body = _name("target_features") + _leb(5000) + b"+" + _name("simd128")
+    module = _module([_section(0, body), _section(1, _leb(2) + b"\x00" * 4)])
+    path = tmp_path / "liar_features.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["target_features"] == [{"feature": "simd128", "prefix": "+"}]
+    assert info["type_count"] == 2  # the section after the liar still parsed
+
+
+def test_target_features_stops_at_an_unknown_prefix(tmp_path: Path) -> None:
+    # A prefix byte that is not '+'/'-'/'=' means the stream is not a
+    # well-formed feature vector; the reader keeps what parsed before it
+    # rather than inventing an entry from a garbage byte.
+    body = _name("target_features") + _leb(2) + b"=" + _name("bulk-memory")
+    body += b"?" + _name("threads")  # '?' is not a valid prefix
+    module = _module([_section(0, body)])
+    path = tmp_path / "bad_prefix.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["target_features"] == [{"feature": "bulk-memory", "prefix": "="}]
+
+
 def test_describe_wasm_is_fail_closed_on_a_malformed_tail(tmp_path: Path) -> None:
     # A valid type section, then an export section whose declared payload runs
     # past the end of the file. The walk must stop and report not-well-formed.
