@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（会话流失线程门用进程级精确相等断言,间歇性误挂）
+
+- `TestSessionChurnStaysBounded` 断言 120 轮开/关会话后 `threading.active_count()
+  == threads_before`。但 `active_count()` 是**进程级**计数:洗牌运行整套时,前
+  序测试遗留的悬挂线程(如 `test_agent_orchestrator` 把默认执行器换成新
+  `ThreadPoolExecutor` 且从不 shutdown,其空闲工作线程要等 GC 回收)会在这个测
+  试 ~1.7s 的窗口内被回收,于是断言变成 `117 == 121` 而挂。经直接测量确认:会话
+  开/关本身**零新增线程**(循环体全程只有 MainThread),所以这条相等断言从来不
+  是在测本服务的线程,而是在测无关噪声。泄漏只会让计数**单调上增**(每轮一个不
+  回收的 worker),故改为 `active_count() <= threads_before`——保留泄漏检测(真
+  泄漏是大幅上增,必被抓),同时容忍别的测试线程在窗口内死亡。此改动**严格安
+  全**:`==` 蕴含 `<=`,凡旧断言通过者新断言必过,旧断言因"下降"误挂者转过。复
+  现确认该 flake 由 GC 回收时机决定(同一 pytest-randomly 种子跨多次运行时挂时
+  过);修复后整套洗牌运行 6043 passed / 54 合法 skip。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

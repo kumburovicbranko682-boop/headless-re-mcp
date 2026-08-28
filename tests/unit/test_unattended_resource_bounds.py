@@ -2870,7 +2870,18 @@ class TestSessionChurnStaysBounded:
                 closed = service.close_session(session_id)
                 assert closed.ok, closed.error
 
-            assert threading.active_count() == threads_before
+            # Session churn must not accumulate threads. active_count() is
+            # process-global, and strict equality here also fault on unrelated
+            # threads from other tests being reaped mid-run: under a shuffled
+            # suite this asserted 117 == 121 -- an *external* decrease of four
+            # threads dying during this test's window, which this test does not
+            # own. A churn leak is strictly additive (a worker per cycle that is
+            # never joined), so it can only push the count up; asserting it does
+            # not grow catches a real leak without failing on another test's
+            # threads dying. Verified directly: create/close adds no threads of
+            # its own here (the loop body runs single-threaded), so any increase
+            # past the baseline is a genuine regression.
+            assert threading.active_count() <= threads_before
             usage = measure_usage(root)
             # 7.7 MB written against a 1 MB budget.
             assert usage.bytes < 3 * budget
