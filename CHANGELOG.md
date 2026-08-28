@@ -45,6 +45,16 @@ until 1.0 the tool surface may still change between minor versions.
   （CI 口径）时 **4470 passed / 54 skipped**，守护完全透明。repo 级 ruff check 与
   mypy（223 文件）全绿。
 
+### 测试（给 web 包惰性导入加 CI 可执行的回归护栏）
+
+- 上一条的 6 个 web 工具单测只在**裸机**上守护——CI 一直装着 fastapi，就算 eager import
+  回潮它们照样收得到，抓不到回归。新增 `tests/unit/test_web_import_without_fastapi.py`：在
+  子进程里于 importer 层拦掉 fastapi（`builtins.__import__` 对 `fastapi`/`fastapi.*` 抛
+  ModuleNotFoundError），再导入 `web` 及 `web.setup/deps/monitor/launch_util/commands`，并断言
+  `create_app`/`run_web` 仍是惰性（访问才需 fastapi）。因为拦截与本机装没装 fastapi 无关，这条
+  在正常 CI（fastapi 在场）里也会跑真格。已双向验证：本分支（惰性 __init__）通过；临时换回
+  origin/main 的 eager __init__ 立刻 FAILED——护栏确实抓得住回归。ruff 与 mypy 全绿。
+
 ### 修复（web 包 __init__ 顶层 eager 导入 web.app，害得纯工具子模块也硬依赖 fastapi——installer 配 IDA 在裸机崩）
 
 - `src/headless_re_mcp/web/__init__.py` 在包顶层 eager 执行
