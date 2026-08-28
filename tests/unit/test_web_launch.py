@@ -6,9 +6,11 @@ import time
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import headless_re_mcp.web.launch_util as launch_util
 from headless_re_mcp.web.launch_util import (
     _parse_healthz_http,
     choose_bind_port,
@@ -136,6 +138,64 @@ def test_probe_our_healthz_returns_within_timeout_when_the_body_trickles() -> No
         assert probe_our_healthz("127.0.0.1", port, timeout=0.4) is None
         elapsed = time.perf_counter() - started
         assert elapsed < 1.5, f"healthz probe ran {elapsed:.3f}s against a 0.4s timeout"
+
+
+def test_probe_our_healthz_gives_up_before_connecting_when_the_budget_is_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deadline is checked before the connect: if the clock has already run
+    past it, the probe returns None without ever opening a socket.
+
+    start_web probes /healthz twice per launch; the budget checks are what keep
+    a probe that lost its slice to scheduling from blocking on connect.
+    """
+    ticks = iter([1000.0, 1000.10])  # deadline is 1000 + 0.05; the read is past it
+    monkeypatch.setattr(launch_util, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+
+    def _never_connect(*args: object, **kwargs: object) -> object:
+        raise AssertionError("must not attempt to connect once the budget is spent")
+
+    monkeypatch.setattr(
+        launch_util,
+        "socket",
+        SimpleNamespace(create_connection=_never_connect, SHUT_RDWR=socket.SHUT_RDWR),
+    )
+
+    assert probe_our_healthz("127.0.0.1", 65000, timeout=0.05) is None
+
+
+def test_probe_our_healthz_gives_up_after_connecting_when_the_budget_is_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The connect can succeed yet consume the whole budget; the second check
+    returns None and still tears down the socket it opened rather than arming a
+    read with a non-positive timeout (which would block indefinitely)."""
+    ticks = iter([2000.0, 2000.01, 2000.20])
+    monkeypatch.setattr(launch_util, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+
+    torn_down = {"shutdown": False, "close": False}
+
+    class _FakeSock:
+        def settimeout(self, _timeout: float) -> None:
+            raise AssertionError("must not arm a read once the budget is spent")
+
+        def shutdown(self, _how: int) -> None:
+            torn_down["shutdown"] = True
+
+        def close(self) -> None:
+            torn_down["close"] = True
+
+    monkeypatch.setattr(
+        launch_util,
+        "socket",
+        SimpleNamespace(
+            create_connection=lambda address, timeout=None: _FakeSock(),
+            SHUT_RDWR=socket.SHUT_RDWR,
+        ),
+    )
+
+    assert probe_our_healthz("127.0.0.1", 65000, timeout=0.05) is None
+    assert torn_down["close"] is True
 
 
 def test_probe_our_healthz_still_recognises_this_console() -> None:
