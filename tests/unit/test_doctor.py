@@ -996,6 +996,48 @@ def test_probe_ghidra_ready_when_pyghidra_package_present(
     assert probe.status == ProbeStatus.READY
 
 
+def test_probe_ghidra_missing_when_analyze_headless_is_absent(tmp_path: Path) -> None:
+    """A configured home with no analyzeHeadless is MISSING, not READY.
+
+    HEADLESS_RE_GHIDRA_HOME pointing at a directory that is not a real Ghidra
+    install (or the wrong subdirectory) must report MISSING with the home it
+    looked under and a remediation, rather than being taken as a usable backend.
+    """
+    home = tmp_path / "not-really-ghidra"
+    home.mkdir()
+    settings = replace(_settings(None, tmp_path / "artifacts"), ghidra_home=home)
+
+    probe = probe_ghidra(settings)
+
+    assert probe.status == ProbeStatus.MISSING
+    assert "analyzeHeadless not found" in probe.summary
+    assert probe.details.get("home") == str(home)
+    assert probe.remediation is not None
+
+
+def test_probe_ghidra_detected_but_not_ready_when_java_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """analyzeHeadless present but no java is DETECTED, never READY.
+
+    analyzeHeadless is a JVM launcher; without java on PATH it cannot run, so the
+    doctor reports the launcher as present (DETECTED) with a remediation to
+    install a JRE, rather than claiming the backend is ready to use.
+    """
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda name: None)
+    settings = replace(
+        _settings(None, tmp_path / "artifacts"),
+        ghidra_home=_ghidra_home(tmp_path, pyghidra=False),
+    )
+
+    probe = probe_ghidra(settings)
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert "java is not on PATH" in probe.summary
+    assert probe.remediation is not None
+    assert "java" in probe.remediation.lower()
+
+
 def test_playwright_probe_is_missing_when_the_module_is_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
