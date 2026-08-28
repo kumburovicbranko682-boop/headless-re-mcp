@@ -675,26 +675,40 @@ class FridaClient:
             ) from exc
         return {"id": str(device.id), "name": str(device.name), "type": str(device.type)}
 
-    def applications(self, device_id: str | None, *, limit: int = 256) -> JsonObject:
+    def applications(
+        self, device_id: str | None, *, offset: int = 0, limit: int = 256
+    ) -> JsonObject:
         device = self._resolve_device(device_id)
         try:
             apps = _run_deadline(device.enumerate_applications, timeout=30.0)
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"failed to enumerate applications: {exc}") from exc
-        capped = max(1, min(int(limit), 1000))
         items = [
             {
                 "identifier": str(app.identifier),
                 "name": str(app.name),
                 "pid": int(getattr(app, "pid", 0) or 0),
             }
-            for app in apps[:capped]
+            for app in apps
         ]
+        # Sort before paging, then page by offset -- like apk.classes/xrefs.
+        # enumerate_applications hands back device order, and the reader used to
+        # cap at the first page with no offset, so a device with more apps than
+        # the cap returned an unsorted first slice and left the rest unreachable:
+        # an agent could not find (or even page to) a package that sorted or sat
+        # past the cap. Sort by identifier (the package id a caller keys on), then
+        # name for a stable tiebreak, so the page is a real alphabetical prefix
+        # and a larger offset walks the remaining apps.
+        items.sort(key=lambda entry: (entry["identifier"], entry["name"]))
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = items[start : start + cap]
         return {
-            "applications": items,
-            "count": len(items),
-            "total": len(apps),
-            "has_more": len(apps) > capped,
+            "applications": window,
+            "count": len(window),
+            "total": len(items),
+            "offset": start,
+            "has_more": start + len(window) < len(items),
         }
 
     def spawn(

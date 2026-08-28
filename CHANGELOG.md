@@ -93,6 +93,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   越界 `offset` 是空的末页,以及把 `_MAX_XREFS_COLLECT` 调小后 `scan_capped` 为真;`test_apk_offset_schema.py` 把\
   `apk.xrefs` 纳入“offset 必须 `minimum=0` 且无上限”的用例;`test_apk_service_envelopes.py` 的假后端补上 `offset` 形参。
 
+### 完整性（frida.applications 补齐 offset 分页与按 identifier 排序，装了很多应用的设备不再只有不可翻页、未排序的首页）
+
+- `frida.applications` 与旧 `apk.xrefs` 是同一类缺陷:`enumerate_applications` 返回设备枚举序,读取器按这个顺序\
+  切掉首个 `capped`(默认 256、上限 1000)条就置 `has_more`,既不排序也不接受 `offset`。装了超过一页应用的设备\
+  (`total` 与 `has_more` 虽如实上报)其余应用无从翻到,且默认页只是设备序的任意前 256 个——agent 想确认\
+  “com.foo.bar 在不在这台设备上”既不能按字母序前缀判断,也没法翻页找过去。现改为:把全部应用先建表、按\
+  `(identifier, name)` 排序、再用 `offset` / `limit` 切页(`offset` 落 0 下限、`limit` 钳到 1..1000),回包新增\
+  `offset`。这样超限页是真正的 identifier 字母序前缀,更大的 `offset` 能走完整台设备,`total` / `has_more` 语义\
+  与既有的 `applications` / `count` 形状保持不变(纯增字段,向后兼容)。
+- `offset` 在 schema 层 `Field(ge=0)`,自动纳入 `test_non_pe_pagination_schema_bounds.py` 的 offset 扫描;\
+  `tests/unit/test_frida_fields.py` 以逆序应用钉住“首页是 identifier 前缀、`offset=3` 取到其余”与负 `offset` 归零页;\
+  `test_frida_audit.py` 与 `test_frida_service_envelopes.py` 的假客户端补上 `offset` 形参。
+
 ### 测试（钉住 frida.java.classes / methods 的 has_more 全靠“向脚本多要一个”：脚本按 limit+1 枚举，回包按 limit 切页）
 
 - `frida.java.classes` / `frida.java.methods` 的 `has_more` 是否诚实,取决于后端向设备脚本请求的是\

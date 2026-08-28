@@ -70,8 +70,8 @@ class _FakeClient:
         del device_id
         return {"package": package, "pid": 4242, "device": "usb"}
 
-    def applications(self, device_id: Any, limit: int = 256) -> JsonObject:
-        del device_id, limit
+    def applications(self, device_id: Any, offset: int = 0, limit: int = 256) -> JsonObject:
+        del device_id, offset, limit
         return {"applications": [], "count": 0}
 
 

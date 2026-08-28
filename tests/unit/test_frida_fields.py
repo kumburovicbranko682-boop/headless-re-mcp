@@ -199,6 +199,60 @@ def test_frida_applications_puts_the_list_in_applications_and_says_when_it_stopp
     assert "Answers with applications" in doc
     assert "has_more" in doc
 
+
+class _PaddedApp:
+    def __init__(self, index: int) -> None:
+        self.identifier = f"com.app{index:03d}"
+        self.name = f"App{index:03d}"
+        self.pid = 0
+
+
+class _ReverseAppsDevice:
+    """enumerate_applications hands back apps in reverse-identifier order."""
+
+    def __init__(self, count: int) -> None:
+        self._count = count
+
+    def enumerate_applications(self) -> list[_PaddedApp]:
+        return [_PaddedApp(index) for index in reversed(range(self._count))]
+
+
+def test_frida_applications_page_is_the_sorted_prefix_and_offset_reaches_the_rest() -> None:
+    """Apps arrive reverse-ordered and overflow the page: the first page must be
+    the identifier-sorted prefix, and a later offset must return the tail.
+
+    That second call is the point of the change -- applications had no offset, so a
+    device with more apps than the cap returned an unsorted device-order first
+    slice with the rest unreachable. An agent could neither trust the page as an
+    alphabetical prefix nor page to a package that sat past the cap.
+    """
+    client = FridaClient()
+    client._resolve_device = lambda device_id: _ReverseAppsDevice(5)  # type: ignore[method-assign]
+    first = client.applications("usb", offset=0, limit=3)
+    assert first["total"] == 5
+    assert first["offset"] == 0
+    assert [app["identifier"] for app in first["applications"]] == [
+        "com.app000",
+        "com.app001",
+        "com.app002",
+    ]
+    assert first["has_more"] is True
+    second = client.applications("usb", offset=3, limit=3)
+    assert [app["identifier"] for app in second["applications"]] == [
+        "com.app003",
+        "com.app004",
+    ]
+    assert second["has_more"] is False
+
+
+def test_frida_applications_negative_offset_returns_page_zero() -> None:
+    client = FridaClient()
+    client._resolve_device = lambda device_id: _ReverseAppsDevice(10)  # type: ignore[method-assign]
+    payload = client.applications("usb", offset=-1, limit=10)
+    assert payload["offset"] == 0
+    assert payload["count"] == 10
+    assert payload["has_more"] is False
+
 class _JavaApi:
     def classes(self, name_filter: str, count: int) -> list[str]:
         return [f"c{index}" for index in range(int(count))]

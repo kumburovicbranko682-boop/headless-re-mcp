@@ -74,7 +74,9 @@ class _FakeFrida:
         self._maybe_fail("spawn")
         return {"package": package, "pid": 4242}
 
-    def applications(self, device_id: Any, limit: int = 256) -> JsonObject:
+    def applications(
+        self, device_id: Any, offset: int = 0, limit: int = 256
+    ) -> JsonObject:
         self._maybe_fail("applications")
         return {"applications": [], "count": 0}
 
