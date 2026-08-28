@@ -132,15 +132,18 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="frida.applications")
     def frida_applications(
-        session_id: str, limit: Annotated[int, Field(ge=1, le=1000)] = 256
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 256,
     ) -> dict[str, Any]:
         """List installed applications on the session's connected device.
 
-        Answers with applications (identifier, name, pid), count, total, and
-        has_more so a page that filled the limit is not read as the whole
-        device. The list field is applications, not apps or packages.
+        Answers with applications (identifier, name, pid), count, total, offset,
+        and has_more so a page that filled the limit is not read as the whole
+        device. Advance offset by the returned count to read the next page while
+        has_more is true. The list field is applications, not apps or packages.
         """
-        return _dump(analysis.frida_applications(session_id, limit=limit))
+        return _dump(analysis.frida_applications(session_id, offset=offset, limit=limit))
 
     @tools.tool(name="frida.spawn")
     def frida_spawn(session_id: str, package: str) -> dict[str, Any]:

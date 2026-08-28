@@ -188,13 +188,22 @@ def test_frida_server_ensure_maps_an_adb_error(
 
 def test_frida_applications_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     payload = {"applications": [{"identifier": "com.x", "name": "X"}], "count": 1}
-    _patch_frida(monkeypatch, _FridaStub(applications=lambda device_id, *, limit: payload))
+    seen: dict[str, int] = {}
+
+    def _apps(device_id: Any, *, offset: int = 0, limit: int = 256) -> Any:
+        seen["offset"] = offset
+        seen["limit"] = limit
+        return payload
+
+    _patch_frida(monkeypatch, _FridaStub(applications=_apps))
     service, session_id = _service_with_session(tmp_path)
     _authorize(service, session_id)
     try:
-        result = service.frida_applications(session_id)
+        result = service.frida_applications(session_id, offset=30, limit=15)
         assert result.ok is True, result.error
         assert result.data is not None and result.data["count"] == 1
+        # The service must forward the page window to the client, not drop it.
+        assert seen == {"offset": 30, "limit": 15}
     finally:
         service.close_all()
 
@@ -202,7 +211,7 @@ def test_frida_applications_success(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 def test_frida_applications_maps_a_frida_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    def _boom(device_id: Any, *, limit: int) -> Any:
+    def _boom(device_id: Any, *, offset: int = 0, limit: int = 256) -> Any:
         raise FridaError("backend_error", "enumeration failed")
 
     _patch_frida(monkeypatch, _FridaStub(applications=_boom))
@@ -219,7 +228,7 @@ def test_frida_applications_maps_a_frida_error(
 def test_frida_applications_maps_an_unexpected_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    def _boom(device_id: Any, *, limit: int) -> Any:
+    def _boom(device_id: Any, *, offset: int = 0, limit: int = 256) -> Any:
         raise RuntimeError("frida-core enumeration segfault")
 
     _patch_frida(monkeypatch, _FridaStub(applications=_boom))

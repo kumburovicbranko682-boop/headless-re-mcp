@@ -181,8 +181,8 @@ class _Device:
 def test_frida_applications_puts_the_list_in_applications_and_says_when_it_stopped() -> None:
     """The catalog never named the payload.
 
-    Measured: 25 apps, limit 10 -> count 10, total 25, has_more True, field
-    is applications not apps or packages. Looking for those after a
+    Measured: 25 apps, limit 10 -> count 10, total 25, offset 0, has_more True,
+    field is applications not apps or packages. Looking for those after a
     successful call reads as an empty device, and a full page with no
     has_more reads as every installed app.
     """
@@ -193,11 +193,51 @@ def test_frida_applications_puts_the_list_in_applications_and_says_when_it_stopp
     assert "packages" not in payload
     assert payload["count"] == 10
     assert payload["total"] == 25
+    assert payload["offset"] == 0
     assert len(payload["applications"]) == 10
     assert payload["has_more"] is True
     doc = _tool_docstring("frida.applications")
     assert "Answers with applications" in doc
     assert "has_more" in doc
+    assert "offset" in doc
+
+
+def test_frida_applications_offset_pages_past_a_filled_limit() -> None:
+    """offset reads the tail a filled first page hides.
+
+    frida.applications advertised total/has_more but took no offset, so a device
+    with more apps than the limit could report has_more True yet give no way to
+    reach the rest -- the one Android/Web reader that broke the offset/limit/
+    total/has_more contract the apk.* readers keep. With 25 apps, offset 20
+    limit 10 must return the final five (offset 20, count 5, total 25, has_more
+    False), and an offset past the end must be an empty, terminal page rather
+    than a wrap into the tail.
+    """
+    client = FridaClient()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+
+    tail = client.applications("usb", offset=20, limit=10)
+    assert tail["offset"] == 20
+    assert tail["count"] == 5
+    assert tail["total"] == 25
+    assert tail["has_more"] is False
+    assert [app["identifier"] for app in tail["applications"]] == [
+        f"com.app{index}" for index in range(20, 25)
+    ]
+
+    beyond = client.applications("usb", offset=100, limit=10)
+    assert beyond["count"] == 0
+    assert beyond["applications"] == []
+    assert beyond["offset"] == 100
+    assert beyond["has_more"] is False
+
+    # The agent/OpenAI transports bypass the schema's offset >= 0 bound, so a
+    # negative offset must clamp to the head rather than slice from the tail.
+    negative = client.applications("usb", offset=-5, limit=10)
+    assert negative["offset"] == 0
+    assert [app["identifier"] for app in negative["applications"]] == [
+        f"com.app{index}" for index in range(0, 10)
+    ]
 
 class _JavaApi:
     def classes(self, name_filter: str, count: int) -> list[str]:

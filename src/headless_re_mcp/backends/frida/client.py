@@ -578,26 +578,38 @@ class FridaClient:
             ) from exc
         return {"id": str(device.id), "name": str(device.name), "type": str(device.type)}
 
-    def applications(self, device_id: str | None, *, limit: int = 256) -> JsonObject:
+    def applications(
+        self, device_id: str | None, *, offset: int = 0, limit: int = 256
+    ) -> JsonObject:
         device = self._resolve_device(device_id)
         try:
             apps = _run_deadline(device.enumerate_applications, timeout=30.0)
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"failed to enumerate applications: {exc}") from exc
+        # enumerate_applications returns the whole list in memory, so paging is a
+        # slice over it. The frida.applications schema bounds offset >= 0 and
+        # limit within range, but the OpenAI/agent transports call the service
+        # directly and bypass that validation; clamp defensively so a negative
+        # offset cannot wrap the slice into the tail (the same reason apk.* has
+        # _clamp_page). has_more compares the window's far edge against the full
+        # count so paging past a filled limit is not read as the whole device.
+        start = max(0, int(offset))
         capped = max(1, min(int(limit), 1000))
+        window = apps[start : start + capped]
         items = [
             {
                 "identifier": str(app.identifier),
                 "name": str(app.name),
                 "pid": int(getattr(app, "pid", 0) or 0),
             }
-            for app in apps[:capped]
+            for app in window
         ]
         return {
             "applications": items,
             "count": len(items),
             "total": len(apps),
-            "has_more": len(apps) > capped,
+            "offset": start,
+            "has_more": start + len(items) < len(apps),
         }
 
     def spawn(
