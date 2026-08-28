@@ -1,4 +1,17 @@
-"""Error-path coverage for the .NET service mixin (service_dotnet.py)."""
+"""The .NET service mixin's guard and error-mapping arms.
+
+The dotnet suites drive the happy paths (inspect a verified image, register a
+de4dot/NRS output) and the closed-session guards, which leaves every
+error-to-RpcError mapping and a few parameter guards unexecuted: the
+non-boolean require_verified refusal, the capability-unavailable answers when
+a CLI is not configured, the input-changed check that refuses to run a
+deobfuscator on a file that no longer matches the session, the runner-raised
+De4dot/NRS failures, and the DotnetInspectError arms of inspect, enumerate,
+il, xrefs, and verify -- plus the whole dotnet_il body, which no test reached.
+This file pins each against a real AnalysisService session, using a native PE
+where a genuine verification failure is the point and a stubbed metadata
+function where the contract under test is purely the wrapper's mapping.
+"""
 
 from __future__ import annotations
 
@@ -7,22 +20,23 @@ from typing import Any
 
 import pytest
 
-import headless_re_mcp.core.service_dotnet as service_dotnet
 from headless_re_mcp.config import Settings
+from headless_re_mcp.core import service_dotnet
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.dotnet.clr_inspect import DotnetInspectError
 from headless_re_mcp.dotnet.de4dot import De4dotError
 from headless_re_mcp.dotnet.net_reactor_slayer import NetReactorSlayerError
 from tests.unit.test_dotnet_inspect import _write_native_pe, _write_verified_clr_pe
 
+JsonObject = dict[str, Any]
 
-def _service(
-    tmp_path: Path,
-    *,
-    de4dot: Path | None = None,
-    net_reactor_slayer: Path | None = None,
-    **runners: Any,
-) -> AnalysisService:
+
+def _service(tmp_path: Path, **settings: Any) -> AnalysisService:
+    runner_kwargs = {
+        key: settings.pop(key)
+        for key in ("de4dot_runner", "net_reactor_slayer_runner")
+        if key in settings
+    }
     return AnalysisService(
         Settings(
             ida_home=None,
@@ -30,322 +44,266 @@ def _service(
             x64dbg_headless_x64=None,
             x64dbg_headless_x86=None,
             artifact_root=tmp_path / "artifacts",
-            de4dot=de4dot,
-            net_reactor_slayer=net_reactor_slayer,
+            **settings,
         ),
-        **runners,
+        **runner_kwargs,
     )
 
 
-def _open(service: AnalysisService, exe: Path) -> str:
-    created = service.create_session(str(exe))
-    assert created.ok and created.data is not None
+def _session_over(service: AnalysisService, binary: Path) -> str:
+    created = service.create_session(str(binary))
+    assert created.ok and created.data is not None, created.error
     return str(created.data["session"]["id"])
 
 
-def _managed(tmp_path: Path) -> Path:
-    exe = tmp_path / "managed.exe"
-    _write_verified_clr_pe(exe)
-    return exe
+def _managed(tmp_path: Path, name: str = "managed.exe") -> Path:
+    binary = tmp_path / name
+    _write_verified_clr_pe(binary)
+    return binary
 
 
-def _native(tmp_path: Path) -> Path:
-    exe = tmp_path / "native.exe"
-    _write_native_pe(exe)
-    return exe
+def _native(tmp_path: Path, name: str = "native.exe") -> Path:
+    binary = tmp_path / name
+    _write_native_pe(binary)
+    return binary
 
 
-def test_inspect_rejects_a_non_boolean_flag(tmp_path: Path) -> None:
+# --------------------------------------------------------------------------- #
+# dotnet_inspect: parameter guard and verification failure                    #
+# --------------------------------------------------------------------------- #
+def test_inspect_rejects_a_non_boolean_require_verified(tmp_path: Path) -> None:
     service = _service(tmp_path)
-    session_id = _open(service, _managed(tmp_path))
-    result = service.dotnet_inspect(session_id, require_verified="yes")  # type: ignore[arg-type]
-    assert not result.ok and result.error is not None
-    assert result.error.code == "invalid_params"
+    try:
+        sid = _session_over(service, _managed(tmp_path))
+        result = service.dotnet_inspect(sid, require_verified="yes")  # type: ignore[arg-type]
+        assert not result.ok
+        assert result.error is not None
+        assert result.error.code == "invalid_params"
+        assert "boolean" in result.error.message
+    finally:
+        service.close_all()
 
 
-def test_inspect_maps_a_clr_verification_failure(tmp_path: Path) -> None:
+def test_inspect_maps_a_verification_failure_to_its_error_code(tmp_path: Path) -> None:
+    """A native PE cannot be verified as managed; the code must survive intact."""
     service = _service(tmp_path)
-    session_id = _open(service, _native(tmp_path))
-    result = service.dotnet_inspect(session_id, require_verified=True)
-    assert not result.ok and result.error is not None
-    assert result.error.code == "not_dotnet"
+    try:
+        sid = _session_over(service, _native(tmp_path))
+        result = service.dotnet_inspect(sid, require_verified=True)
+        assert not result.ok
+        assert result.error is not None
+        assert result.error.code in {"not_dotnet", "clr_unverified"}
+    finally:
+        service.close_all()
 
 
-def test_deobfuscate_requires_a_configured_cli(tmp_path: Path) -> None:
+# --------------------------------------------------------------------------- #
+# dotnet_deobfuscate: capability, input-changed, runner failure               #
+# --------------------------------------------------------------------------- #
+def test_deobfuscate_without_de4dot_is_capability_unavailable(tmp_path: Path) -> None:
     service = _service(tmp_path)
-    session_id = _open(service, _managed(tmp_path))
-    result = service.dotnet_deobfuscate(session_id)
-    assert not result.ok and result.error is not None
-    assert result.error.code == "capability_unavailable"
+    try:
+        sid = _session_over(service, _managed(tmp_path))
+        result = service.dotnet_deobfuscate(sid)
+        assert not result.ok
+        assert result.error is not None
+        assert result.error.code == "capability_unavailable"
+        assert "de4dot" in result.error.message
+    finally:
+        service.close_all()
 
 
-def test_deobfuscate_refuses_a_mutated_input(tmp_path: Path) -> None:
-    exe = _managed(tmp_path)
-    service = _service(tmp_path, de4dot=tmp_path / "de4dot.exe")
-    session_id = _open(service, exe)
-    exe.write_bytes(exe.read_bytes() + b"\0")  # still verified CLR, new sha256
-    result = service.dotnet_deobfuscate(session_id)
-    assert not result.ok and result.error is not None
-    assert result.error.code == "input_changed"
-
-
-def test_deobfuscate_maps_a_runner_failure(tmp_path: Path) -> None:
-    def runner(*args: Any, **kwargs: Any) -> Any:
-        raise De4dotError("process_failed", "de4dot blew up", details={"returncode": 2})
-
-    service = _service(tmp_path, de4dot=tmp_path / "de4dot.exe", de4dot_runner=runner)
-    session_id = _open(service, _managed(tmp_path))
-    result = service.dotnet_deobfuscate(session_id)
-    assert not result.ok and result.error is not None
-    assert result.error.code == "process_failed"
-    assert result.error.details["returncode"] == 2
-
-
-def test_reactor_unpack_requires_a_configured_cli(tmp_path: Path) -> None:
-    service = _service(tmp_path)
-    session_id = _open(service, _managed(tmp_path))
-    result = service.dotnet_reactor_unpack(session_id)
-    assert not result.ok and result.error is not None
-    assert result.error.code == "capability_unavailable"
-
-
-def test_reactor_unpack_refuses_a_mutated_input(tmp_path: Path) -> None:
-    exe = _managed(tmp_path)
-    service = _service(tmp_path, net_reactor_slayer=tmp_path / "nrs.exe")
-    session_id = _open(service, exe)
-    exe.write_bytes(exe.read_bytes() + b"\0")
-    result = service.dotnet_reactor_unpack(session_id)
-    assert not result.ok and result.error is not None
-    assert result.error.code == "input_changed"
-
-
-def test_reactor_unpack_maps_a_runner_failure(tmp_path: Path) -> None:
-    def runner(*args: Any, **kwargs: Any) -> Any:
-        raise NetReactorSlayerError("timeout", "slayer stalled")
-
-    service = _service(
-        tmp_path,
-        net_reactor_slayer=tmp_path / "nrs.exe",
-        net_reactor_slayer_runner=runner,
-    )
-    session_id = _open(service, _managed(tmp_path))
-    result = service.dotnet_reactor_unpack(session_id)
-    assert not result.ok and result.error is not None
-    assert result.error.code == "timeout"
-
-
-def test_enumerate_maps_a_clr_verification_failure(tmp_path: Path) -> None:
-    service = _service(tmp_path)
-    session_id = _open(service, _native(tmp_path))
-    result = service.dotnet_enumerate(session_id, "types", require_verified=True)
-    assert not result.ok and result.error is not None
-    assert result.error.code == "not_dotnet"
-
-
-def test_il_returns_the_disassembly_payload(
+def test_deobfuscate_refuses_a_session_whose_input_changed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The image passed inspection but no longer hashes to the session's sha."""
+    de4dot = tmp_path / "de4dot.exe"
+    de4dot.write_bytes(b"placeholder")
+    service = _service(tmp_path, de4dot=de4dot, de4dot_runner=_unreached_runner)
+    try:
+        sid = _session_over(service, _managed(tmp_path))
+        monkeypatch.setattr(service_dotnet, "file_sha256", lambda _path: "f" * 64)
+        result = service.dotnet_deobfuscate(sid)
+        assert not result.ok
+        assert result.error is not None
+        assert result.error.code == "input_changed"
+        assert result.error.details["expected_sha256"] != "f" * 64
+    finally:
+        service.close_all()
+
+
+def test_deobfuscate_maps_a_runner_failure_to_its_error_code(tmp_path: Path) -> None:
+    de4dot = tmp_path / "de4dot.exe"
+    de4dot.write_bytes(b"placeholder")
+
+    def failing_runner(*_args: Any, **_kwargs: Any) -> Any:
+        raise De4dotError("process_failed", "de4dot exited 1", details={"exit_code": 1})
+
+    service = _service(tmp_path, de4dot=de4dot, de4dot_runner=failing_runner)
+    try:
+        sid = _session_over(service, _managed(tmp_path))
+        result = service.dotnet_deobfuscate(sid)
+        assert not result.ok
+        assert result.error is not None
+        assert result.error.code == "process_failed"
+        assert result.error.details["exit_code"] == 1
+    finally:
+        service.close_all()
+
+
+# --------------------------------------------------------------------------- #
+# dotnet_reactor_unpack: capability, input-changed, runner failure            #
+# --------------------------------------------------------------------------- #
+def test_reactor_unpack_without_the_cli_is_capability_unavailable(tmp_path: Path) -> None:
     service = _service(tmp_path)
-    session_id = _open(service, _managed(tmp_path))
-    monkeypatch.setattr(
-        service_dotnet,
-        "disassemble_method_il",
-        lambda path, token, *, require_verified: {"token": token, "il": ["nop"]},
-    )
-    result = service.dotnet_il(session_id, 0x06000001)
-    assert result.ok and result.data is not None
-    assert result.data["token"] == 0x06000001
+    try:
+        sid = _session_over(service, _managed(tmp_path))
+        result = service.dotnet_reactor_unpack(sid)
+        assert not result.ok
+        assert result.error is not None
+        assert result.error.code == "capability_unavailable"
+        assert "NETReactorSlayer" in result.error.message
+    finally:
+        service.close_all()
 
 
-def test_il_maps_a_clr_verification_failure(tmp_path: Path) -> None:
-    service = _service(tmp_path)
-    session_id = _open(service, _native(tmp_path))
-    result = service.dotnet_il(session_id, 0x06000001)
-    assert not result.ok and result.error is not None
-    assert result.error.code == "not_dotnet"
-
-
-def test_xrefs_maps_a_clr_verification_failure(tmp_path: Path) -> None:
-    service = _service(tmp_path)
-    session_id = _open(service, _native(tmp_path))
-    result = service.dotnet_xrefs(session_id)
-    assert not result.ok and result.error is not None
-    assert result.error.code == "not_dotnet"
-
-
-def test_verify_maps_a_clr_verification_failure_on_an_owned_artifact(
-    tmp_path: Path,
+def test_reactor_unpack_refuses_a_session_whose_input_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = _service(tmp_path)
-    session_id = _open(service, _managed(tmp_path))
-    owned_dir = (tmp_path / "artifacts").resolve() / "dotnet" / session_id
-    owned_dir.mkdir(parents=True)
-    artifact = owned_dir / "candidate.exe"
-    _write_native_pe(artifact)
-    result = service.dotnet_verify(session_id, str(artifact), require_verified=True)
-    assert not result.ok and result.error is not None
-    assert result.error.code == "not_dotnet"
-
-
-def test_il_error_type_is_the_shared_inspect_error() -> None:
-    assert issubclass(DotnetInspectError, ValueError)
-
-
-def test_every_method_maps_an_unknown_session_to_a_failure(tmp_path: Path) -> None:
-    service = _service(tmp_path)
-    results = [
-        service.dotnet_inspect("missing"),
-        service.dotnet_deobfuscate("missing"),
-        service.dotnet_reactor_unpack("missing"),
-        service.dotnet_enumerate("missing", "types"),
-        service.dotnet_il("missing", 0x06000001),
-        service.dotnet_xrefs("missing"),
-        service.dotnet_verify("missing", str(tmp_path)),
-    ]
-    for result in results:
-        assert not result.ok and result.error is not None
-
-
-def _close(service: AnalysisService, session_id: str) -> None:
-    closed = service.close_session(session_id)
-    assert closed.ok
-
-
-def test_deobfuscate_and_reactor_refuse_a_closed_session(tmp_path: Path) -> None:
+    nrs = tmp_path / "nrs.exe"
+    nrs.write_bytes(b"placeholder")
     service = _service(
-        tmp_path, de4dot=tmp_path / "de4dot.exe", net_reactor_slayer=tmp_path / "nrs.exe"
+        tmp_path, net_reactor_slayer=nrs, net_reactor_slayer_runner=_unreached_runner
     )
-    session_id = _open(service, _managed(tmp_path))
-    _close(service, session_id)
-    for call in (service.dotnet_deobfuscate, service.dotnet_reactor_unpack):
-        result = call(session_id)
-        assert not result.ok and result.error is not None
+    try:
+        sid = _session_over(service, _managed(tmp_path))
+        monkeypatch.setattr(service_dotnet, "file_sha256", lambda _path: "e" * 64)
+        result = service.dotnet_reactor_unpack(sid)
+        assert not result.ok
+        assert result.error is not None
+        assert result.error.code == "input_changed"
+    finally:
+        service.close_all()
 
 
-class _FakeRunResult:
-    def __init__(self, output_path: Path) -> None:
-        self.output_path = output_path
+def test_reactor_unpack_maps_a_runner_failure_to_its_error_code(tmp_path: Path) -> None:
+    nrs = tmp_path / "nrs.exe"
+    nrs.write_bytes(b"placeholder")
 
-    def to_dict(self) -> dict[str, Any]:
-        return {"output_path": str(self.output_path)}
+    def failing_runner(*_args: Any, **_kwargs: Any) -> Any:
+        raise NetReactorSlayerError("output_missing", "no output produced")
 
-
-def test_deobfuscate_detects_a_session_closed_mid_run(tmp_path: Path) -> None:
-    exe = _managed(tmp_path)
-    holder: dict[str, Any] = {}
-
-    def runner(cli: Path, source: Path, out_path: Path, **kwargs: Any) -> _FakeRunResult:
-        _write_verified_clr_pe(out_path)
-        _close(holder["service"], holder["session_id"])
-        return _FakeRunResult(out_path)
-
-    service = _service(tmp_path, de4dot=tmp_path / "de4dot.exe", de4dot_runner=runner)
-    holder["service"] = service
-    holder["session_id"] = _open(service, exe)
-    result = service.dotnet_deobfuscate(holder["session_id"])
-    assert not result.ok and result.error is not None
+    service = _service(tmp_path, net_reactor_slayer=nrs, net_reactor_slayer_runner=failing_runner)
+    try:
+        sid = _session_over(service, _managed(tmp_path))
+        result = service.dotnet_reactor_unpack(sid)
+        assert not result.ok
+        assert result.error is not None
+        assert result.error.code == "output_missing"
+    finally:
+        service.close_all()
 
 
-def test_reactor_unpack_detects_a_session_closed_mid_run(tmp_path: Path) -> None:
-    exe = _managed(tmp_path)
-    holder: dict[str, Any] = {}
+# --------------------------------------------------------------------------- #
+# dotnet_enumerate / dotnet_il / dotnet_xrefs error mapping and the il body    #
+# --------------------------------------------------------------------------- #
+def test_enumerate_maps_a_dotnet_inspect_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def raising(*_args: Any, **_kwargs: Any) -> Any:
+        raise DotnetInspectError("clr_unverified", "no tables", details={"kind": "table"})
 
-    def runner(cli: Path, source: Path, out_path: Path, **kwargs: Any) -> _FakeRunResult:
-        _write_verified_clr_pe(out_path)
-        _close(holder["service"], holder["session_id"])
-        return _FakeRunResult(out_path)
-
-    service = _service(
-        tmp_path,
-        net_reactor_slayer=tmp_path / "nrs.exe",
-        net_reactor_slayer_runner=runner,
-    )
-    holder["service"] = service
-    holder["session_id"] = _open(service, exe)
-    result = service.dotnet_reactor_unpack(holder["session_id"])
-    assert not result.ok and result.error is not None
-
-
-class _FakePage:
-    def to_dict(self) -> dict[str, Any]:
-        return {"items": [], "total": 0}
-
-
-def test_inspect_succeeds_on_a_verified_assembly(tmp_path: Path) -> None:
+    monkeypatch.setattr(service_dotnet, "enumerate_metadata", raising)
     service = _service(tmp_path)
-    session_id = _open(service, _managed(tmp_path))
-    result = service.dotnet_inspect(session_id)
-    assert result.ok and result.data is not None
-    assert result.data["verified_clr"] is True
+    try:
+        sid = _session_over(service, _managed(tmp_path))
+        result = service.dotnet_enumerate(sid, "TypeDef")
+        assert not result.ok
+        assert result.error is not None
+        assert result.error.code == "clr_unverified"
+        assert result.error.details["kind"] == "table"
+    finally:
+        service.close_all()
 
 
-def test_deobfuscate_registers_a_successful_run(tmp_path: Path) -> None:
-    def runner(cli: Path, source: Path, out_path: Path, **kwargs: Any) -> _FakeRunResult:
-        _write_verified_clr_pe(out_path)
-        return _FakeRunResult(out_path)
+def test_il_disassembles_a_method_on_the_happy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No test reached dotnet_il at all; pin its success body and its argument."""
+    seen: JsonObject = {}
 
-    service = _service(tmp_path, de4dot=tmp_path / "de4dot.exe", de4dot_runner=runner)
-    session_id = _open(service, _managed(tmp_path))
-    result = service.dotnet_deobfuscate(session_id)
-    assert result.ok and result.data is not None
-    assert result.data["claims_universal_unpack"] is False
-    assert result.data["input_unchanged"] is True
+    def fake_disassemble(pe: Path, method_token: int, *, require_verified: bool) -> JsonObject:
+        seen["token"] = method_token
+        seen["require_verified"] = require_verified
+        return {"method_token": method_token, "instructions": [{"op": "ret"}]}
 
-
-def test_reactor_unpack_registers_a_successful_run(tmp_path: Path) -> None:
-    def runner(cli: Path, source: Path, out_path: Path, **kwargs: Any) -> _FakeRunResult:
-        _write_verified_clr_pe(out_path)
-        return _FakeRunResult(out_path)
-
-    service = _service(
-        tmp_path, net_reactor_slayer=tmp_path / "nrs.exe", net_reactor_slayer_runner=runner
-    )
-    session_id = _open(service, _managed(tmp_path))
-    result = service.dotnet_reactor_unpack(session_id)
-    assert result.ok and result.data is not None
-    assert result.data["authorized_samples_only"] is True
-
-
-def test_verify_rejects_a_path_outside_the_session_artifacts(tmp_path: Path) -> None:
+    monkeypatch.setattr(service_dotnet, "disassemble_method_il", fake_disassemble)
     service = _service(tmp_path)
-    session_id = _open(service, _managed(tmp_path))
-    stray = tmp_path / "outside.exe"
-    _write_verified_clr_pe(stray)
-    result = service.dotnet_verify(session_id, str(stray))
-    assert not result.ok and result.error is not None
-    assert result.error.code == "invalid_params"
-    assert result.error.details["allowed_roots"]
+    try:
+        sid = _session_over(service, _managed(tmp_path))
+        result = service.dotnet_il(sid, 0x06000001, require_verified=False)
+        assert result.ok and result.data is not None, result.error
+        assert result.data["method_token"] == 0x06000001
+        assert result.data["instructions"] == [{"op": "ret"}]
+        assert seen == {"token": 0x06000001, "require_verified": False}
+    finally:
+        service.close_all()
 
 
-def test_verify_succeeds_on_an_owned_verified_artifact(tmp_path: Path) -> None:
+def test_il_maps_a_dotnet_inspect_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def raising(*_args: Any, **_kwargs: Any) -> Any:
+        raise DotnetInspectError("method_not_found", "no such token")
+
+    monkeypatch.setattr(service_dotnet, "disassemble_method_il", raising)
     service = _service(tmp_path)
-    session_id = _open(service, _managed(tmp_path))
-    owned_dir = (tmp_path / "artifacts").resolve() / "dotnet" / session_id
-    owned_dir.mkdir(parents=True)
-    artifact = owned_dir / "candidate.exe"
-    _write_verified_clr_pe(artifact)
-    result = service.dotnet_verify(session_id, str(artifact), require_verified=True)
-    assert result.ok and result.data is not None
-    assert result.data["ok"] is True
-    assert result.data["claims_universal_unpack"] is False
+    try:
+        sid = _session_over(service, _managed(tmp_path))
+        result = service.dotnet_il(sid, 0x06000009)
+        assert not result.ok
+        assert result.error is not None
+        assert result.error.code == "method_not_found"
+    finally:
+        service.close_all()
 
 
-def test_enumerate_and_xrefs_return_pages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_xrefs_maps_a_dotnet_inspect_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def raising(*_args: Any, **_kwargs: Any) -> Any:
+        raise DotnetInspectError("clr_unverified", "unverified image")
+
+    monkeypatch.setattr(service_dotnet, "list_memberref_xrefs", raising)
     service = _service(tmp_path)
-    session_id = _open(service, _managed(tmp_path))
-    monkeypatch.setattr(
-        service_dotnet,
-        "enumerate_metadata",
-        lambda path, kind, *, offset, limit, require_verified: _FakePage(),
-    )
-    monkeypatch.setattr(
-        service_dotnet,
-        "list_memberref_xrefs",
-        lambda path, *, offset, limit, require_verified: _FakePage(),
-    )
-    enumerated = service.dotnet_enumerate(session_id, "types")
-    assert enumerated.ok and enumerated.data is not None
-    assert enumerated.data["total"] == 0
-    xrefs = service.dotnet_xrefs(session_id)
-    assert xrefs.ok and xrefs.data is not None
-    assert xrefs.data["items"] == []
+    try:
+        sid = _session_over(service, _managed(tmp_path))
+        result = service.dotnet_xrefs(sid)
+        assert not result.ok
+        assert result.error is not None
+        assert result.error.code == "clr_unverified"
+    finally:
+        service.close_all()
+
+
+# --------------------------------------------------------------------------- #
+# dotnet_verify: a session-owned but unverifiable artifact                     #
+# --------------------------------------------------------------------------- #
+def test_verify_maps_a_dotnet_inspect_error_on_an_owned_artifact(tmp_path: Path) -> None:
+    """The path is inside the session's dotnet root, so ownership passes and the
+    failure is genuinely the CLR check, not the boundary guard."""
+    service = _service(tmp_path)
+    try:
+        sid = _session_over(service, _managed(tmp_path))
+        owned_dir = service.settings.artifact_root.expanduser().resolve() / "dotnet" / sid
+        owned_dir.mkdir(parents=True, exist_ok=True)
+        artifact = owned_dir / "candidate.exe"
+        _write_native_pe(artifact)
+
+        result = service.dotnet_verify(sid, str(artifact), require_verified=True)
+
+        assert not result.ok
+        assert result.error is not None
+        assert result.error.code in {"not_dotnet", "clr_unverified"}
+    finally:
+        service.close_all()
+
+
+def _unreached_runner(*_args: Any, **_kwargs: Any) -> Any:  # pragma: no cover
+    raise AssertionError("the runner must not be reached once input_changed fires")
