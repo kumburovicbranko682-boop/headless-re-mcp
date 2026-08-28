@@ -409,6 +409,49 @@ def test_artifacts_read_reports_a_row_whose_file_is_gone(tmp_path: Path) -> None
     assert result.error.code == "not_found"
 
 
+@pytest.mark.parametrize("bad", [None, [1], {"a": 1}, "x", float("inf"), True])
+def test_artifacts_read_refuses_a_non_int_byte_window(tmp_path: Path, bad: Any) -> None:
+    """artifacts.read pages a byte range with its own int(offset)/int(limit).
+
+    It sits outside the shared list.* helpers, so a null/list/dict offset used
+    to raise TypeError and an inf (a JSON 1e400) an OverflowError -- both filed
+    as a logged internal_error incident against a real artifact -- while a
+    non-numeric string echoed the caller's value in its message. A bool was
+    silently taken as byte 1. Refuse them all as the invalid_request they are.
+    """
+    service = _Service(tmp_path)
+    blob = tmp_path / "dump.bin"
+    blob.write_bytes(bytes(range(16)))
+    recorded = _register(service, blob)
+
+    for label, result in (
+        ("offset", service.artifacts_read(str(recorded["id"]), offset=bad, limit=4)),
+        ("limit", service.artifacts_read(str(recorded["id"]), offset=0, limit=bad)),
+    ):
+        assert not result.ok and result.error is not None, label
+        assert result.error.code == "invalid_request", f"{label}: {result.error.code}"
+
+
+@pytest.mark.parametrize(
+    ("offset", "limit", "expected_offset", "expected_data"),
+    [(4, 4, 4, "04050607"), ("4", "4", 4, "04050607"), (4.9, 4.9, 4, "04050607")],
+)
+def test_artifacts_read_keeps_coercible_byte_windows(
+    tmp_path: Path, offset: Any, limit: Any, expected_offset: int, expected_data: str
+) -> None:
+    """The numeric strings and floats int() already accepted still read."""
+    service = _Service(tmp_path)
+    blob = tmp_path / "dump.bin"
+    blob.write_bytes(bytes(range(16)))
+    recorded = _register(service, blob)
+
+    result = service.artifacts_read(str(recorded["id"]), offset=offset, limit=limit)
+
+    assert result.ok and result.data is not None
+    assert result.data["offset"] == expected_offset
+    assert result.data["data"] == expected_data
+
+
 # --- timeline / unclean / peek / audit ---------------------------------------
 
 
@@ -451,6 +494,25 @@ def test_sessions_unclean_maps_a_store_failure(tmp_path: Path) -> None:
 
     assert not result.ok and result.error is not None
     assert result.error.code == "internal_error"
+
+
+@pytest.mark.parametrize("bad", [None, [1], {"a": 1}, "x", float("inf"), True])
+def test_sessions_unclean_refuses_a_non_int_page(tmp_path: Path, bad: Any) -> None:
+    """sessions.unclean pages list_unclean_sessions, which int()s its bounds.
+
+    Like artifacts.read it is outside the shared list.* helpers, so a
+    null/list/dict raised TypeError and an inf raised OverflowError -- both a
+    logged internal_error incident -- and a bool was silently taken as page 1.
+    Coerce at the boundary so a bad page window is the caller fault it is.
+    """
+    service = _Service(tmp_path)
+
+    for label, result in (
+        ("offset", service.sessions_unclean(offset=bad, limit=100)),
+        ("limit", service.sessions_unclean(offset=0, limit=bad)),
+    ):
+        assert not result.ok and result.error is not None, label
+        assert result.error.code == "invalid_request", f"{label}: {result.error.code}"
 
 
 def test_peek_session_record_reports_a_live_session(tmp_path: Path) -> None:

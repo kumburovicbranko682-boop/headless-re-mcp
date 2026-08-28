@@ -50,6 +50,30 @@ _DEBUG_EVENT_BUDGET_PER_BATCH = 64
 _REPORT_INLINE_MAX_BYTES = 64 * 1024
 
 
+def _page_bound(value: object, name: str) -> int:
+    """Coerce one paging bound to int, or raise ValueError for the caller.
+
+    artifacts.read and sessions.unclean page outside the shared repository
+    list.* helpers -- the first over a byte range into an artifact file, the
+    second through list_unclean_sessions -- and each fed offset/limit straight
+    to ``int(...)``. Both are typed as integers at the tool boundary, but the
+    agent and OpenAI-bridge transports bind them from model output with no
+    pydantic coercion, so a null/list/dict raised TypeError and an inf (a JSON
+    1e400 parsed to float) raised OverflowError -- both filed as a logged
+    internal_error incident -- while a non-numeric string raised a ValueError
+    whose "invalid literal for int()" text echoed the caller's value back.
+    Coerce here so a bad page window is the invalid_request caller fault it is,
+    while the numeric strings and floats int() already accepted still work. A
+    bool is an int subclass but never a real page coordinate.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"{name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+
+
 def _breakpoint_binding_address(workflow_data: Mapping[str, Any], intent_id: str) -> int:
     if not isinstance(intent_id, str) or not intent_id.strip():
         raise ValueError("breakpoint intent_id must not be blank")
@@ -730,8 +754,8 @@ class ExtAnalysisMixin(UiDriveMixin):
             )
         if not path.is_file():
             return Result(ok=False, error=RpcError(code="not_found", message="artifact file missing"))
-        limit = max(1, min(int(limit), 256 * 1024))
-        offset = max(0, int(offset))
+        limit = max(1, min(_page_bound(limit, "limit"), 256 * 1024))
+        offset = max(0, _page_bound(offset, "offset"))
         # Seek rather than read-then-slice. Artifacts here are process dumps and
         # traces: measured on a 200 MB one, twenty paginated 256 KiB reads spiked
         # to 243 MB of RSS against a 42 MB baseline and touched 4 GB to serve
@@ -776,12 +800,14 @@ class ExtAnalysisMixin(UiDriveMixin):
 
     def sessions_unclean(self, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
+            offset = _page_bound(offset, "offset")
+            limit = _page_bound(limit, "limit")
             items, total = _ensure_repository(self).list_unclean_sessions(
                 offset=offset, limit=limit
             )
         except BaseException as exc:
             return _failure(exc)
-        start = max(0, int(offset))
+        start = max(0, offset)
         return _success(
             {
                 "sessions": items,
