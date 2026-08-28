@@ -30,6 +30,13 @@ fields that keep a page which filled the limit from being read as the whole
 list. That is the layer the agent actually consumes, and the class of gap this
 catches is exactly the one ``apk.xrefs`` and ``frida.applications`` each shipped
 with before -- an offset-less cap whose first page looked complete.
+
+A fourth guard generalises the ``limit`` ceiling to *every* numeric caller
+input, whatever it is named. The by-name ``limit`` guard could not see
+``device.logcat``'s ``lines`` -- a page size called something else -- which is
+why that one needed its own dedicated bounds test; this scans all integer /
+number params so the next such escapee (``depth``, ``count``, ``rows`` ...)
+trips the general guard rather than shipping unbounded until someone notices.
 """
 
 from __future__ import annotations
@@ -79,6 +86,33 @@ def _non_pe_offset_tool_docstrings() -> dict[str, str]:
             if "offset" in schema.get("properties", {}):
                 found[bound.name] = " ".join((bound.handler.__doc__ or "").split())
     return found
+
+
+def _non_pe_numeric_params() -> dict[tuple[str, str], dict[str, Any]]:
+    """Map every ``(tool, param)`` whose schema type is integer/number to its schema."""
+    found: dict[tuple[str, str], dict[str, Any]] = {}
+    for builder in _NON_PE_BUILDERS:
+        for bound in builder(cast(Any, object())):
+            schema = input_schema_for(bound.handler)
+            for param, prop in schema.get("properties", {}).items():
+                if prop.get("type") in ("integer", "number"):
+                    found[(bound.name, param)] = prop
+    return found
+
+
+# (tool, param) numeric inputs that legitimately carry no upper bound. Kept as a
+# fail-closed allowlist keyed by the exact pair, not the bare name: a *new*
+# unbounded numeric param -- even one reusing "address" on another tool -- trips
+# the guard until it is added here with a reason, which is the deliberate
+# decision we want rather than a silent pass.
+_UNBOUNDED_NUMERIC_OK = frozenset(
+    {
+        # A raw debuggee memory address spans the whole address space, so a
+        # maximum is meaningless (the backend validates reachability, not
+        # magnitude). Debuggee-scoped, but the frida surface is scanned whole.
+        ("frida.memory.read", "address"),
+    }
+)
 
 
 def test_every_non_pe_limit_param_is_bounded() -> None:
@@ -167,4 +201,49 @@ def test_every_non_pe_offset_reader_documents_the_honest_page_fields() -> None:
             missing[name] = absent
     assert missing == {}, (
         f"offset readers whose docstring omits an honest-page field: {missing}"
+    )
+
+
+def test_every_non_pe_numeric_param_declares_an_upper_bound() -> None:
+    """Every integer/number parameter on a non-PE tool must cap its maximum.
+
+    The two guards above pin ``limit`` and ``offset`` by name; this generalises
+    to the next numeric caller input whatever it is called. A page-size- or
+    resource-shaped number with no ceiling is what a transport skipping the
+    schema hands a backend as "give me everything": billions of rows, a
+    10^9-second timeout, a 4 GiB logcat. ``device.logcat``'s ``lines`` escaped
+    the by-name guards for exactly this reason -- it is not called ``limit`` --
+    and only a dedicated test caught it; this catches the class, not the instance.
+
+    ``offset`` is excluded by rule: it is floored at 0 and unbounded above by
+    design (you page until has_more is false, so a ceiling would strand the
+    tail), and it is pinned positively by the offset guard above. The only other
+    exception is the explicit, fail-closed ``_UNBOUNDED_NUMERIC_OK`` allowlist
+    for a raw memory address, whose magnitude is not the thing to bound.
+    """
+    numeric = _non_pe_numeric_params()
+
+    # Non-vacuous: the scan must reach numeric params across several backends,
+    # including the resource-shaped ones that are not named ``limit`` -- a broken
+    # enumeration would otherwise pass by finding nothing to check.
+    assert {
+        ("device.logcat", "lines"),
+        ("frida.memory.read", "size"),
+        ("proxy.start", "port"),
+        ("web.wait", "timeout"),
+        ("apk.classes", "limit"),
+    } <= set(numeric), f"the numeric-param scan looks broken, saw {sorted(numeric)}"
+
+    unbounded: list[tuple[str, str]] = []
+    for (tool, param), prop in numeric.items():
+        if param == "offset":
+            continue  # floored at 0, unbounded above by design (see the offset guard)
+        if (tool, param) in _UNBOUNDED_NUMERIC_OK:
+            continue
+        if not isinstance(prop.get("maximum"), (int, float)):
+            unbounded.append((tool, param))
+    assert unbounded == [], (
+        "these non-PE numeric params declare no maximum, so a transport skipping "
+        "the schema could hand a backend an absurd value as a page size or "
+        f"resource bound: {sorted(unbounded)}"
     )

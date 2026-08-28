@@ -24,6 +24,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（非 PE 数值入参上界守卫从“按名钉 limit”推广到“钉所有整数/浮点入参”：device.logcat 的 lines 正因不叫 limit 逃过通用守卫、只能靠专测拦下，新增第四条守卫扫全部数值参数，钉住下一个换名的越界页大小 / 资源上限）
+
+- `test_non_pe_pagination_schema_bounds.py` 前三条守卫按名字钉 `limit`(整数、下限 1、须有上界)、`offset`(整数、下限 0)
+  与 offset 读取器 docstring 的诚实字段。但“按名字”看不到换了名字的同类:`device.logcat` 的 `lines`(返回多少条
+  尾部日志)本质是页大小,却因不叫 `limit` 逃过通用守卫,当初只能靠一条专门的 `test_device_logcat_bounds.py` 拦下——
+  钉的是那个实例,不是那类缺陷。一个跳过 schema 的传输(agent / OpenAI 桥直调 handler)拿到无上界的数值参数,就等于
+  向后端要“全部”:十亿行、10^9 秒超时、4 GiB logcat,轻则挂起重则只能指望后端恰好再钳一次。新增第四条守卫
+  `test_every_non_pe_numeric_param_declares_an_upper_bound` 扫描整个非 PE 工具面的每个 `integer` / `number` 入参,
+  要求其声明 `maximum`,从而钉住“下一个换名的越界参数”(`depth` / `count` / `rows` …)在裸 int 上线时即报错,而不是等
+  人察觉。两类合法无上界者按规则排除而非按名放行:`offset` 下限 0、上界无意义(翻页翻到 has_more 为假,设上界反而
+  截断尾部),且已被 offset 守卫正面钉住;唯一另设的是 fail-closed 的 `_UNBOUNDED_NUMERIC_OK`——以 `(工具, 参数)` 精确
+  列出 `frida.memory.read` 的 `address`(裸内存地址跨整个地址空间,该管的是可达性不是量级,由后端校验),故一个新的
+  无上界参数(哪怕在别处复用 `address` 这个名)仍会触发守卫,须显式加进白名单并附理由——这正是我们要的“显式决定”而
+  非静默放过。正反双向非空校验:断言扫描确实触及 `device.logcat.lines` / `frida.memory.read.size` / `proxy.start.port` /
+  `web.wait.timeout` / `apk.classes.limit` 等跨后端数值参数,枚举一旦断裂即“无事可查”地失败。以“临时把 lines 退回裸
+  int”与“临时清空地址白名单”双向验证非空过:前者精确报出 `('device.logcat','lines')`,后者报出
+  `('frida.memory.read','address')`,恢复后 4 条守卫全绿。
+
 ### device.list 补齐“先排序再切页”：设备列表在 _MAX_DEVICES(64) 处截断却不排序，超限时可见/被弃的 serial 随 adb 枚举序逐次漂移——改为按 serial 排序后再截，向 packages / properties 的诚实范式看齐
 
 - `AdbBackend.list_devices` 过去 `page = items[:_MAX_DEVICES]` 直接切 adb 交回的原始顺序,只置 `has_more`。同门的
