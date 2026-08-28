@@ -3753,6 +3753,20 @@ class TestGoBuildInfo:
         settings = _go_build_info(path)["go"]["settings"]
         assert len(settings) == 64  # _GO_MAX_SETTINGS
 
+    def test_a_long_setting_value_is_kept_whole(self, tmp_path: Path) -> None:
+        # DefaultGODEBUG lists every GODEBUG default and runs past 256 chars on
+        # current toolchains; the reader must reproduce it in full the way
+        # ``go version -m`` prints it, not clip it to the identifier cap (the
+        # boundary that failed the cross-tool gate on a newer Go than the one
+        # that happened to be installed locally).
+        long_value = ",".join(f"godebugkey{i}=1" for i in range(40))
+        assert len(long_value) > 256
+        path = tmp_path / "godebug.bin"
+        path.write_bytes(
+            _go_buildinfo_blob("go1.24.13", f"path\tx\nbuild\tDefaultGODEBUG={long_value}\n")
+        )
+        assert _go_build_info(path)["go"]["settings"]["DefaultGODEBUG"] == long_value
+
     def test_session_over_a_go_elf_carries_the_stamp(self, tmp_path: Path) -> None:
         # A real ELF header so describe_native produces facts, with the Go
         # stamp appended where the reader's whole-file scan finds it -- the
