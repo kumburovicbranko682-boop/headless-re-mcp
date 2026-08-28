@@ -1777,6 +1777,51 @@ def test_macho_without_a_symtab_has_no_export_fact(tmp_path: Path) -> None:
     assert "imported_symbols" not in facts
 
 
+class TestMachoStripped:
+    """describe_native reports whether a Mach-O's local symbols are gone.
+
+    ``strip`` removes the local symbols -- the debug-map STABS a ``-g`` build
+    carries and the local defined symbols -- while leaving the external symbols
+    dyld needs for linking. So a stripped image is one whose symbol table has
+    become all-external, the Mach-O pair to the ELF ``stripped`` fact.
+    """
+
+    def test_an_all_external_table_reads_stripped(self, tmp_path: Path) -> None:
+        # Only externals survive stripping: a defined export and an undefined
+        # import, nothing local left.
+        data = _macho64_with_symbols(
+            [("_main", _N_SECT | _N_EXT, 1), ("_puts", _N_UNDF | _N_EXT, 0)]
+        )
+        facts = describe_native(_write(tmp_path, "s.bin", data))["native"]
+        assert facts["stripped"] is True
+
+    def test_a_local_defined_symbol_reads_unstripped(self, tmp_path: Path) -> None:
+        data = _macho64_with_symbols(
+            [("_main", _N_SECT | _N_EXT, 1), ("_helper", _N_SECT, 1)]
+        )
+        facts = describe_native(_write(tmp_path, "u.bin", data))["native"]
+        assert facts["stripped"] is False
+
+    def test_a_stab_debug_entry_reads_unstripped(self, tmp_path: Path) -> None:
+        # N_SO (0x64) is a STABS debug-map entry: exactly what a -g build
+        # carries and strip removes, so its presence means not stripped.
+        data = _macho64_with_symbols([("_main", _N_SECT | _N_EXT, 1), ("src.c", 0x64, 0)])
+        facts = describe_native(_write(tmp_path, "g.bin", data))["native"]
+        assert facts["stripped"] is False
+
+    def test_a_nameless_local_does_not_count(self, tmp_path: Path) -> None:
+        # A local slot with a zero string index carries no name to recover;
+        # it is not the named local that makes an image worth reversing.
+        data = _macho64_with_symbols([("_main", _N_SECT | _N_EXT, 1), ("", _N_SECT, 1)])
+        facts = describe_native(_write(tmp_path, "n.bin", data))["native"]
+        assert facts["stripped"] is True
+
+    def test_no_symtab_omits_the_fact(self, tmp_path: Path) -> None:
+        data = _macho64_full(filetype=2, flags=0x4, load_cmds=_lc_uuid(), ncmds=1)
+        facts = describe_native(_write(tmp_path, "b.bin", data))["native"]
+        assert "stripped" not in facts
+
+
 def test_macho_only_imports_export_nothing(tmp_path: Path) -> None:
     # A symbol table of nothing but undefined externals (pure imports) has no
     # export surface: the import fact carries them all, the export fact stays out.

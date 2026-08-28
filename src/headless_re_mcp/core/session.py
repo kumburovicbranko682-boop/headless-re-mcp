@@ -770,6 +770,11 @@ _N_EXT = 0x01
 _N_TYPE = 0x0E
 _N_SECT = 0x0E
 _N_UNDF = 0x00
+# N_STAB masks the three bits that mark a debug-map (STABS) symbol -- the
+# -g source/line entries `strip` removes. A local defined symbol (N_SECT with
+# N_EXT clear) is the other thing `strip` takes; the presence of either is
+# what "not stripped" means for a Mach-O, the counterpart to an ELF .symtab.
+_N_STAB = 0xE0
 _MACHO_MAX_NSYMS_SCAN = 200_000
 _MACHO_MAX_EXPORTS = 8192
 # The load-time constructor surface, the Mach-O counterpart of ELF's
@@ -6313,6 +6318,12 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
             facts["exported_symbols"] = exports
         if imports:
             facts["imported_symbols"] = imports
+        # Whether the local symbols strip removes are gone -- the Mach-O pair
+        # to the ELF stripped fact; omitted when there is no symbol table to
+        # measure, present as True/False otherwise.
+        stripped = _macho_stripped(stream, lc["symtab"], bits, order)
+        if stripped is not None:
+            facts["stripped"] = stripped
         # Appended data past everything the load commands map -- the PE
         # overlay analogue for Mach-O. Absent means none.
         overlay = _macho_overlay(stream, cmd_off + sizeofcmds, lc, bits)
@@ -6532,6 +6543,54 @@ def _macho_symbol_surface(
         if name:
             bucket.add(name)
     return sorted(exports), sorted(imports)
+
+
+def _macho_stripped(
+    stream: BinaryIO, symtab: tuple[int, int, int, int] | None, bits: int, order: str
+) -> bool | None:
+    """True when LC_SYMTAB carries no local symbols; None when there is none.
+
+    The Mach-O counterpart to the ELF ``stripped`` fact. ``strip`` removes the
+    local symbols -- the debug-map STABS entries a ``-g`` build carries and the
+    local defined symbols (N_SECT with N_EXT clear) -- while leaving the
+    external symbols dyld needs for linking, so a stripped image is one whose
+    symbol table has become all-external. A local named symbol is exactly what
+    llvm-nm prints with a lowercase type letter, so the gate cross-checks the
+    verdict. None when the image has no LC_SYMTAB at all (nothing to measure),
+    parallel to the ELF reader returning None without a section table. The scan
+    is bounded like the symbol surface's.
+    """
+    if symtab is None:
+        return None
+    symoff, nsyms, stroff, strsize = symtab
+    if symoff <= 0 or nsyms <= 0 or stroff <= 0 or strsize <= 0:
+        return None
+    stride = 16 if bits == 64 else 12
+    count = min(nsyms, _MACHO_MAX_NSYMS_SCAN)
+    try:
+        stream.seek(stroff)
+        strblob = stream.read(min(strsize, _ELF_MAX_STRTAB))
+        stream.seek(symoff)
+        syms = stream.read(stride * count)
+    except OSError:
+        return None
+    for i in range(count):
+        rec = syms[i * stride : i * stride + stride]
+        if len(rec) < stride:
+            break
+        n_strx = int.from_bytes(rec[0:4], order)  # type: ignore[arg-type]
+        n_type = rec[4]
+        if n_type & _N_EXT:
+            continue  # external symbols survive stripping; not a local
+        is_stab = bool(n_type & _N_STAB)
+        is_local_defined = (n_type & _N_TYPE) == _N_SECT
+        if not (is_stab or is_local_defined):
+            continue
+        if 0 < n_strx < len(strblob):
+            end = strblob.find(b"\x00", n_strx)
+            if strblob[n_strx : (end if end != -1 else len(strblob))]:
+                return False  # a named local symbol remains: not stripped
+    return True
 
 
 def _macho_read_load_commands(
