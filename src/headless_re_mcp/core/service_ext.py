@@ -480,9 +480,16 @@ class ExtAnalysisMixin(UiDriveMixin):
         self, session_id: str, limit: int = 64, name_filter: str = ""
     ) -> Result[JsonObject]:
         try:
-            pid = _require_debuggee_pid(self, session_id)
             client = FridaClient()
-            data = client.modules(pid, allowed_pid=pid, limit=limit, name_filter=name_filter)
+            target = _frida_device_target(self, session_id)
+            if target is not None:
+                device_id, pid, allowed = target
+                data = client.modules_device(
+                    device_id, pid, allowed_pids=allowed, limit=limit, name_filter=name_filter
+                )
+            else:
+                pid = _require_debuggee_pid(self, session_id)
+                data = client.modules(pid, allowed_pid=pid, limit=limit, name_filter=name_filter)
             _timeline_append(self, session_id, "frida.modules", "frida modules listed", count=data.get("count"))
             return _success(data, session_id=session_id, backend="frida")
         except FridaError as exc:
@@ -494,11 +501,23 @@ class ExtAnalysisMixin(UiDriveMixin):
         self, session_id: str, module_name: str, limit: int = 64, name_filter: str = ""
     ) -> Result[JsonObject]:
         try:
-            pid = _require_debuggee_pid(self, session_id)
             client = FridaClient()
-            data = client.exports(
-                pid, module_name, allowed_pid=pid, limit=limit, name_filter=name_filter
-            )
+            target = _frida_device_target(self, session_id)
+            if target is not None:
+                device_id, pid, allowed = target
+                data = client.exports_device(
+                    device_id,
+                    pid,
+                    module_name,
+                    allowed_pids=allowed,
+                    limit=limit,
+                    name_filter=name_filter,
+                )
+            else:
+                pid = _require_debuggee_pid(self, session_id)
+                data = client.exports(
+                    pid, module_name, allowed_pid=pid, limit=limit, name_filter=name_filter
+                )
             _timeline_append(
                 self,
                 session_id,
@@ -517,11 +536,23 @@ class ExtAnalysisMixin(UiDriveMixin):
         self, session_id: str, module_name: str, limit: int = 64, name_filter: str = ""
     ) -> Result[JsonObject]:
         try:
-            pid = _require_debuggee_pid(self, session_id)
             client = FridaClient()
-            data = client.imports(
-                pid, module_name, allowed_pid=pid, limit=limit, name_filter=name_filter
-            )
+            target = _frida_device_target(self, session_id)
+            if target is not None:
+                device_id, pid, allowed = target
+                data = client.imports_device(
+                    device_id,
+                    pid,
+                    module_name,
+                    allowed_pids=allowed,
+                    limit=limit,
+                    name_filter=name_filter,
+                )
+            else:
+                pid = _require_debuggee_pid(self, session_id)
+                data = client.imports(
+                    pid, module_name, allowed_pid=pid, limit=limit, name_filter=name_filter
+                )
             _timeline_append(
                 self,
                 session_id,
@@ -540,9 +571,16 @@ class ExtAnalysisMixin(UiDriveMixin):
         self, session_id: str, address: int, size: int
     ) -> Result[JsonObject]:
         try:
-            pid = _require_debuggee_pid(self, session_id)
             client = FridaClient()
-            data = client.memory_read(pid, address, size, allowed_pid=pid)
+            target = _frida_device_target(self, session_id)
+            if target is not None:
+                device_id, pid, allowed = target
+                data = client.memory_read_device(
+                    device_id, pid, address, size, allowed_pids=allowed
+                )
+            else:
+                pid = _require_debuggee_pid(self, session_id)
+                data = client.memory_read(pid, address, size, allowed_pid=pid)
             return _success(data, session_id=session_id, backend="frida")
         except FridaError as exc:
             return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
@@ -1101,6 +1139,25 @@ def _require_debuggee_pid(service: Any, session_id: str) -> int:
     if not isinstance(pid, int) or pid <= 0:
         raise XdbgRpcError("invalid_state", "no active debuggee for optional backend")
     return pid
+
+
+def _frida_device_target(
+    service: Any, session_id: str
+) -> tuple[str | None, int, list[int]] | None:
+    """Route a frida native read to the device when one is bound.
+
+    If this session connected a frida device and authorized at least one pid
+    (frida.device.connect + frida.spawn), return its device id, the most recent
+    authorized pid, and the full authorized set; otherwise None to fall back to
+    the local PE debuggee. This is the same dual path frida.hook.template takes,
+    so modules/exports/imports/memory reads work on an Android target instead of
+    silently attaching to the local process the debuggee path would pick.
+    """
+    auth = service.registry.get(session_id).metadata.get("frida_authorized")
+    if isinstance(auth, dict) and auth.get("pids"):
+        pids = [int(value) for value in auth.get("pids", [])]
+        return auth.get("device_id"), pids[-1], pids
+    return None
 
 
 def _windbg_client(service: Any) -> WindbgClient:

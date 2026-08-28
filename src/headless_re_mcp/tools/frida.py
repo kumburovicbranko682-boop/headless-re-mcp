@@ -36,14 +36,16 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: Annotated[int, Field(ge=1, le=256)] = 64,
         name_filter: str = "",
     ) -> dict[str, Any]:
-        """List modules in the session debuggee via a short-lived Frida probe.
+        """List modules in the session target via a short-lived Frida probe.
 
         Answers with modules (name, base, size, path), count for this page,
         total, and has_more so a page that filled the limit is not read as
         the whole list. name_filter keeps only modules whose name contains
         that substring (case-sensitive), applied before the cap so total is
         the match count -- the only way to reach a module past the first 256,
-        and the name frida.exports then needs. Limited to the debuggee pid.
+        and the name frida.exports then needs. The target is the connected
+        device's authorized pid when this session has one (frida.device.connect
+        + frida.spawn); otherwise the local debuggee.
         """
         return _dump(analysis.frida_modules(session_id, limit=limit, name_filter=name_filter))
 
@@ -61,7 +63,9 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         as the whole export table. name_filter keeps only exports whose name
         contains that substring (case-sensitive), applied before the cap, so a
         target symbol (e.g. SSL_write) in a big module is findable rather than
-        buried past the limit. Limited to the debuggee pid.
+        buried past the limit. The target is the connected device's authorized
+        pid when this session has one (frida.device.connect + frida.spawn);
+        otherwise the local debuggee.
         """
         return _dump(
             analysis.frida_exports(
@@ -83,9 +87,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         unfamiliar .so. Answers with found, module, base, and imports (name,
         type, module -- the providing library, address when bound), plus count
         and has_more so a page that filled the limit is not read as the whole
-        import table. name_filter keeps only imports whose name contains that
+        import table.         name_filter keeps only imports whose name contains that
         substring (case-sensitive), applied before the cap so a target (e.g.
-        dlopen, JNI_OnLoad) is findable rather than buried. Debuggee pid only.
+        dlopen, JNI_OnLoad) is findable rather than buried. The target is the
+        connected device's authorized pid when this session has one
+        (frida.device.connect + frida.spawn); otherwise the local debuggee.
         """
         return _dump(
             analysis.frida_imports(
@@ -97,12 +103,14 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def frida_memory_read(
         session_id: str, address: int, size: Annotated[int, Field(ge=1, le=262144)] = 16
     ) -> dict[str, Any]:
-        """Read up to 256 KiB from the session debuggee via a Frida probe.
+        """Read up to 256 KiB from the session target via a Frida probe.
 
         Answers with data holding the hex string and encoding naming the form,
-        alongside address and size. Limited to the debuggee pid. address must be
-        an integer in [0, 2**64); an unmapped or protected address is a
-        backend_error, not a successful empty read.
+        alongside address and size. The target is the connected device's
+        authorized pid when this session has one (frida.device.connect +
+        frida.spawn); otherwise the local debuggee. address must be an integer
+        in [0, 2**64); an unmapped or protected address is a backend_error, not
+        a successful empty read.
         """
         return _dump(analysis.frida_memory_read(session_id, address, size))
 

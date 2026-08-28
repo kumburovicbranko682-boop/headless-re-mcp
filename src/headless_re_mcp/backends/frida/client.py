@@ -213,6 +213,103 @@ def _page(values: Any, limit: int) -> tuple[list[Any], bool]:
     return items, False
 
 
+def _require_module_name(module_name: str) -> str:
+    if not isinstance(module_name, str) or not module_name.strip():
+        raise FridaError("invalid_params", "module_name is required")
+    return module_name.strip()
+
+
+def _check_read_bounds(address: int, size: int) -> None:
+    """Reject a bad size or pointer before any session is attached.
+
+    address is typed int in the MCP schema, but the agent transport calls
+    handlers with no pydantic validation, so a float/str/negative value can
+    reach here and be handed to ptr() in the injected JS. Reject anything that
+    is not a real pointer (a non-int -- bool included -- or outside the 64-bit
+    range) with invalid_params, the same strict shape the size check uses.
+    """
+    if type(size) is not int or not 1 <= size <= 256 * 1024:
+        raise FridaError("invalid_params", "size must be 1..262144")
+    if type(address) is not int or not 0 <= address < 2**64:
+        raise FridaError("invalid_params", "address must be an integer in [0, 2**64)")
+
+
+def _shape_modules(raw: Any, capped: int) -> JsonObject:
+    if isinstance(raw, dict):
+        held = list(raw.get("modules") or [])
+        total = int(raw.get("total") or len(held))
+    else:
+        held = list(raw or [])
+        total = len(held)
+    items = [
+        {
+            "name": str(item.get("name", "")),
+            "base": str(item.get("base", "")),
+            "size": int(item.get("size", 0) or 0),
+            "path": str(item.get("path", "")),
+        }
+        for item in held[:capped]
+        if isinstance(item, dict)
+    ]
+    return {
+        "modules": items,
+        "count": len(items),
+        "total": total,
+        "has_more": total > len(items),
+    }
+
+
+def _shape_exports(raw: Any, module_name: str, capped: int) -> JsonObject:
+    if not isinstance(raw, dict):
+        raise FridaError("backend_error", "unexpected frida exports payload")
+    page, has_more = _page(list(raw.get("exports") or []), capped)
+    items = []
+    for item in page:
+        if not isinstance(item, dict):
+            continue
+        items.append(
+            {
+                "name": str(item.get("name", "")),
+                "address": str(item.get("address", "")),
+                "type": str(item.get("type", "")),
+            }
+        )
+    return {
+        "found": bool(raw.get("found")),
+        "module": str(raw.get("module") or module_name),
+        "base": str(raw.get("base") or ""),
+        "exports": items,
+        "count": len(items),
+        "has_more": has_more,
+    }
+
+
+def _shape_imports(raw: Any, module_name: str, capped: int) -> JsonObject:
+    if not isinstance(raw, dict):
+        raise FridaError("backend_error", "unexpected frida imports payload")
+    page, has_more = _page(list(raw.get("imports") or []), capped)
+    items = []
+    for item in page:
+        if not isinstance(item, dict):
+            continue
+        items.append(
+            {
+                "name": str(item.get("name", "")),
+                "type": str(item.get("type", "")),
+                "module": str(item.get("module", "")),
+                "address": str(item.get("address", "")),
+            }
+        )
+    return {
+        "found": bool(raw.get("found")),
+        "module": str(raw.get("module") or module_name),
+        "base": str(raw.get("base") or ""),
+        "imports": items,
+        "count": len(items),
+        "has_more": has_more,
+    }
+
+
 class FridaError(RuntimeError):
     def __init__(self, code: str, message: str, **details: object) -> None:
         super().__init__(message)
@@ -356,38 +453,9 @@ class FridaClient:
         self._require(pid, allowed_pid)
         session = self._attach_local(pid)
         try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            capped = max(1, min(int(limit), 256))
-            # A substring name filter, applied in-agent before the cap, is the
-            # only way to reach a module past the first 256 in enumeration order
-            # (there is no offset), and frida.exports needs the exact name -- so
-            # without it a module you cannot see in the first page is unqueryable.
-            # Mirrors the filter frida.java.classes already takes.
-            needle = name_filter.strip() if isinstance(name_filter, str) else ""
-            raw = script.exports_sync.modules(needle, capped)
-            if isinstance(raw, dict):
-                held = list(raw.get("modules") or [])
-                total = int(raw.get("total") or len(held))
-            else:
-                held = list(raw or [])
-                total = len(held)
-            items = [
-                {
-                    "name": str(item.get("name", "")),
-                    "base": str(item.get("base", "")),
-                    "size": int(item.get("size", 0) or 0),
-                    "path": str(item.get("path", "")),
-                }
-                for item in held[:capped]
-                if isinstance(item, dict)
-            ]
-            return {
-                "modules": items,
-                "count": len(items),
-                "total": total,
-                "has_more": total > len(items),
-            }
+            return self._run_enum(
+                session, kind="modules", limit=limit, name_filter=name_filter
+            )
         finally:
             with contextlib.suppress(Exception):
                 session.detach()
@@ -402,42 +470,16 @@ class FridaClient:
         name_filter: str = "",
     ) -> JsonObject:
         self._require(pid, allowed_pid)
-        if not isinstance(module_name, str) or not module_name.strip():
-            raise FridaError("invalid_params", "module_name is required")
-        capped = max(1, min(int(limit), 512))
+        module = _require_module_name(module_name)
         session = self._attach_local(pid)
         try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            # A substring name filter, applied in-agent before the cap, is the
-            # only way to reach an export past the cap in a big module (libc,
-            # libcrypto, an obfuscated .so with thousands of symbols) -- there is
-            # no offset -- and finding one target symbol's address is the whole
-            # point of this tool. Mirrors frida.modules / frida.java.classes.
-            needle = name_filter.strip() if isinstance(name_filter, str) else ""
-            raw = script.exports_sync.exports(module_name.strip(), needle, capped + 1)
-            if not isinstance(raw, dict):
-                raise FridaError("backend_error", "unexpected frida exports payload")
-            page, has_more = _page(list(raw.get("exports") or []), capped)
-            items = []
-            for item in page:
-                if not isinstance(item, dict):
-                    continue
-                items.append(
-                    {
-                        "name": str(item.get("name", "")),
-                        "address": str(item.get("address", "")),
-                        "type": str(item.get("type", "")),
-                    }
-                )
-            return {
-                "found": bool(raw.get("found")),
-                "module": str(raw.get("module") or module_name),
-                "base": str(raw.get("base") or ""),
-                "exports": items,
-                "count": len(items),
-                "has_more": has_more,
-            }
+            return self._run_enum(
+                session,
+                kind="exports",
+                module_name=module,
+                limit=limit,
+                name_filter=name_filter,
+            )
         finally:
             with contextlib.suppress(Exception):
                 session.detach()
@@ -452,43 +494,16 @@ class FridaClient:
         name_filter: str = "",
     ) -> JsonObject:
         self._require(pid, allowed_pid)
-        if not isinstance(module_name, str) or not module_name.strip():
-            raise FridaError("invalid_params", "module_name is required")
-        capped = max(1, min(int(limit), 512))
+        module = _require_module_name(module_name)
         session = self._attach_local(pid)
         try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            # Imports are the dependency side of exports: which libc / libdl /
-            # JNI symbols a native module actually calls, the first triage read
-            # on an unfamiliar .so. Same in-agent substring filter and limit+1
-            # paging as exports, since there is no offset and a single target
-            # import's providing module is what a caller is usually after.
-            needle = name_filter.strip() if isinstance(name_filter, str) else ""
-            raw = script.exports_sync.imports(module_name.strip(), needle, capped + 1)
-            if not isinstance(raw, dict):
-                raise FridaError("backend_error", "unexpected frida imports payload")
-            page, has_more = _page(list(raw.get("imports") or []), capped)
-            items = []
-            for item in page:
-                if not isinstance(item, dict):
-                    continue
-                items.append(
-                    {
-                        "name": str(item.get("name", "")),
-                        "type": str(item.get("type", "")),
-                        "module": str(item.get("module", "")),
-                        "address": str(item.get("address", "")),
-                    }
-                )
-            return {
-                "found": bool(raw.get("found")),
-                "module": str(raw.get("module") or module_name),
-                "base": str(raw.get("base") or ""),
-                "imports": items,
-                "count": len(items),
-                "has_more": has_more,
-            }
+            return self._run_enum(
+                session,
+                kind="imports",
+                module_name=module,
+                limit=limit,
+                name_filter=name_filter,
+            )
         finally:
             with contextlib.suppress(Exception):
                 session.detach()
@@ -497,20 +512,50 @@ class FridaClient:
         self, pid: int, address: int, size: int, *, allowed_pid: int
     ) -> JsonObject:
         self._require(pid, allowed_pid)
-        if type(size) is not int or not 1 <= size <= 256 * 1024:
-            raise FridaError("invalid_params", "size must be 1..262144")
-        # address is typed int in the MCP schema, but the agent transport calls
-        # handlers with no pydantic validation, so a float/str/negative value can
-        # reach here and be handed to ptr() in the injected JS. Reject anything
-        # that is not a real pointer (a non-int -- bool included -- or outside the
-        # 64-bit range) with invalid_params, the same strict shape the size check
-        # uses, before a session is even attached.
-        if type(address) is not int or not 0 <= address < 2**64:
-            raise FridaError("invalid_params", "address must be an integer in [0, 2**64)")
+        _check_read_bounds(address, size)
         session = self._attach_local(pid)
         try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
+            return self._run_enum(session, kind="read", address=address, size=size)
+        finally:
+            with contextlib.suppress(Exception):
+                session.detach()
+
+    def _run_enum(
+        self,
+        session: Any,
+        *,
+        kind: str,
+        module_name: str = "",
+        address: int = 0,
+        size: int = 0,
+        limit: int = 64,
+        name_filter: str = "",
+    ) -> JsonObject:
+        """Load the enumeration agent into an attached session and run one query.
+
+        Shared by the local (PE debuggee) and device (Android/USB/remote) paths
+        so a native module's exports/imports and a raw memory read behave the
+        same whichever process the session is bound to. The caller owns attach
+        and detach; this only creates the script, calls the one RPC, and shapes
+        the reply. A substring ``name_filter`` is applied in-agent before the
+        cap -- the only way to reach a symbol past the limit, since there is no
+        offset -- mirroring frida.java.classes / methods.
+        """
+        script = session.create_script(_ENUM_SCRIPT)
+        script.load()
+        needle = name_filter.strip() if isinstance(name_filter, str) else ""
+        if kind == "modules":
+            capped = max(1, min(int(limit), 256))
+            return _shape_modules(script.exports_sync.modules(needle, capped), capped)
+        if kind == "exports":
+            capped = max(1, min(int(limit), 512))
+            raw = script.exports_sync.exports(module_name, needle, capped + 1)
+            return _shape_exports(raw, module_name, capped)
+        if kind == "imports":
+            capped = max(1, min(int(limit), 512))
+            raw = script.exports_sync.imports(module_name, needle, capped + 1)
+            return _shape_imports(raw, module_name, capped)
+        if kind == "read":
             try:
                 data = bytes(script.exports_sync.read(int(address), int(size)))
             except FridaError:
@@ -534,9 +579,7 @@ class FridaClient:
                 "encoding": "hex",
                 "data": data.hex(),
             }
-        finally:
-            with contextlib.suppress(Exception):
-                session.detach()
+        raise FridaError("invalid_params", f"unknown enum kind {kind!r}")
 
     def hook_template(self, pid: int, template: str, *, allowed_pid: int,
                       timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:
@@ -830,6 +873,150 @@ class FridaClient:
             if _is_timeout(exc):
                 raise _timeout_error(deadline) from exc
             raise FridaError("backend_error", f"java enumeration failed: {exc}") from exc
+
+    # The native-enumeration analogue of java_enumerate: modules / exports /
+    # imports / memory reads against an authorized *device* pid, not just the
+    # local debuggee. Enumerating a .so's symbols (SSL_write, JNI_OnLoad) and
+    # reading device memory is the first native step on an Android target, and
+    # without these it was impossible once a session was bound to USB/remote.
+    def modules_device(
+        self,
+        device_id: str | None,
+        pid: int,
+        *,
+        allowed_pids: Iterable[int],
+        limit: int = 64,
+        name_filter: str = "",
+        timeout: float = _PROBE_TIMEOUT_S,
+    ) -> JsonObject:
+        self._authorize(pid, allowed_pids)
+        device = self._resolve_device(device_id)
+        return self._enum_on_device(
+            device, pid, kind="modules", limit=limit, name_filter=name_filter, timeout=timeout
+        )
+
+    def exports_device(
+        self,
+        device_id: str | None,
+        pid: int,
+        module_name: str,
+        *,
+        allowed_pids: Iterable[int],
+        limit: int = 64,
+        name_filter: str = "",
+        timeout: float = _PROBE_TIMEOUT_S,
+    ) -> JsonObject:
+        self._authorize(pid, allowed_pids)
+        module = _require_module_name(module_name)
+        device = self._resolve_device(device_id)
+        return self._enum_on_device(
+            device,
+            pid,
+            kind="exports",
+            module_name=module,
+            limit=limit,
+            name_filter=name_filter,
+            timeout=timeout,
+        )
+
+    def imports_device(
+        self,
+        device_id: str | None,
+        pid: int,
+        module_name: str,
+        *,
+        allowed_pids: Iterable[int],
+        limit: int = 64,
+        name_filter: str = "",
+        timeout: float = _PROBE_TIMEOUT_S,
+    ) -> JsonObject:
+        self._authorize(pid, allowed_pids)
+        module = _require_module_name(module_name)
+        device = self._resolve_device(device_id)
+        return self._enum_on_device(
+            device,
+            pid,
+            kind="imports",
+            module_name=module,
+            limit=limit,
+            name_filter=name_filter,
+            timeout=timeout,
+        )
+
+    def memory_read_device(
+        self,
+        device_id: str | None,
+        pid: int,
+        address: int,
+        size: int,
+        *,
+        allowed_pids: Iterable[int],
+        timeout: float = _PROBE_TIMEOUT_S,
+    ) -> JsonObject:
+        self._authorize(pid, allowed_pids)
+        _check_read_bounds(address, size)
+        device = self._resolve_device(device_id)
+        return self._enum_on_device(
+            device, pid, kind="read", address=address, size=size, timeout=timeout
+        )
+
+    def _enum_on_device(
+        self,
+        device: Any,
+        pid: int,
+        *,
+        kind: str,
+        module_name: str = "",
+        address: int = 0,
+        size: int = 0,
+        limit: int = 64,
+        name_filter: str = "",
+        timeout: float = _PROBE_TIMEOUT_S,
+    ) -> JsonObject:
+        """attach on the resolved device, run one enumeration, detach.
+
+        The device analogue of the local ``_attach_local`` + ``_run_enum`` pair:
+        the whole attach/load/RPC is bounded by ``_run_deadline`` so a wedged or
+        paused device process cannot park a worker, exactly as java_enumerate.
+        """
+        deadline = _bound_timeout(timeout)
+        sessions: list[Any] = []
+
+        def work() -> JsonObject:
+            try:
+                session = _invoke(device.attach, pid, timeout=deadline)
+            except Exception as exc:  # noqa: BLE001
+                if _is_timeout(exc):
+                    raise _timeout_error(deadline) from exc
+                raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
+            sessions.append(session)
+            try:
+                return self._run_enum(
+                    session,
+                    kind=kind,
+                    module_name=module_name,
+                    address=address,
+                    size=size,
+                    limit=limit,
+                    name_filter=name_filter,
+                )
+            finally:
+                with contextlib.suppress(Exception):
+                    session.detach()
+
+        try:
+            return _run_deadline(
+                work, timeout=deadline, on_timeout=lambda: _detach_all(sessions)
+            )
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _detach_all(sessions)
+            if _is_timeout(exc):
+                raise _timeout_error(deadline) from exc
+            raise FridaError(
+                "backend_error", f"frida {kind} enumeration failed: {exc}"
+            ) from exc
 
     def hook_template_device(
         self,

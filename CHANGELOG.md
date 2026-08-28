@@ -156,6 +156,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   原来的单 pid 校验是**替换而不是移除**：设备操作改用按会话的「设备 + 已授权 pid 集合」，
   会话必须先连设备、pid 必须由本会话 spawn 得到；PE 会话的本机单 pid 行为逐字未变。
   Android hook 模板并入现有 `frida.hook.template`，仍不接受调用方自带脚本。
+- **`frida.modules`/`exports`/`imports`/`memory.read` 只认本机 PE 调试对象，绑了设备也读不到目标进程**。
+  这四个原生读一律走本机 `frida.attach(pid)`（PE debuggee 那条路径），所以会话一旦
+  `frida.device.connect` + `frida.spawn` 绑到 USB/模拟器/远程、拿到设备侧 pid，想枚举某个
+  `.so` 的模块/导出/导入（例如在 `libssl.so` 里定位 `SSL_write` 去 hook）或读设备内存，
+  要么无从下手、要么静默 attach 到本机同名进程——这恰是 Android 原生逆向的第一步。现在这四个
+  工具与 `frida.hook.template` 走同一条双路径路由：会话元数据 `frida_authorized` 里有已授权 pid
+  时，针对该设备进程的最近授权 pid 执行；否则回落到本机 debuggee。新增的设备侧
+  `modules_device`/`exports_device`/`imports_device`/`memory_read_device` 把 attach/load/RPC
+  整体交给 `_run_deadline` 有界（与 `java_enumerate` 一致），卡死或暂停的目标进程不再占住 worker；
+  pid 必须落在本会话已授权集合内，否则在解析设备之前就 `permission_denied`。分页、`name_filter`、
+  `has_more` 与 `address` 校验（`[0, 2**64)`、非法值 attach 前即拒）经 `_run_enum` 由本机/设备两路
+  共用，回包字段与本机路径逐字一致；本机 PE 路径行为未变。
 
 ### 新增（Web）
 
