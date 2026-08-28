@@ -47,6 +47,14 @@ _MAX_TEXT_CHARS = 4096
 _MAX_TREE_NODES = 256
 _MAX_TREE_DEPTH = 8
 _MAX_WAIT_SECONDS = 30.0
+# The ui.wait tool schema declares 0 < poll_interval <= 5.0. The agent and
+# OpenAI-bridge transports call this handler straight from model arguments and
+# never run that pydantic validation, and ui_drive builds the argument with a
+# bare float(step["poll_interval"]) from a caller script, so the bound has to be
+# re-applied here. A finite value larger than the timeout (poll_interval=1e9)
+# makes the first failed poll sleep for ~31 years, sailing past the validated
+# timeout ceiling, and an inf makes time.sleep raise OverflowError outright.
+_MAX_POLL_INTERVAL_SECONDS = 5.0
 _DEFAULT_SEND_TIMEOUT_MS = 5_000
 _MAX_SCREENSHOT_EDGE = 8192
 _MAX_SCREENSHOT_PIXELS = 16_777_216  # 4096*4096
@@ -1013,6 +1021,19 @@ def wait_for_window(
             "invalid_params",
             f"timeout must be > 0 and <= {_MAX_WAIT_SECONDS}",
             timeout=timeout,
+        )
+    if (
+        isinstance(poll_interval, bool)
+        or not isinstance(poll_interval, (int, float))
+        or not 0 < float(poll_interval) <= _MAX_POLL_INTERVAL_SECONDS
+    ):
+        # ``not 0 < x <= max`` also rejects NaN, whose every comparison is
+        # False; the max(0.05, ...) below would otherwise pass a large finite
+        # poll_interval straight through to a sleep that outlives the deadline.
+        raise UiPidBoundaryError(
+            "invalid_params",
+            f"poll_interval must be > 0 and <= {_MAX_POLL_INTERVAL_SECONDS}",
+            poll_interval=poll_interval,
         )
     deadline = time.monotonic() + float(timeout)
     last_error: str | None = None
