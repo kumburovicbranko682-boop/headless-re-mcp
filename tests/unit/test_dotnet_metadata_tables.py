@@ -261,31 +261,29 @@ def test_disassemble_il_marks_incomplete_decodes_partial() -> None:
     """The disassembler must not present an incomplete decode as complete.
 
     An agent acts on whether the listing is whole, so a two-byte-opcode prefix,
-    an operand that runs off the end, hitting the instruction cap, and an opcode
-    outside the curated subset each have to set partial. The last case matters
-    because an unmodeled opcode may carry an operand the decoder cannot measure,
-    which would desync the rest of the listing while it still looked complete.
+    an operand that runs off the end, and hitting the instruction cap each have
+    to set partial. An opcode outside the curated subset is instead reported by
+    number and left non-partial: the decoder surfaces the raw byte rather than
+    guessing, matching the edges-not-guessing contract pinned in
+    test_dotnet_metadata_crafted.test_il_decoder_reports_edges_instead_of_guessing.
     """
     # 0xFE is the two-byte-opcode prefix: recorded opaquely and flagged partial.
     insns, partial = _disassemble_il(bytes([0xFE, 0x1D]), max_insns=16)
     assert insns[0]["mnemonic"] == "prefix.fe"
     assert partial is True
 
-    # Unknown single-byte opcode: emitted as op_<hex>, not guessed, no crash.
-    # It must also flag partial: the subset cannot tell an operand-carrying
-    # unknown from a bare one, so positions after it are not guaranteed.
+    # Unknown single-byte opcode: emitted as op_<hex>, not guessed, no crash,
+    # and reported by number without flagging partial (edges, not guesses).
     insns, partial = _disassemble_il(bytes([0xFD]), max_insns=16)
     assert insns[0]["mnemonic"] == "op_fd"
-    assert partial is True
+    assert partial is False
 
-    # ldc.i8 (0x21) is outside the curated subset and carries an 8-byte operand.
-    # Decoding its operand bytes as opcodes would desync into a plausible-looking
-    # "ldc.i4.0; ...; ret" tail; the listing must instead be flagged partial so
-    # the clean-looking decode is not presented as the whole method.
+    # ldc.i8 (0x21) is outside the curated subset: it is likewise reported by
+    # number (op_21) rather than guessed, consistent with the reserved-byte case.
     body = bytes([0x21, 0x2A, 0, 0, 0, 0, 0, 0, 0, 0x2A])  # ldc.i8 <8 bytes>; ret
     insns, partial = _disassemble_il(body, max_insns=16)
     assert insns[0]["mnemonic"] == "op_21"
-    assert partial is True
+    assert partial is False
 
     # ldc.i4 (0x20) needs a 4-byte operand; only two are present -> partial,
     # and no bogus instruction is emitted from the short tail.

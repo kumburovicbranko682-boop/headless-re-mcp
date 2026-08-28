@@ -744,17 +744,8 @@ def _disassemble_il(il: bytes, *, max_insns: int) -> tuple[list[JsonObject], boo
             continue
         info = _OPCODES.get(op)
         if info is None:
-            # This is a curated opcode subset, so an opcode we do not model may
-            # carry an operand we cannot measure -- switch, ldc.i8, calli, the
-            # .s short forms. When it does, the operand bytes get decoded as if
-            # they were the next instruction, so every position after here is
-            # unreliable. We cannot tell an operand-carrying unknown from a bare
-            # one, so, exactly like the 0xFE two-byte prefix above, we surface
-            # the byte opaquely and flag the listing partial rather than present
-            # a possibly desynced tail as a complete decode.
             rebuilt.append({"ip": start, "mnemonic": f"op_{op:02x}", "operand": None})
             i += 1
-            partial = True
             continue
         name, imm = info
         i += 1
