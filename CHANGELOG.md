@@ -24,6 +24,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（非 PE 后端错误码词表守卫：八个后端的 code 是 agent 路由所依的机器契约，此前为散落的裸字符串、无枚举无校验，新增守卫钉住“抛出的 code 恰等于 canonical 词表”——拼写错 / 混入 PE 线方言 / 词表烂成宽集三向皆拦）
+
+- 每个非 PE 后端(web / proxy / adb / apk 静态 / apktool / frida / jsre / jadx)抛出的类型化错误,其首参 `code` 经
+  `_as_rpc` 原样进入调用方看到的 `RpcError.code`;agent 与 OpenAI 桥据此分支——`timeout` 重试、`capability_unavailable`
+  降级绕过、`permission_denied` 中止、`too_large` 改分页——所以 code 是契约而非日志串。契约成立的前提是词表小而共享:
+  一个拼写错(`capabilty_unavailable` / `invalid_param`)铸出无人分支的码,静默落到通用失败路径;而 PE 线说的是另一套
+  方言(`invalid_argument` / `process_failed` / `input_too_large` / `executable_not_found` …),某非 PE 后端若照搬 PE 模式
+  或经共享 helper 漏入,便把错方言的码交给按非 PE 词表路由的调用方而漏接。此前无人钉住词表:code 是散落在八个后端里的
+  裸字符串字面量,无枚举、无校验,两种漂移都会悄悄上线。新增 `test_non_pe_error_taxonomy.py` 扫描八个 `client.py` 抛出的
+  码字面量(正则的 `\s*` 跨行,容多行 raise;类定义 `class WebError(RuntimeError):` 与 `except WebError` 不会误匹配),
+  断言其并集**恰等于** `_NON_PE_ERROR_CODES`(当前 8 个:`backend_error` / `capability_unavailable` / `invalid_params` /
+  `invalid_state` / `not_found` / `permission_denied` / `timeout` / `too_large`):词表之外的码报错(拼写 / PE 方言污染守卫),
+  词表之内却无人抛的码也报错(防其烂成“放行一切”的宽集)。一个真新码必须显式加进词表并附理由——这正是要逼出的显式决定。
+  正反双向非空校验(须真扫到 web / adb / frida / apk 的码,且并集含 `capability_unavailable` / `invalid_params` /
+  `backend_error` / `too_large`)避免枚举一断即空过。以双向注入验证非空:往 web 后端塞一条 `capabilty_unavailable` 的探针
+  raise,守卫报出该越界码(证明扫描器确从源码抓码,含新增 raise),还原后转绿;临时把 PE 线的 `invalid_argument` 塞进
+  canonical 词表,守卫报出该“无人抛”的死码,移除后转绿。
+
 ### 测试（非 PE 数值入参上界守卫从“按名钉 limit”推广到“钉所有整数/浮点入参”：device.logcat 的 lines 正因不叫 limit 逃过通用守卫、只能靠专测拦下，新增第四条守卫扫全部数值参数，钉住下一个换名的越界页大小 / 资源上限）
 
 - `test_non_pe_pagination_schema_bounds.py` 前三条守卫按名字钉 `limit`(整数、下限 1、须有上界)、`offset`(整数、下限 0)
