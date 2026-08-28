@@ -3076,6 +3076,44 @@ class TestAdbForwardsAreReleased:
         finally:
             service.close_all()
 
+    def test_ca_install_without_a_generated_ca_is_not_found_and_pushes_nothing(
+        self, tmp_path: Any
+    ) -> None:
+        """proxy.ca.install_android before the proxy ever ran fails cleanly.
+
+        mitmproxy only writes ~/.mitmproxy on first start, so a CA install
+        requested before that must answer not_found carrying the start-the-proxy
+        guidance -- and must never reach adb, so no push of a nonexistent file
+        is attempted against a real device.
+        """
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+        from headless_re_mcp.core.service import AnalysisService
+
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        service = AnalysisService(settings)
+        try:
+            created = service.create_session("https://example.com", target="web")
+            assert created.data is not None
+            session_id = str(created.data["session"]["id"])
+            pushed: list[tuple[str, str]] = []
+            service._adb_backend.push = (  # type: ignore[method-assign]
+                lambda serial, local_path, remote_path: pushed.append((serial, remote_path))
+                or {"local": local_path, "remote": remote_path}
+            )
+            service._proxy_backend.ca_cert_path = lambda: None  # type: ignore[method-assign]
+
+            result = service.proxy_ca_install_android(session_id, "emulator-5554")
+
+            assert result.ok is False
+            assert result.error is not None
+            assert result.error.code == "not_found"
+            assert "start the proxy once" in result.error.message
+            assert pushed == []
+        finally:
+            service.close_all()
+
 
 class TestUnpackProbesKillWhatTheyStart:
     def test_scylla_timeout_is_not_availability_after_the_tree_is_dead(
