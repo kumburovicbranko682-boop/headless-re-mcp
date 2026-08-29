@@ -59,11 +59,26 @@ def _write_minimal_pe(path: Path, machine: int = 0x8664) -> None:
 
 @pytest.mark.parametrize(
     "hostile_id",
-    ["", "   ", "../../etc/shadow", "abc/def", "a\\b" if Path("a\\b").name != "a\\b" else "x/y"],
+    [
+        "",
+        "   ",
+        "../../etc/shadow",
+        "abc/def",
+        "a\\b" if Path("a\\b").name != "a\\b" else "x/y",
+        # The dot segments are the subtle case: they carry no separator, so the
+        # bare ``Path(id).name != id`` test that guarded this row let ".." pass
+        # (``Path("..").name == ".."``). A restored id ".." would then resolve
+        # ``artifact_root/<cat>/..`` -- the artifact root itself -- for the write
+        # paths that trust it (ghidra/dotnet/trace/static/unpack). "." rode in
+        # on the same weakness even though Path(".").name happens to be empty.
+        "..",
+        ".",
+    ],
 )
 def test_store_row_rejects_ids_that_are_not_plain_names(hostile_id: str) -> None:
     # The id becomes a path component for artifacts and threads, so anything
-    # with separators is a traversal attempt, not a session.
+    # with separators -- or a "." / ".." that climbs out of its own subtree --
+    # is a traversal attempt, not a session.
     row = {"id": hostile_id, "binary": "C:/x.exe", "state": "ready"}
     assert session_from_store_row(row) is None
 
@@ -184,6 +199,33 @@ def test_hydrate_skips_rows_that_are_not_mappings() -> None:
     registry = SessionRegistry()
     assert hydrate_persisted_sessions(registry, _Junk()) == 0
     assert registry.list() == []
+
+
+def test_hydrate_never_admits_a_dot_dot_id_into_a_live_registry(tmp_path: Path) -> None:
+    """End to end: a corrupted ".." row must not reach the registry.
+
+    create() only mints uuids, so this restore path is the sole way an
+    untrusted id could enter a live registry. A ".." row used to survive
+    session_from_store_row (the bare Path(id).name test admits it) and get
+    adopted, after which the write paths that trust the id
+    (ghidra/dotnet/trace/static/unpack) would resolve artifact_root/<cat>/.. --
+    the artifact root itself. Pin that the malicious row is dropped at the
+    source and get() still refuses the id.
+    """
+    binary = tmp_path / "target.exe"
+    _write_minimal_pe(binary)
+
+    class _OneBadRow:
+        def list_unclean_sessions(
+            self, *, offset: int = 0, limit: int = 100
+        ) -> tuple[list[Any], int]:
+            return ([{"id": "..", "binary": str(binary), "state": "ready"}], 1)
+
+    registry = SessionRegistry()
+    assert hydrate_persisted_sessions(registry, _OneBadRow()) == 0
+    assert registry.list() == []
+    with pytest.raises(SessionNotFound):
+        registry.get("..")
 
 
 # ---------------------------------------------------------------------------

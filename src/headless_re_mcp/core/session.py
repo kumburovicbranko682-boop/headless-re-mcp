@@ -277,7 +277,17 @@ def hydrate_persisted_sessions(
 def session_from_store_row(row: Mapping[str, Any]) -> Session | None:
     """Build a dormant Session from a sessions.db row, or skip a bad row."""
     session_id = str(row.get("id") or "").strip()
-    if not session_id or Path(session_id).name != session_id:
+    # Mirror core.service._is_safe_session_segment: the bare
+    # ``Path(name).name != name`` test admits ``..`` because
+    # ``Path("..").name == ".."``. The id becomes a path component under the
+    # artifact root (``artifact_root/<cat>/<id>``), and create() only ever mints
+    # a uuid, so this restore path is the one place an untrusted id can enter a
+    # live registry. A corrupted or hand-edited row with id ".." would resolve
+    # ``artifact_root/ghidra/..`` -- the artifact root itself -- for the write
+    # paths that trust the id (ghidra/dotnet/trace/static/unpack), which unlike
+    # proxy/web/ui/apk carry no segment guard of their own. Reject the dot
+    # segments explicitly, exactly as that guard does.
+    if not session_id or session_id in {".", ".."} or Path(session_id).name != session_id:
         return None
     stored_state = str(row.get("state") or "").strip().lower()
     try:

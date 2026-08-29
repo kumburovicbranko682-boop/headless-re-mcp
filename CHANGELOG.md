@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 安全（会话恢复放行 ".." 会话 id——绕过工件根隔离的唯一入口）
+
+- `session_from_store_row`（重启后从 sessions.db 重建会话）用 `Path(id).name != id` 校验
+  id，而 `core.service._is_safe_session_segment` 的注释早就点明这道检查不够：`Path("..").name
+  == ".."`，于是 `..` 恰好溜过去（`.` 因 `Path(".").name` 为空而被顺带挡住）。会话 id 会成为
+  工件根下的路径分量 `artifact_root/<cat>/<id>`，而 `create()` 只签发 uuid，所以这条恢复路径
+  是唯一能让不可信 id 进入活动 registry 的入口。一条被损坏或手改的 `id=".."` 行会被恢复进
+  registry，随后信任该 id 的写入路径（ghidra/dotnet/trace/static/unpack——它们不像
+  proxy/web/ui/apk 各自带分量守卫）就把 `artifact_root/ghidra/..` 解析成工件根本身。实测确认
+  `..` 行被接受、且 `artifact_root/ghidra/..` 解析到根；这与 GC「越界绝不 unlink」保险栓、工件
+  下载路由的越界守卫属同一「损坏 DB 行」威胁模型。修复：在 `session_from_store_row` 显式拒绝
+  `.`/`..`（与 `_is_safe_session_segment` 逻辑对齐，并加注释防漂移），在唯一入口处一次性堵住
+  所有无守卫写入路径。既有参数化拒绝用例只覆盖了带分隔符的 id（`../../etc/shadow`、`abc/def`），
+  裸 `..`/`.` 正是缺口——补进该用例，并新增端到端 `test_hydrate_never_admits_a_dot_dot_id_into_a_live_registry`
+  钉住「恶意行在源头被丢弃、`registry.get('..')` 仍拒绝」。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
