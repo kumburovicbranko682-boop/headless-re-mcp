@@ -5,6 +5,28 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（配置了却不存在的 adb 路径在运行时干脆拒绝，不再毒化 server 自启）
+
+- 把上一轮"配置诊断诚实性"从 doctor 侧补到运行时侧。doctor 早已对配置了却不是文件的
+  `HEADLESS_RE_ADB`(经 `probe_optional_tool` 的 settings_attr="adb" 分支)如实报 MISSING,
+  并在注释里点名 "adb exports it as ADBUTILS_ADB_PATH and poisons server auto-spawn"——
+  可运行时 `AdbBackend._client` 却仍无条件把这条悬空路径 `setdefault` 进 `ADBUTILS_ADB_PATH`,
+  adbutils 随后在**首个命令**触发 server 自启时才深处报错,浮到面上是一句含糊的
+  "cannot reach adb server"(或 spawn 抛出的裸 FileNotFoundError),既非构造期失败也非
+  `capability_unavailable`——doctor 说 MISSING、运行时说 backend_error,言行不一。
+- `_client`(所有 adb 操作的唯一漏斗:`_device`/`list_devices`/`connect`/`info` 等都经它)在
+  推 env 之前先判 `self._adb_path.is_file()`:配置了却不是文件(不存在、或指向目录)即刻抛
+  `capability_unavailable` 并把坏路径放进 `details.executable`,与 r2/jadx/apktool/webcrack
+  的悬空配置处理**完全对齐**;拒绝时不写 `ADBUTILS_ADB_PATH`。adbutils 本就只认这条配置路径、
+  不回退 PATH,故除拒绝外别无可试。
+- 测试:新增 `test_client_refuses_a_configured_adb_path_that_is_not_a_file`——悬空文件与指向目录
+  两种都断言 `capability_unavailable`、path 点名、且 env 未被写;把既有
+  `test_client_sets_the_adb_path_env_and_falls_back_on_typeerror` 的 fixture 改成**真实文件**
+  (原先只构造 Path 从不落盘,正好会撞上新判据)。mutation 验证(把 `is_file()` 判据改成恒假,
+  拒绝测即红)。ruff+mypy 通过,全量单测 6650 passed / 55 skipped。另核实 frida server 一侧无同类
+  缺口:`ensure_frida_server` 早已 `is_file()` 校验 `server_binary`(含由 `settings.frida_server`
+  解析而来的值)并干净地报 `not_found`。
+
 ### 改进（apk.xrefs 与 classes/methods/strings 对齐：排序 + offset 翻页）
 
 - 核查 Android 静态读取面的分页一致性时发现:`apk.xrefs` 是四个列表读取器里唯一**只有 limit、
