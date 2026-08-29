@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Linux 集成 CI 的 Playwright Chromium 安装改为尽力而为,失败只跳过 web 网关而非中止整个 job）
+
+- `Install Playwright Chromium` 步骤是硬性要求且无容错:`playwright install --with-deps chromium` 一旦失败(它底层还要
+  跑 apt 装系统库,是本 job 里最重、最易碰上下载或依赖抖动的可选后端),整步非零退出、整个 job 中止,把 radare2、Frida、
+  Android、代理一并连坐——正是上面 apt 步骤刚消除的那类耦合。而四个 web 控制台网关本就在浏览器起不来时诚实跳过
+  ("chromium could not launch — skip != pass"),所以浏览器装不上只该跳过这些网关。
+- 改为尽力而为(与 webcrack/jadx/Ghidra 一致):`|| echo ::warning::`,失败抛注解、该步以 0 退出,web 网关随后经 `-rs`
+  诚实跳过。已用 `bash -eo pipefail` 本地验证 `false || echo` 退 0 不中止。
+
 ### 修复（Linux 集成 CI 逐个安装 apt 后端,一个包缺失不再连坐整条非-PE 覆盖）
 
 - `linux-integration` 用 `apt-get install -y radare2 upx-ucl wabt apktool apksigner adb` 一次装齐六个**互不相干**的后端。

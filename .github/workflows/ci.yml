@@ -243,8 +243,18 @@ jobs:
           python -m pip install -U pip
           python -m pip install -e ".[test,dev,web,android,browser,proxy]"
 
-      - name: Install Playwright Chromium
-        run: python -m playwright install --with-deps chromium
+      - name: Install Playwright Chromium (best effort)
+        # Every web console gate checks the browser can launch and skips honestly
+        # when it cannot ("chromium could not launch — skip != pass"), so a
+        # failed browser install should skip only those gates -- not abort the
+        # job and blank out radare2, Frida, Android and the proxy along with it,
+        # the same coupling the apt step above now avoids. Best-effort like the
+        # webcrack/jadx/Ghidra steps: a failure becomes a ::warning:: and the web
+        # gates skip rather than failing the job over the one heavy optional
+        # backend most likely to hit a transient download or apt-dep hiccup.
+        run: |
+          python -m playwright install --with-deps chromium \
+            || echo "::warning::Playwright Chromium unavailable; the web console gates will skip (skip != pass)"
 
       - name: Install webcrack (best effort)
         # The JS gate uses webcrack; if the global install fails the gate skips
