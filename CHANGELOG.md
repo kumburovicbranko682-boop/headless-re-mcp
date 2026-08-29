@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 文档（r2.functions 补记 items_total/items_limit，与其余 r2 读取器一致）
+
+- `r2.functions` 是唯一一个 docstring 只提 `items_truncated`、没提 `items_total`/`items_limit` 的 r2 列表读取器,
+  而共享的 `enrich_r2_payload` 对每个 `*j` 列表一律封顶 4096 并同时回这三个字段。一个函数数超过 4096 的目标
+  (大型静态链接程序或 app)会把 `aflj` 列表截断,轻信旧 docstring 的调用方就永远不读 `items_total`,把一页当成全程序——
+  正是其余读取器早已堵上的"截断无声化"缺口。docstring 现与 strings/imports/exports/xrefs 对齐,并新增
+  `test_r2_functions_fields` 同时钉住截断载荷(4099 → `items_total=4099`、`items_limit=4096`,且无
+  functions/truncated/has_more 字段)与更正后的 docstring;地址映射测试里的精确整句断言放宽为共享的 "no functions" 措辞。
+
 ### 改进（ghidra.functions/symbols/xrefs 补上 total，与其余分页读取器对齐；Ghidra 在 Linux 实测）
 
 - `ghidra.functions`/`symbols`/`xrefs` 此前只回 `count` 与 `has_more`,与本仓其余分页读取器
