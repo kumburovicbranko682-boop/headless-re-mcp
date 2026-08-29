@@ -65,8 +65,8 @@ class _FakeWebBackend:
     def script_source(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
         return self._record("script_source", session_id, script_id, artifact_dir)
 
-    def dom_snapshot(self, session_id: str) -> JsonObject:
-        return self._record("dom_snapshot", session_id)
+    def dom_snapshot(self, session_id: str, artifact_dir: Path) -> JsonObject:
+        return self._record("dom_snapshot", session_id, artifact_dir)
 
     def screenshot(self, session_id: str, out: Path, *, full_page: bool) -> JsonObject:
         result = self._record("screenshot", session_id, out, full_page=full_page)

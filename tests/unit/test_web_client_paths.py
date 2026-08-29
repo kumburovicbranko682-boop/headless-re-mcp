@@ -555,35 +555,37 @@ def test_script_source_reraises_a_web_error(tmp_path: Path) -> None:
     assert info.value.code == "timeout"
 
 
-def test_dom_snapshot_reads_and_clips() -> None:
+def test_dom_snapshot_reads_and_inlines(tmp_path: Path) -> None:
     handle = _handle()
-    handle.page.evaluate = lambda script, cap: {"html": "<html></html>", "truncated": False}
+    handle.page.evaluate = lambda script: "<html></html>"
     backend = _backend_with(handle)
-    result = backend.dom_snapshot("s")
+    result = backend.dom_snapshot("s", tmp_path)
     assert result["html"] == "<html></html>"
     assert result["truncated"] is False
+    assert "html_path" not in result
 
 
-def test_dom_snapshot_maps_an_evaluation_failure() -> None:
+def test_dom_snapshot_maps_an_evaluation_failure(tmp_path: Path) -> None:
     handle = _handle()
 
-    def _boom(script: str, cap: int) -> Any:
+    def _boom(script: str) -> Any:
         raise RuntimeError("evaluate failed")
 
     handle.page.evaluate = _boom
     backend = _backend_with(handle)
     with pytest.raises(WebError) as info:
-        backend.dom_snapshot("s")
+        backend.dom_snapshot("s", tmp_path)
     assert info.value.code == "backend_error"
 
 
-def test_dom_snapshot_refuses_a_non_document_result() -> None:
+def test_dom_snapshot_degrades_a_non_string_result_to_empty(tmp_path: Path) -> None:
     handle = _handle()
-    handle.page.evaluate = lambda script, cap: "not-a-dict"
+    handle.page.evaluate = lambda script: 1234
     backend = _backend_with(handle)
-    with pytest.raises(WebError) as info:
-        backend.dom_snapshot("s")
-    assert "no document" in info.value.message
+    result = backend.dom_snapshot("s", tmp_path)
+    assert result["html"] == ""
+    assert result["truncated"] is False
+    assert "html_path" not in result
 
 
 def test_screenshot_writes_and_reports_size(tmp_path: Path) -> None:

@@ -72,7 +72,7 @@ class TestWebSessionScoping:
             "console": lambda: backend.console("nope"),
             "scripts": lambda: backend.scripts("nope"),
             "script_source": lambda: backend.script_source("nope", "1", tmp_path),
-            "dom_snapshot": lambda: backend.dom_snapshot("nope"),
+            "dom_snapshot": lambda: backend.dom_snapshot("nope", tmp_path),
             "screenshot": lambda: backend.screenshot("nope", out),
             "har_export": lambda: backend.har_export("nope", out),
         }

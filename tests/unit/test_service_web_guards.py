@@ -86,8 +86,11 @@ class _ScriptedWeb:
             reply["source_path"] = str(self.spill_writer(artifact_dir))
         return reply
 
-    def dom_snapshot(self, session_id: str) -> JsonObject:
-        return self._answer("dom_snapshot", session_id)
+    def dom_snapshot(self, session_id: str, artifact_dir: Path) -> JsonObject:
+        reply = self._answer("dom_snapshot", session_id, str(artifact_dir))
+        if self.spill_writer is not None:
+            reply["html_path"] = str(self.spill_writer(artifact_dir))
+        return reply
 
     def screenshot(self, session_id: str, out: Path, *, full_page: bool = False) -> JsonObject:
         reply = self._answer("screenshot", session_id, str(out), full_page=full_page)
@@ -445,6 +448,31 @@ def test_dom_snapshot_answers_through_the_shared_wrapper(tmp_path: Path) -> None
     refused = service.web_dom_snapshot(sid)
     assert not refused.ok and refused.error is not None
     assert refused.error.code == "no_browser"
+
+
+def test_dom_snapshot_registers_a_spilled_document(tmp_path: Path) -> None:
+    """A truncated snapshot's html_path is registered so the tail is reachable.
+
+    web.dom.snapshot spills the full document to html_path when it overflows the
+    inline buffer; the service must register that file as a capture -- otherwise
+    nothing on the tool surface can open it and retention cannot reclaim it, the
+    same dead end script_source's spill would hit unregistered.
+    """
+    service = _Service(tmp_path)
+    sid = service.web_session()
+
+    def spill(artifact_dir: Path) -> Path:
+        doc = artifact_dir / "dom.html"
+        doc.write_text("<html>" + "x" * 4096 + "</html>", encoding="utf-8")
+        return doc
+
+    service.fake.spill_writer = spill
+    result = service.web_dom_snapshot(sid)
+
+    assert result.ok and result.data is not None
+    described = service.repository.describe_artifact(str(result.data["artifact_id"]))
+    assert described is not None
+    assert described["kind"] == "web_dom_snapshot"
 
 
 def test_screenshot_registers_the_capture_and_a_timeline_event(tmp_path: Path) -> None:

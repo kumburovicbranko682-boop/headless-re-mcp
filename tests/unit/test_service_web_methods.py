@@ -72,7 +72,8 @@ class _FakeWeb:
     ) -> JsonObject:
         return {"scripts": [], "wasm_only": wasm_only, "offset": offset, "limit": limit}
 
-    def dom_snapshot(self, session_id: str) -> JsonObject:
+    def dom_snapshot(self, session_id: str, artifact_dir: Path) -> JsonObject:
+        del artifact_dir
         return {"nodes": 1}
 
     def har_export(self, session_id: str, out: Path) -> JsonObject:
@@ -461,7 +462,9 @@ def test_web_wrap_maps_web_error(settings: Settings) -> None:
 
 def test_web_wrap_maps_unexpected_error(settings: Settings) -> None:
     web = _FakeWeb()
-    web.dom_snapshot = lambda session_id: (_ for _ in ()).throw(RuntimeError("cdp died"))  # type: ignore[method-assign]
+    web.dom_snapshot = lambda session_id, artifact_dir: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        RuntimeError("cdp died")
+    )
     host = _host(settings, web)
     session_id = _adopt(host)
     result = host.web_dom_snapshot(session_id)

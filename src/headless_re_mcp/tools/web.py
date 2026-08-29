@@ -195,8 +195,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_dom_snapshot(session_id: str) -> dict[str, Any]:
         """Return the current page HTML, URL, and title.
 
-        Answers with url, title and html, plus truncated when the HTML was
-        cut at the buffer. There is no content, dom or body field.
+        Answers with url, title, bytes and html, plus truncated when the HTML
+        was cut at the buffer. When truncated is set the html field holds only
+        the leading buffer and the complete document is written to html_path
+        (registered under artifact_id), so the tail is recoverable in this same
+        run rather than lost. A DOM past the capture cap is refused as too_large.
+        There is no content, dom or body field.
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 

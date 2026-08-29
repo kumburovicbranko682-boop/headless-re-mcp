@@ -118,7 +118,7 @@ def test_script_source_passes_a_web_error_through_unchanged(
 
 
 def test_dom_snapshot_evaluate_failure_is_backend_error(
-    runner: Any, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Any, runner: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A page that will not evaluate is a backend outcome, not a crash."""
     def evaluate(expression: str, arg: Any = None) -> Any:
@@ -129,19 +129,19 @@ def test_dom_snapshot_evaluate_failure_is_backend_error(
     handle = SimpleNamespace(page=page, runner=runner)
     _wire(backend, handle, monkeypatch)
     with pytest.raises(WebError) as info:
-        backend.dom_snapshot("s")
+        backend.dom_snapshot("s", tmp_path)
     assert info.value.code == "backend_error"
     assert "dom snapshot failed" in info.value.message
 
 
-def test_dom_snapshot_non_dict_result_is_backend_error(
-    runner: Any, monkeypatch: pytest.MonkeyPatch
+def test_dom_snapshot_non_string_result_degrades_to_empty_html(
+    tmp_path: Any, runner: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An evaluate that returns no document object is refused, not returned empty.
+    """An evaluate that yields no string document reads as an empty page, not a crash.
 
-    If the injected script yields a non-dict (a driver hiccup, a navigation
-    mid-evaluate), returning it would produce a snapshot with no html; the guard
-    reports backend_error instead of an empty-looking success.
+    A driver hiccup or a navigation mid-evaluate can return a non-string; the
+    snapshot coerces that to empty html with truncated False and writes no
+    spill, rather than raising or claiming a document it does not have.
     """
     backend = WebBackend()
     page = SimpleNamespace(
@@ -149,10 +149,10 @@ def test_dom_snapshot_non_dict_result_is_backend_error(
     )
     handle = SimpleNamespace(page=page, runner=runner)
     _wire(backend, handle, monkeypatch)
-    with pytest.raises(WebError) as info:
-        backend.dom_snapshot("s")
-    assert info.value.code == "backend_error"
-    assert "no document" in info.value.message
+    result = backend.dom_snapshot("s", tmp_path)
+    assert result["html"] == ""
+    assert result["truncated"] is False
+    assert "html_path" not in result
 
 
 def test_screenshot_failure_is_backend_error(

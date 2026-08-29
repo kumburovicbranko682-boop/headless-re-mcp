@@ -952,36 +952,45 @@ class WebBackend:
             )
         return result
 
-    def dom_snapshot(self, session_id: str) -> JsonObject:
+    def dom_snapshot(self, session_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
 
         def work() -> JsonObject:
             try:
-                clipped = handle.page.evaluate(
-                    """(cap) => {
-                        const html = document.documentElement
+                # Fetch the whole outerHTML rather than slicing it in the browser:
+                # a DOM past the inline buffer used to lose everything past the cut
+                # with no way back. _spill_text inlines a prefix and writes the full
+                # document to disk, matching what script_source already does for a
+                # large script source. The capture cap in _spill_text (not this
+                # evaluate) bounds the transfer, so a pathological DOM is refused as
+                # too_large rather than silently trimmed to a prefix.
+                html = handle.page.evaluate(
+                    """() => {
+                        const doc = document.documentElement
                           ? document.documentElement.outerHTML
                           : (document.body ? document.body.outerHTML : "");
-                        const text = typeof html === "string" ? html : "";
-                        return {
-                          html: text.length > cap ? text.slice(0, cap) : text,
-                          truncated: text.length > cap
-                        };
-                    }""",
-                    _MAX_INLINE_BODY,
+                        return typeof doc === "string" ? doc : "";
+                    }"""
                 )
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"dom snapshot failed: {exc}") from exc
-            if not isinstance(clipped, dict):
-                raise WebError("backend_error", "dom snapshot returned no document")
-            html = clipped.get("html")
             text = html if isinstance(html, str) else ""
-            return {
+            inline, spill, cut = _spill_text(
+                text,
+                artifact_dir=artifact_dir,
+                filename=f"dom-{uuid4().hex}.html",
+                kind="dom snapshot",
+            )
+            result: JsonObject = {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
-                "html": text[:_MAX_INLINE_BODY],
-                "truncated": bool(clipped.get("truncated")) or len(text) > _MAX_INLINE_BODY,
+                "bytes": len(text.encode("utf-8", errors="replace")),
+                "html": inline,
+                "truncated": cut,
             }
+            if spill is not None:
+                result["html_path"] = str(spill)
+            return result
 
         return self._runner(handle).call(work)
 

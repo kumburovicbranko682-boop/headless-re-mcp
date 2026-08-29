@@ -651,7 +651,7 @@ def test_script_source_inlines_a_non_string_source(tmp_path: Path) -> None:
 
 
 def test_dom_snapshot_maps_an_evaluate_failure_to_backend_error(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     backend = WebBackend()
     runner = _Runner("test-dom-fail")
@@ -660,7 +660,7 @@ def test_dom_snapshot_maps_an_evaluate_failure_to_backend_error(
         class _Page:
             url = "https://x/"
 
-            def evaluate(self, script: str, arg: Any) -> Any:
+            def evaluate(self, script: str) -> Any:
                 raise RuntimeError("execution context destroyed")
 
             def title(self) -> str:
@@ -670,23 +670,30 @@ def test_dom_snapshot_maps_an_evaluate_failure_to_backend_error(
         monkeypatch.setattr(backend, "_get", lambda session_id: handle)
 
         with pytest.raises(WebError) as caught:
-            backend.dom_snapshot("s")
+            backend.dom_snapshot("s", tmp_path)
 
         assert caught.value.code == "backend_error"
     finally:
         runner.shutdown()
 
 
-def test_dom_snapshot_rejects_a_non_dict_result(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dom_snapshot_treats_the_evaluate_string_as_the_document(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """evaluate returns the outerHTML string directly, which becomes html.
+
+    A short document fits the inline buffer, so truncated is False and nothing
+    is spilled -- the string is returned as-is rather than wrapped or refused.
+    """
     backend = WebBackend()
-    runner = _Runner("test-dom-nondict")
+    runner = _Runner("test-dom-string")
     try:
 
         class _Page:
             url = "https://x/"
 
-            def evaluate(self, script: str, arg: Any) -> Any:
-                return "not a dict"
+            def evaluate(self, script: str) -> Any:
+                return "<html><body>ok</body></html>"
 
             def title(self) -> str:
                 return ""
@@ -694,10 +701,10 @@ def test_dom_snapshot_rejects_a_non_dict_result(monkeypatch: pytest.MonkeyPatch)
         handle = SimpleNamespace(page=_Page(), runner=runner)
         monkeypatch.setattr(backend, "_get", lambda session_id: handle)
 
-        with pytest.raises(WebError) as caught:
-            backend.dom_snapshot("s")
-
-        assert caught.value.code == "backend_error"
+        result = backend.dom_snapshot("s", tmp_path)
+        assert result["html"] == "<html><body>ok</body></html>"
+        assert result["truncated"] is False
+        assert "html_path" not in result
     finally:
         runner.shutdown()
 
