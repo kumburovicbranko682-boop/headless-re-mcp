@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（r2 列表输出被 1MB 截断后,解析器把嵌套片段捏造成结果）
+
+- `run()` 在 1_000_000 字节处盲切 stdout(带 `truncated` 标志),而 `parse_r2_json`
+  取"第一个可解码的 JSON 值"。切点落在根数组中间时根数组永远解不开,扫描就落在
+  第一个能解开的**嵌套片段**上——经真机 `run()` 实测(r2 5.5.0,缩小 cap 的超限
+  `aflj`):返回 `parsed: True`,items 是第一个函数条目内嵌的 `callrefs` 数组,
+  把调用引用伪装成函数列表;dict 形态的首条目则被当成 info 型输出落进 `info`。
+  大二进制的 `aflj`/`izj` 很容易超 1MB,这是热路径上的捏造分析结果。
+- 新增 `reparse_cut_output`:截断输出只信任**首个结构字符**处的值——完整解开则照常
+  使用(切点在其后);是未闭合的根数组则按序打捞其完整的顶层条目(逐条 `raw_decode`,
+  在切尾处停止),payload 标注 `items_salvaged: True`;其余情况诚实报 `parsed: False`
+  并保留 raw,绝不采用更深处侥幸存活的片段。`enrich_xrefs_payload` 的陈旧键清理
+  同步纳入 `items_salvaged`。
+- 四个列表工具(functions/strings/imports/exports)的文档注明 `items_salvaged`
+  语义。新增 `tests/unit/test_r2_truncated_output_salvage.py`:实测到的 callrefs
+  捏造形态、dict 误入 info、打捞与 4096 cap 的叠加、根后切点照常解析、xrefs 陈旧
+  标志清理、run()→enrich 端到端接缝;真机复验(切中列表打捞出 6/12 个完整函数条目,
+  切进首条目内诚实拒绝),变异测试(去掉截断分支)5 个用例失败确认防线有效。
+
 ### 修复（r2.xrefs 返回的是全库交叉引用，与请求地址无关）
 
 - `R2Client.xrefs` 此前构造 `axj @ {address}`,但 radare2 的 `axj` 列出的是整个

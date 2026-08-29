@@ -146,6 +146,62 @@ def parse_r2_json_values(raw: str) -> list[Any]:
     return values
 
 
+def _salvage_cut_array(text: str, opening: int) -> list[Any]:
+    """Complete values inside an array whose closing bracket was cut off."""
+    decoder = json.JSONDecoder()
+    values: list[Any] = []
+    index = opening + 1
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char in ", \t\r\n":
+            index += 1
+            continue
+        if char == "]":
+            break
+        try:
+            value, end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            # The cut tail begins here; everything before it was complete.
+            break
+        values.append(value)
+        index = end
+    return values
+
+
+def reparse_cut_output(raw: str) -> tuple[Any | None, bool]:
+    """(value, salvaged) for output the byte cap cut mid-stream.
+
+    ``parse_r2_json`` takes the first *decodable* value, which is exactly
+    wrong once the 1_000_000-byte cut falls inside the root array: the root
+    never decodes, so the scan lands on the first fragment that does --
+    measured through run() on an oversized ``aflj``, that was the nested
+    ``callrefs`` array of the first function, presented as the function
+    listing itself with ``parsed: True``. Call references masquerading as
+    functions is fabricated analysis, not truncation.
+
+    Cut output therefore trusts only the *first* structural character: if the
+    value opening there decodes to completion the cut fell after it (use it as
+    usual); if it is an unterminated array, salvage its complete top-level
+    entries and say so; anything else parses as nothing rather than as
+    whatever fragment happens to survive further in.
+    """
+    text = (raw or "").strip()
+    first = next((index for index, char in enumerate(text) if char in "[{"), None)
+    if first is None:
+        return None, False
+    decoder = json.JSONDecoder()
+    try:
+        value, _end = decoder.raw_decode(text, first)
+    except json.JSONDecodeError:
+        if text[first] == "[":
+            entries = _salvage_cut_array(text, first)
+            if entries:
+                return entries, True
+        return None, False
+    return value, False
+
+
 def _item_va(entry: JsonObject, keys: tuple[str, ...]) -> int | None:
     for key in keys:
         value = entry.get(key)
@@ -196,7 +252,11 @@ def enrich_r2_payload(
     arch = architecture or pe_arch
     raw = str(data.get("raw") or "")
     commands = list(data.get("commands") or [])
-    parsed = parse_r2_json(raw)
+    salvaged = False
+    if data.get("truncated"):
+        parsed, salvaged = reparse_cut_output(raw)
+    else:
+        parsed = parse_r2_json(raw)
     out = dict(data)
     out["module"] = module
     if image_base is not None:
@@ -230,6 +290,11 @@ def enrich_r2_payload(
             out["items_truncated"] = True
             out["items_total"] = available
             out["items_limit"] = _MAX_ITEMS
+        if salvaged:
+            # items holds the complete entries recovered before the byte cut;
+            # an unknown tail is gone. Distinct from items_truncated, which
+            # counts a list that arrived whole and was capped here.
+            out["items_salvaged"] = True
         out["parsed"] = True
     elif isinstance(parsed, dict):
         out["info"] = parsed
@@ -286,7 +351,16 @@ def enrich_xrefs_payload(
     # The payload arrives pre-enriched by run(), whose generic parse saw only
     # the first array; drop those keys so a drifted output cannot leave the
     # axtj half behind as authoritative-looking items.
-    for stale in ("items", "count", "parsed", "items_truncated", "items_total", "items_limit"):
+    stale_keys = (
+        "items",
+        "count",
+        "parsed",
+        "items_truncated",
+        "items_total",
+        "items_limit",
+        "items_salvaged",
+    )
+    for stale in stale_keys:
         out.pop(stale, None)
 
     values = parse_r2_json_values(str(data.get("raw") or ""))
