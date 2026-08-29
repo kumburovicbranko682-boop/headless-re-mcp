@@ -141,6 +141,44 @@ def test_a_torn_final_line_does_not_corrupt_the_next_append(tmp_path: Path) -> N
     assert [item["event"] for item in listed["events"]] == ["e0000", "e0001"]
 
 
+def test_a_unicode_separator_in_an_entry_does_not_break_paging_or_drop_it(
+    tmp_path: Path,
+) -> None:
+    r"""U+2028 inside an entry must not shatter its JSON line.
+
+    Entries are written with ``json.dumps(ensure_ascii=False)``, which leaves
+    NEL (U+0085) and the Unicode line/paragraph separators (U+2028, U+2029)
+    literal inside a string. ``_page`` counts and slices the file on ``\n`` but
+    used to split the decoded window with ``str.splitlines()``, which also
+    breaks on those -- so an entry carrying one was cut into fragments that each
+    failed ``json.loads`` and were dropped, and the extra pieces inflated the
+    page length so ``has_more`` read a truncated page as complete and hid every
+    entry after it. Splitting the window on ``\n`` alone keeps the entry whole
+    and the count honest.
+    """
+    path = tmp_path / "timeline.jsonl"
+    store.append_session_timeline(path, event="e0", message="first")
+    store.append_session_timeline(
+        path, event="e1", message="alpha\u2028beta\u2029gamma\u0085delta"
+    )
+    store.append_session_timeline(path, event="e2", message="last")
+
+    page = store.list_session_timeline(path, offset=0, limit=2)
+    assert [item["event"] for item in page["events"]] == ["e0", "e1"]
+    assert page["events"][1]["message"] == "alpha\u2028beta\u2029gamma\u0085delta"
+    assert page["count"] == 2
+    assert page["total"] == 3
+    # The third entry is beyond this page. The discarded splitlines() version
+    # counted five fragments for these two lines and reported has_more False,
+    # which hid e2 from a caller paging forward.
+    assert page["has_more"] is True
+
+    everything = store.list_session_timeline(path, offset=0, limit=100)
+    assert [item["event"] for item in everything["events"]] == ["e0", "e1", "e2"]
+    assert everything["total"] == 3
+    assert everything["has_more"] is False
+
+
 def test_an_oversized_external_timeline_is_rejected_after_a_bounded_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

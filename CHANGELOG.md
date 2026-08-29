@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（timeline.list 用 splitlines 在条目内嵌的 Unicode 分隔符处丢条目、坏分页）
+
+- `core/store/timeline.py` 的 `_page` 按 `\n` 逐字节计数与切窗（`total`、`start/end`
+  都只认 `\n`），却在最后对解码后的窗口用 `str.splitlines()` 再切一次。`splitlines`
+  还会在 NEL（U+0085）与 Unicode 行/段分隔符（U+2028、U+2029）处断行，而条目是用
+  `json.dumps(ensure_ascii=False)` 写入的——这几类字符在字符串里原样落盘。于是某条
+  `message`/`details` 里带了其中之一的条目（文件名、页面标题、被回显的工具结果等）会被
+  切成多个碎片：每个碎片 `json.loads` 失败被调用方静默丢弃，多出来的碎片还把返回长度撑大，
+  让 `has_more` 把一页没读完当成读完，从而把该页之后的条目整段藏掉。改为只按 `\n` 切分
+  解码窗口（窗口以 `\n` 边界结束，末尾空串是终止符而非空条目），条目保持完整、计数如实。
+- `tests/unit/test_timeline_store.py` 新增用例：中间一条 `message` 内嵌
+  U+2028/U+2029/U+0085 时，`offset=0,limit=2` 必须原样返回前两条（`count` 为 2、
+  `total` 为 3、`has_more` 为真，中间条 message 完整），整读再验三条齐全；并钉死旧实现
+  会把该条切成 5 个碎片、丢掉它并把 `has_more` 误报为假的非平凡性。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

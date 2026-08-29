@@ -180,7 +180,21 @@ def _page(raw: bytes, offset: int, limit: int) -> tuple[int, list[str]]:
             end = len(raw)
             break
         end = nxt + 1
-    return total, raw[start:end].decode("utf-8", errors="replace").splitlines()
+    # Split the decoded window on ``\n`` only -- the exact separator this
+    # counted and sliced by above. ``str.splitlines`` also breaks on NEL
+    # (U+0085) and the Unicode line/paragraph separators (U+2028, U+2029),
+    # which json.dumps(ensure_ascii=False) leaves literal inside a string, so
+    # an entry whose message or details carried one (a filename, a page title,
+    # an echoed tool result) was shattered into fragments: each failed
+    # json.loads and was dropped by the caller, and the extra pieces inflated
+    # the returned length so has_more read a short page as complete and hid
+    # every entry past it. The slice ends on a ``\n`` boundary, so the trailing
+    # empty is a terminator, not a blank entry.
+    chunk = raw[start:end].decode("utf-8", errors="replace")
+    rows = chunk.split("\n")
+    if rows and rows[-1] == "":
+        rows.pop()
+    return total, rows
 
 
 def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
