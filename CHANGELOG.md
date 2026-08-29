@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（jadx 默认包类名解析进 defpackage/ 树：apk.classes 往返契约）
+
+- `apk.classes` 对混淆应用的默认包类报的是 smali 形式 `La;`（裸名 `a`），而 jadx 把无包类
+  写进 `sources/defpackage/`，从不放在 sources 根。`decompile()` 此前只探根路径
+  `sources/a.java`，落空后走简单名回退——只要存在 `a.a` 这类同名类（混淆应用里比比皆是），
+  回退就因两个 `a.java` 判歧义,把 `apk.classes` 亲手交回的类名答成 `not_found`,
+  尽管反编译产物就躺在盘上。实测 jadx 1.5.1 + 同名对（默认包 `a` + `a.a`）复现。
+- 改法：单段类名在根路径落空后、简单名回退前，确定性探查 `sources/defpackage/<Name>.java`
+  （带 resolve + `is_relative_to` 同款守卫）。根路径保持最高优先级，带包限定名不受影响，
+  语义上也更正确——Java 里裸类名本就是默认包类名，其他包的同名类各有限定名。
+- `apk.decompile` 工具 docstring 与客户端 docstring 补记名字形式契约（dotted/smali/裸名
+  → defpackage）。新增四条回归（`test_jadx_client_fallback_and_run_guards.py`）：
+  默认包名往返（`a`/`La;` → defpackage，不被同名类遮蔽；限定名 `a.a` 仍走精确路径）、
+  根文件优先于 defpackage 候选、无 defpackage 命中仍走唯一回退、纯歧义仍 `not_found`。
+  变异校验：还原修复后往返测试红，修复态 17 例全绿；真实 jadx 1.5.1 上四种形式全部解析成功。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
