@@ -1968,6 +1968,76 @@ class TestStuckToolCallsStopPilingUp:
         assert completed, "the refusal has to be visible in the run, not just raised"
         assert completed[-1].data["error"] == "tool_workers_stuck"
 
+    def test_a_hallucinated_tool_name_is_a_tool_result_not_a_failed_run(
+        self, tmp_path: Any
+    ) -> None:
+        """A model naming a tool that does not exist must not fail the whole run.
+
+        require() raised KeyError, which escaped _handle_tool_call to _execute's
+        exception boundary: the run failed and an incident was minted for what is
+        only the model calling something that is not there. It has to come back as
+        a tool result the model can read and correct on the next round.
+        """
+        import asyncio
+
+        from headless_re_mcp.agent.models import RunStatus
+
+        orchestrator = self._orchestrator(tmp_path)
+        thread = orchestrator.store.create_thread(title="hallucination")
+        run = orchestrator.store.create_run(
+            thread.id, provider_profile="p", model="m", deadline_seconds=60.0
+        )
+        orchestrator.store.transition(run.id, RunStatus.STREAMING)
+
+        result = asyncio.run(
+            orchestrator._handle_tool_call(run.id, "call-1", "totally.not.a.tool", {})
+        )
+
+        assert result["ok"] is False
+        assert result["error"]["code"] == "tool_not_found"
+        assert orchestrator.store.get_run(run.id).status == RunStatus.STREAMING
+        completed = [
+            item
+            for item in orchestrator.store.list_events(run.id, after=0)
+            if item.type == "tool.completed"
+        ]
+        assert completed and completed[-1].data["error"] == "tool_not_found"
+
+    def test_a_tool_off_the_agent_surface_is_refused_without_failing_the_run(
+        self, tmp_path: Any
+    ) -> None:
+        """A spec that exists but is not on the AGENT transport is refused too.
+
+        Every shipped spec is on the AGENT surface, so this defence-in-depth arm
+        (which used to raise PermissionError and end the run) has no real tool to
+        trip it. A stub spec whose transports omit AGENT stands in for a future
+        or misconfigured tool: it must come back as the same tool_not_found
+        result, not a crash.
+        """
+        import asyncio
+        from types import SimpleNamespace
+
+        from headless_re_mcp.agent.models import RunStatus
+
+        orchestrator = self._orchestrator(tmp_path)
+        off_surface = SimpleNamespace(transports=frozenset(), effects=("run",))
+        orchestrator.catalog = SimpleNamespace(  # type: ignore[assignment]
+            get=lambda name: off_surface
+        )
+        thread = orchestrator.store.create_thread(title="offlimits")
+        run = orchestrator.store.create_run(
+            thread.id, provider_profile="p", model="m", deadline_seconds=60.0
+        )
+        orchestrator.store.transition(run.id, RunStatus.STREAMING)
+
+        result = asyncio.run(
+            orchestrator._handle_tool_call(run.id, "call-1", "off.surface.tool", {})
+        )
+
+        assert result["ok"] is False
+        assert result["error"]["code"] == "tool_not_found"
+        assert orchestrator.store.get_run(run.id).status == RunStatus.STREAMING
+
 
 class TestATimeoutBindsWhatTheToolStarted:
     """jadx, apktool and Ghidra are scripts that start a JVM; webcrack starts node.

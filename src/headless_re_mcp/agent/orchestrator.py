@@ -628,9 +628,36 @@ class AgentOrchestrator:
     async def _handle_tool_call(self, run_id: str, call_id: str, name: str, arguments: JsonObject) -> JsonObject:
         if self._check_cancelled(run_id):
             raise asyncio.CancelledError
-        spec = self.catalog.require(name)
-        if CommandTransport.AGENT not in spec.transports or not spec.effects:
-            raise PermissionError(f"tool is unavailable to Agent: {name}")
+        spec = self.catalog.get(name)
+        if spec is None or CommandTransport.AGENT not in spec.transports or not spec.effects:
+            # A model naming a tool that does not exist, or one this transport
+            # does not expose, is ordinary model error -- the same class as a
+            # misspelled argument, which already comes back as a tool result.
+            # require() raised KeyError for the unknown name and the
+            # transport/effects check raised PermissionError; both escaped to
+            # _execute's exception boundary, which minted an incident and failed
+            # the whole run for something the model could have recovered from on
+            # the next round. Return a tool_not_found result instead, recorded in
+            # the run the same way arguments_too_large is, so the model reads it
+            # and picks a real tool. The tool still does not run either way.
+            unavailable: JsonObject = {
+                "ok": False,
+                "error": {
+                    "code": "tool_not_found",
+                    "message": f"tool is not available to the agent: {name}",
+                },
+            }
+            self.store.append_event(
+                run_id,
+                "tool.completed",
+                {
+                    "tool_call_id": call_id,
+                    "name": name,
+                    "ok": False,
+                    "error": "tool_not_found",
+                },
+            )
+            return unavailable
         oversized = self._arguments_too_large(arguments)
         if oversized is not None:
             self.store.append_event(
