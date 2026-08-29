@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（device.logcat 用 splitlines 会在应用日志内嵌的 Unicode 分隔符处误拆行）
+
+- `backends/adb/client.py` 的 `logcat` 用 `str.splitlines()` 切分设备日志文本。
+  `splitlines` 除了 CR/LF/CRLF，还会在垂直制表符、换页符、文件/组/记录分隔符、
+  NEL（U+0085）以及 Unicode 行/段分隔符（U+2028、U+2029）处断行。logcat 逐字打印
+  应用的消息文本，因此某个 `Log.i` 里内嵌的上述任一字节都会把一条日志拆成多条：
+  `count` 与 `-t` 尾部行数被虚增，调用方拿到没有时间戳的碎片，当成独立日志行去解析
+  就会错。新增 `_split_log_lines`，只按 CR/LF/CRLF 切分、其余字节一律当内容，且末尾
+  终止符不算空行（与 `splitlines` 一致）；`logcat` 改用它。截断分支本就按 `\n` 处理，
+  不受影响。
+- `tests/unit/test_adb_device_readouts.py` 新增两例：一条内嵌 U+2028/U+2029/U+0085
+  的日志必须仍是一条（`count` 为 3，中间条完整保留，且钉死旧实现会切成 6 条的非平凡性）；
+  `-capped` 尾部按真实日志条数而非碎片计数（请求最后 2 条时返回中间与末尾整条，而不是
+  `gamma` 与末行）。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

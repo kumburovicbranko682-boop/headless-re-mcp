@@ -192,6 +192,26 @@ def _is_host_error_output(text: str) -> bool:
     )
 
 
+def _split_log_lines(text: str) -> list[str]:
+    """Split device log text on real line terminators only.
+
+    ``str.splitlines`` also breaks on the vertical tab, form feed, the file /
+    group / record separators, NEL (U+0085) and the Unicode line and paragraph
+    separators (U+2028, U+2029). logcat renders an app's message text verbatim,
+    so any of those bytes inside one ``Log.i`` call would split a single entry
+    into several -- inflating ``count`` and the ``-t`` tail, and handing a
+    caller a fragment with no timestamp that mis-parses as its own log line.
+    adb and logcat delimit entries with CR, LF or CRLF, so split on exactly
+    those and leave every other byte as content. A trailing terminator is not
+    an empty final line, matching ``splitlines``.
+    """
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    rows = normalized.split("\n")
+    if rows and rows[-1] == "":
+        rows.pop()
+    return rows
+
+
 def _call(method: Any, *args: Any, timeout: float | None = None, **kwargs: Any) -> Any:
     """Invoke an adbutils method, passing timeout when the signature allows it."""
     extra = dict(kwargs)
@@ -683,7 +703,7 @@ class AdbBackend:
             text = text[-_MAX_LOGCAT_CHARS:]
             newline = text.find("\n")
             text = text[newline + 1 :] if newline != -1 else ""
-        out_lines = text.splitlines()[-capped:]
+        out_lines = _split_log_lines(text)[-capped:]
         return {
             "lines": out_lines,
             "count": len(out_lines),

@@ -98,6 +98,51 @@ def test_logcat_clamps_the_requested_line_count() -> None:
     assert dev.calls == [["logcat", "-d", "-t", "5000"]]
 
 
+def test_logcat_keeps_an_entry_that_embeds_a_unicode_separator() -> None:
+    """One Log.i carrying U+2028/U+2029/U+0085 stays one entry, not several.
+
+    logcat prints an app's message text verbatim, so a message that contains
+    the Unicode line separator (U+2028), paragraph separator (U+2029) or NEL
+    (U+0085) reaches this parser inside a single newline-delimited entry.
+    ``str.splitlines`` breaks on all of those, which turned that one entry into
+    four -- inflating ``count`` and the ``-t`` tail and handing the caller three
+    fragments with no timestamp. Split only on CR/LF/CRLF: three real log lines
+    stay three and the middle one keeps its exotic bytes intact.
+    """
+    middle = "01-02 03:04:05.678  100  200 I App: alpha\u2028beta\u2029gamma\u0085delta"
+    dump = "\n".join(
+        [
+            "01-02 03:04:05.000    1    1 I App: first",
+            middle,
+            "01-02 03:04:05.999    2    2 I App: last",
+        ]
+    )
+    dev = _ScriptedDev({("logcat",): dump})
+    payload = _backend_with(dev).logcat("emulator-5554", lines=200)
+    assert payload["truncated"] is False
+    assert payload["count"] == 3
+    assert payload["lines"][1] == middle
+    # Non-vacuity: the discarded implementation would have produced six lines.
+    assert len(dump.splitlines()) == 6
+
+
+def test_logcat_tail_counts_real_lines_not_separator_fragments() -> None:
+    """The newest-N tail is measured in log entries, not splitlines fragments.
+
+    The client re-caps to the requested count after the device dump, and an
+    entry that embeds a Unicode separator must not steal tail slots from the
+    genuine entries around it. Asking for the last two of three entries -- one
+    of which carries U+2028 -- returns the middle and last entries whole, where
+    counting fragments would have returned "delta" and the last line.
+    """
+    middle = "I App: alpha\u2028beta\u2029gamma"
+    dump = "\n".join(["I App: first", middle, "I App: last"])
+    dev = _ScriptedDev({("logcat",): dump})
+    payload = _backend_with(dev).logcat("emulator-5554", lines=2)
+    assert payload["lines"] == [middle, "I App: last"]
+    assert payload["count"] == 2
+
+
 def test_packages_reports_has_more_and_sorts_the_page() -> None:
     """A list longer than the cap says has_more and comes back sorted."""
     listing = "\n".join(
