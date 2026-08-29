@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（web 网络捕获把重定向每一跳单独留存为一行，并在 HAR 里补 redirectURL）
+
+- CDP 在一条重定向链里**复用同一个 requestId**:每一跳都是一条新的 `requestWillBeSent`,带着上一跳的响应
+  (`redirectResponse`)。`on_request` 过去直接用新一跳把旧的覆盖掉,于是中间的每个 3xx——一次登录跳转、一次追踪器
+  弹跳、一个短链——统统消失,`web.network.list` 和 HAR 里只剩最终落地页,而重定向本身往往正是 web 逆向要找的线索。
+  现在每一跳都被留存:用 `redirectResponse` 补全上一跳的 status/mimeType/已测得的 send·wait 时相,打上 `redirect=true`
+  和 `redirect_url`(它把客户端送去的 Location),并改挂到一个合成 id 下,让落地跳继续占用真正的 requestId。合成 id 对
+  `web.network.get` 自洽:查得到该行,而 CDP 对重定向没有响应体,于是走既有的"空 body + body_error"路径,而不是错误地
+  回落地页的 body。`har_entry` 新增可选 `redirect_url`,穿进规范的 `response.redirectURL`,让 HAR 查看器把整条链画出来;
+  非重定向条目仍是空串。
+- 已用单测覆盖(驱动真实 CDP 事件处理器):单跳留存与字段、A→B→C 三跳全留、重定向跳携带实测时相、对已驱逐 id 的重定向
+  不崩也不伪造行;`har_entry`/web `har.export` 各补 redirectURL 断言。并经变异验证(把留存改回覆盖,3 条单测 + 活体网关
+  齐红)。另在真实 Chromium 上新增活体网关:环回站点发一个真 302,断言留存跳进入 network.list(status 302、
+  redirect_url 指向 /landing)、其合成 id 在 `web.network.get` 走空 body/body_error、落地跳是自己的 200 行、且 302 带着
+  redirectURL 进入 HAR。
+
 ### 修复（apk.export_sources 的 java_files 清单先排序整表再取头，杜绝"截断页伪装成字母序")
 
 - jadx 的 `_capped_java_listing` 过去在 `rglob` 的**文件系统顺序**里取头 2000 个 `.java`,然后**只对这一页**排序——
