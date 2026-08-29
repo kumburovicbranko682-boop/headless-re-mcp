@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 安全（工件下载路由从「按后缀猜测渲染」改为不透明附件——防未来 .html 工件在控制台源内执行）
+
+- `GET /api/artifacts/{id}/file` 此前返回裸 `FileResponse(resolved)`：按工件扩展名猜
+  Content-Type、不带 disposition。工件内容天然敌意（恶意页面的脚本源码与响应体、恶意
+  APK 里解出的文件、脱壳产物），旧版静态 UI 的「下载」链接是顶层 `<a href>` 导航——一旦
+  出现 `.html` 后缀的工件种类（HTML 报告、导出的 APK 资产都是自然的未来特性），攻击者
+  标记就在带凭据的控制台源内渲染执行，且 bearer token 就躺在它自己的 query string 里
+  （修复前实测 `.html` 行以 `text/html; charset=utf-8` 应答）。现固定
+  `application/octet-stream` + `Content-Disposition: attachment`（保留真实文件名）+
+  `X-Content-Type-Options: nosniff` + `Cache-Control: no-store`，与同文件里 preview/frame
+  两条兄弟路由对「从盘上发文件」的既有处置对齐；SPA 走 fetch→blob 下载不受响应头影响，
+  旧版 UI 的导航则从「内联渲染文本」变成其按钮本意的下载。新增
+  `test_artifact_download_is_an_opaque_attachment_never_a_renderable_page` 钉住四个响应头。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

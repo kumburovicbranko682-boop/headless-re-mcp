@@ -389,6 +389,54 @@ def test_artifact_download_serves_only_real_files_under_the_root(
     assert missing.json()["detail"] == "artifact_missing"
 
 
+def test_artifact_download_is_an_opaque_attachment_never_a_renderable_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Artifact bytes must download, not render in the console's origin.
+
+    Artifacts *are* the hostile input here: script sources and response bodies
+    captured from a malicious page, files pulled out of a malicious APK. The
+    route used to return a bare FileResponse, which guessed the media type from
+    the artifact's extension and set no disposition -- so the legacy UI's
+    <a href> download link navigated into the bytes, and an .html-suffixed
+    artifact answered as Content-Type: text/html (verified before the fix):
+    attacker markup executing in the authenticated origin, with the bearer
+    token readable from its own query string. No artifact kind writes .html
+    today, which is exactly why this is pinned -- the first one to appear (an
+    HTML report, an exported APK asset) must not turn the download route into
+    stored XSS. Octet-stream + attachment + nosniff means no browser renders
+    or executes any artifact, whatever its extension; the sibling preview and
+    frame routes already treat served files this way.
+    """
+    from headless_re_mcp.core.models import Result
+
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    page = settings.artifact_root / "report.html"
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text("<script>fetch('/steal?t='+location.search)</script>", encoding="utf-8")
+
+    def describe(self: AnalysisService, artifact_id: str) -> Result:
+        return Result(ok=True, data={"artifact": {"id": artifact_id, "path": str(page)}})
+
+    monkeypatch.setattr(AnalysisService, "artifacts_describe", describe)
+    served = client.get("/api/artifacts/report/file", headers=headers)
+
+    assert served.status_code == 200
+    assert served.content == page.read_bytes()
+    assert served.headers["content-type"] == "application/octet-stream"
+    assert "attachment" in served.headers["content-disposition"]
+    # The real filename still travels in the disposition so the download keeps
+    # its name; only the response's *rendering* is neutralized.
+    assert "report.html" in served.headers["content-disposition"]
+    assert served.headers["x-content-type-options"] == "nosniff"
+    assert served.headers["cache-control"] == "no-store"
+
+
 def test_web_preview_refuses_a_path_outside_the_artifact_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

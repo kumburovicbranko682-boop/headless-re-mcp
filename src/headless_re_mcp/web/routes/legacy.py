@@ -1027,7 +1027,25 @@ def register_legacy_routes(
             raise HTTPException(status_code=403, detail="artifact_outside_root") from exc
         if not resolved.is_file():
             raise HTTPException(status_code=404, detail="artifact_missing")
-        return FileResponse(resolved)
+        # Artifact bytes are hostile by definition in this console: script
+        # sources and response bodies captured from a malicious page, files
+        # pulled out of a malicious APK, deobfuscated malware. A bare
+        # FileResponse guesses the media type from the extension and sets no
+        # disposition, so the legacy UI's <a href> download link *navigated*
+        # into the bytes -- and the first artifact kind to carry a renderable
+        # type (an HTML report, an exported .html asset) would execute in the
+        # console's authenticated origin, with the bearer token sitting in its
+        # own query string. Serve every artifact as an opaque download instead:
+        # the fixed octet-stream type plus nosniff means no browser renders or
+        # executes it, and the attachment disposition (via filename=) matches
+        # what the download links want anyway. The SPA fetches into a blob and
+        # ignores all three headers, so nothing inline breaks.
+        return FileResponse(
+            resolved,
+            media_type="application/octet-stream",
+            filename=resolved.name,
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
 
     @app.get("/api/audit")
     def audit(
