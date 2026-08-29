@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（web.dom.snapshot 截断时把完整文档落盘到 html_path，消除"页面尾部无处可寻"）
+
+- `web.dom.snapshot` 过去在**浏览器内**就把 `outerHTML` 切到 200KB 内联上限(`text.slice(0, cap)`),只回一个前缀
+  和 `truncated=True`,超出的部分连 Python 侧都收不到——对一个 DOM 稍大的现代页面,尾部就此丢失,且没有任何字段
+  能把它取回来。而它的姊妹工具 `web.script.source` 早已对超大脚本源走 `_spill_text`:内联前缀、把全文落盘到
+  `source_path` 并登记为 artifact。现在 `dom.snapshot` 照同一套办:抓取完整 `outerHTML`,交给 `_spill_text`
+  内联前缀 + 落盘全文到 `html_path`(由 service 登记 `artifact_id`,纳入 artifact 保留/回收),因此截断结果即在
+  **同一次调用**里带上完整文档;超过采集上限(64 MiB)的病态 DOM 按 `too_large` 拒绝,而非默默截成前缀。响应新增
+  `bytes`(文档全长)。docstring 改为写明 html/truncated/html_path 三者的契约。
+- 已在真实 Chromium(Playwright headless)上活体验证:一个 500,081 字节的 DOM,内联封顶 200,000 字节、
+  `html_path` 落盘全部 500,081 字节且内联是其前缀;service 路径 400,144 字节的膨胀 DOM 也 `truncated=True`、
+  落盘登记为 `web_dom_snapshot`(size 400,144)、全文可回收。单测覆盖 spill/非-spill/非字符串降级三态与 service 登记,
+  并经变异验证(把落盘输入改成前缀即令截断断言变红)。
+
 ### 修复（js.deobfuscate/beautify 截断时把完整代码落盘到 output_path，消除"尾巴丢失/需二次跑"）
 
 - webcrack 走 stdout(无 `-o`)输出反混淆代码,因此结果一旦超过 400KB 内联上限,尾巴就无处可寻——旧 docstring
