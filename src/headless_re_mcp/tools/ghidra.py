@@ -42,8 +42,9 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Functions Ghidra found.
 
         Answers with items, each carrying name, entry and body_size, plus count
-        and has_more so a page that filled the limit is not read as the whole
-        list. entry is the function's entry-point address; pass it to
+        for this page, total (the program's full function count) and has_more so
+        a page that filled the limit is not read as the whole list. entry is the
+        function's entry-point address; pass it to
         ghidra.decompile or ghidra.xrefs as their address (both take an address,
         not a function name). The raw export is kept: the reply also carries
         export_path, project_dir and artifact_id, so the JSON can be reopened
@@ -61,7 +62,9 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Symbols Ghidra recovered.
 
         Answers with items, each carrying name, address and type, plus count
-        and has_more. The listing does not include a containing scope. The raw
+        for this page, total (the program's full symbol count) and has_more so a
+        filled page is not read as the whole table. The listing does not include
+        a containing scope. The raw
         export is kept: the reply also carries export_path, project_dir and
         artifact_id, so the JSON can be reopened with artifacts.read. A failed
         export is an error, not an empty listing.
@@ -78,7 +81,8 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """References to address, as Ghidra resolved them.
 
         Only incoming refs (getReferencesTo). Answers with items carrying from,
-        to and type, plus count and has_more. Outgoing refs are not listed. The
+        to and type, plus count for this page, total (all references to the
+        address) and has_more. Outgoing refs are not listed. The
         raw export is kept: the reply also carries export_path, project_dir and
         artifact_id, so the JSON can be reopened with artifacts.read.
         A failed export is an error, not an address with no references.

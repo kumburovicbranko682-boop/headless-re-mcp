@@ -37,12 +37,20 @@ def _addr(value):
     return program.getAddressFactory().getAddress(value)
 
 
+# total is counted by exhausting the same iterator the page is filled from --
+# not read from getFunctionCount()/getNumSymbols()/getReferenceCountTo(), which
+# can count a different set (externals, dynamic symbols) than the iterator
+# yields and so disagree with count/has_more. Counting past the limit stores no
+# extra items, so total is O(all) time but O(limit) memory, and has_more is then
+# exactly "there are more than this page" -- the pagination contract every other
+# reader here (frida.*, proxy.flows, apk.xrefs) already honours with a total.
 if mode == "functions":
     items = []
+    total = 0
     for fn in fm.getFunctions(True):
+        total += 1
         if len(items) >= limit:
-            payload["has_more"] = True
-            break
+            continue
         entry = fn.getEntryPoint()
         items.append(
             {
@@ -52,12 +60,15 @@ if mode == "functions":
             }
         )
     payload["items"] = items
+    payload["total"] = total
+    payload["has_more"] = total > len(items)
 elif mode == "symbols":
     items = []
+    total = 0
     for sym in st.getAllSymbols(True):
+        total += 1
         if len(items) >= limit:
-            payload["has_more"] = True
-            break
+            continue
         items.append(
             {
                 "name": sym.getName(),
@@ -66,15 +77,18 @@ elif mode == "symbols":
             }
         )
     payload["items"] = items
+    payload["total"] = total
+    payload["has_more"] = total > len(items)
 elif mode == "xrefs":
     items = []
+    total = 0
     if address_arg:
         addr = _addr(address_arg)
         if addr is not None:
             for ref in refmgr.getReferencesTo(addr):
+                total += 1
                 if len(items) >= limit:
-                    payload["has_more"] = True
-                    break
+                    continue
                 items.append(
                     {
                         "from": str(ref.getFromAddress()),
@@ -83,6 +97,8 @@ elif mode == "xrefs":
                     }
                 )
     payload["items"] = items
+    payload["total"] = total
+    payload["has_more"] = total > len(items)
 elif mode == "decompile":
     text = ""
     found = False

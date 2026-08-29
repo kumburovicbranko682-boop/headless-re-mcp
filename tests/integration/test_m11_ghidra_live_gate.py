@@ -95,6 +95,15 @@ def test_m11_ghidra_live_functions_and_decompile(tmp_path: Path) -> None:
     sym_items = symbols.get("items") or []
     assert symbols.get("count") == 16 and len(sym_items) == 16
     assert symbols.get("has_more") is True, "a 16-symbol page of a real PE must paginate"
+    # total is the program's full symbol count, distinct from this page's count,
+    # counted by exhausting the same iterator the page is filled from. A real PE
+    # carries far more than one page, so total must exceed count and has_more
+    # must be exactly that -- the pagination parity every other reader here
+    # already has, pinned against the live interpreter (a getNumSymbols() that
+    # counted a different set than the iterator would break the biconditional).
+    total_syms = symbols.get("total")
+    assert isinstance(total_syms, int) and total_syms > 16, symbols
+    assert symbols.get("has_more") is (total_syms > symbols["count"])
     for sym in sym_items:
         assert isinstance(sym.get("name"), str) and sym["name"]
         assert isinstance(sym.get("address"), str) and sym["address"]
@@ -189,6 +198,11 @@ def test_m11_ghidra_live_elf_analyze_functions_and_xrefs(tmp_path: Path) -> None
     assert xrefs.get("mode") == "xrefs"
     rows = xrefs.get("items") or []
     assert xrefs.get("count", 0) >= 1 and rows, "no references to a function main calls"
+    # total counts every reference to the address (the page fits under limit 64
+    # here, so it equals count and has_more is False) -- the same total/has_more
+    # contract functions and symbols now report, pinned on the xrefs mode too.
+    assert xrefs.get("total") == xrefs["count"], xrefs
+    assert xrefs.get("has_more") is False, xrefs
     for row in rows:
         assert isinstance(row.get("type"), str) and row["type"]
         assert int(row["to"], 16) == greet_entry, f"a ref to a different address: {row}"

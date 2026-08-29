@@ -3529,7 +3529,14 @@ class TestGhidraExportDisclosesTruncation:
 
         script = Path(ghidra.__file__).resolve().parent / "scripts" / "ExportJson.py"
         text = script.read_text(encoding="utf-8")
-        assert 'payload["has_more"] = True' in text
+        # A cut list is disclosed by has_more, now derived from the full total so
+        # the page's size is known, not merely that it filled -- pagination
+        # parity with every other reader. The live gate pins the values against
+        # a real program; this pins the source-level contract that both the
+        # total and the derived has_more are emitted, and that a long
+        # decompilation still reports truncated.
+        assert 'payload["total"] = total' in text
+        assert 'payload["has_more"] = total > len(items)' in text
         assert 'payload["truncated"] = len(text) > 200000' in text
 
 
