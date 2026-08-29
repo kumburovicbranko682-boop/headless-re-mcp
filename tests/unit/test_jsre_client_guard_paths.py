@@ -1,8 +1,9 @@
 """js/wasm client guard paths refuse bad inputs and dead tools precisely.
 
 The webcrack and wabt adapters promise specific error codes before and after
-the subprocess runs: a missing input is ``not_found``, an unstatable one is
-``backend_error`` (not silently accepted), a timed-out child maps to
+the subprocess runs: a stale configured executable is ``capability_unavailable``
+up front (never launched), a missing input is ``not_found``, an unstatable one
+is ``backend_error`` (not silently accepted), a timed-out child maps to
 ``timeout`` with the killed PIDs, a launch failure to ``backend_error``, and
 a tool that exited non-zero without producing anything raises rather than
 returning an empty success. These lock in those contracts plus the bounded
@@ -111,6 +112,64 @@ def test_an_unstatable_input_is_a_backend_error(
 
 def test_an_unreadable_file_does_not_look_like_wasm(tmp_path: Path) -> None:
     assert _looks_like_wasm(tmp_path / "ghost.wasm") is False
+
+
+def test_a_stale_configured_webcrack_path_is_unavailable_not_a_launch_error(
+    tmp_path: Path,
+) -> None:
+    """A configured path that no longer exists must not answer available.
+
+    Discovery goes through shutil.which, but HEADLESS_RE_WEBCRACK is taken as
+    given: with the stale path below, ``available`` answered True and every
+    call then failed at launch time with ``backend_error`` -- the same
+    misconfiguration r2, jadx, apktool and windbg all report up front as
+    ``capability_unavailable``. The gate must also fire before the child is
+    spawned, so run_bounded is patched to prove the stale path never launches.
+    """
+    script = tmp_path / "input.js"
+    script.write_text("var a = 1;", encoding="utf-8")
+    client = JsClient(tmp_path / "gone" / "webcrack")
+
+    assert client.available is False
+
+    def never_runs(cmd: list[str], **kwargs: Any) -> Completed:
+        raise AssertionError("a stale webcrack path must never be launched")
+
+    with patch(_RUN_BOUNDED, never_runs), pytest.raises(JsReError) as caught:
+        client.deobfuscate(script)
+
+    assert caught.value.code == "capability_unavailable"
+
+
+def test_a_directory_as_the_webcrack_path_is_unavailable(tmp_path: Path) -> None:
+    # exists() would pass for a directory; the check has to be is_file.
+    assert JsClient(tmp_path).available is False
+
+
+def test_client_availability_agrees_with_the_doctor_probe_for_a_stale_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The webcrack doctor probe and the client must give the same verdict.
+
+    For a configured path that is not a file (and no webcrack on PATH), the
+    probe falls through its is_file check and reports MISSING; the client
+    used to answer available=True for the very same settings value, so
+    capabilities said missing while the tool claimed it could run.
+    """
+    from types import SimpleNamespace
+
+    from headless_re_mcp import doctor as doctor_module
+    from headless_re_mcp.doctor import ProbeStatus, probe_optional_tool
+
+    stale = tmp_path / "gone" / "webcrack"
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
+
+    probe = probe_optional_tool(
+        "webcrack", SimpleNamespace(webcrack=stale), "webcrack", ("webcrack",)
+    )
+
+    assert probe.status is ProbeStatus.MISSING
+    assert JsClient(stale).available is False
 
 
 def test_a_timed_out_tool_maps_to_timeout_with_killed_pids(tmp_path: Path) -> None:

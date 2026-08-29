@@ -163,10 +163,15 @@ class JsClient:
 
     @property
     def available(self) -> bool:
-        return self.executable is not None
+        # is_file matters for the explicitly configured path: discovery goes
+        # through shutil.which, but HEADLESS_RE_WEBCRACK is taken as given, and
+        # a stale path answered available while every call then failed with
+        # backend_error "failed to launch". r2, jadx, apktool and windbg all
+        # verify the file for the same reason.
+        return self.executable is not None and self.executable.is_file()
 
     def _require_input(self, path: Path) -> Path:
-        if self.executable is None:
+        if not self.available or self.executable is None:
             raise JsReError(
                 "capability_unavailable", "webcrack is not configured (needs Node 22/24)"
             )
