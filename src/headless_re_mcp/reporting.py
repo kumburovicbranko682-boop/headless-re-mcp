@@ -23,17 +23,27 @@ JsonObject = dict[str, Any]
 _MAX_CELL = 120
 
 
-def _cell(value: object) -> str:
+def _flatten(value: object) -> str:
+    """One bounded, single-line cell string, with no Markdown escaping applied.
 
+    Escaping is the cell layer's job alone. When ``_summarize_value`` also
+    escaped its pieces, ``_cell`` escaped them a second time and ``a|b`` went out
+    as ``a\\|b`` -> ``a\\\\|b`` -- an escaped backslash followed by a live pipe,
+    which a renderer reads as a new column and shifts the rest of the row. A bare
+    CR is a line ending to CommonMark exactly like LF, and Windows tool output is
+    full of CRLF, so stripping only LF left the CR behind to split the row too.
+    """
     text = "" if value is None else str(value)
-
-    text = text.replace("|", "\\|").replace("\n", " ").strip()
-
+    for line_end in ("\r\n", "\r", "\n"):
+        text = text.replace(line_end, " ")
+    text = text.strip()
     if len(text) > _MAX_CELL:
-
         text = text[: _MAX_CELL - 1] + "…"
-
     return text or "—"
+
+
+def _cell(value: object) -> str:
+    return _flatten(value).replace("|", "\\|")
 
 
 def _table(headers: list[str], rows: list[list[object]]) -> list[str]:
@@ -57,9 +67,9 @@ def _summarize_value(value: object) -> str:
 
             return "—"
 
-        return ", ".join(f"{key}={_cell(item)}" for key, item in list(value.items())[:4])
+        return ", ".join(f"{key}={_flatten(item)}" for key, item in list(value.items())[:4])
 
-    return _cell(value)
+    return _flatten(value)
 
 
 def _note_if_partial(

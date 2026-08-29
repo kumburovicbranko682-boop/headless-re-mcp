@@ -200,6 +200,60 @@ def test_a_capped_report_says_it_is_capped() -> None:
     assert "Showing 100 of 247 artifacts" in partial
 
 
+def test_a_pipe_in_a_finding_value_stays_one_escaped_column() -> None:
+    """A recorded value holding a pipe must not split its own report row.
+
+    Finding values pass through _summarize_value before the table's _cell, so a
+    value with a pipe used to be escaped twice: 'a|b' -> 'a\\|b' -> 'a\\\\|b'.
+    A Markdown renderer reads '\\\\|' as an escaped backslash and a live pipe,
+    which starts a new column -- a Windows path, a command line or a regex in a
+    knowledge value silently shifted the rest of the row. The existing pipe test
+    only covers the key column; this pins the value column.
+    """
+    markdown = render_markdown_report(
+        session=_SESSION,
+        knowledge={
+            "entries": [
+                {"kind": "note", "key": "k", "value": {"cmd": "a|b"}, "updated_at": "t"}
+            ]
+        },
+        generated_at="t",
+    )
+
+    row = next(line for line in markdown.splitlines() if line.startswith("| k "))
+    assert "a\\|b" in row
+    assert "a\\\\|b" not in row
+    assert len(row.replace("\\|", "").strip("| ").split(" | ")) == 3
+
+
+def test_a_carriage_return_in_a_value_does_not_split_the_row() -> None:
+    """CRLF is what Windows tools emit; a surviving CR is a CommonMark newline.
+
+    _cell stripped only LF, so 'a\\r\\nb' left the CR behind as 'a\\r b' and a
+    lone 'a\\rb' kept its CR outright. Either one is a line ending to a Markdown
+    renderer, so the value broke out of its cell and split the table.
+    """
+    markdown = render_markdown_report(
+        session=_SESSION,
+        knowledge={
+            "entries": [
+                {
+                    "kind": "note",
+                    "key": "k",
+                    "value": "line1\r\nline2\rline3",
+                    "updated_at": "t",
+                }
+            ]
+        },
+        generated_at="t",
+    )
+
+    row = next(line for line in markdown.splitlines() if line.startswith("| k "))
+    assert "\r" not in row
+    assert "line1 line2 line3" in row
+    assert len(row.strip("| ").split(" | ")) == 3
+
+
 def test_report_reads_the_list_artifacts_key() -> None:
     """Production list_artifacts returns artifacts, not entries."""
     markdown = render_markdown_report(

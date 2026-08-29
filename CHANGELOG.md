@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（报告表格：不受信的 finding 值不再撑坏 Markdown 表格结构）
+
+- `reporting.py` 的 `_summarize_value` 会先用 `_cell` 转义每个 dict 值,而 `_table`
+  又对整个行项再转义一次,导致值里的管道被双重转义:`a|b` → `a\|b` → `a\\|b`。
+  Markdown 渲染器把 `\\|` 读作"转义的反斜杠 + 未转义的管道",后者会新起一列,把该行
+  其余单元格整体错位。knowledge 值由 agent 经 `knowledge.record` 写入,而 Windows 路径、
+  命令行、正则里常含管道,于是一条记录的 finding 会悄悄破坏它自己的报告表格。
+- 同一格式化路径只清理了 LF,没清理 CR:Windows 工具输出多为 CRLF,`"a\r\nb"` 经
+  `.replace("\n"," ")` 后残留一个裸 `\r`,而 CommonMark 把裸 `\r` 也当作换行,同样会把值
+  从单元格里"顶出去"拆行。
+- 改法:抽出不做 Markdown 转义、只负责压平成单行(CRLF/CR/LF 统一成空格)、按 `_MAX_CELL`
+  截断并回退 `—` 的 `_flatten`;`_cell` 复用 `_flatten` 后只转义一次管道;`_summarize_value`
+  改用 `_flatten`,把转义唯一地留给单元格层。行为对既有用例不变(空 dict 仍为 `—`、
+  键值对与标量渲染不变、键列单次转义与列数不变的既有断言仍成立)。
+- 新增 `tests/unit/test_reporting.py` 两条回归:dict 值含管道时值列只被单次转义且行仍为三列;
+  值含 CRLF/CR 时不残留裸 `\r`、多行归一为空格且行仍为三列。已 revert-and-check 确认无修复时两条均失败。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
