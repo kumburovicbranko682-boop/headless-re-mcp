@@ -1086,10 +1086,34 @@ def probe_optional_tool(
     settings_attr: str,
     commands: tuple[str, ...],
 ) -> Probe:
-    """Detect an optional CLI from its configured path or PATH, never blocking."""
+    """Detect an optional CLI from its configured path, else PATH.
+
+    A configured ``HEADLESS_RE_<TOOL>`` path that is not a file is a
+    misconfiguration, not an absent optional tool, and it is reported BLOCKED
+    rather than falling through to PATH. The clients are built from this same
+    settings value and take it as-is -- R2Client, JadxClient, ApktoolClient and
+    the webcrack/wabt resolvers all use ``settings.<tool>`` and call the tool
+    ``capability_unavailable`` when it is not a file, with no PATH fallback --
+    so a broken configured path leaves the tool unusable even when the binary is
+    on PATH. Falling back here reported ``detected`` for a tool the client will
+    refuse to run, which is the doctor lying about readiness -- the one command
+    someone runs *because* a configured path stopped working. probe_die,
+    probe_upx and probe_exeinfope already BLOCK on a broken configured path;
+    this matches them. PATH discovery still applies when nothing is configured.
+    """
     configured = getattr(settings, settings_attr, None)
-    if configured is not None and Path(str(configured)).is_file():
-        return Probe(name, ProbeStatus.DETECTED, f"{name} configured", {"path": str(configured)})
+    if configured is not None:
+        if Path(str(configured)).is_file():
+            return Probe(
+                name, ProbeStatus.DETECTED, f"{name} configured", {"path": str(configured)}
+            )
+        return Probe(
+            name,
+            ProbeStatus.BLOCKED,
+            f"configured {name} path is not a file",
+            {"path": str(configured)},
+            f"Correct the configured {name} path or unset it to fall back to PATH.",
+        )
     found = {candidate: shutil.which(candidate) for candidate in commands}
     found = {candidate: path for candidate, path in found.items() if path}
     if found:

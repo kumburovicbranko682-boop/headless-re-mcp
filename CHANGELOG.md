@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（doctor 对"已配置但失效"的可选工具路径应 BLOCKED，而非回退 PATH 谎报就绪）
+
+- `probe_optional_tool`（r2、adb、jadx、apktool、apksigner、webcrack、wabt 共用）此前遇到
+  一个已配置但不是文件的 `HEADLESS_RE_<TOOL>` 路径时，会静默回退到 PATH：若同名工具恰在
+  PATH 上，就报 `detected`。但客户端是用同一个 `settings.<tool>` 直接构造的——R2Client、
+  JadxClient、ApktoolClient 以及 webcrack/wabt 解析器都把配置路径原样拿来用，路径不是文件就
+  `capability_unavailable`，绝不回退 PATH。于是 doctor 说"已检测到"、客户端却拒绝运行，正好在
+  操作者"因为配置路径失效才来跑 doctor"的场景下谎报就绪。改为：已配置但不是文件 → BLOCKED
+  并给出修复建议（与 `probe_die`/`probe_upx`/`probe_exeinfope` 对失效配置路径的处理一致）；未
+  配置时仍照常按 PATH 发现。
+- 这条改法特意只动 `probe_optional_tool` 函数体，不改 radare2 的调用点，因此 r2 仍走
+  `probe_optional_tool`、保留其配置路径支持，可与 `r2-doctor-discovery-parity`（为 r2 补上
+  `radare2` 命名）无冲突叠加，得到"配置路径 + radare2 命名 + 失效即 BLOCKED"的完整行为。
+- 新增 `tests/unit/test_doctor.py::test_optional_tool_probe_blocks_a_stale_configured_path_instead_of_using_path`：
+  在 PATH 上放一个可用的 jadx、同时把配置指向一个不存在的路径，断言 probe 报 BLOCKED（而非
+  借 PATH 报 detected），补齐 configured/PATH/MISSING 之外的第四条 BLOCKED 支路。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

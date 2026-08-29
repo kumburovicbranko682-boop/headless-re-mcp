@@ -112,6 +112,36 @@ def test_radare2_probe_missing_when_neither_configured_nor_on_path(
     assert probe.status == ProbeStatus.MISSING
 
 
+def test_optional_tool_probe_blocks_a_stale_configured_path_instead_of_using_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A configured tool path that no longer exists is BLOCKED, not PATH-detected.
+
+    The clients take ``settings.<tool>`` as-is -- R2Client, JadxClient,
+    ApktoolClient and the webcrack/wabt resolvers all report
+    ``capability_unavailable`` when the configured path is not a file, and never
+    reach for a PATH copy. A stale configured path that fell through to PATH here
+    told the operator the tool was detected while the client refused to run it,
+    the one machine state ``doctor`` exists to surface. The probe must honor the
+    configured path the way the client does even when a working binary sits on
+    PATH; this pins the fourth arm (BLOCKED) beside the configured/PATH/MISSING
+    ones the radare2 cases already cover, and matches probe_die/probe_upx.
+    """
+    on_path = tmp_path / "jadx"
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_module.shutil, "which", lambda cmd: str(on_path) if cmd == "jadx" else None
+    )
+    stale = tmp_path / "vendor" / "jadx"  # configured, but never created on disk
+
+    settings = replace(_settings(None, tmp_path / "artifacts"), jadx=stale)
+    probe = probe_optional_tool("jadx", settings, "jadx", ("jadx", "jadx.bat"))
+
+    assert probe.status == ProbeStatus.BLOCKED
+    assert probe.details.get("path") == str(stale)
+    assert probe.remediation is not None
+
+
 def test_x64dbg_source_probe_requires_official_target(tmp_path: Path) -> None:
     source = tmp_path / "x64dbg"
     (source / "src" / "headless").mkdir(parents=True)
