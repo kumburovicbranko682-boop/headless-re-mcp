@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（webcrack 失效配置路径的能力诚实：capability_unavailable 而非启动失败）
+
+- `JsClient.available` 此前只判 `executable is not None`，与 r2/jadx/apktool/windbg
+  四个兄弟后端统一的 `is_file()` 校验不一致：`HEADLESS_RE_WEBCRACK` 指向已失效路径时，
+  客户端声称可用，而每次调用都在拉起子进程时以 `backend_error: failed to launch` 失败；
+  同一配置值下 doctor 的 webcrack 探针（先查 `is_file()` 再回退 PATH）却报 MISSING——
+  能力目录说没有、客户端说能跑，两边打架。
+- 改法与兄弟后端对齐：`available` 要求文件真实存在，`_require_input` 在拉起子进程前
+  以 `capability_unavailable` 拒绝。发现路径（`shutil.which`）不受影响，只有显式配置的
+  失效路径改变行为。
+- 新增三条回归（`test_jsre_client_guard_paths.py`）：失效路径 `available is False` 且
+  子进程从不启动（run_bounded 打桩为断言炸弹）、目录路径不可用（钉 `is_file` 而非
+  `exists`）、以及 doctor 探针与客户端对同一失效配置给出一致结论。变异校验：还原
+  `available`/`_require_input` 后三条全红，修复态全绿（该文件 17 例过）。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
