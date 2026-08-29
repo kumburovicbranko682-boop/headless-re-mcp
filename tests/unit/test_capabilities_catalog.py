@@ -98,6 +98,35 @@ def test_list_capabilities_maps_probe_status_and_honors_filters(
     assert "detect.die" not in ready
 
 
+def test_apk_sign_capability_is_keyed_on_apksigner_not_apktool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """apk.sign must not read ready off apktool when apksigner is absent.
+
+    apktool (decode/repack) and apksigner (sign) are separate binaries with
+    separate HEADLESS_RE_* settings and separate doctor probes. While apk.sign
+    lived inside the apktool-keyed capability, a host with apktool but no
+    apksigner advertised the sign workflow as ready and then failed the call
+    with capability_unavailable -- the words/actions split this catalog exists
+    to prevent. Drive a report where exactly that holds and assert the two
+    capabilities now diverge.
+    """
+    report = DoctorReport(
+        probes=(
+            Probe("apktool", ProbeStatus.DETECTED, "apktool present"),
+            Probe("apksigner", ProbeStatus.MISSING, "apksigner absent"),
+        )
+    )
+    monkeypatch.setattr(capabilities_catalog, "run_doctor", lambda settings=None: report)
+
+    by_id = {cap["id"]: cap for cap in list_capabilities()}
+
+    assert by_id["apk.apktool"]["status"] == "detected"
+    assert by_id["apk.apktool"]["tools"] == ["apk.decode", "apk.repack"]
+    assert by_id["apk.apksigner"]["status"] == "missing"
+    assert by_id["apk.apksigner"]["tools"] == ["apk.sign"]
+
+
 def test_describe_capability_finds_known_ids_and_none_for_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
