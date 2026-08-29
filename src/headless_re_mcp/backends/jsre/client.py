@@ -291,14 +291,20 @@ def _discover_webcrack() -> Path | None:
 
 
 def _resolve_wabt_tool(wabt: Path | None, tool: str) -> Path | None:
-    exe = tool + (".exe" if os.name == "nt" else "")
+    # On Windows the shipped binary is tool.exe, but a configured install (or a
+    # shell wrapper) may carry no extension; accept both so resolution does not
+    # hinge on the platform's canonical suffix -- shutil.which already does the
+    # same through PATHEXT below. On POSIX only the bare name applies.
+    names = (tool + ".exe", tool) if os.name == "nt" else (tool,)
     if wabt is not None:
-        candidate = wabt if wabt.name.lower().startswith(tool) else wabt / exe
-        if candidate.is_file():
-            return candidate
-        # wabt may point at the bin directory.
-        alt = wabt / "bin" / exe
-        if alt.is_file():
-            return alt
+        # A path pointing straight at the binary (any extension) wins.
+        if wabt.name.lower().startswith(tool) and wabt.is_file():
+            return wabt
+        # Otherwise wabt is an install root: the tool sits at the root or bin/.
+        for base in (wabt, wabt / "bin"):
+            for name in names:
+                candidate = base / name
+                if candidate.is_file():
+                    return candidate
     found = shutil.which(tool)
     return Path(found) if found else None
