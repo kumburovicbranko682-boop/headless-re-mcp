@@ -27,7 +27,9 @@ def test_apk_list_schema_refuses_a_negative_offset() -> None:
     """
     names = [f"L{index};" for index in range(10)]
     assert names[-1 : -1 + 100] == ["L9;"]
-    for name in ("apk.classes", "apk.methods", "apk.strings"):
+    # apk.xrefs joined the paginated readers: it now sorts and windows by offset
+    # like the others, so its offset must refuse a negative page the same way.
+    for name in ("apk.classes", "apk.methods", "apk.strings", "apk.xrefs"):
         offset = _offset_schema(name)
         assert offset.get("type") == "integer"
         assert offset.get("minimum") == 0

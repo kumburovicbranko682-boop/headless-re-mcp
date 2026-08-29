@@ -143,17 +143,23 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def apk_xrefs(
         session_id: str,
         method_name: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
         """List the distinct callers of every method named method_name.
 
         callers are deduplicated by (class, method): a caller that invokes the
         target from several sites, or that calls two same-named methods, appears
-        once. Answers with callers (class and method), method_name, count (of
-        distinct callers), and has_more so a page that filled the limit is not
-        read as the whole list.
+        once, and the list is sorted so paging is stable. Answers with callers
+        (class and method), method_name, count (this page), total (distinct
+        callers collected), offset, has_more so a page that filled the limit is
+        not read as the whole list, and scan_capped when more distinct callers
+        exist than the collection bound gathered. Page with offset to reach
+        callers past the first limit, exactly like apk.classes/methods/strings.
         """
-        return _dump(analysis.apk_xrefs(session_id, method_name, limit=limit))
+        return _dump(
+            analysis.apk_xrefs(session_id, method_name, offset=offset, limit=limit)
+        )
 
     @tools.tool(name="apk.decompile")
     def apk_decompile(

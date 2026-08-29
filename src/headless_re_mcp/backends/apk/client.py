@@ -34,6 +34,11 @@ _MAX_CLASSES_PAGE = 1000
 _MAX_METHODS_PAGE = 1000
 _MAX_STRINGS_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
+# Distinct callers gathered before paging, so a hot utility method's callers
+# past the first page are still reachable by offset. Sized like the strings
+# collect cap: generous enough that only a pathologically-referenced method
+# trips scan_capped.
+_MAX_XREFS_COLLECT = 5000
 
 
 class ApkError(RuntimeError):
@@ -464,23 +469,29 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
-    def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
+    def xrefs(
+        self,
+        path: Path,
+        method_name: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
         parsed = self._parsed(path)
         target = method_name.strip()
         if not target:
             raise ApkError("invalid_params", "method_name is required")
-        _, cap = _clamp_page(0, limit, max_limit=_MAX_XREFS_PAGE)
-        callers: list[JsonObject] = []
         # get_xref_from() yields one tuple per callsite, so a caller that invokes
         # the target from a loop returns the same (class, method) many times, and
         # two same-named methods (the "every method named" match below) can share
-        # a caller. Without dedup those repeats inflated count -- which reads as
-        # "distinct callers" -- and, worse, consumed the page cap: a method called
-        # from a dozen sites in one method could fill the whole page with that one
-        # caller and set has_more, dropping every other caller. Collapse to the
-        # distinct callers and spend the cap only on new ones, like classes/strings.
+        # a caller. Dedup so count is distinct callers, not callsites. Collect the
+        # distinct callers up to a bound, then sort and window exactly like
+        # classes/methods/strings: the earlier version stopped at the page limit
+        # in analysis order, so a caller past the first page was unreachable (no
+        # offset) and which callers a truncated page kept was arbitrary. Sorting
+        # makes the order stable so offset paging is coherent.
         seen: set[tuple[str, str]] = set()
-        has_more = False
+        scan_more = False
         for method in parsed.analysis.get_methods():
             if method.is_external() or method.name != target:
                 continue
@@ -488,23 +499,25 @@ class ApkClient:
                 key = (str(call.class_name), str(call.name))
                 if key in seen:
                     continue
-                if len(callers) >= cap:
-                    # Only set once a distinct caller was actually left out, so a
-                    # result that happens to fill the page is not reported as
-                    # partial and a tail of pure duplicates does not fake it.
-                    has_more = True
+                if len(seen) >= _MAX_XREFS_COLLECT:
+                    scan_more = True
                     break
                 seen.add(key)
-                callers.append({"class": key[0], "method": key[1]})
-            if has_more:
+            if scan_more:
                 break
+        callers = sorted(seen)
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_XREFS_PAGE)
+        window = callers[start : start + cap]
         return {
             "method_name": target,
-            "callers": callers,
-            "count": len(callers),
+            "callers": [{"class": cls, "method": meth} for cls, meth in window],
+            "count": len(window),
+            "total": len(callers),
+            "offset": start,
             # A caller deciding "these are all the callers" has to know whether
-            # the enumeration ended or merely stopped.
-            "has_more": has_more,
+            # the page ended the list or merely filled the window.
+            "has_more": start + len(window) < len(callers),
+            "scan_capped": scan_more,
         }
 
 

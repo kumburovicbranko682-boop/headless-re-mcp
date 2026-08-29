@@ -478,10 +478,12 @@ def test_xrefs_cap_counts_distinct_callers_not_callsites(
 ) -> None:
     """A caller with many callsites must not crowd genuine callers off the page.
 
-    With the cap at two, five duplicate callsites of one caller plus two more
-    distinct callers must yield the two distinct callers and has_more -- not two
-    copies of the noisy one. Pins that the page budget is spent per distinct
-    caller, the way classes/strings dedupe before paginating.
+    With the page cap at two, five duplicate callsites of one caller plus two
+    more distinct callers must yield two distinct callers and has_more -- not two
+    copies of the noisy one. The page budget is spent per distinct caller, the
+    way classes/strings dedupe before paginating. The surviving two are the
+    lexically-smallest, because the callers are sorted before the window is cut
+    (which is what makes offset paging stable): B and C sort ahead of Loop.
     """
     import headless_re_mcp.backends.apk.client as apk_client
 
@@ -508,11 +510,87 @@ def test_xrefs_cap_counts_distinct_callers_not_callsites(
     payload = client.xrefs(tmp_path / "app.apk", "decrypt", limit=1000)
 
     assert payload["callers"] == [
-        {"class": "Lcom/app/Loop;", "method": "run"},
         {"class": "Lcom/app/B;", "method": "b"},
+        {"class": "Lcom/app/C;", "method": "c"},
     ]
     assert payload["count"] == 2
+    assert payload["total"] == 3
     assert payload["has_more"] is True
+
+    # The dropped distinct caller is reachable by offset -- the pageability the
+    # analysis-order early-exit lacked; the tail's has_more closes the list.
+    page2 = client.xrefs(tmp_path / "app.apk", "decrypt", offset=2, limit=1000)
+    assert page2["callers"] == [{"class": "Lcom/app/Loop;", "method": "run"}]
+    assert page2["offset"] == 2
+    assert page2["has_more"] is False
+
+
+def test_xrefs_are_sorted_and_offset_pages_the_whole_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Callers come back sorted, and every distinct caller is reachable by offset.
+
+    Analysis order is whatever androguard walked; feeding callers in a scrambled
+    order must still page deterministically (page one then page two, no overlap,
+    no gap), which is only possible because the client sorts before windowing.
+    This is the parity with classes/methods/strings the limit-only version
+    lacked -- there a caller past the first page could never be returned.
+    """
+    parsed = _XrefAnalysis(
+        [
+            _ConfigurableXrefMethod(
+                "decrypt",
+                [
+                    ("Lcom/app/D;", "d"),
+                    ("Lcom/app/A;", "a"),
+                    ("Lcom/app/C;", "c"),
+                    ("Lcom/app/B;", "b"),
+                ],
+            )
+        ]
+    )
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: parsed)
+
+    first = client.xrefs(tmp_path / "app.apk", "decrypt", offset=0, limit=2)
+    second = client.xrefs(tmp_path / "app.apk", "decrypt", offset=2, limit=2)
+
+    assert first["callers"] == [
+        {"class": "Lcom/app/A;", "method": "a"},
+        {"class": "Lcom/app/B;", "method": "b"},
+    ]
+    assert first["total"] == 4
+    assert first["has_more"] is True
+    assert second["callers"] == [
+        {"class": "Lcom/app/C;", "method": "c"},
+        {"class": "Lcom/app/D;", "method": "d"},
+    ]
+    assert second["has_more"] is False
+    assert second["scan_capped"] is False
+
+
+def test_xrefs_reports_scan_capped_when_the_collect_bound_is_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """More distinct callers than the collect bound must set scan_capped."""
+    import headless_re_mcp.backends.apk.client as apk_client
+
+    monkeypatch.setattr(apk_client, "_MAX_XREFS_COLLECT", 2)
+    parsed = _XrefAnalysis(
+        [
+            _ConfigurableXrefMethod(
+                "decrypt",
+                [("Lcom/app/A;", "a"), ("Lcom/app/B;", "b"), ("Lcom/app/C;", "c")],
+            )
+        ]
+    )
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: parsed)
+
+    payload = client.xrefs(tmp_path / "app.apk", "decrypt", limit=1000)
+
+    assert payload["total"] == 2
+    assert payload["scan_capped"] is True
 
 
 def test_dotted_to_smali_leaves_smali_form_untouched() -> None:

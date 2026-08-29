@@ -71,7 +71,9 @@ class _FakeApkClient:
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
         return {"strings": [], "count": 0, "has_more": False, "limit": limit}
 
-    def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
+    def xrefs(
+        self, path: Path, method_name: str, *, offset: int = 0, limit: int = 100
+    ) -> JsonObject:
         return {"callers": [], "method_name": method_name, "count": 0, "has_more": False}
 
 
