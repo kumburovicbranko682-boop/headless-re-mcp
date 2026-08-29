@@ -762,7 +762,10 @@ def test_function_list_is_items_not_functions(tmp_path: Path) -> None:
             continue
         described = ast.get_docstring(node) or ""
     assert "Answers with items" in described
-    assert "no functions field" in described
+    # The docstring now folds the missing-field note into the shared
+    # "no functions, truncated or has_more field" phrasing the sibling readers
+    # use, so match the field name rather than the old exact clause.
+    assert "no functions" in described
 
 
 def test_r2_info_puts_identity_in_raw_not_arch_bits_entry(
