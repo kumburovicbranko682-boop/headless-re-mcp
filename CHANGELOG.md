@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Android 证书活体网关在缺 androguard 时诚实跳过而非失败,守住 skip≠pass）
+
+- `test_android_certificates_report_v2_v3_on_a_real_signature` 过去只守 apksigner 和 debug keystore,随后调用
+  `apk.certificates`——这是一条 androguard 支撑的读取。于是当 apksigner 在场而 androguard 缺席时,它签好 fixture,
+  却在 `capability_unavailable` 上**失败**而非跳过,是本文件里唯一破坏其同侪(经 `_require_androguard()`)所守的
+  skip≠pass 纪律之处。补上该守卫(放在签名之前,因签名路径另有网关覆盖),让它诚实跳过。已用真实工具双向验证:缺
+  androguard 时干净跳过;装上后通过——apksigner 真实的 v1+v2+v3 签名经 androguard 读回为 v2_signed/v3_signed,证明
+  读取器本身从无问题,缺的只是守卫。
+
 ### 新增（proxy 记录 3xx 流的 Location 并写入 HAR 的 redirectURL,与浏览器捕获对齐）
 
 - mitmproxy 本就把重定向每一跳作为独立的 flow 记录,所以这一跳早就是一行——但 flow 摘要过去丢掉了 `Location`,于是
