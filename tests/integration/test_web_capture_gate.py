@@ -86,11 +86,26 @@ _PAGES: dict[str, tuple[str, bytes]] = {
     ),
     "/wasmfetch.js": ("application/javascript", _WASM_FETCH_JS.encode("utf-8")),
     "/module.wasm": ("application/wasm", _WASM_MODULE),
+    "/landing": (
+        "text/html",
+        b"<html><head><title>landing</title></head><body>arrived</body></html>",
+    ),
 }
+
+# A server-side 302: navigating here lands on /landing. CDP reuses one requestId
+# across the hop, so this is the ground truth for the redirect-preservation path.
+_REDIRECTS: dict[str, str] = {"/redirect": "/landing"}
 
 
 class _SiteHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
+        target = _REDIRECTS.get(self.path)
+        if target is not None:
+            self.send_response(302)
+            self.send_header("Location", target)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         mime, body = _PAGES.get(self.path, ("text/plain", b"not found"))
         self.send_response(200 if self.path in _PAGES else 404)
         self.send_header("Content-Type", mime)
@@ -424,6 +439,87 @@ def test_network_captured_wasm_body_feeds_wasm_wat(site: str) -> None:
             objdump = info.data["objdump"]
             assert "Export" in objdump, objdump[:200]
             assert "answer" in objdump, objdump[:200]
+        finally:
+            service.web_close(session_id)
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_web_capture_records_a_redirect_hop(site: str) -> None:
+    """A real server-side 302 must survive as its own row and reach the HAR.
+
+    CDP reuses one requestId across a redirect chain, so the capture has to
+    preserve each hop before the landing request overwrites it. The unit guards
+    drive synthetic requestWillBeSent events; this proves the preservation holds
+    against real Chromium following a genuine 302, where the redirectResponse
+    shape and event ordering are the browser's, not a fake's. skip != pass:
+    skips only when playwright or its browser is unavailable.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — redirect Gate not run (skip != pass)")
+    service = AnalysisService()
+    try:
+        created = service.create_session(site + "/redirect", target="web")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+        opened = service.web_open(session_id, headless=True, timeout=30.0)
+        if not opened.ok:
+            pytest.skip(
+                f"chromium could not launch (browser not installed?): "
+                f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+            )
+        try:
+            # The landing document must arrive first (proves navigation followed
+            # the 302), then the preserved 302 hop must be findable in the list.
+            def find_redirect_hop() -> dict[str, Any] | None:
+                listing = service.web_network_list(session_id)
+                assert listing.ok, listing.error
+                for row in listing.data["requests"]:
+                    if row.get("url", "").endswith("/redirect") and row.get("redirect"):
+                        return dict(row)
+                return None
+
+            hop = _poll(
+                find_redirect_hop, message="the 302 redirect hop was never recorded"
+            )
+            assert hop["status"] == 302, hop
+            assert hop["redirect"] is True, hop
+            assert hop["redirect_url"].endswith("/landing"), hop
+            # Its id is synthetic (the real requestId belongs to the landing
+            # hop), so it is distinct from the landing row's id.
+            assert hop["requestId"].split(":redirect:")[0] != hop["requestId"], hop
+
+            # The landing hop is its own row with a real 200 and the reused id.
+            listing = service.web_network_list(session_id)
+            landing = [
+                r for r in listing.data["requests"] if r.get("url", "").endswith("/landing")
+            ]
+            assert landing, listing.data["requests"]
+            assert landing[0].get("status") == 200, landing[0]
+            assert "redirect" not in landing[0], landing[0]
+
+            # network.get on the synthetic hop id is self-consistent: it resolves
+            # the row, and CDP has no body for a redirect, so it degrades to the
+            # documented empty-body/body_error shape rather than erroring out or
+            # returning the landing page's body.
+            got = service.web_network_get(session_id, hop["requestId"])
+            assert got.ok, got.error
+            assert got.data["body"] == "", got.data
+            assert "body_error" in got.data, got.data
+
+            # The 302 must reach the HAR with its Location in response.redirectURL
+            # so a viewer draws the chain; the landing entry keeps the empty
+            # string a non-redirect response carries.
+            exported = service.web_har_export(session_id)
+            assert exported.ok, exported.error
+            document = json.loads(Path(exported.data["path"]).read_text(encoding="utf-8"))
+            by_url = {e["request"]["url"]: e for e in document["log"]["entries"]}
+            redirect_entry = by_url.get(site + "/redirect")
+            assert redirect_entry is not None, by_url.keys()
+            assert redirect_entry["response"]["status"] == 302, redirect_entry
+            assert redirect_entry["response"]["redirectURL"].endswith("/landing"), redirect_entry
+            assert by_url[site + "/landing"]["response"]["redirectURL"] == ""
         finally:
             service.web_close(session_id)
     finally:
