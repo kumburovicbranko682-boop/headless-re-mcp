@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 改进（ghidra.functions/symbols/xrefs 补上 total，与其余分页读取器对齐；Ghidra 在 Linux 实测）
+
+- `ghidra.functions`/`symbols`/`xrefs` 此前只回 `count` 与 `has_more`,与本仓其余分页读取器
+  (`frida.*`、`proxy.flows`、`web.network.list`、`apk.xrefs`、r2 的 `items_total`)不一致:命中 `has_more`
+  的调用方无从判断到底是 40 个函数还是 40000 个。`ExportJson.py` 改为用**填页所用的同一个迭代器**数满全量
+  再回 `total`——不额外存 item(时间 O(全量)、内存 O(limit)),因此 `total` 与派生的 `has_more = total > count`
+  永远与 `items` 自洽,而不依赖 `getFunctionCount()`/`getNumSymbols()`/`getReferenceCountTo()`(它们可能把
+  externals、dynamic symbols 数成与迭代器不同的集合)。三个工具 docstring 补记 `total`;活体门禁断言之
+  (提交在库的 PE 上 symbols `count=16 / total=502 / has_more=True`),且把 `total` 改成等于页大小会让门禁变红。
+  该脚本对 Jython(Ghidra ≤11.2)与 PyGhidra/Py3(≥11.3)双运行时兼容,已 py_compile 校验。
+- 承接"Linux 上诚实的 CI":装 Ghidra 12.1.3 + PyGhidra 3.1.0(JDK 21)后,`test_m11_ghidra_live_gate.py`
+  三例全过——PE 的 functions/symbols/decompile、ELF 的 analyze/functions/xrefs(含 PyGhidra 一次性工程目录的清理)、
+  以及经 service 层 ELF 会话→ghidra.functions 的整链。至此每个 FOSS 非 PE 后端都在本机核过活体。
+
 ### 测试（proxy/web 两条动态线在 Linux 实测，capture→wasm 门禁收紧断言导出名）
 
 - 把此前只在 Windows 自托管跑过的两条动态非 PE 线在 Linux 上跑成活体通过:
