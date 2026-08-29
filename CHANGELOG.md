@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（jsre 在 Linux 实测通过，并补上 wasm.wat 截断→output_path 的活体门禁）
+
+- 承接"Linux 上诚实的 CI/测试"这条线,在装了真实工具的 VM 上实跑 jsre 全部门禁:apt 装
+  wabt 1.0.34(wasm2wat + wasm-objdump 都在)、npm 全局装 webcrack 2.16.0(Node 22)。
+  `test_web_re_gate.py` 的 wasm 两例、js 四例(deobfuscate/beautify/unpack_bundle/截断经
+  unpack 恢复)全过;`doctor.probe_wabt` 在真实安装上如实报 DETECTED 并给出两个工具路径;
+  `js.deobfuscate` 的活体输出键(code/bytes/truncated)与 docstring 逐一对上。
+- 发现一处**无活体覆盖**的恢复路径:`wasm.wat`/`wasm.info` 在输出超过 400 KiB 内联上限时会把
+  完整文本落盘到 `output_path`(内联字段只留前缀),而既有 wasm 门禁只喂小模块、从不触发截断。
+  新增 `test_wasm_wat_truncation_spills_the_full_module_to_output_path`:手搓一个 12000 函数的
+  合法 wasm(仅依赖被测的 wasm2wat,不额外依赖 wat2wasm),其 WAT 达 ~709 KiB 越过上限,断言
+  `truncated` 为真、内联 wat 恰为上限长度、`bytes` 更大、`output_path` 落盘且大小等于 `bytes`、
+  且落盘文件以内联前缀打头(证明 output_path 是被截断文本的续篇,而非另一次渲染)。
+- mutation 验证:把 `_bounded_output` 里写 `output_path` 的那一步去掉,新门禁即红(spill 断言失败);
+  还原后复绿。ruff 通过。该门禁 `skip != pass`:未装 wasm2wat 时如实跳过。
+
 ### 改进（frida.exports 补上 total，与 frida.modules/applications 分页字段对齐）
 
 - 核查 frida 枚举面的分页一致性时发现:`frida.modules` 与 `frida.applications` 都回 `total`
