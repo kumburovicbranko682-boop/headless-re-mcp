@@ -121,7 +121,14 @@ class JadxClient:
         *,
         timeout: float = 300.0,
     ) -> JsonObject:
-        """Decompile the whole APK, then return one class's Java source."""
+        """Decompile the whole APK, then return one class's Java source.
+
+        Accepts dotted (``com.example.Main``) and smali (``Lcom/example/Main;``)
+        names. A name with no package -- ``a`` or ``La;``, the form
+        ``apk.classes`` reports for default-package classes in obfuscated apps
+        -- resolves into jadx's ``defpackage/`` tree when the sources root has
+        no such file.
+        """
         target = class_name.strip()
         if not target:
             raise JadxError("invalid_params", "class_name is required")
@@ -134,6 +141,17 @@ class JadxClient:
         candidate = (sources / rel).resolve()
         if candidate == sources or not candidate.is_relative_to(sources):
             raise JadxError("invalid_params", "class_name escapes the jadx sources directory")
+        if not candidate.is_file() and len(rel.parts) == 1:
+            # jadx writes classes that carry no package -- the "a" / "La;"
+            # names apk.classes reports for obfuscated apps -- under
+            # sources/defpackage/, never at the sources root, so the exact
+            # probe above cannot hit them and the simple-name walk below goes
+            # ambiguous as soon as some a.a homonym exists. Measured with jadx
+            # 1.5.1: decompile("La;") answered not_found while
+            # sources/defpackage/a.java sat on disk.
+            default_package = (sources / "defpackage" / rel).resolve()
+            if default_package.is_file() and default_package.is_relative_to(sources):
+                candidate = default_package
         if not candidate.is_file():
             match = None
             if sources.is_dir():

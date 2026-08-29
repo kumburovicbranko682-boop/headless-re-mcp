@@ -153,11 +153,15 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Decompile one class to Java via jadx (requires jadx + JRE).
 
-        Answers with class_name, path and source, plus truncated when the
-        Java was cut at the buffer. There is no java, code or text field. If
-        jadx exited non-zero on the whole-APK pass but still wrote this class,
-        the reply carries exit_code, tool_failed and stderr so a partial
-        decompile is not read as complete.
+        class_name accepts dotted (com.example.Main) and smali
+        (Lcom/example/Main;) forms; a name with no package -- a or La;, the
+        form apk.classes reports for default-package classes in obfuscated
+        apps -- resolves into jadx's defpackage/ tree. Answers with
+        class_name, path and source, plus truncated when the Java was cut at
+        the buffer. There is no java, code or text field. If jadx exited
+        non-zero on the whole-APK pass but still wrote this class, the reply
+        carries exit_code, tool_failed and stderr so a partial decompile is
+        not read as complete.
         """
         return _dump(analysis.apk_decompile(session_id, class_name, timeout=timeout))
 

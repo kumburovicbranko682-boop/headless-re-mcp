@@ -1,8 +1,10 @@
 """jadx fallback resolution and subprocess guard paths behave as promised.
 
-apk.decompile resolves a class to its expected package path first, and only
-then falls back to a simple-name walk of the jadx tree -- accepting the file
-only when the walk is unambiguous. These lock in that fallback contract (a
+apk.decompile resolves a class to its expected package path first, then -- for
+a bare name -- jadx's ``defpackage/`` tree (where classes without a package
+actually land), and only then falls back to a simple-name walk of the jadx
+tree, accepting the file only when the walk is unambiguous. These lock in that
+resolution contract (default-package names round-trip from apk.classes, a
 unique match wins, decoys that are not regular files or cannot be resolved are
 skipped, a missing tree or ambiguity is ``not_found``), the bounded listing's
 edge behavior (missing root, non-file matches, the counted-files ceiling), and
@@ -131,6 +133,66 @@ def test_decompile_skips_a_match_that_cannot_be_resolved(
 
     assert caught.value.code == "not_found"
     assert caught.value.details["class_name"] == "com.example.Main"
+
+
+def test_a_default_package_class_resolves_into_the_defpackage_tree(tmp_path: Path) -> None:
+    """The names apk.classes reports for default-package classes round-trip.
+
+    Measured with real jadx 1.5.1 on a jar holding the classic obfuscation
+    homonym pair (default-package ``a`` plus ``a.a``): jadx wrote
+    ``sources/defpackage/a.java`` and ``sources/a/a.java``, and
+    ``decompile("a")`` / ``decompile("La;")`` -- the exact names ``apk.classes``
+    hands back -- both answered not_found: the exact probe looked at the
+    sources root and the simple-name walk saw two ``a.java`` files. A bare
+    name must resolve into jadx's ``defpackage/`` tree, deterministically,
+    and never be shadowed by the homonym.
+    """
+    client, apk, out = _jadx(tmp_path)
+    fake_run = _writes(out, "sources/defpackage/a.java", "sources/a/a.java")
+
+    for name in ("a", "La;"):
+        with patch(_RUN_BOUNDED, fake_run):
+            payload = client.decompile(apk, out, name)
+        assert payload["path"] == str(out / "sources" / "defpackage" / "a.java"), name
+
+    # The qualified homonym keeps resolving by its exact package path.
+    with patch(_RUN_BOUNDED, fake_run):
+        qualified = client.decompile(apk, out, "a.a")
+    assert qualified["path"] == str(out / "sources" / "a" / "a.java")
+
+
+def test_a_sources_root_file_wins_over_the_defpackage_candidate(tmp_path: Path) -> None:
+    # If some jadx build ever emits a packageless class at the sources root,
+    # the exact probe must keep priority; defpackage/ is only the second try.
+    client, apk, out = _jadx(tmp_path)
+    fake_run = _writes(out, "sources/a.java", "sources/defpackage/a.java")
+
+    with patch(_RUN_BOUNDED, fake_run):
+        payload = client.decompile(apk, out, "a")
+
+    assert payload["path"] == str(out / "sources" / "a.java")
+
+
+def test_a_bare_name_without_a_defpackage_hit_still_uses_the_unique_fallback(
+    tmp_path: Path,
+) -> None:
+    client, apk, out = _jadx(tmp_path)
+    fake_run = _writes(out, "sources/pkg/Solo.java")
+
+    with patch(_RUN_BOUNDED, fake_run):
+        payload = client.decompile(apk, out, "Solo")
+
+    assert payload["path"] == str(out / "sources" / "pkg" / "Solo.java")
+
+
+def test_a_bare_name_that_matches_nothing_stays_not_found(tmp_path: Path) -> None:
+    client, apk, out = _jadx(tmp_path)
+    fake_run = _writes(out, "sources/x/b.java", "sources/y/b.java")
+
+    with patch(_RUN_BOUNDED, fake_run), pytest.raises(JadxError) as caught:
+        client.decompile(apk, out, "b")
+
+    assert caught.value.code == "not_found"
 
 
 def test_decompile_is_not_found_when_the_name_is_ambiguous(tmp_path: Path) -> None:
