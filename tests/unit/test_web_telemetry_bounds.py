@@ -383,3 +383,95 @@ def test_console_ring_keeps_the_newest_and_counts_the_drops() -> None:
         on_console({"type": "log", "args": [{"value": f"line {index}"}]})
     assert [entry["text"] for entry in handle.console] == ["line 2", "line 3"]
     assert handle.console_dropped == 2
+
+
+def _redirect_event(
+    request_id: str, *, url: str, status: int, timing: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """A requestWillBeSent for a redirect hop: same id, carrying the 3xx that caused it."""
+    event = _request_event(request_id, url=url)
+    response: dict[str, Any] = {"status": status, "mimeType": "text/html"}
+    if timing is not None:
+        response["timing"] = timing
+    event["redirectResponse"] = response
+    return event
+
+
+def test_a_redirect_hop_survives_as_its_own_row_before_the_id_is_reused() -> None:
+    """CDP reuses one requestId across a redirect chain; each hop must stay visible.
+
+    Without preserving it the 302 -- the actual handoff -- was overwritten by the
+    landing request and vanished from network.list and the HAR. The prior hop is
+    kept under a synthetic id with its own status and redirect_url, in front of
+    the final row, so the chain reads a -> b.
+    """
+    handle, cdp = _wired_session()
+    on_request = cdp.handlers["Network.requestWillBeSent"]
+    on_response = cdp.handlers["Network.responseReceived"]
+
+    on_request(_request_event("X", url="https://site/a"))
+    on_request(_redirect_event("X", url="https://site/b", status=302))
+    on_response({"requestId": "X", "response": {"status": 200, "mimeType": "text/html"}})
+
+    rows = list(handle.requests.values())
+    assert len(rows) == 2
+    hop, final = rows
+    assert hop["redirect"] is True
+    assert hop["status"] == 302
+    assert hop["url"] == "https://site/a"
+    assert hop["redirect_url"] == "https://site/b"
+    assert hop["requestId"] != "X"
+    assert hop["requestId"].startswith("X:redirect:")
+    assert final["requestId"] == "X"
+    assert final["url"] == "https://site/b"
+    assert final["status"] == 200
+
+
+def test_a_two_hop_redirect_chain_keeps_every_hop() -> None:
+    """A -> B -> C leaves three rows: two preserved 3xx hops and the final landing."""
+    handle, cdp = _wired_session()
+    on_request = cdp.handlers["Network.requestWillBeSent"]
+
+    on_request(_request_event("X", url="https://site/a"))
+    on_request(_redirect_event("X", url="https://site/b", status=301))
+    on_request(_redirect_event("X", url="https://site/c", status=302))
+
+    rows = list(handle.requests.values())
+    assert [r["url"] for r in rows] == ["https://site/a", "https://site/b", "https://site/c"]
+    assert [r.get("status") for r in rows] == [301, 302, None]
+    assert [r.get("redirect_url") for r in rows] == [
+        "https://site/b",
+        "https://site/c",
+        None,
+    ]
+    # The two preserved hops get distinct synthetic ids; the live hop keeps X.
+    ids = [r["requestId"] for r in rows]
+    assert ids[2] == "X"
+    assert ids[0] != ids[1]
+    assert all(i.startswith("X:redirect:") for i in ids[:2])
+
+
+def test_a_redirect_hop_carries_its_measured_send_wait_timings() -> None:
+    """The redirectResponse's ResourceTiming populates the preserved hop's timings."""
+    handle, cdp = _wired_session()
+    on_request = cdp.handlers["Network.requestWillBeSent"]
+    timing = {"sendStart": 1.0, "sendEnd": 3.0, "receiveHeadersEnd": 10.0}
+    on_request(_request_event("X", url="https://site/a"))
+    on_request(_redirect_event("X", url="https://site/b", status=307, timing=timing))
+    hop = next(iter(handle.requests.values()))
+    assert hop["timings"] == {"send": 2.0, "wait": 7.0}
+
+
+def test_a_redirect_for_an_unknown_id_does_not_crash_or_fabricate_a_hop() -> None:
+    """A redirectResponse whose id was already evicted must be a clean no-op there.
+
+    The new hop is still recorded under the reused id; only the (absent) prior
+    hop cannot be preserved, and that must not raise on the handler thread.
+    """
+    handle, cdp = _wired_session()
+    on_request = cdp.handlers["Network.requestWillBeSent"]
+    on_request(_redirect_event("ghost", url="https://site/b", status=302))
+    assert list(handle.requests) == ["ghost"]
+    assert handle.requests["ghost"]["url"] == "https://site/b"
+    # No preserved hop was fabricated for a prior request that was never seen.
+    assert not any(k.startswith("ghost:redirect:") for k in handle.requests)

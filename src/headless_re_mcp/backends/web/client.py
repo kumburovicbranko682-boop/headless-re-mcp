@@ -169,6 +169,50 @@ def _receive_anchor(timing: Any) -> float | None:
     return None
 
 
+def _preserve_redirect_hop(
+    handle: _WebSession,
+    request_id: str,
+    redirect_response: JsonObject,
+    next_url: str,
+) -> None:
+    """Keep a redirect hop as its own request row before the chain reuses its id.
+
+    Must be called while ``handle.lock`` is held. CDP fires one requestWillBeSent
+    per hop of a redirect chain, all sharing a requestId, each carrying the prior
+    hop's response as ``redirectResponse``. The prior entry is finalised here
+    from that response -- status, mime, and whatever send/wait phases its timing
+    measured -- given ``redirect_url`` (the next hop's URL, the Location it sent
+    the client to) and re-keyed under a synthetic id so the new hop can take the
+    real requestId without erasing it. The synthetic id is self-consistent for
+    web.network.get: the lookup finds this row, and CDP's getResponseBody then
+    reports no body for it (a redirect carries none), the documented body_error
+    path. A stale receive anchor for the reused id is dropped so it cannot bind
+    to the new hop.
+    """
+    prior = handle.requests.pop(request_id, None)
+    if prior is None:
+        return
+    status = redirect_response.get("status")
+    if isinstance(status, int):
+        prior["status"] = status
+    mime_type, mime_truncated = _bounded_metadata(
+        redirect_response.get("mimeType"), _MAX_METADATA_BYTES
+    )
+    if mime_type:
+        prior["mimeType"] = mime_type
+    timings = _cdp_phase_timings(redirect_response.get("timing"))
+    if timings:
+        prior["timings"] = timings
+    prior["redirect"] = True
+    prior["redirect_url"] = next_url
+    if mime_truncated:
+        prior["metadata_truncated"] = True
+    preserved_id = f"{request_id}:redirect:{uuid4().hex[:8]}"
+    prior["requestId"] = preserved_id
+    handle.requests[preserved_id] = prior
+    handle.receive_anchors.pop(request_id, None)
+
+
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
     """Join console args, stopping at ``_MAX_CONSOLE_TEXT``.
 
@@ -577,8 +621,21 @@ class WebBackend:
                 entry["started_at"] = float(wall_time)
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
+            request_id = str(params.get("requestId"))
+            # CDP reuses one requestId across a redirect chain: each hop arrives
+            # as a fresh requestWillBeSent carrying redirectResponse -- the
+            # response that caused the redirect. Storing the new hop straight
+            # over the old one dropped that 3xx entirely, so an auth handoff, a
+            # tracker bounce or a URL shortener showed up in network.list/HAR as
+            # only its final landing, the redirect (often the finding) invisible.
+            # Finalise the prior hop with the redirect's status/mime/timings and
+            # re-key it under a synthetic id so it survives as its own row, with
+            # redirect_url pointing at where it sent the client next.
+            redirect_response = params.get("redirectResponse")
             with handle.lock:
-                handle.requests[str(params.get("requestId"))] = entry
+                if isinstance(redirect_response, dict):
+                    _preserve_redirect_hop(handle, request_id, redirect_response, url)
+                handle.requests[request_id] = entry
                 while len(handle.requests) > _MAX_REQUESTS:
                     evicted_id, _ = handle.requests.popitem(last=False)
                     handle.receive_anchors.pop(evicted_id, None)
@@ -1028,6 +1085,7 @@ class WebBackend:
                     started_date_time=iso_from_epoch(e.get("started_at")),
                     timings_ms=e.get("timings"),
                     error=e.get("error_msg") if e.get("error") else None,
+                    redirect_url=e.get("redirect_url"),
                 )
                 for e in handle.requests.values()
             ]

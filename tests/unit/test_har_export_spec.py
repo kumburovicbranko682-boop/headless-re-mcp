@@ -214,6 +214,20 @@ def test_har_entry_reports_a_known_response_body_size() -> None:
     assert unknown["response"]["bodySize"] == -1
 
 
+def test_har_entry_fills_redirect_url_for_a_redirect_hop() -> None:
+    """A 3xx hop's Location becomes response.redirectURL; a normal hop stays empty."""
+    hop = har_entry(
+        method="GET",
+        url="https://site/a",
+        status=302,
+        mime_type="text/html",
+        redirect_url="https://site/b",
+    )
+    assert hop["response"]["redirectURL"] == "https://site/b"
+    landing = har_entry(method="GET", url="https://site/b", status=200, mime_type="text/html")
+    assert landing["response"]["redirectURL"] == ""
+
+
 def test_iso_from_epoch_converts_a_real_time_and_rejects_junk() -> None:
     """A real epoch becomes an ISO instant; unknown or unparseable stays None.
 
@@ -515,6 +529,51 @@ def test_web_har_export_marks_a_failed_request_with_the_error_extension(
     assert bad["_error"] == "net::ERR_BLOCKED_BY_CLIENT"
     assert bad["response"]["status"] == 0
     assert "_error" not in entries["https://example.com/ok"]
+
+
+def test_web_har_export_carries_the_redirect_url_of_a_preserved_hop(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A preserved 3xx hop reaches the HAR with its Location in response.redirectURL.
+
+    The capture keeps redirect_url on the preserved hop; the export must thread
+    it into the spec's redirectURL so a viewer draws the chain, while the final
+    landing (no redirect_url) keeps the empty string.
+    """
+
+    class _Handle:
+        def __init__(self) -> None:
+            self.lock = Lock()
+            self.requests = {
+                "X:redirect:abc": {
+                    "requestId": "X:redirect:abc",
+                    "url": "https://example.com/a",
+                    "method": "GET",
+                    "resourceType": "Document",
+                    "status": 302,
+                    "mimeType": "text/html",
+                    "redirect": True,
+                    "redirect_url": "https://example.com/b",
+                },
+                "X": {
+                    "requestId": "X",
+                    "url": "https://example.com/b",
+                    "method": "GET",
+                    "resourceType": "Document",
+                    "status": 200,
+                    "mimeType": "text/html",
+                },
+            }
+
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _Handle())
+    out = tmp_path / "capture.har"
+    backend.har_export("s", out)
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    entries = {e["request"]["url"]: e for e in doc["log"]["entries"]}
+    assert entries["https://example.com/a"]["response"]["redirectURL"] == "https://example.com/b"
+    assert entries["https://example.com/a"]["response"]["status"] == 302
+    assert entries["https://example.com/b"]["response"]["redirectURL"] == ""
 
 
 def test_web_har_export_uses_the_captured_request_time(

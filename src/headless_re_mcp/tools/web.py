@@ -93,9 +93,14 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         errorText) with a null status, the same shape the proxy uses;
         canceled=true marks a benign abort as distinct from a hard failure, and
         blocked_reason names why a block happened when CDP reports one. A
-        completed request carries a numeric status and no error field.
-        metadata_truncated marks bounded oversized request fields. There is no
-        type field.
+        completed request carries a numeric status and no error field. Each hop
+        of a redirect chain is its own row: a 3xx hop carries redirect=true and
+        redirect_url (the Location it sent the client to) with its own status, so
+        an auth handoff or tracker bounce is visible instead of collapsed into
+        the final landing; its requestId is synthetic, so web.network.get on it
+        returns the documented empty body (a redirect carries none), not the
+        final hop's body. metadata_truncated marks bounded oversized request
+        fields. There is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 

@@ -120,6 +120,7 @@ def har_entry(
     response_body_size: int | None = None,
     timings_ms: JsonObject | None = None,
     error: str | None = None,
+    redirect_url: str | None = None,
 ) -> JsonObject:
     """One spec-complete HAR 1.2 entry from the fields a summary actually has.
 
@@ -151,6 +152,12 @@ def har_entry(
     a genuine zero-status response, and the reason recorded on the row -- often
     the finding -- is dropped from the artifact. ``None`` (a completed exchange)
     emits no ``_error`` field at all.
+
+    ``redirect_url`` fills the spec's ``response.redirectURL`` for a 3xx hop (the
+    Location it sent the client to), which the browser capture records for each
+    redirect it preserves; absent it stays the empty string the spec uses for a
+    non-redirect response, so a HAR viewer draws the redirect chain instead of
+    showing each hop as an unrelated row.
     """
     status_code = int(status) if isinstance(status, int) else 0
     url_text = str(url or "")
@@ -185,7 +192,7 @@ def har_entry(
             "cookies": [],
             "headers": [],
             "content": {"size": content_size, "mimeType": str(mime_type or "")},
-            "redirectURL": "",
+            "redirectURL": str(redirect_url or ""),
             "headersSize": _UNKNOWN_SIZE,
             "bodySize": content_size,
         },
