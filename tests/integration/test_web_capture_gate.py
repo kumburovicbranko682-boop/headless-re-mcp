@@ -415,9 +415,15 @@ def test_network_captured_wasm_body_feeds_wasm_wat(site: str) -> None:
             assert "i32.const 42" in wat.data["wat"], wat.data["wat"][:200]
 
             # wasm.info reads the same captured file through the other wabt tool.
+            # Assert the export *name*, not just the "Export" section header:
+            # objdump prints that header for any module with an export section,
+            # so naming "answer" is what proves the captured module's export
+            # table decoded -- the same bar the standalone wasm_info gate holds.
             info = service.wasm_info(wasm_path)
             assert info.ok, info.error
-            assert "Export" in info.data["objdump"], info.data["objdump"][:200]
+            objdump = info.data["objdump"]
+            assert "Export" in objdump, objdump[:200]
+            assert "answer" in objdump, objdump[:200]
         finally:
             service.web_close(session_id)
     finally:

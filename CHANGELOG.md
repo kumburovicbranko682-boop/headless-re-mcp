@@ -5,6 +5,26 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（proxy/web 两条动态线在 Linux 实测，capture→wasm 门禁收紧断言导出名）
+
+- 把此前只在 Windows 自托管跑过的两条动态非 PE 线在 Linux 上跑成活体通过:
+  - **proxy(mitmproxy 12.2.3)**:`test_proxy_lifecycle_gate.py` 全 8 例过——start 即监听/stop 释放端口、
+    占用端口拒绝、坏参数(坏端口/坏主机)在绑定前拒绝且不留半注册会话、两会话不共享端口、10 轮 start/stop
+    不漏线程或端口、真实请求经代理录制并导出 spec 合规 HAR(含失败流的 `_error` 条目)、flow.get 明细与
+    replay 真正打到上游。
+  - **web(Playwright Chromium)**:`test_web_lifecycle_gate.py`(5 过 2 跳,跳因本机无逐进程资源计数,诚实跳)、
+    `test_web_capture_gate.py` 两例、`test_agent_browser_smoke.py`、`test_web_re_gate.py::test_web_cdp_open_and_inspect`
+    全过——CDP 网络捕获(含 `loadingFailed` 失败行、`receive` 相位由 anchor→loadingFinished 计算、
+    `startedDateTime` 取 wallTime)、HAR 的 `_resourceType`、脚本源、WASM `is_wasm`、跨后端
+    capture→network.get→wasm.wat/info 的整链都在真实 Chromium 上核过。
+- 收紧 `test_network_captured_wasm_body_feeds_wasm_wat` 的 `wasm.info` 断言:原先只查 "Export" 段头,
+  改为同时断言导出名 "answer"(与独立的 wasm_info 门禁同一根标准),证明被捕获模块的导出表真的被解码,
+  而非只打印了段头。活体核过导出名确实出现;ruff 通过。
+- **单测无污染复核**:在同时装了 frida 17.17.0 / mitmproxy 12.2.3 / playwright / androguard 4.1.4 的环境下
+  跑完整 `tests/unit`(6654 过 53 跳,跳均为 Windows-only、未构建 PE fixture、未配 UPX CLI)。这些可选后端
+  存在与否都不改变单测结果,坐实了单测对可选依赖是无污染的——即 CI 每次提交的单测作业(不装这些 extra)与
+  本地装了它们跑出的是同一套结论。
+
 ### 测试（frida.exports 的 total/has_more 分页字段补上活体断言，并在 Linux 实测整条非 PE 线）
 
 - 承接上一轮给 `frida.exports` 补 `total` 的改动:活体门禁 `test_m11_frida_live_gate.py` 此前只断言
