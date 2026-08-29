@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,7 @@ import headless_re_mcp.web.routes.legacy as legacy
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.results import _success
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.web.app import create_app
+from headless_re_mcp.web.app import _MAX_BOOTSTRAP_SESSIONS, create_app
 from headless_re_mcp.web.commands import WebCommandAdapter
 
 TOKEN = "test-token-value-0123456789abcdef"
@@ -481,3 +482,56 @@ def test_a_disconnected_monitor_stream_stops_polling_immediately(
 
     assert b"event: monitor" not in body
     assert b"event: end" in body
+
+
+def test_bootstrap_session_store_is_bounded_and_evicts_oldest_first(
+    tmp_path: Path,
+) -> None:
+    """A full bootstrap store must drop its OLDEST session, never a random one.
+
+    The store was a plain set, and ``set.pop()`` removes an arbitrary member: a
+    burst of more than the cap in ``/?token=`` opens could invalidate a session
+    issued moments earlier while an older, idle one survived -- the active user
+    then 401s on their next /api call. It is now a bounded deque, so appending
+    when full evicts the oldest and every more-recent session lives on.
+    """
+    service = AnalysisService(_settings(tmp_path))
+    app = create_app(service, token=TOKEN, settings=service.settings)
+    store = app.state.bootstrap_sessions
+
+    assert isinstance(store, deque)
+    assert store.maxlen == _MAX_BOOTSTRAP_SESSIONS
+
+    store.extend(f"t{index}" for index in range(store.maxlen))
+    assert len(store) == store.maxlen
+
+    store.append("newest")
+    assert "t0" not in store  # the oldest was pushed out
+    assert "t1" in store  # everything after it survived
+    assert f"t{store.maxlen - 1}" in store
+    assert "newest" in store
+    assert len(store) == store.maxlen
+
+
+def test_a_token_open_when_full_evicts_the_oldest_bootstrap_session(
+    tmp_path: Path,
+) -> None:
+    """Driving the real /?token= route when the store is full drops the oldest.
+
+    Proves the route appends rather than doing a set-style arbitrary pop: with
+    the store pre-filled to capacity, one more token open evicts only the oldest
+    sentinel and keeps the most recent one.
+    """
+    service = AnalysisService(_settings(tmp_path))
+    app = create_app(service, token=TOKEN, settings=service.settings)
+    client = TestClient(app)
+    store = app.state.bootstrap_sessions
+    store.extend(f"t{index}" for index in range(store.maxlen))
+
+    reply = client.get(f"/?token={TOKEN}")
+    assert reply.status_code == 200
+    assert reply.cookies.get("headless_re_bootstrap")
+
+    assert "t0" not in store
+    assert f"t{store.maxlen - 1}" in store
+    assert len(store) == store.maxlen

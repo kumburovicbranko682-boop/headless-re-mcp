@@ -6,6 +6,7 @@ import asyncio
 import ipaddress
 import json
 import secrets
+from collections import deque
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -113,7 +114,7 @@ def register_legacy_routes(
     def _bootstrap_cookie_ok(token_cookie: str | None) -> bool:
         if not token_cookie:
             return False
-        sessions: set[str] = app.state.bootstrap_sessions
+        sessions: deque[str] = app.state.bootstrap_sessions
         return any(
             len(token_cookie) == len(session_token)
             and secrets.compare_digest(token_cookie, session_token)
@@ -244,10 +245,12 @@ def register_legacy_routes(
         )
         if token_q:
             bootstrap_session = secrets.token_urlsafe(32)
-            sessions: set[str] = app.state.bootstrap_sessions
-            if len(sessions) >= 32:
-                sessions.pop()
-            sessions.add(bootstrap_session)
+            sessions: deque[str] = app.state.bootstrap_sessions
+            # The deque is bounded, so append evicts the oldest session when it
+            # is full. The set this replaced used pop(), which drops a random
+            # member -- a burst of opens could then invalidate a session issued
+            # moments earlier while an older idle one lived on.
+            sessions.append(bootstrap_session)
             response.set_cookie(
                 "headless_re_bootstrap",
                 bootstrap_session,

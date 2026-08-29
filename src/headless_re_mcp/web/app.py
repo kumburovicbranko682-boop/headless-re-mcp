@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import ipaddress
 import os
+from collections import deque
 from pathlib import Path
 from typing import Any
+
+# Cap on live single-use bootstrap sessions. A bounded deque so a burst of
+# ?token= opens evicts the OLDEST session rather than a set.pop()'s arbitrary
+# one -- see the comment where it is created.
+_MAX_BOOTSTRAP_SESSIONS = 32
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
@@ -50,7 +56,14 @@ def create_app(
     app.state.service = service
     app.state.token = token
     app.state.settings = cfg
-    app.state.bootstrap_sessions = set()
+    # Insertion-ordered and bounded so the cap evicts the oldest session, not a
+    # random one. A set's pop() drops an arbitrary member, so a burst of more
+    # than the cap in ?token= opens could invalidate a just-authenticated
+    # browser's cookie while an older, idle session survived -- the active user
+    # then 401s on their next /api call. A deque(maxlen=...) evicts oldest-first,
+    # and its append is atomic, which also drops the set's check-then-pop race
+    # between the threadpool-run route handlers.
+    app.state.bootstrap_sessions = deque(maxlen=_MAX_BOOTSTRAP_SESSIONS)
     register_legacy_routes(app, service, token=token, settings=cfg)
     register_agent_routes(app, service, token=token, settings=cfg)
     register_spa_fallback(app, token=token)
