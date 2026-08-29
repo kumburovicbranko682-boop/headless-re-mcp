@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 改进（frida.java.methods 补上 total，补齐 frida 后端内部的分页一致性）
+
+- `frida.modules`/`exports`/`applications` 都回 `total`(后端全量,区别于本页),但 `frida.java.methods` 只回
+  `count`/`has_more`——正是 exports 修过的同一缺口,且在 frida 后端内部就自相矛盾。类的 `getDeclaredMethods()`
+  本就把整个方法数组物化了,所以那里的 `total` 是白拿的:内嵌 JS 现返回 `methods.length`,Python 侧照 exports 办
+  (传本页 limit、读 total、令 `has_more = total > count`),分页大类时 agent 拿到真实规模,而非只知道"还有更多"。
+  `frida.java.classes` 则**刻意不报 total**——数清每个已加载类要对 ART 类表做一次完整遍历,而按页枚举正是要避开它——
+  两个 docstring 都写清了各自是什么、为什么。ART 路径在本 Linux 主机上不可达(无活体门禁),故 JS 沿用已在
+  libc 上活体验证过的 exports 写法,Python 契约用 fake 钉住(含旧脚本 bare-array 回退分支),并经变异验证 total 断言确实吃重。
+
 ### 修复（能力目录补全每个非 PE 后端暴露的全部工具，杜绝"装了后端却查不到工具"）
 
 - 能力目录 `_CORE_CAPABILITIES` 的各能力 `tools` 列表出现漂移:`r2.pipe`/`ghidra.headless`/`jsre.webcrack`/
