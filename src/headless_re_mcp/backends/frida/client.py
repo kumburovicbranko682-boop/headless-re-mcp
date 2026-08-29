@@ -163,6 +163,7 @@ rpc.exports = {
   methods: function (className, limit) {
     var out = [];
     var found = false;
+    var total = 0;
     Java.perform(function () {
       var clazz;
       try {
@@ -172,11 +173,16 @@ rpc.exports = {
       }
       found = true;
       var methods = clazz.class.getDeclaredMethods();
+      // total is the class's full declared-method count, not out.length:
+      // getDeclaredMethods already materialised the whole array, so the count
+      // is free, and an agent paging a large class needs the real size --
+      // exactly as exports returns all.length. Only the page is bounded.
+      total = methods.length;
       for (var i = 0; i < methods.length && out.length < limit; i++) {
         out.push(methods[i].toString());
       }
     });
-    return {found: found, methods: out};
+    return {found: found, methods: out, total: total};
   }
 };
 """
@@ -789,7 +795,7 @@ class FridaClient:
                 if mode == "methods":
                     if not class_name:
                         raise FridaError("invalid_params", "class_name is required")
-                    raw = script.exports_sync.methods(class_name, capped + 1)
+                    raw = script.exports_sync.methods(class_name, capped)
                     # found distinguishes "class is not loaded on the target"
                     # (found false, methods empty) from "loaded, but declares no
                     # methods of its own" (found true, methods empty) -- an empty
@@ -798,16 +804,27 @@ class FridaClient:
                     # as ``modules`` does.
                     if isinstance(raw, dict):
                         found = bool(raw.get("found"))
-                        values, has_more = _page(list(raw.get("methods") or []), capped)
+                        held = list(raw.get("methods") or [])
+                        total = int(raw.get("total") or len(held))
                     else:
                         found = True
-                        values, has_more = _page(list(raw or []), capped)
+                        held = list(raw or [])
+                        total = len(held)
+                    # total is the class's full declared-method count from the
+                    # script (getDeclaredMethods().length), not len(page): pinned
+                    # the way modules/exports report all.length, so a truncated
+                    # page carries the real size and has_more, and an agent does
+                    # not stop at page one believing it saw every method. classes
+                    # cannot do this without a full ART class-table walk, so it
+                    # stays on the fetch-one-extra has_more with no total.
+                    values = held[:capped]
                     return {
                         "class_name": class_name,
                         "found": found,
                         "methods": values,
                         "count": len(values),
-                        "has_more": has_more,
+                        "total": total,
+                        "has_more": total > len(values),
                     }
                 raise FridaError("invalid_params", "mode must be classes or methods")
             finally:

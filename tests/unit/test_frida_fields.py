@@ -359,8 +359,13 @@ class _JavaApi:
     def classes(self, name_filter: str, count: int) -> list[str]:
         return [f"c{index}" for index in range(int(count))]
 
-    def methods(self, class_name: str, count: int) -> list[str]:
-        return [f"m{index}" for index in range(int(count))]
+    def methods(self, class_name: str, limit: int) -> dict[str, Any]:
+        # Newer script shape: the page is bounded by the limit while total is
+        # the class's full declared-method count. Model a class with one more
+        # method than the page holds so has_more must fire off total, not off a
+        # fetched extra.
+        page = [f"m{index}" for index in range(int(limit))]
+        return {"found": True, "methods": page, "total": int(limit) + 1}
 
 
 class _JavaScript:
@@ -426,11 +431,15 @@ def test_frida_java_methods_puts_the_list_in_methods_and_says_when_it_stopped() 
     assert payload["count"] == 10
     assert len(payload["methods"]) == 10
     assert payload["has_more"] is True
-    # A bare-array script shape is tolerated and reported as found.
+    # total is the class's full declared-method count, not the page: the fake
+    # models 11 methods for a page of 10, so has_more must come off total, and
+    # an agent learns the real size rather than only "there is more".
+    assert payload["total"] == 11
     assert payload["found"] is True
     doc = _tool_docstring("frida.java.methods")
     assert "Answers with methods" in doc
     assert "has_more" in doc
+    assert "total" in doc
     assert "found" in doc
 
 
@@ -442,10 +451,14 @@ class _JavaApiFound:
         self._count = count
 
     def methods(self, class_name: str, limit: int) -> dict[str, Any]:
-        del class_name, limit
+        del class_name
+        # Real JS caps the page at the limit but returns the full declared
+        # count as total, so the fake does the same.
+        page = [f"m{index}" for index in range(min(self._count, int(limit)))]
         return {
             "found": self._found,
-            "methods": [f"m{index}" for index in range(self._count)],
+            "methods": page,
+            "total": self._count,
         }
 
 
@@ -488,6 +501,7 @@ def test_frida_java_methods_reports_a_loaded_class_with_methods_as_found() -> No
     )
     assert payload["found"] is True
     assert payload["count"] == 10
+    assert payload["total"] == 11
     assert payload["has_more"] is True
 
 
@@ -500,6 +514,34 @@ def test_frida_java_methods_reports_a_loaded_class_with_no_methods_as_found() ->
     assert payload["found"] is True
     assert payload["methods"] == []
     assert payload["count"] == 0
+    assert payload["total"] == 0
+    assert payload["has_more"] is False
+
+
+class _JavaApiBareMethods:
+    """Older script shape: methods() returns a bare list, no found/total."""
+
+    def methods(self, class_name: str, limit: int) -> list[str]:
+        del class_name
+        return [f"m{index}" for index in range(min(3, int(limit)))]
+
+
+def test_frida_java_methods_tolerates_a_bare_array_from_an_older_script() -> None:
+    """A pre-dict script shape stays readable: found true, total the page.
+
+    The dict shape carries found and total; a bare list (the older script)
+    carries neither, so found falls back to true and total to the page length --
+    the same defensive fallback modules and exports keep. It must not crash on
+    the missing keys.
+    """
+    client = _java_client_returning(_JavaApiBareMethods())
+    payload = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="methods", class_name="Foo", limit=10
+    )
+    assert payload["found"] is True
+    assert payload["methods"] == ["m0", "m1", "m2"]
+    assert payload["count"] == 3
+    assert payload["total"] == 3
     assert payload["has_more"] is False
 
 

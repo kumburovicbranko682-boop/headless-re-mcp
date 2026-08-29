@@ -169,7 +169,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Enumerate loaded Java classes on the authorized device pid (ART only).
 
         Answers with classes, count, and has_more so a page that filled the
-        limit is not read as every loaded class.
+        limit is not read as every loaded class. Unlike frida.java.methods (and
+        modules/exports), there is no total: counting every loaded class would
+        force a full ART class-table walk that this page-bounded enumeration
+        deliberately stops short of, so has_more is derived by fetching one past
+        the page rather than from a full count.
         """
         return _dump(
             analysis.frida_java_classes(session_id, name_filter=name_filter, limit=limit, pid=pid)
@@ -184,11 +188,13 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List declared methods of a Java class on the authorized device pid (ART only).
 
-        Answers with methods, class_name, found, count, and has_more so a page
-        that filled the limit is not read as every declared method. found is
-        false when the class is not loaded on the target, which an empty
-        methods list alone cannot distinguish from a loaded class that declares
-        none of its own.
+        Answers with methods, class_name, found, count, total and has_more so a
+        page that filled the limit is not read as every declared method. total
+        is the class's full declared-method count (getDeclaredMethods), free
+        because the whole array is already materialized, so has_more means
+        exactly total > count. found is false when the class is not loaded on
+        the target, which an empty methods list alone cannot distinguish from a
+        loaded class that declares none of its own.
         """
         return _dump(analysis.frida_java_methods(session_id, class_name, limit=limit, pid=pid))
 
