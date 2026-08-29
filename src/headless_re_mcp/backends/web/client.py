@@ -59,6 +59,25 @@ class WebError(RuntimeError):
         self.details = details
 
 
+def _require_str(value: object, name: str) -> str:
+    """Refuse an id whose shape the web.* tool schemas already forbid.
+
+    Every ``session_id`` here keys the per-session browser map, but the agent and
+    OpenAI-bridge transports call handlers straight from model arguments with no
+    pydantic coercion. A list or dict id reached ``self._sessions.get``/``pop``/
+    ``in`` and raised ``TypeError: unhashable type``, which the service's
+    ``except BaseException`` filed as a logged internal_error incident (only the
+    methods that go through ``registry.get`` first were spared; navigate, console,
+    scripts, network_list, dom_snapshot, and close reach the backend directly). A
+    hashable wrong type (an int) instead missed silently and was reported as
+    ``invalid_state`` ("web session not open") rather than the parameter fault it
+    is. Name the actual mistake, the same way the proxy backend does.
+    """
+    if not isinstance(value, str):
+        raise WebError("invalid_params", f"{name} must be a string")
+    return value
+
+
 def _bound_nav_timeout(timeout: float) -> float:
     """Clamp a caller navigation timeout at the backend boundary.
 
@@ -337,6 +356,7 @@ class WebBackend:
 
     def status(self, session_id: str) -> JsonObject:
         """Cheap page identity; never launches a browser."""
+        _require_str(session_id, "session_id")
         with self._lock:
             handle = self._sessions.get(session_id)
         if handle is None:
@@ -356,6 +376,7 @@ class WebBackend:
         return self._runner(handle).call(work)
 
     def _get(self, session_id: str) -> _WebSession:
+        _require_str(session_id, "session_id")
         with self._lock:
             handle = self._sessions.get(session_id)
         if not isinstance(handle, _WebSession):
@@ -373,6 +394,11 @@ class WebBackend:
     def open(
         self, session_id: str, url: str, *, headless: bool = True, timeout: float = 30.0
     ) -> JsonObject:
+        # Before _check_available: a malformed request is the caller's fault
+        # whether or not playwright is installed, and answering
+        # capability_unavailable for it would send the operator installing a
+        # dependency that was never the problem.
+        _require_str(session_id, "session_id")
         self._check_available()
         timeout = _bound_nav_timeout(timeout)
 
@@ -561,6 +587,7 @@ class WebBackend:
         return self._runner(handle).call(work, timeout=timeout + 10.0)
 
     def close(self, session_id: str) -> JsonObject:
+        _require_str(session_id, "session_id")
         with self._lock:
             handle = self._sessions.pop(session_id, None)
         if handle is None:

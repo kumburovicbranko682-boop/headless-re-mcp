@@ -5,6 +5,27 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（web 后端对非字符串 session_id 崩溃或误报状态问题）
+
+- `WebBackend` 的每个 `session_id` 都用作 per-session 浏览器表的键，但 agent 与
+  OpenAI 桥接传输直接用模型参数调用处理器、无 pydantic 强制转换。web 服务里
+  `web_navigate`/`web_console`/`web_scripts`/`web_wasm_list`/`web_network_list`/
+  `web_dom_snapshot`/`web_close` 经 `_web_wrap` 或直调绕过了 `registry.get`
+  chokepoint，把原始 id 直接送到后端：list/dict 形状走 `self._sessions.get`/
+  `pop`/`in` 抛 `TypeError: unhashable type`，被 `except BaseException` 记成
+  internal_error 事故；可哈希的错误类型（int）则静默未命中，被 `_get` 误报成
+  `invalid_state`（"web session not open"）。新增 `_require_str` 守卫接入四个直接
+  访问 `self._sessions` 的入口 `status`/`_get`/`open`/`close`（`_get` 覆盖
+  navigate/console/scripts/network_list/network_get/dom_snapshot/script_source/
+  screenshot/har_export），统一拒绝为 `invalid_params`。
+- `open` 的守卫放在 `_check_available()` 之前：未装 playwright 的环境此前会对坏
+  参数回答 capability_unavailable，把操作者支去装一个从来不是问题的依赖。与
+  proxy 后端同源缺口同法处理。
+- 新增 `tests/unit/test_web_session_id_arg_type.py`：参数化覆盖 12 个入口 × 8 种坏
+  形状、`close` 在有活动会话（非空表）时才触发的 pop 哈希路径、`open` 守卫先于能力
+  探测，以及字符串 id 仍走正常应答（open False / closed False / invalid_state）的
+  对照组。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
