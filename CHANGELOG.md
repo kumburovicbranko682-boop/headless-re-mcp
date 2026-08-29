@@ -20,6 +20,14 @@ until 1.0 the tool surface may still change between minor versions.
   默认包名往返（`a`/`La;` → defpackage，不被同名类遮蔽；限定名 `a.a` 仍走精确路径）、
   根文件优先于 defpackage 候选、无 defpackage 命中仍走唯一回退、纯歧义仍 `not_found`。
   变异校验：还原修复后往返测试红，修复态 17 例全绿；真实 jadx 1.5.1 上四种形式全部解析成功。
+- 同分支第二处：jadx 会把文件系统规则拒绝的类名（不可打印/非法字符——混淆应用常见）重写成
+  合成名。实测 jadx 1.5.1：默认包 `类` 写成 `defpackage/C0000.java`，带包 `p.类2` 写成
+  `p/C2.java`，原始拼写只存在于文件头 `/* renamed from: ... */` 注释（默认包记简单名，
+  带包记全限定名）。精确探查、defpackage 探查、简单名回退全部落空,`apk.classes` 交回的
+  类名照样 `not_found`。改法：全部落空后,只扫描类名映射到的那一个包目录（裸名再加
+  `defpackage/`）的文件头找该注释——目录级、只读每文件头 2KB、带文件数上限,名字边界
+  精确匹配（`类` 不会误中 renamed from `类2`），跨包不重定向。三条新回归 + 上限回归；
+  真实 jadx 上 `类`/`L类;`/`p.类2`/`Lp/类2;` 全部解析,错误包名 `q.类2` 仍诚实 `not_found`。
 
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
