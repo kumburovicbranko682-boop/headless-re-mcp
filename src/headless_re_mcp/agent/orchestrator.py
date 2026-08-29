@@ -389,6 +389,7 @@ class AgentOrchestrator:
         self.store.transition(run_id, RunStatus.STREAMING)
         self.store.append_event(run_id, "run.started", {"status": RunStatus.STREAMING.value})
         tools = self._provider_tools()
+        used_call_ids: set[str] = set()
         for round_index in range(self.max_tool_rounds + 1):
             if self._check_cancelled(run_id):
                 await self._finish_cancel(run_id)
@@ -480,6 +481,7 @@ class AgentOrchestrator:
                 self.store.transition(run_id, RunStatus.COMPLETED)
                 self.store.append_event(run_id, "run.completed", {"status": RunStatus.COMPLETED.value})
                 return
+            completed_calls = self._usable_tool_calls(completed_calls, used_call_ids)
             assistant_tool_calls = []
             for call in completed_calls:
                 assistant_tool_calls.append({"id": call.id, "type": "function", "function": {"name": call.name, "arguments": json.dumps(call.arguments, ensure_ascii=False, sort_keys=True)}})
@@ -510,6 +512,38 @@ class AgentOrchestrator:
             return
         self.store.append_event(run_id, "reasoning.delta", {"delta": "".join(parts)})
         parts.clear()
+
+    def _usable_tool_calls(
+        self, calls: tuple[ProviderToolCall, ...], used_ids: set[str]
+    ) -> tuple[ProviderToolCall, ...]:
+        """Re-mint provider call ids the store would refuse or has already taken.
+
+        The id is only a correlation key: the assistant tool_calls entry and the
+        tool result must quote the same string within the conversation, and the
+        store needs it unique within the run because (run_id, id) is the
+        tool_calls primary key. The provider honours neither constraint: stream
+        assembly bounds the id only by the shared multi-megabyte tool buffer
+        while propose_tool_call refuses anything over tool_call_id_max_chars,
+        and the ``call_{index}`` fallback for providers that omit ids restarts
+        at index 0 every round, so the second such round inserted a duplicate
+        key. Both escaped as ValueError / sqlite3.IntegrityError and failed the
+        whole run with an incident over a string the model never chose.
+        Substituting a fresh id here, before anything quotes it, keeps the
+        conversation, the events, and the store telling the same story.
+        """
+        id_limit = max(8, int(self.store.tool_call_id_max_chars))
+        usable: list[ProviderToolCall] = []
+        for call in calls:
+            call_id = call.id
+            if not call_id or len(call_id) > id_limit or call_id in used_ids:
+                call_id = f"call_{uuid.uuid4().hex}"
+            used_ids.add(call_id)
+            usable.append(
+                call
+                if call_id == call.id
+                else ProviderToolCall(call_id, call.name, call.arguments)
+            )
+        return tuple(usable)
 
     def _arguments_too_large(self, arguments: JsonObject) -> JsonObject | None:
         """Refuse a call whose arguments are too big to be meant, and say so.

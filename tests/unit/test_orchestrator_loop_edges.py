@@ -593,6 +593,91 @@ async def test_a_slow_tool_emits_progress_heartbeats(
     assert progress[0]["name"] == "test.tool"
 
 
+# ---------------------------------------------------------------------------
+# provider-supplied call ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_id", ["", "x" * 4096])
+async def test_a_call_id_the_store_would_refuse_is_reminted_not_a_failed_run(
+    tmp_path: Path, bad_id: str
+) -> None:
+    """An id outside the store's bounds must not end the run.
+
+    Stream assembly bounds a tool-call id only by the shared multi-megabyte
+    buffer, but propose_tool_call raises ValueError past tool_call_id_max_chars.
+    That ValueError used to escape to the run's exception boundary: incident
+    minted, run failed, over a correlation key the model never chose. The
+    orchestrator has to substitute an id of its own and carry on.
+    """
+    executed: list[str] = []
+
+    def tool() -> JsonObject:
+        executed.append("ran")
+        return {"ok": True}
+
+    provider = FakeProvider(
+        [[ProviderEvent("completed", tool_calls=(ProviderToolCall(bad_id, "test.tool", {}),))]]
+    )
+    runner, store = _runner(tmp_path, provider, spec=_spec(tool))
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "go")
+    run = await runner.start_run(thread.id)
+
+    status = await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED})
+
+    assert status is RunStatus.COMPLETED
+    assert executed == ["ran"]
+    proposed = [
+        event.data for event in store.list_events(run["id"]) if event.type == "tool.proposed"
+    ]
+    assert len(proposed) == 1
+    minted = str(proposed[0]["tool_call_id"])
+    assert minted and len(minted) <= store.tool_call_id_max_chars
+
+
+@pytest.mark.asyncio
+async def test_a_call_id_reused_across_rounds_does_not_fail_the_run(tmp_path: Path) -> None:
+    """The same id in two rounds must not trip the store's primary key.
+
+    (run_id, id) is the tool_calls primary key, and the provider's
+    ``call_{index}`` fallback for streams that omit ids restarts at index 0
+    every round. The second round's insert used to raise
+    sqlite3.IntegrityError and fail the whole run. The first use keeps the
+    provider's id; the repeat gets a fresh one.
+    """
+    executed: list[str] = []
+
+    def tool() -> JsonObject:
+        executed.append("ran")
+        return {"ok": True}
+
+    reused = (ProviderToolCall("call_0", "test.tool", {}),)
+    provider = FakeProvider(
+        [
+            [ProviderEvent("completed", tool_calls=reused)],
+            [ProviderEvent("completed", tool_calls=reused)],
+        ]
+    )
+    runner, store = _runner(tmp_path, provider, spec=_spec(tool))
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "go")
+    run = await runner.start_run(thread.id)
+
+    status = await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED})
+
+    assert status is RunStatus.COMPLETED
+    assert executed == ["ran", "ran"]
+    ids = [
+        str(event.data["tool_call_id"])
+        for event in store.list_events(run["id"])
+        if event.type == "tool.proposed"
+    ]
+    assert len(ids) == 2
+    assert ids[0] == "call_0"
+    assert ids[1] != "call_0", "the repeat must be re-minted, not re-inserted"
+
+
 def test_arguments_that_exhaust_the_encoder_are_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
