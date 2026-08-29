@@ -5,6 +5,28 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（能力目录把 apk.sign 挂到 apksigner 探针，不再随 apktool 谎报就绪）
+
+- 承接"配置诊断诚实性"这条线,核查 `list_capabilities` 的 `status_probe` 映射是否与工具真正
+  依赖的后端一致时发现:`apk.apktool` 能力捆了 `apk.decode`/`apk.repack`/`apk.sign` 三个工具、
+  却只以 `apktool` 一个探针定状态。但 `apk.sign` 走的是 apktool 客户端的 `sign()`——依赖
+  **apksigner**(独立二进制、独立 `HEADLESS_RE_APKSIGNER`、独立 doctor 探针,可与 apktool
+  分开安装)。于是装了 apktool 但没装 apksigner 的机器上,能力目录报 `apk.apktool` 就绪、
+  `apk.sign` 却回 `capability_unavailable`——正是该目录本该杜绝的言行不一。
+- 把 `apk.sign` 拆成独立能力 `apk.apksigner`(status_probe 为 `apksigner`),`apk.apktool` 只留
+  decode/rebuild。二者 backend 仍是 `apk`;既有把目录钉到真实工具名与真实探针名的两条元测试
+  依然通过(apksigner 本就是 doctor 会发的探针、apk.sign 本就是真实工具)。对照未拆分的
+  `proxy.ca.install_android`(也会碰 adb)保持原样:它的**主**后端 mitmproxy 已被 status_probe
+  如实反映,adb 只是单个工具的次级传输且自成一条 `device.adb` 能力,不构成同类误报。
+- 新增元测试钉死:构造 apktool DETECTED 而 apksigner MISSING 的 doctor 报告,断言两条能力状态
+  分叉(apk.apktool=detected、apk.apksigner=missing)且各自工具清单正确。mutation 验证(把
+  apk.sign 折回 apktool 能力,该测即红)。ruff+mypy 通过,全量单测 6647 passed / 55 skipped。
+- 另经实测验证本轮及上几轮的 r2/doctor 改动:在 apt 装的 radare2 5.5.0(`r2` 与 `radare2`
+  两个名字都在,正好覆盖 `R2_BINARY_NAMES`)上跑 `test_m11_r2_live_gate.py` 三例全过,含需要
+  gcc 的 ELF 用例(实证 `aa aac`+`axtj` 能从真实 `main`→`helper` 调用recover出调用者);
+  整个 integration 目录在 Linux 上 collect-only 无导入错误,确认 `_WINDOWS_ONLY_MODULES`
+  自跳机制完备。
+
 ### 修复（r2/jadx/apktool/apksigner/ghidra 的不可用拒绝信息点名真正的堵点）
 
 - 把 webcrack 那条"unset 与打错字要能区分"的修法推广到其余非 PE CLI 后端。此前
