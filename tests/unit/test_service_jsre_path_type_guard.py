@@ -24,9 +24,7 @@ _BAD_PATHS = (123, 1.5, True, None, ["a.js"], {"path": "a.js"}, b"a.js")
 
 class _Service(JsReAnalysisMixin):
     def __init__(self, artifact_root: Path) -> None:
-        self.settings: Any = SimpleNamespace(
-            artifact_root=artifact_root, webcrack=None, wabt=None
-        )
+        self.settings: Any = SimpleNamespace(artifact_root=artifact_root, webcrack=None, wabt=None)
 
 
 @pytest.fixture
@@ -61,11 +59,10 @@ def test_a_string_path_still_reaches_the_backend(service: _Service, method: str)
     assert result.error.code == "capability_unavailable"
 
 
-def test_a_refused_unpack_creates_no_output_directory(
-    service: _Service, tmp_path: Path
-) -> None:
+def test_a_refused_unpack_creates_no_output_directory(service: _Service, tmp_path: Path) -> None:
     """The output tree used to be made before the path was ever looked at."""
-    result = service.js_unpack_bundle(123)
+    bad_path: Any = 123
+    result = service.js_unpack_bundle(bad_path)
 
     assert result.error is not None and result.error.code == "invalid_params"
     jsre_root = tmp_path / "jsre"
