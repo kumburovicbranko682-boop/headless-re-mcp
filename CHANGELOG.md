@@ -19,6 +19,13 @@ until 1.0 the tool surface may still change between minor versions.
   旧版 UI 的导航则从「内联渲染文本」变成其按钮本意的下载。新增
   `test_artifact_download_is_an_opaque_attachment_never_a_renderable_page` 钉住四个响应头。
 
+### 修复（web.network.get 两条错误路径中恰有一条违背「body 键必在」的文档承诺）
+
+- CDP 无响应体路径的注释明言「读 `result["body"]` 的调用方不会碰 missing key」，但
+  base64 解码失败路径只返回 `{**entry, "body_error"}`——同一契约在两条错误路径上恰好
+  一条成立一条不成立（修复前实测 KeyError）。现补齐 `body=""`、`base64_encoded=False`、
+  `body_truncated=False`，两条错误路径形状一致；对应用例改钉完整形状。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

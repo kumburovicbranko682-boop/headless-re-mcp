@@ -472,13 +472,23 @@ def test_network_get_decodes_a_base64_body_to_bytes(tmp_path: Path) -> None:
     assert Path(result["body_path"]).read_bytes() == b"\x89PNG\r\n"
 
 
-def test_network_get_reports_invalid_base64(tmp_path: Path) -> None:
+def test_network_get_reports_invalid_base64_in_the_documented_shape(tmp_path: Path) -> None:
+    """body_error travels alongside an empty body, never instead of one.
+
+    The no-body CDP failure path documents that a caller reading
+    ``result["body"]`` never hits a missing key; the invalid-base64 path used
+    to return only ``{**entry, "body_error"}``, so exactly one of the two
+    error paths broke that promise (KeyError verified before the fix).
+    """
     handle = _handle()
     handle.requests["r"] = {"requestId": "r"}
     handle.cdp.send = lambda *a, **k: {"body": "!!!not base64!!!", "base64Encoded": True}
     backend = _backend_with(handle)
     result = backend.network_get("s", "r", tmp_path)
     assert "was not valid base64" in result["body_error"]
+    assert result["body"] == ""
+    assert result["base64_encoded"] is False
+    assert result["body_truncated"] is False
 
 
 def test_console_returns_the_newest_tail() -> None:
