@@ -409,6 +409,18 @@ class _FlowRecorder:
             resp.headers.get("content-type", "") if resp else "",
             _MAX_METADATA_BYTES,
         )
+        # A 3xx flow's Location is where it sent the client next. Kept so the HAR
+        # export can fill the spec's response.redirectURL and a viewer draws the
+        # chain -- the same field the browser capture records for a redirect hop.
+        # Only for an actual redirect status: a Location on a non-3xx (some APIs
+        # echo it) is not a redirect target and must not be reported as one.
+        status_code = getattr(resp, "status_code", None)
+        redirect_url = ""
+        redirect_truncated = False
+        if resp is not None and isinstance(status_code, int) and 300 <= status_code < 400:
+            redirect_url, redirect_truncated = _bounded_metadata(
+                resp.headers.get("location", ""), _MAX_URL_BYTES
+            )
         # The on-wire (raw) response body length is known here, before the flow
         # may be dropped from the retain ring, so the summary keeps it even for a
         # flow whose body was not retained -- and the HAR export can report a real
@@ -454,10 +466,12 @@ class _FlowRecorder:
                 "method": method,
                 "url": url,
                 "host": host,
-                "status": getattr(resp, "status_code", None),
+                "status": status_code,
                 "content_type": content_type,
                 "response_size": response_size,
             }
+            if redirect_url:
+                entry["redirect_url"] = redirect_url
             if started_at is not None:
                 entry["started_at"] = started_at
             if timings:
@@ -473,6 +487,7 @@ class _FlowRecorder:
                 or host_truncated
                 or type_truncated
                 or error_truncated
+                or redirect_truncated
             ):
                 entry["metadata_truncated"] = True
             self.flows.append(entry)
@@ -837,6 +852,7 @@ class ProxyBackend:
                 started_date_time=iso_from_epoch(f.get("started_at")),
                 timings_ms=f.get("timings"),
                 error=f.get("error_msg") if f.get("error") else None,
+                redirect_url=f.get("redirect_url"),
             )
             for f in inst.recorder.snapshot()
         ]

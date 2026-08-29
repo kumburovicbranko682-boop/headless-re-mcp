@@ -313,13 +313,15 @@ def _flow(
     status: int | None = 200,
     body: bytes = b"body",
     content_type: str = "text/plain",
+    location: str = "",
     error: Any = None,
 ) -> Any:
     request = SimpleNamespace(method=method, pretty_url=url, host=host, headers={}, raw_content=b"")
+    headers = {"content-type": content_type}
+    if location:
+        headers["location"] = location
     response = (
-        SimpleNamespace(
-            status_code=status, headers={"content-type": content_type}, raw_content=body
-        )
+        SimpleNamespace(status_code=status, headers=headers, raw_content=body)
         if status is not None or body
         else None
     )
@@ -340,6 +342,41 @@ def test_recorder_records_response_and_error_flows() -> None:
     assert bad["error_msg"] == "reset"
     assert bad["status"] is None
     assert recorder.raw("ok") is not None
+
+
+def test_recorder_records_the_redirect_location_of_a_3xx_flow() -> None:
+    """A 3xx flow keeps its Location as redirect_url; a non-3xx never does.
+
+    mitmproxy captures each redirect hop as its own flow, so the hop is already
+    a row -- but the HAR needs the Location to fill redirectURL and draw the
+    chain. Only an actual redirect status counts: some APIs echo a Location on a
+    200, and that is not a redirect target.
+    """
+    recorder = _FlowRecorder()
+    recorder.response(
+        _flow(flow_id="hop", status=302, body=b"", location="http://x/landing")
+    )
+    recorder.response(
+        _flow(flow_id="ok", status=200, body=b"hi", location="http://x/not-a-redirect")
+    )
+    snap = {e["id"]: e for e in recorder.snapshot()}
+    assert snap["hop"]["status"] == 302
+    assert snap["hop"]["redirect_url"] == "http://x/landing"
+    assert "redirect_url" not in snap["ok"]
+
+
+def test_recorder_flags_a_truncated_redirect_location(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hostile/oversized Location is bounded like every other summary field."""
+    monkeypatch.setattr(proxy_client, "_MAX_URL_BYTES", 16)
+    recorder = _FlowRecorder()
+    recorder.response(
+        _flow(flow_id="hop", status=301, body=b"", location="http://x/" + "a" * 100)
+    )
+    entry = recorder.snapshot()[0]
+    assert len(entry["redirect_url"].encode()) <= 16
+    assert entry["metadata_truncated"] is True
 
 
 def test_recorder_omits_a_body_over_the_store_ceiling(

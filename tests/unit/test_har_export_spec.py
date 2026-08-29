@@ -809,6 +809,38 @@ def test_proxy_export_har_carries_the_captured_response_body_size(tmp_path: Path
         assert entry["response"]["bodySize"] == 512
 
 
+def test_proxy_export_har_carries_the_redirect_url_of_a_3xx_flow(tmp_path: Path) -> None:
+    """A 3xx flow's Location reaches the HAR as response.redirectURL, like the browser's.
+
+    mitmproxy records each redirect hop as its own flow; the recorder keeps the
+    Location as redirect_url and the export threads it into the spec's
+    redirectURL so a viewer draws the chain. A non-3xx flow keeps the empty
+    string.
+    """
+    recorder = _FlowRecorder()
+    hop_request = SimpleNamespace(method="GET", pretty_url="http://x/go", host="x")
+    hop_response = SimpleNamespace(
+        status_code=302,
+        headers={"content-type": "text/html", "location": "http://x/landing"},
+        raw_content=b"",
+    )
+    recorder.response(SimpleNamespace(id="hop", request=hop_request, response=hop_response))
+    land_request = SimpleNamespace(method="GET", pretty_url="http://x/landing", host="x")
+    land_response = SimpleNamespace(
+        status_code=200, headers={"content-type": "text/html"}, raw_content=b"ok"
+    )
+    recorder.response(SimpleNamespace(id="land", request=land_request, response=land_response))
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)  # type: ignore[assignment]
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    by_url = {e["request"]["url"]: e for e in doc["log"]["entries"]}
+    assert by_url["http://x/go"]["response"]["status"] == 302
+    assert by_url["http://x/go"]["response"]["redirectURL"] == "http://x/landing"
+    assert by_url["http://x/landing"]["response"]["redirectURL"] == ""
+
+
 def test_proxy_export_har_is_now_bounded_by_the_capture_cap(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
