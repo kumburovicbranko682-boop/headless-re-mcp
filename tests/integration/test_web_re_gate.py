@@ -97,3 +97,32 @@ def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
         assert "module" in result.data["wat"]
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_info_when_wasm_objdump_present(tmp_path: Path) -> None:
+    """Exercise the wasm-objdump path, which wasm.wat's gate does not cover.
+
+    ``WasmClient.available`` only guarantees wasm2wat; ``wasm.info`` needs
+    wasm-objdump, which a partial wabt install may not ship (the split the
+    doctor probe_wabt now reports). Detect its absence through the public
+    envelope -- a valid module that comes back capability_unavailable means the
+    tool is missing -- so the skip is honest rather than a silent pass.
+    """
+    module = tmp_path / "empty.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    service = AnalysisService()
+    try:
+        result = service.wasm_info(str(module))
+        if (
+            not result.ok
+            and result.error is not None
+            and result.error.code == "capability_unavailable"
+        ):
+            pytest.skip(
+                "wabt wasm-objdump not installed — WASM info Gate not run (skip != pass)"
+            )
+        assert result.ok, result.error
+        assert "objdump" in result.data
+    finally:
+        service.close_all()

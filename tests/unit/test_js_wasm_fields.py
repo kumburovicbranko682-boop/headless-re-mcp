@@ -57,6 +57,43 @@ def test_wasm_info_puts_the_dump_in_objdump_not_sections(tmp_path: Path) -> None
     assert "Answers with objdump" in _tool_docstring("wasm.info")
 
 
+def test_wasm_info_refuses_a_wat_only_install_without_crashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """available (wasm2wat) is True, yet wasm.info honestly refuses without objdump.
+
+    A wabt directory -- a custom HEADLESS_RE_WABT, or a partial install -- can
+    ship wasm2wat but not wasm-objdump. ``available`` reports wasm2wat, so
+    ``wasm.wat`` works, but ``wasm.info`` needs wasm-objdump and must return a
+    clean capability_unavailable rather than dereference a None executable.
+    This is the client-side twin of the doctor probe_wabt split that surfaces
+    wasm-objdump separately: pin that ``available`` can never be read as "both
+    tools are here".
+    """
+    import headless_re_mcp.backends.jsre.client as jsre_client
+
+    # Decide resolution from the passed config alone: a real wasm-objdump on the
+    # host PATH must not turn a wat-only install into a both-tools one.
+    monkeypatch.setattr(jsre_client.shutil, "which", lambda name: None)
+    wabt = tmp_path / "wabt"
+    (wabt / "bin").mkdir(parents=True)
+    (wabt / "bin" / "wasm2wat").write_text("#!/bin/sh\necho '(module)'\n")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+    client = WasmClient(wabt)
+    assert client.available is True, "wasm2wat alone makes the client available"
+    with pytest.raises(JsReError) as caught:
+        client.info(module)
+    assert caught.value.code == "capability_unavailable"
+    # wat still works on the same install, proving the refusal is objdump-specific.
+    with patch(
+        "headless_re_mcp.backends.jsre.client.run_bounded",
+        lambda cmd, **kw: Completed(0, b"(module)", b""),
+    ):
+        assert client.wat(module)["wat"] == "(module)"
+
+
 def test_wasm_wat_names_bytes_not_size(tmp_path: Path) -> None:
     """The catalog named wat and never named the length field.
 

@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（wasm-only 安装的能力诚实契约 + wasm.info 实机门——补齐 wabt 非对称安装的验证）
+
+- 上一轮 doctor 的 `probe_wabt` 已把 wasm2wat 与 wasm-objdump 拆开单独上报，但客户端/服务层
+  「只有 wasm2wat、没有 wasm-objdump」这一诚实契约在任何地方都没被钉住。实证确认：一个只带
+  `bin/wasm2wat` 的 wabt 目录（自定义 HEADLESS_RE_WABT 或残缺安装）下，`WasmClient.available`
+  为 True（wasm2wat 在），`wasm.wat` 正常，而 `wasm.info` 在客户端与服务层都干净地返回
+  `capability_unavailable`——不会对 None 可执行文件解引用崩溃。新增
+  `test_wasm_info_refuses_a_wat_only_install_without_crashing`（处处运行的单元契约）钉住
+  「available 永远不能被读成『两个工具都在』」；变异测试确认：抹掉 `_require_input` 的 tool-None
+  守卫后该用例转红。
+- `test_web_re_gate.py` 的 wasm 实机门此前只覆盖 `wasm.wat`（wasm2wat），漏了 `wasm.info`
+  （wasm-objdump）——正是 `probe_wabt` 拆分出来单独上报的那条工具路径。新增
+  `test_wasm_info_when_wasm_objdump_present`，仅经公有信封判断工具是否缺失（合法模块回
+  `capability_unavailable` 即代表 wasm-objdump 未装，据此诚实 skip 而非静默 pass）。本轮已装
+  真实 wabt 1.0.34 跑通两条 wasm 实机门（`wasm.wat` 与 `wasm.info` 均 PASS），确认
+  wasm-objdump 路径端到端可用。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
