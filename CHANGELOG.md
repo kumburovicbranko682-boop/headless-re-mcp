@@ -5,18 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 测试（androguard DEX 分析路径的实机 gate：apk.classes/methods/xrefs）
+### 测试（apk.xrefs 判别性实机 gate：xrefs 必须反映真实调用图）
 
-- `apk.classes` / `apk.methods` / `apk.xrefs` 走 androguard 在进程内解析真实 Dalvik 可执行体,
-  但所有单测都把 androguard 打桩,没有任何东西证明客户端确实按契约映射真实 DEX(apktool 自己的
-  decode/build 另有 live gate,这补的是缺失的另一半——进程内分析路径)。
-- 新增 `tests/integration/test_android_dex_analysis_gate.py`:像 ELF gate 用 gcc 编译
-  `elf_fixture.c` 那样,用 `smali` 汇编两个类进真实 `classes.dex`(`Helper` 有一个被
-  `Main` 调用两次的方法和一个无人调用的方法),`aapt2` link 出二进制 AXML 清单,压进 APK
-  (不签名——androguard 不看签名),再经 service 会话端到端驱动。关键是 xrefs 的**判别性**:
-  被调方法报出两个调用点、未调方法报 0,让"所有方法看起来都一样"的夹具无法蒙混过关;另钉
-  `limit=1` 的 `has_more` 诚实。`smali`/`aapt2`/androguard 任一缺失则 skip(skip != pass),
-  已实证真实工具链上通过、缺 smali 时诚实 skip、无 android extras 时干净收集。
+- androguard 的 DEX 分析已有"被调方法能解析到调用者"的正向实机覆盖,但正向断言看不到的失效
+  模式是 xrefs **停止判别**——无论调用图如何都返回全部方法、或永远返回空——它照样满足
+  "已知调用者在列表里"。本 gate 钉另一面:在调用图完全已知的 DEX 上,被调方法精确报出其调用点、
+  无人调用的方法报 0,让"丢失判别能力"的实现在此暴露。
+- 新增 `tests/integration/test_apk_xrefs_discrimination_gate.py`:夹具是真实 `classes.dex`
+  (`smali` 汇编一次后 base64 内嵌,运行时**只依赖 androguard**——无需 smali/aapt2/Android SDK),
+  调用图为 `Main.run()` 调 `Helper.doWork()` 两次、`Helper.unused()` 与 `Main.run()` 无人调用。
+  断言:`doWork` 恰好两个调用点且全部来自 `Main.run`(非一锅端),`unused`/`run`/不存在方法均
+  报 0 callers(正向覆盖漏掉的判别器),`limit=1` 时 `has_more=True`(诚实截断而非静默丢弃);
+  另钉 dotted 与 smali 类名等价、外部框架类被过滤。androguard 缺失则 skip(skip != pass),
+  已实证真实 androguard 上通过、lint 干净。
 
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
