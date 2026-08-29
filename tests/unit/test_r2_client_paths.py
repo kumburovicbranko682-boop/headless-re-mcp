@@ -99,7 +99,13 @@ def test_xrefs_enriches_run_payload(tmp_path: Path) -> None:
     assert out["items"][0]["from_address"]["va"] == 0x140002000
 
 
-def test_run_reports_capability_unavailable_without_executable(tmp_path: Path) -> None:
+def test_run_reports_capability_unavailable_without_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # executable=None falls back to PATH discovery, so on a machine that has
+    # radare2 installed this test would exercise not_found instead. Pin the
+    # absence: the refusal under test is "no r2 anywhere", not "no binary".
+    monkeypatch.setattr("headless_re_mcp.backends.r2.client.shutil.which", lambda name: None)
     client = R2Client(executable=None)
     with pytest.raises(R2Error) as caught:
         client.run(tmp_path / "any.exe", ["i"])
