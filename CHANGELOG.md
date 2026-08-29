@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（proxy.flow.get 面对 errored flow 不再崩，且把失败原因带进详情）
+
+- `proxy.flows` 会把一条"请求还没解析就失败"的 flow(早期 TLS/连接失败,`error` 钩子捕获)也记进环形缓冲——摘要侧
+  一律用 `getattr(req, "method", "")` 读,故 `request` 为 `None` 也安然列出并标 `error`/`error_msg`。但 `flow.get`
+  详情侧直接 `req.method`,于是**对着摘要明明列着的那一行**下钻就抛 `AttributeError`→被记成 `internal_error` 事故;
+  且即便 errored flow 有 request,`flow.get` 也完全丢掉 `error`/`error_msg`,详情比摘要还少信息,恰好把 RE 常要的
+  发现("这台主机拒绝了握手")藏了起来。现在 `flow.get` 照摘要那样用 `getattr` 读请求字段(无 request 时回空
+  method/url 而非崩),并把顶层 `error`/`error_msg`(按 `_MAX_METADATA_BYTES` 截断,超出置 `metadata_truncated`)
+  带进详情;正常完成的 flow 依旧不带 error 字段。docstring 补记这套契约。
+- 已在真实 mitmproxy 12.2.3 上活体验证:经代理请求一个拒连上游,摘要与 `flow.get` 均 `error=True`、
+  `error_msg="[Errno 111] Connect call failed"`、`status=None` 且不崩。单测覆盖 request=None/有 request/正常完成/
+  超长错误串四态,并经双变异验证(还原直连 `req.method` 令无崩断言变红;去掉 error 透出令三条断言变红)。
+
 ### 修复（web.dom.snapshot 截断时把完整文档落盘到 html_path，消除"页面尾部无处可寻"）
 
 - `web.dom.snapshot` 过去在**浏览器内**就把 `outerHTML` 切到 200KB 内联上限(`text.slice(0, cap)`),只回一个前缀
