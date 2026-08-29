@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（能力目录补全每个非 PE 后端暴露的全部工具，杜绝"装了后端却查不到工具"）
+
+- 能力目录 `_CORE_CAPABILITIES` 的各能力 `tools` 列表出现漂移:`r2.pipe`/`ghidra.headless`/`jsre.webcrack`/
+  `wasm.wabt` 都完整列出各自暴露的每个工具(r2 全 8 个、ghidra 全 5 个、js 全 3 个、wasm 两个),但同类非 PE 后端
+  随着新增工具却没同步更新,导致 **21 个已发布、可调用、受后端探针门控的工具** 不在"操作者据以了解装该后端能得到什么"
+  的能力清单里——`apk.certificates`/`components`/`native_libs`、九个 `device.*`(info、properties、packages、
+  uninstall、force_stop、current_activity、pull、push、forward)、`frida.applications`/`server.ensure`、
+  `web.close`/`console`/`wasm.list`/`dom.snapshot`/`har.export`、以及 `proxy.status`/`stop`。原有正向测试只查
+  "目录里的名字是否真实存在",抓不到"真实工具是否被漏登",所以漂移一直无声发布。现补全这五个列表,并新增反向覆盖测试:
+  任一非 PE 后端(r2/ghidra/frida/apk/device/web/js/wasm/proxy 前缀)注册了工具却没被任何能力登记,即测试失败——
+  今后新增工具必须并入其能力,否则红线拦下。
+
 ### 文档（r2.functions 补记 items_total/items_limit，与其余 r2 读取器一致）
 
 - `r2.functions` 是唯一一个 docstring 只提 `items_truncated`、没提 `items_total`/`items_limit` 的 r2 列表读取器,
