@@ -17,6 +17,7 @@ from typing import Any
 from headless_re_mcp.backends.proxy.client import (
     _MAX_FLOW_HEADERS,
     _MAX_HEADER_VALUE_BYTES,
+    _MAX_METADATA_BYTES,
     ProxyBackend,
     _bounded_headers,
 )
@@ -26,6 +27,11 @@ def _flow(req_headers: dict[str, str], resp_headers: dict[str, str], *, body: by
     request = SimpleNamespace(method="GET", pretty_url="http://x/1", headers=req_headers)
     response = SimpleNamespace(status_code=200, headers=resp_headers, raw_content=body)
     return SimpleNamespace(request=request, response=response)
+
+
+def _errored_flow(*, request: Any, msg: str | None = "net::ERR_CONNECTION_REFUSED") -> Any:
+    error = SimpleNamespace(msg=msg) if msg is not None else None
+    return SimpleNamespace(request=request, response=None, error=error)
 
 
 def _backend_returning(flow: Any, monkeypatch: Any) -> ProxyBackend:
@@ -103,3 +109,66 @@ def test_flow_get_bounds_request_headers_and_flags_truncation(
     # The response headers were small, so that side is not flagged.
     assert "metadata_truncated" not in payload["response"]
     assert list(tmp_path.iterdir()) == []
+
+
+def test_flow_get_of_an_errored_flow_surfaces_the_reason(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Drilling into an errored flow must show why it failed, like the summary.
+
+    proxy.flows marks an errored flow with error/error_msg; before this,
+    flow.get dropped both, so the detail view of a listed failure was a null
+    status and an empty response -- hiding the finding an RE session is after.
+    """
+    request = SimpleNamespace(method="GET", pretty_url="http://x/e1", headers={})
+    backend = _backend_returning(_errored_flow(request=request), monkeypatch)
+    payload = backend.flow_get("s", "e1", tmp_path)
+    assert payload["error"] is True
+    assert payload["error_msg"] == "net::ERR_CONNECTION_REFUSED"
+    assert payload["response"]["status"] is None
+    assert payload["request"]["url"] == "http://x/e1"
+
+
+def test_flow_get_of_an_errored_flow_without_a_request_does_not_crash(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """An early failure leaves request None; the summary reads it, so must flow.get.
+
+    A TLS/connection failure the error hook captured before any request line was
+    parsed reaches the raw store with request None. Dereferencing req.method
+    raised AttributeError and turned a benign, listed row into an internal_error
+    incident on drill-in; empty method/url plus the error reason is the honest
+    answer.
+    """
+    backend = _backend_returning(_errored_flow(request=None), monkeypatch)
+    payload = backend.flow_get("s", "e1", tmp_path)
+    assert payload["request"]["method"] == ""
+    assert payload["request"]["url"] == ""
+    assert payload["response"]["status"] is None
+    assert payload["error"] is True
+    assert payload["error_msg"] == "net::ERR_CONNECTION_REFUSED"
+
+
+def test_flow_get_of_a_completed_flow_carries_no_error(tmp_path: Path, monkeypatch: Any) -> None:
+    """The completed path must not sprout a spurious error field.
+
+    The guard's complement: a normal flow (no flow.error) must answer with no
+    top-level error/error_msg, so a reader never mistakes a success for a
+    failure.
+    """
+    flow = _flow({"accept": "text/plain"}, {"content-type": "text/plain"}, body=b"ok")
+    backend = _backend_returning(flow, monkeypatch)
+    payload = backend.flow_get("s", "f1", tmp_path)
+    assert "error" not in payload
+    assert "error_msg" not in payload
+    assert payload["response"]["status"] == 200
+
+
+def test_flow_get_bounds_a_huge_error_message(tmp_path: Path, monkeypatch: Any) -> None:
+    """A hostile/verbose error string is bounded like every other metadata field."""
+    request = SimpleNamespace(method="GET", pretty_url="http://x/e1", headers={})
+    huge = "é" * (_MAX_METADATA_BYTES + 100)
+    backend = _backend_returning(_errored_flow(request=request, msg=huge), monkeypatch)
+    payload = backend.flow_get("s", "e1", tmp_path)
+    assert len(str(payload["error_msg"]).encode("utf-8")) <= _MAX_METADATA_BYTES
+    assert payload["metadata_truncated"] is True

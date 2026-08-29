@@ -744,10 +744,15 @@ class ProxyBackend:
                 "flow body was not retained",
                 flow_id=flow_id,
             )
-        req = flow.request
-        resp = flow.response
-        method, method_cut = _bounded_metadata(req.method, _MAX_METADATA_BYTES)
-        url, url_cut = _bounded_metadata(req.pretty_url, _MAX_URL_BYTES)
+        req = getattr(flow, "request", None)
+        resp = getattr(flow, "response", None)
+        # An errored flow can reach the raw store with request None -- an early
+        # TLS/connection failure the `error` hook captured before any request
+        # line was parsed. The summary already reads such a flow through getattr;
+        # flow_get must too, or `req.method` raises AttributeError and a benign,
+        # listed row turns into an internal_error incident on drill-in.
+        method, method_cut = _bounded_metadata(getattr(req, "method", ""), _MAX_METADATA_BYTES)
+        url, url_cut = _bounded_metadata(getattr(req, "pretty_url", ""), _MAX_URL_BYTES)
         req_headers, req_headers_cut = _bounded_headers(req)
         resp_headers, resp_headers_cut = _bounded_headers(resp) if resp else ({}, False)
         request: JsonObject = {"method": method, "url": url, "headers": req_headers}
@@ -764,7 +769,21 @@ class ProxyBackend:
         if resp_headers_cut:
             response["metadata_truncated"] = True
         response.update(_emit_body(_raw_body(resp), artifact_dir))
-        return {"id": flow_id, "request": request, "response": response}
+        result: JsonObject = {"id": flow_id, "request": request, "response": response}
+        # Carry the failure reason the summary marks (error / error_msg) into the
+        # detail view too. Without it, drilling into a flow the list flagged as
+        # errored showed only a null status and empty response -- strictly less
+        # than the summary -- hiding the very finding ("host refused the
+        # handshake") an RE session is often after. Bounded like the summary's.
+        err = getattr(flow, "error", None)
+        if err is not None:
+            message = str(getattr(err, "msg", None) or err or "flow error")
+            error_text, error_cut = _bounded_metadata(message, _MAX_METADATA_BYTES)
+            result["error"] = True
+            result["error_msg"] = error_text
+            if error_cut:
+                result["metadata_truncated"] = True
+        return result
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:
         inst = self._get(session_id)

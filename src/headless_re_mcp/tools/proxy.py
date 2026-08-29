@@ -96,8 +96,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         carries artifact_error instead, and body_path still points at the file so
         the capture is degraded, not lost. Headers are bounded in count and size;
         metadata_truncated on request or response marks a clipped header map or
-        field. There is no top-level headers or body field, and a binary body is
-        never returned as a mojibake body string.
+        field. A flow proxy.flows marked as errored carries top-level error and
+        error_msg here too (the same failure reason, e.g. a refused handshake),
+        with response.status null; a request that never parsed still answers with
+        empty method/url rather than failing. There is no top-level headers or
+        body field, and a binary body is never returned as a mojibake body string.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 
