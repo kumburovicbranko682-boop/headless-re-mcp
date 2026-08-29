@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（apk.export_sources 的 java_files 清单先排序整表再取头，杜绝"截断页伪装成字母序")
+
+- jadx 的 `_capped_java_listing` 过去在 `rglob` 的**文件系统顺序**里取头 2000 个 `.java`,然后**只对这一页**排序——
+  于是反编译树的 java 文件超过上限时(任何稍具规模的 app 轻松破 2000 类),返回的是一段任意子集却摆出字母序的样子,
+  `rglob` 本就不排序,真正排在最前的路径常常缺席,且没有 offset 够不到其余。现在先把整棵树(上限 50000)的 `.java`
+  路径收齐再排序取头,和 apk/device 的读取器一致;完整的树仍在磁盘 `output_dir` 上,单个类由 `apk.decompile` 直接
+  按路径读取,故该预览清单只是"字母序头页"。docstring 改为写明 java_files 即字母序头页。jsre 的 unpack 清单本就正确
+  (它用等于采集上限的 cap 收齐整表,再由 service 按 offset 开窗),无需改动。
+- 已用单测覆盖:在真实磁盘上铺 6 个 `.java`、把上限压到 4、并强制 `rglob` 逆序产出,断言返回页正是字母序头
+  (C0..C3)而非逆序前缀(C2..C5);经变异验证(改回"先切后排"即令头页断言变红)。另在真实 jadx 1.5.1 上跑活体
+  Android 网关:反编译网关内建的真 APK,`apk.export_sources` 的 java_files 含 `Gate.java`,`apk.decompile` 取回类源——
+  skip 转为真 pass。
+
 ### 修复（apk.permissions/components/native_libs 先排序整表再取头，杜绝"截断页伪装成字母序")
 
 - `_cap_names`(供 `apk.permissions`、`apk.components` 用)与 `apk.native_libs` 过去在 androguard 的**原始列表顺序**里
