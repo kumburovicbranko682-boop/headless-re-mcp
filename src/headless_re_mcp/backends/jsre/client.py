@@ -135,12 +135,13 @@ def _bounded_output(
     }
     if include_bytes:
         result["bytes"] = len(payload)
-    # The inline text is capped, and unlike js.unpack_bundle these WASM tools
-    # have no companion that writes the whole thing to disk -- so a truncated
-    # WAT dropped every function past the buffer with no way to get it back.
+    # The inline text is capped, and the stdout-capturing tools here (wasm2wat,
+    # wasm-objdump, and webcrack's deobfuscate/beautify) have no companion that
+    # writes the whole thing to disk -- so a truncated dump dropped everything
+    # past the buffer with no way to get it back short of re-running the tool.
     # When the caller offers a spill path, persist the full output there and
     # name it so the tail is recoverable. Best-effort: a failed write leaves the
-    # truncated text in place rather than turning a large module into an error.
+    # truncated text in place rather than turning a large output into an error.
     if truncated and spill_path is not None:
         try:
             spill_path.parent.mkdir(parents=True, exist_ok=True)
@@ -200,7 +201,9 @@ class JsClient:
             )
         return _require_existing_file(path, missing="input file not found")
 
-    def deobfuscate(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
+    def deobfuscate(
+        self, path: Path, *, timeout: float = 120.0, spill_path: Path | None = None
+    ) -> JsonObject:
         resolved = self._require_input(path)
         stdout, stderr, code = _run(
             [str(self.executable), str(resolved)], timeout=timeout, maximum=_MAX_TIMEOUT_S
@@ -209,13 +212,21 @@ class JsClient:
             raise JsReError(
                 "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
+        # webcrack prints the deobfuscated code to stdout (no -o), so a result
+        # past the inline cap left its tail nowhere -- the caller was told to
+        # re-run js.unpack_bundle, a second full webcrack pass. Spill the full
+        # code to output_path in this same run instead, exactly as wasm.wat does.
         return _note_nonzero_exit(
-            _bounded_output(stdout, "code", include_bytes=True), code=code, stderr=stderr
+            _bounded_output(stdout, "code", include_bytes=True, spill_path=spill_path),
+            code=code,
+            stderr=stderr,
         )
 
-    def beautify(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
+    def beautify(
+        self, path: Path, *, timeout: float = 120.0, spill_path: Path | None = None
+    ) -> JsonObject:
         # webcrack always unminifies; expose it under a formatting-focused name.
-        return self.deobfuscate(path, timeout=timeout)
+        return self.deobfuscate(path, timeout=timeout, spill_path=spill_path)
 
     def unpack_bundle(
         self,

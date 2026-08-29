@@ -74,8 +74,14 @@ class JsReAnalysisMixin:
 
     def js_deobfuscate(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
+            spill_path = self._jsre_spill_path("deobfuscated", ".js")
             data = JsClient(getattr(self.settings, "webcrack", None)).deobfuscate(
-                Path(path), timeout=timeout
+                Path(path), timeout=timeout, spill_path=spill_path
+            )
+            prune_capped_dir(
+                spill_path.parent,
+                max_entries=JSRE_UNPACK_MAX_ENTRIES,
+                max_bytes=JSRE_UNPACK_MAX_BYTES,
             )
             return _success(data, backend="webcrack")
         except JsReError as exc:
@@ -85,8 +91,14 @@ class JsReAnalysisMixin:
 
     def js_beautify(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
+            spill_path = self._jsre_spill_path("beautified", ".js")
             data = JsClient(getattr(self.settings, "webcrack", None)).beautify(
-                Path(path), timeout=timeout
+                Path(path), timeout=timeout, spill_path=spill_path
+            )
+            prune_capped_dir(
+                spill_path.parent,
+                max_entries=JSRE_UNPACK_MAX_ENTRIES,
+                max_bytes=JSRE_UNPACK_MAX_BYTES,
             )
             return _success(data, backend="webcrack")
         except JsReError as exc:

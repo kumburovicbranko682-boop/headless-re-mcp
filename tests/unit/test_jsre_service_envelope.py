@@ -171,6 +171,91 @@ def test_wasm_wat_over_the_buffer_spills_the_full_text_under_the_jsre_root(
     assert spilled.read_bytes() == body
 
 
+def test_js_deobfuscate_over_the_buffer_spills_the_full_code_under_the_jsre_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A truncated deobfuscation must land its full code in the jsre area.
+
+    webcrack prints to stdout (no -o), so a result past the inline cap used to
+    drop its tail and send the caller to re-run js.unpack_bundle -- a second
+    full webcrack pass. Now the service hands deobfuscate a spill path exactly
+    as it does the wasm tools, so output_path names a real file under
+    artifact_root/jsre holding every byte, recovered in this same run.
+    """
+    body = b"function f(){return 42;}\n" * 80
+    monkeypatch.setattr(jsre_client, "_MAX_INLINE", 16)
+    monkeypatch.setattr(jsre_client, "run_bounded", _stub_run(body))
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    service = _service(tmp_path)
+    try:
+        result = service.js_deobfuscate(str(src))
+    finally:
+        service.close_all()
+
+    assert result.ok, result.error
+    assert result.data is not None
+    assert result.data["truncated"] is True
+    # bytes is the full size; the inline code is only the leading buffer.
+    assert result.data["bytes"] == len(body)
+    assert len(result.data["code"].encode("utf-8")) <= 16
+    spilled = Path(result.data["output_path"])
+    assert spilled.is_file()
+    jsre_root = (tmp_path / "artifacts" / "jsre").resolve()
+    assert jsre_root in spilled.resolve().parents
+    assert spilled.read_bytes() == body
+
+
+def test_js_beautify_over_the_buffer_also_spills_the_full_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """beautify shares deobfuscate's path, so it spills the same way."""
+    body = b"const y = 2;\n" * 80
+    monkeypatch.setattr(jsre_client, "_MAX_INLINE", 16)
+    monkeypatch.setattr(jsre_client, "run_bounded", _stub_run(body))
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    service = _service(tmp_path)
+    try:
+        result = service.js_beautify(str(src))
+    finally:
+        service.close_all()
+
+    assert result.ok, result.error
+    assert result.data is not None
+    assert result.data["truncated"] is True
+    spilled = Path(result.data["output_path"])
+    assert spilled.is_file()
+    assert spilled.read_bytes() == body
+
+
+def test_a_deobfuscation_that_fits_the_buffer_writes_no_spill_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No truncation, no output_path, and no stray file under the jsre root.
+
+    The spill is written only when the inline text was cut. A result that fits
+    must not leave a file behind (the wasm tools hold the same contract), so an
+    agent never mistakes a small deobfuscation for one with a recoverable tail.
+    """
+    monkeypatch.setattr(jsre_client, "run_bounded", _stub_run(b"var x = 1;"))
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    service = _service(tmp_path)
+    try:
+        result = service.js_deobfuscate(str(src))
+    finally:
+        service.close_all()
+
+    assert result.ok, result.error
+    assert result.data is not None
+    assert result.data["truncated"] is False
+    assert "output_path" not in result.data
+    jsre_root = (tmp_path / "artifacts" / "jsre")
+    spilled = list(jsre_root.glob("deobfuscated-*.js")) if jsre_root.is_dir() else []
+    assert spilled == [], f"a fitting result left a spill file: {spilled}"
+
+
 def test_an_unexpected_backend_exception_is_contained_as_a_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

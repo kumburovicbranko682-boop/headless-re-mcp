@@ -38,10 +38,14 @@ class _FakeClient:
             raise self._answer
         return dict(self._answer)
 
-    def deobfuscate(self, path: Path, *, timeout: float) -> JsonObject:
+    def deobfuscate(
+        self, path: Path, *, timeout: float, spill_path: Path | None = None
+    ) -> JsonObject:
         return self._reply()
 
-    def beautify(self, path: Path, *, timeout: float) -> JsonObject:
+    def beautify(
+        self, path: Path, *, timeout: float, spill_path: Path | None = None
+    ) -> JsonObject:
         return self._reply()
 
     def unpack_bundle(

@@ -30,15 +30,16 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         path is any local .js file: a standalone download, or one a web session
         saved -- web.script.source's source_path (a spilled script source) or
         web.network.get's body_path (a fetched script body). Answers with code
-        and bytes, plus truncated when the text was cut at
-        the buffer. When truncated is set, bytes exceeds the returned code
-        length and the tail is not in this reply: run js.unpack_bundle on the
-        same file to recover the complete output on disk -- webcrack writes the
-        full text to output_dir (deobfuscated.js for a plain file, one file per
-        module for a bundle). If webcrack exits non-zero but still emitted code,
-        that code is returned with exit_code, tool_failed and stderr set so a
-        partial run is not read as complete. An input over 16 MiB is refused
-        as too_large rather than handed to webcrack.
+        and bytes, plus truncated when the text was cut at the buffer. When
+        truncated is set the complete code is written to output_path (the code
+        field holds only the leading buffer), so the tail is recoverable in this
+        same run rather than lost -- no need to re-run to get it back. (For a
+        webpack/browserify bundle, js.unpack_bundle splits it into one file per
+        module under output_dir, which output_path's single file does not.) If
+        webcrack exits non-zero but still emitted code, that code is returned
+        with exit_code, tool_failed and stderr set so a partial run is not read
+        as complete. An input over 16 MiB is refused as too_large rather than
+        handed to webcrack.
         """
         return _dump(analysis.js_deobfuscate(path, timeout=timeout))
 
@@ -51,9 +52,10 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Same payload as js.deobfuscate: Answers with code and bytes, plus
         truncated when the text was cut at the buffer, and exit_code /
         tool_failed / stderr when webcrack exits non-zero but still emitted
-        code. When truncated is set, run js.unpack_bundle on the same file to
-        recover the complete output on disk. An input over 16 MiB is refused as
-        too_large rather than handed to webcrack.
+        code. When truncated is set the complete code is written to output_path
+        (the code field holds only the leading buffer), recoverable in this same
+        run. An input over 16 MiB is refused as too_large rather than handed to
+        webcrack.
         """
         return _dump(analysis.js_beautify(path, timeout=timeout))
 
