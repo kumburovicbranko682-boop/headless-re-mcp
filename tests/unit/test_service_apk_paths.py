@@ -38,7 +38,9 @@ class _FakeApk:
     def strings(self, binary: Path, *, offset: int, limit: int) -> dict[str, Any]:
         return {"strings": []}
 
-    def xrefs(self, binary: Path, method_name: str, *, limit: int) -> dict[str, Any]:
+    def xrefs(
+        self, binary: Path, method_name: str, *, offset: int = 0, limit: int
+    ) -> dict[str, Any]:
         return {"method": method_name, "xrefs": []}
 
     def manifest(self, binary: Path) -> dict[str, Any]:
