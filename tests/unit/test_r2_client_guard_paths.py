@@ -8,13 +8,13 @@ branches nothing exercised:
   without a usable executable (``capability_unavailable``).
 * ``disasm`` / ``xrefs`` input validation -- a bool or string address, a
   negative address, a count outside 1..512 -- and, on the happy path, the
-  exact ``pdj``/``axj`` script handed to the process plus the echoed
-  address/count fields.
+  exact ``pdj``/``axtj``/``axfj`` script handed to the process plus the
+  echoed address/count fields.
 * ``_discover`` returning the first radare2 binary name found on PATH.
 
 The disasm/xrefs commands matter because they are built from caller input and
 must stay inside the allow-list ``run`` enforces: a change to the format
-string that stops matching ``_PDJ_COMMAND``/``_AXJ_COMMAND`` would reject
+string that stops matching ``_PDJ_COMMAND``/``_AXREF_COMMAND`` would reject
 every disasm call at runtime, which these tests would catch immediately.
 """
 
@@ -152,20 +152,37 @@ def test_xrefs_rejects_a_non_int_or_negative_address(tmp_path: Path) -> None:
         assert caught.value.code == "invalid_params"
 
 
-def test_xrefs_builds_the_whitelisted_axj_script_and_echoes_the_address(
+def test_xrefs_builds_the_scoped_axtj_axfj_script_and_echoes_the_address(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The script is the axtj/axfj pair at the address, never bare axj.
+
+    ``axj @ addr`` ignores the seek and dumps the whole xref database
+    (measured on r2 5.5.0), so the one command this client may build is the
+    scoped pair. Two arrays come back -- one per command -- and both must be
+    consumed: a parse that stopped at the first array would silently drop
+    every outgoing reference.
+    """
     recorded: list[list[str]] = []
-    monkeypatch.setattr(r2_client, "run_bounded", _capture(recorded))
+    monkeypatch.setattr(
+        r2_client,
+        "run_bounded",
+        _capture(recorded, stdout=b'[{"from": 64, "type": "CALL"}]\n[{"from": 32, "to": 96}]'),
+    )
     client = R2Client(_stub_executable(tmp_path))
 
     payload = client.xrefs(_target(tmp_path), 0x20)
 
     assert len(recorded) == 1
-    assert _script_lines(recorded[0]) == ["aa", "axj @ 32", "q"]
+    assert _script_lines(recorded[0]) == ["aa", "axtj @ 32", "axfj @ 32", "q"]
     assert payload["address_va"] == 0x20
     assert payload["parsed"] is True
+    assert [item["direction"] for item in payload["items"]] == ["to", "from"]
+    # The axtj entry names only its origin; the requested address is its
+    # implied target and must be filled in so every item carries both ends.
+    assert payload["items"][0]["to"] == 0x20
+    assert payload["items"][1]["to"] == 0x60
 
 
 # --- _discover ---------------------------------------------------------------

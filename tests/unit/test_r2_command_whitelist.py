@@ -25,9 +25,14 @@ def _client_and_binary(tmp_path: Path) -> tuple[R2Client, Path]:
         "pdj 1 @ 0\n!echo escaped",
         "pdj 1 @ 0|!echo escaped",
         "pdj 1 @ `!echo escaped`",
-        "axj @ 0 && !echo escaped",
+        "axtj @ 0 && !echo escaped",
         "i anything",
         "pdj 513 @ 0",
+        # The whole-database dump xrefs() used to build: axj lists every xref
+        # and the @ seek does not filter it (measured on r2 5.5.0), so neither
+        # the bare nor the seeked spelling has a legitimate caller left.
+        "axj",
+        "axj @ 0x401000",
     ],
 )
 def test_r2_whitelist_rejects_composed_commands_before_launch(
@@ -62,7 +67,7 @@ def test_r2_whitelist_keeps_bounded_disasm_and_xref_forms(
         return Completed(0, b"[]", b"")
 
     monkeypatch.setattr(r2_module, "run_bounded", fake_run)
-    result = client.run(binary, ["pdj 32 @ 4198400", "axj @ 0x401000"])
+    result = client.run(binary, ["pdj 32 @ 4198400", "axtj @ 0x401000", "axfj @ 0x401000"])
 
-    assert result["commands"] == ["pdj 32 @ 4198400", "axj @ 0x401000"]
+    assert result["commands"] == ["pdj 32 @ 4198400", "axtj @ 0x401000", "axfj @ 0x401000"]
     assert len(launched) == 1

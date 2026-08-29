@@ -78,14 +78,17 @@ def test_disasm_refuses_addresses_and_counts_outside_the_whitelist(
     assert calls == []
 
 
-def test_xrefs_builds_the_whitelisted_command_and_refuses_bad_addresses(
+def test_xrefs_builds_the_whitelisted_commands_and_refuses_bad_addresses(
     tmp_path: Path,
 ) -> None:
     client, calls = _client_with_fake_run(tmp_path)
     binary = tmp_path / "sample.bin"
     binary.write_bytes(b"\x90" * 16)
     data = client.xrefs(binary, 4096, timeout=8.0)
-    assert calls == [(binary, ["aa", "axj @ 4096"], 8.0)]
+    # One spawn, both scoped listings: axtj (refs to the address) and axfj
+    # (refs from it). Bare "axj @ addr" is gone -- the seek never filtered it,
+    # so it answered every address with the binary's whole xref database.
+    assert calls == [(binary, ["aa", "axtj @ 4096", "axfj @ 4096"], 8.0)]
     assert data["address"] == {"va": 4096}
 
     for bad_address in (-5, False):

@@ -117,6 +117,35 @@ def parse_r2_json(raw: str) -> Any | None:
     return None
 
 
+def parse_r2_json_values(raw: str) -> list[Any]:
+    """Every top-level JSON value in r2 -q0 output, in emission order.
+
+    A script of several ``*j`` commands prints one value per command,
+    newline-separated (no NUL markers arrive through ``-q0 -c``, measured on
+    r2 5.5.0). ``parse_r2_json`` stops at the first value, which silently
+    discards every command after the first; callers that batch commands need
+    all of them, positionally. Skips over undecodable ``[``/``{`` exactly like
+    the single-value parse, and jumps past each decoded value so a large
+    array is scanned once.
+    """
+    text = (raw or "").strip()
+    values: list[Any] = []
+    decoder = json.JSONDecoder()
+    index = 0
+    while index < len(text):
+        if text[index] not in "[{":
+            index += 1
+            continue
+        try:
+            value, end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            index += 1
+            continue
+        values.append(value)
+        index = end
+    return values
+
+
 def _item_va(entry: JsonObject, keys: tuple[str, ...]) -> int | None:
     for key in keys:
         value = entry.get(key)
@@ -128,6 +157,31 @@ def _item_va(entry: JsonObject, keys: tuple[str, ...]) -> int | None:
             except ValueError:
                 continue
     return None
+
+
+def _mapped_item(
+    entry: JsonObject,
+    *,
+    module: str,
+    image_base: int | None,
+    arch: Architecture | None,
+) -> JsonObject:
+    """One r2 item with unified Address fields attached."""
+    item = dict(entry)
+    va = _item_va(
+        entry,
+        ("offset", "vaddr", "addr", "from", "to", "plt", "paddr"),
+    )
+    mapped = address_dict(va, module=module, image_base=image_base, architecture=arch)
+    if mapped is not None:
+        item["address"] = mapped
+    # Named endpoints for xrefs
+    for edge_key in ("from", "to"):
+        edge_va = _item_va(entry, (edge_key,))
+        edge_mapped = address_dict(edge_va, module=module, image_base=image_base, architecture=arch)
+        if edge_mapped is not None:
+            item[f"{edge_key}_address"] = edge_mapped
+    return item
 
 
 def enrich_r2_payload(
@@ -166,23 +220,7 @@ def enrich_r2_payload(
         for entry in parsed[:_MAX_ITEMS]:
             if not isinstance(entry, dict):
                 continue
-            item = dict(entry)
-            va = _item_va(
-                entry,
-                ("offset", "vaddr", "addr", "from", "to", "plt", "paddr"),
-            )
-            mapped = address_dict(va, module=module, image_base=image_base, architecture=arch)
-            if mapped is not None:
-                item["address"] = mapped
-            # Named endpoints for xrefs
-            for edge_key in ("from", "to"):
-                edge_va = _item_va(entry, (edge_key,))
-                edge_mapped = address_dict(
-                    edge_va, module=module, image_base=image_base, architecture=arch
-                )
-                if edge_mapped is not None:
-                    item[f"{edge_key}_address"] = edge_mapped
-            items.append(item)
+            items.append(_mapped_item(entry, module=module, image_base=image_base, arch=arch))
         out["items"] = items
         out["count"] = len(items)
         if available > _MAX_ITEMS:
@@ -199,4 +237,81 @@ def enrich_r2_payload(
     else:
         out["parsed"] = False
     out["commands"] = commands
+    return out
+
+
+def enrich_xrefs_payload(
+    data: JsonObject,
+    *,
+    binary: Path,
+    address: int,
+    architecture: Architecture | None = None,
+) -> JsonObject:
+    """Merge the ``axtj``/``axfj`` pair into one direction-tagged items list.
+
+    ``r2.xrefs`` promises references to and from one address. ``axj @ addr``
+    never delivered that: ``axj`` lists the whole xref database and the ``@``
+    seek does not filter it (measured on r2 5.5.0 -- a two-caller fixture
+    answered with entry0/printf/section relocs for every address asked). The
+    scoped commands are ``axtj`` (references to the seek; entries carry
+    ``from``, the seek itself is the implied ``to``) and ``axfj`` (references
+    from the instruction at the seek; entries carry ``from`` and ``to``), so
+    the client now runs both and this merge tags each item with ``direction``:
+    ``"to"`` when the reference points at ``address``, ``"from"`` when
+    ``address`` makes it. The missing endpoint defaults to ``address`` so
+    every item carries both ``from`` and ``to`` -- which the old global dump
+    also never did (``axj`` names its target ``addr``, not ``to``).
+
+    Positional, not shape-guessed: the first two top-level JSON arrays in
+    ``raw`` are the axtj and axfj answers, in script order (r2 always prints
+    an array, ``[]`` when empty, and ``aa`` is silent on stdout). Anything
+    other than exactly two arrays means the output format drifted; that is
+    reported as ``parsed: False`` with the raw text intact rather than
+    guessed at.
+    """
+    module = binary.name
+    pe_arch, image_base = pe_preferred_base(binary)
+    arch = architecture or pe_arch
+    out = dict(data)
+    out["module"] = module
+    if image_base is not None:
+        out["image_base"] = image_base
+    if arch is not None:
+        out["architecture"] = arch.value
+    mapped_request = address_dict(address, module=module, image_base=image_base, architecture=arch)
+    if mapped_request is not None:
+        out["address"] = mapped_request
+        out["address_va"] = address
+
+    # The payload arrives pre-enriched by run(), whose generic parse saw only
+    # the first array; drop those keys so a drifted output cannot leave the
+    # axtj half behind as authoritative-looking items.
+    for stale in ("items", "count", "parsed", "items_truncated", "items_total", "items_limit"):
+        out.pop(stale, None)
+
+    values = parse_r2_json_values(str(data.get("raw") or ""))
+    arrays = [value for value in values if isinstance(value, list)]
+    if len(arrays) != 2:
+        out["parsed"] = False
+        out["commands"] = list(data.get("commands") or [])
+        return out
+    refs_to, refs_from = arrays
+    tagged = [(entry, "to") for entry in refs_to] + [(entry, "from") for entry in refs_from]
+    available = len(tagged)
+    items: list[JsonObject] = []
+    for entry, direction in tagged[:_MAX_ITEMS]:
+        if not isinstance(entry, dict):
+            continue
+        normalized = dict(entry)
+        normalized.setdefault("to" if direction == "to" else "from", address)
+        normalized["direction"] = direction
+        items.append(_mapped_item(normalized, module=module, image_base=image_base, arch=arch))
+    out["items"] = items
+    out["count"] = len(items)
+    if available > _MAX_ITEMS:
+        out["items_truncated"] = True
+        out["items_total"] = available
+        out["items_limit"] = _MAX_ITEMS
+    out["parsed"] = True
+    out["commands"] = list(data.get("commands") or [])
     return out

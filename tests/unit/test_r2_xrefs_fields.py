@@ -6,7 +6,7 @@ import ast
 import json
 from pathlib import Path
 
-from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
+from headless_re_mcp.backends.r2.mapping import enrich_xrefs_payload
 from headless_re_mcp.core.models import Architecture
 from headless_re_mcp.tools.r2 import build_r2_tools
 
@@ -48,29 +48,33 @@ def test_r2_xrefs_puts_the_request_va_in_address_va_not_address(
 ) -> None:
     """The catalog named item edges and never named the request address.
 
-    Measured: enrich_r2_payload replaces the requested address with
+    Measured: enrich_xrefs_payload replaces the requested address with
     {va, rva, module} and puts the integer in address_va. Looking for an
     integer address after a successful xref list reads as radare2
     returning no request coordinate.
     """
-    payload = enrich_r2_payload(
+    payload = enrich_xrefs_payload(
         {
-            "raw": json.dumps(
-                [{"from": 0x140002000, "to": 0x140001000, "type": "CODE"}]
-            ),
-            "commands": ["axj"],
+            # The axtj array (refs to the address) then the axfj array (refs
+            # from it), exactly as the two-command script emits them.
+            "raw": json.dumps([{"from": 0x140002000, "type": "CODE"}]) + "\n[]",
+            "commands": ["axtj @ 5368713216", "axfj @ 5368713216"],
             "address": 0x140001000,
         },
         binary=_pe(tmp_path),
+        address=0x140001000,
         architecture=Architecture.X64,
     )
     assert payload["address"]["va"] == 0x140001000
     assert payload["address_va"] == 0x140001000
     assert type(payload["address"]) is not int
     assert payload["items"][0]["from_address"]["va"] == 0x140002000
+    assert payload["items"][0]["direction"] == "to"
+    assert payload["items"][0]["to_address"]["va"] == 0x140001000
     described = _tool_docstring("r2.xrefs")
     assert "from_address" in described
     assert "address_va" in described
+    assert "direction" in described
     assert "no integer address" in described.replace("\n", " ")
 
 

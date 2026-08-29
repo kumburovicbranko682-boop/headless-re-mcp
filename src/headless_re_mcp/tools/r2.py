@@ -123,7 +123,9 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """References to and from address, as radare2 resolved them.
 
-        Answers with items, each carrying from, to, type, from_address and
+        Runs axtj and axfj at address and merges both answers. Items each
+        carry from, to, type and direction ("to" when the reference points
+        at address, "from" when address makes it), plus from_address and
         to_address, plus address (va/rva/module) and address_va (the integer
         that was asked). Read items_truncated, items_total and items_limit
         when the list filled the cap (4096). There is no integer address,

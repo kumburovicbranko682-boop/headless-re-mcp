@@ -5,6 +5,33 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（r2.xrefs 返回的是全库交叉引用，与请求地址无关）
+
+- `R2Client.xrefs` 此前构造 `axj @ {address}`,但 radare2 的 `axj` 列出的是整个
+  二进制的交叉引用数据库,`@` 临时 seek 对它不起过滤作用(在 r2 5.5.0 上实测:
+  双调用点 fixture 对任意地址都返回 entry0/printf/section 重定位等全库条目,没有
+  一条是关于所问地址的)。工具文档承诺的 "References to and from address" 从未成立;
+  且全库条目以 `addr` 命名目标而非 `to`,文档承诺的 `to`/`to_address` 字段也从不存在。
+- 改为单次 spawn 内执行作用域化的一对命令:`axtj @ addr`(指向该地址的引用,条目
+  只带 `from`,隐含目标即所问地址)与 `axfj @ addr`(该地址处指令发出的引用)。新增
+  `enrich_xrefs_payload` 按位置合并两个数组(r2 对空结果也打印 `[]`,`aa` 不占
+  stdout),为每条 item 标注 `direction`("to"=引用指向该地址,"from"=该地址发出),
+  并补全隐含端点,使每条 item 同时携带 `from`/`to` 与映射后的 `from_address`/
+  `to_address`;输出若不再是恰好两个数组(格式漂移)则如实报 `parsed: False` 并保留
+  raw,同时清除 run() 泛型 enrich 留下的、只见第一个数组的陈旧 items/count/截断键。
+  新增 `parse_r2_json_values`(按序提取全部顶层 JSON 值,跳过 banner,解码后跳到
+  值末尾避免重复扫描)。
+- 命令白名单收紧:`ax[tf]j @ addr` 取代 `axj @ addr`;裸 `axj` 一并移出白名单——
+  再无调用方需要把 4096 条的全库转储伪装成关于单个地址的回答。
+- 单测迁移到真实管线并新增 `tests/unit/test_r2_xrefs_scope.py`(方向标注、端点补全、
+  漂移诚实降级、banner 容忍、多值解析);`test_m11_r2_live_gate.py` 新增真机门禁:
+  编译双调用点 fixture,断言每条 item 都触及所问地址且两个调用点以 direction="to"
+  出现——旧命令在第一条上即失败,该语义 bug 只有真 radare2 能复现(已在 r2 5.5.0
+  上端到端验证,变异测试确认门禁与单测都能抓住回退)。
+- 附带:`test_run_reports_capability_unavailable_without_executable` 原假设宿主机
+  没装 radare2(`executable=None` 会回落到 PATH 发现),在装了 r2 的机器上跑成
+  not_found 而失败;monkeypatch 钉死"到处都没有 r2"的前提,消除环境依赖。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

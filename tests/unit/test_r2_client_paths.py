@@ -90,16 +90,27 @@ def test_xrefs_enriches_run_payload(tmp_path: Path) -> None:
     binary = _pe64(tmp_path / "s.exe")
 
     def _fake_run(_binary: Path, commands: list[str], *, timeout: float) -> dict[str, Any]:
-        assert commands == ["aa", "axj @ 8192"]
-        return {"raw": json.dumps([{"from": 0x140002000}]), "commands": commands}
+        assert commands == ["aa", "axtj @ 8192", "axfj @ 8192"]
+        # One array per scoped command, as r2 emits them: axtj first, axfj
+        # second (empty here -- r2 prints [] rather than nothing).
+        return {"raw": json.dumps([{"from": 0x140002000}]) + "\n[]", "commands": commands}
 
     client.run = _fake_run  # type: ignore[assignment]
     out = client.xrefs(binary, 0x2000)
     assert out["address_va"] == 0x2000
     assert out["items"][0]["from_address"]["va"] == 0x140002000
+    assert out["items"][0]["direction"] == "to"
+    # axtj entries name only the origin; the requested address is the target.
+    assert out["items"][0]["to"] == 0x2000
 
 
-def test_run_reports_capability_unavailable_without_executable(tmp_path: Path) -> None:
+def test_run_reports_capability_unavailable_without_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # executable=None falls back to PATH discovery, so on a machine that has
+    # radare2 installed this test would exercise not_found instead. Pin the
+    # absence: the refusal under test is "no r2 anywhere", not "no binary".
+    monkeypatch.setattr("headless_re_mcp.backends.r2.client.shutil.which", lambda name: None)
     client = R2Client(executable=None)
     with pytest.raises(R2Error) as caught:
         client.run(tmp_path / "any.exe", ["i"])

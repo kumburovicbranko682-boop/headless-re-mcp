@@ -13,7 +13,7 @@ from headless_re_mcp.backends.common.bounded_run import (
     clamp_cli_timeout,
     run_bounded,
 )
-from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
+from headless_re_mcp.backends.r2.mapping import enrich_r2_payload, enrich_xrefs_payload
 
 JsonObject = dict[str, Any]
 _MAX_OUTPUT = 1_000_000
@@ -32,12 +32,16 @@ _ALLOWED = frozenset(
         "iij",
         "iEj",
         "pdj",
-        "axj",
         "aa",
     }
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
-_AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+# axtj (refs to the seek) and axfj (refs from it) are the address-scoped xref
+# listings. Bare axj -- the whole-database dump xrefs() used to spell as
+# "axj @ addr", where the seek changes nothing (measured on r2 5.5.0) -- is
+# deliberately not whitelisted: no caller wants an unscoped 4096-item graph
+# dressed up as an answer about one address.
+_AXREF_COMMAND = re.compile(r"ax[tf]j @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 
 
 class R2Error(RuntimeError):
@@ -54,7 +58,7 @@ def _require_allowed_command(command: str) -> None:
     pdj = _PDJ_COMMAND.fullmatch(command)
     if pdj is not None and int(pdj.group(1)) <= 512:
         return
-    if _AXJ_COMMAND.fullmatch(command) is not None:
+    if _AXREF_COMMAND.fullmatch(command) is not None:
         return
     raise R2Error("invalid_params", "r2 command not whitelisted", command=command)
 
@@ -107,11 +111,18 @@ class R2Client:
     ) -> JsonObject:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
-        cmd = f"axj @ {address}"
-        data = self.run(binary, ["aa", cmd], timeout=timeout)
+        # Both scoped listings in one spawn: axtj answers "who references this
+        # address", axfj "what does the instruction here reference". The old
+        # single command, "axj @ {address}", ignored the seek and returned the
+        # binary's entire xref database for every address asked.
+        data = self.run(
+            binary,
+            ["aa", f"axtj @ {address}", f"axfj @ {address}"],
+            timeout=timeout,
+        )
         data = dict(data)
         data["address"] = address
-        return enrich_r2_payload(data, binary=binary)
+        return enrich_xrefs_payload(data, binary=binary, address=address)
 
     def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
         try:

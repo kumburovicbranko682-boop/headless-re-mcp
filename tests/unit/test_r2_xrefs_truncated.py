@@ -6,7 +6,7 @@ import ast
 import json
 from pathlib import Path
 
-from headless_re_mcp.backends.r2.mapping import _MAX_ITEMS, enrich_r2_payload
+from headless_re_mcp.backends.r2.mapping import _MAX_ITEMS, enrich_xrefs_payload
 from headless_re_mcp.tools.r2 import build_r2_tools
 
 
@@ -39,12 +39,19 @@ def test_r2_xrefs_says_when_the_list_was_cut(tmp_path: Path) -> None:
     binary = tmp_path / "f.exe"
     binary.write_bytes(b"MZ" + b"\x00" * 200)
     entries = [
-        {"from": 0x140002000 + index, "to": 0x140001000, "type": "CODE"}
-        for index in range(_MAX_ITEMS + 3)
+        {"from": 0x140002000 + index, "type": "CODE"} for index in range(_MAX_ITEMS + 3)
     ]
-    payload = enrich_r2_payload(
-        {"raw": json.dumps(entries), "commands": ["axj"], "address": 0x140001000},
+    # The cap applies to the merged axtj+axfj list: 4097 references into the
+    # address plus 2 out of it still surface as one items_truncated cut.
+    outgoing = [{"from": 0x140001000, "to": 0x140003000 + index} for index in range(2)]
+    payload = enrich_xrefs_payload(
+        {
+            "raw": json.dumps(entries[: _MAX_ITEMS + 1]) + "\n" + json.dumps(outgoing),
+            "commands": ["axtj @ 5368713216", "axfj @ 5368713216"],
+            "address": 0x140001000,
+        },
         binary=binary,
+        address=0x140001000,
     )
     assert payload["count"] == 4096
     assert len(payload["items"]) == 4096
