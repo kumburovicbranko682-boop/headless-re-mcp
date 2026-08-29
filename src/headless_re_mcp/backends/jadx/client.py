@@ -27,6 +27,12 @@ _MAX_TIMEOUT_S = 1800.0
 _MAX_STDERR = 8000
 _MAX_LISTED_FILES = 2000
 _MAX_COUNTED_FILES = 50_000
+# The "renamed from:" comment sits right after the package declaration, well
+# inside the first kilobytes; reading only the head keeps the rename scan from
+# pulling whole sources into memory. The file cap bounds one package directory
+# (the scan never walks the tree).
+_RENAMED_HEAD_BYTES = 2048
+_MAX_RENAME_SCAN_FILES = 4000
 
 
 def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -56,6 +62,49 @@ class JadxError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _renamed_source(directory: Path, dotted: str, sources: Path) -> Path | None:
+    """Find the file jadx renamed away from ``dotted`` in one package directory.
+
+    jadx rewrites class names its filesystem rules refuse -- non-printable
+    characters, otherwise invalid names -- into synthetic ones (``类`` became
+    ``C0000.java``, measured with jadx 1.5.1), and the only record of the
+    original spelling is a leading ``/* renamed from: ... */`` comment: the
+    simple name for default-package classes, the fully qualified one for
+    packaged classes. Package directories keep their real names, so the scan
+    stays inside the one directory the class must live in, reads only each
+    file's head, and demands an exact name boundary (a comma or whitespace
+    follows) so ``类`` never matches a class renamed from ``类2``.
+    """
+    if not directory.is_dir():
+        return None
+    simple = dotted.rsplit(".", 1)[-1]
+    needles = tuple(f"renamed from: {name}" for name in dict.fromkeys((dotted, simple)))
+    scanned = 0
+    for path in sorted(directory.glob("*.java")):
+        if scanned >= _MAX_RENAME_SCAN_FILES:
+            break
+        try:
+            resolved = path.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if not resolved.is_relative_to(sources) or not resolved.is_file():
+            continue
+        scanned += 1
+        try:
+            with resolved.open("rb") as handle:
+                head = handle.read(_RENAMED_HEAD_BYTES).decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        for needle in needles:
+            start = head.find(needle)
+            while start >= 0:
+                end = start + len(needle)
+                if end >= len(head) or head[end] in ", \t\r\n":
+                    return resolved
+                start = head.find(needle, end)
+    return None
 
 
 def _note_partial_decompile(result: JsonObject, *, code: int, stderr: str) -> JsonObject:
@@ -127,7 +176,9 @@ class JadxClient:
         names. A name with no package -- ``a`` or ``La;``, the form
         ``apk.classes`` reports for default-package classes in obfuscated apps
         -- resolves into jadx's ``defpackage/`` tree when the sources root has
-        no such file.
+        no such file. A class jadx had to rename (non-printable or otherwise
+        invalid characters) is found through its ``renamed from:`` comment in
+        the package directory the name maps to.
         """
         target = class_name.strip()
         if not target:
@@ -168,6 +219,14 @@ class JadxClient:
                         matches.append(resolved)
                 if len(matches) == 1:
                     match = matches[0]
+            if match is None:
+                # jadx renames classes its filesystem rules refuse, so the
+                # name the caller has (from apk.classes, straight from the
+                # DEX) may exist only inside a "renamed from:" comment.
+                dotted = ".".join((*rel.parts[:-1], rel.stem))
+                match = _renamed_source((sources / rel).parent, dotted, sources)
+                if match is None and len(rel.parts) == 1:
+                    match = _renamed_source(sources / "defpackage", dotted, sources)
             if match is None:
                 raise JadxError(
                     "not_found",

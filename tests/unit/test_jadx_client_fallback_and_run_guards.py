@@ -185,6 +185,113 @@ def test_a_bare_name_without_a_defpackage_hit_still_uses_the_unique_fallback(
     assert payload["path"] == str(out / "sources" / "pkg" / "Solo.java")
 
 
+def _writes_content(out: Path, files: dict[str, str]) -> Callable[..., Completed]:
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        out.mkdir(parents=True, exist_ok=True)
+        for rel, content in files.items():
+            target = out / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        return Completed(0, b"", b"")
+
+    return fake_run
+
+
+def test_a_class_jadx_renamed_is_found_through_its_renamed_from_comment(
+    tmp_path: Path,
+) -> None:
+    """Classes with names jadx's filesystem rules refuse still round-trip.
+
+    Measured with jadx 1.5.1: a default-package class named ``类`` was written
+    as ``sources/defpackage/C0000.java`` with the original spelling only in a
+    leading ``/* renamed from: 类, reason: ... */`` comment (simple name for
+    default-package classes), and a packaged ``p.类2`` as ``sources/p/C2.java``
+    with the fully qualified ``renamed from: p.类2``. The exact probe, the
+    defpackage probe and the simple-name walk all miss such files, so the
+    names apk.classes reports answered not_found while the sources sat on
+    disk. The boundary matters too: asking for ``类`` must not match the file
+    renamed from ``类2``.
+    """
+    client, apk, out = _jadx(tmp_path)
+    fake_run = _writes_content(
+        out,
+        {
+            "sources/defpackage/C0000.java": (
+                "package defpackage;\n\n"
+                "/* renamed from: 类, reason: contains not printable characters */\n"
+                "public class C0000 {\n}\n"
+            ),
+            "sources/defpackage/C0001.java": (
+                "package defpackage;\n\n"
+                "/* renamed from: 类2, reason: contains not printable characters */\n"
+                "public class C0001 {\n}\n"
+            ),
+            "sources/p/C2.java": (
+                "package p;\n\n"
+                "/* renamed from: p.类2, reason: invalid class name */\n"
+                "public class C2 {\n}\n"
+            ),
+        },
+    )
+
+    for name, expected in (
+        ("类", out / "sources" / "defpackage" / "C0000.java"),
+        ("L类;", out / "sources" / "defpackage" / "C0000.java"),
+        ("类2", out / "sources" / "defpackage" / "C0001.java"),
+        ("p.类2", out / "sources" / "p" / "C2.java"),
+        ("Lp/类2;", out / "sources" / "p" / "C2.java"),
+    ):
+        with patch(_RUN_BOUNDED, fake_run):
+            payload = client.decompile(apk, out, name)
+        assert payload["path"] == str(expected), name
+
+
+def test_the_rename_scan_stays_inside_its_package_directory(tmp_path: Path) -> None:
+    # p.类2's comment lives under sources/p/; asking for the same class under
+    # another package must not be redirected across packages.
+    client, apk, out = _jadx(tmp_path)
+    fake_run = _writes_content(
+        out,
+        {
+            "sources/p/C2.java": (
+                "package p;\n\n"
+                "/* renamed from: p.类2, reason: invalid class name */\n"
+                "public class C2 {\n}\n"
+            ),
+        },
+    )
+
+    with patch(_RUN_BOUNDED, fake_run), pytest.raises(JadxError) as caught:
+        client.decompile(apk, out, "q.类2")
+
+    assert caught.value.code == "not_found"
+
+
+def test_the_rename_scan_respects_its_file_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(jadx_mod, "_MAX_RENAME_SCAN_FILES", 1)
+    client, apk, out = _jadx(tmp_path)
+    # Sorted scan order reads A.java first and stops at the ceiling before
+    # reaching Z.java, where the wanted comment lives.
+    fake_run = _writes_content(
+        out,
+        {
+            "sources/defpackage/A.java": "package defpackage;\npublic class A {\n}\n",
+            "sources/defpackage/Z.java": (
+                "package defpackage;\n\n"
+                "/* renamed from: 类, reason: contains not printable characters */\n"
+                "public class Z {\n}\n"
+            ),
+        },
+    )
+
+    with patch(_RUN_BOUNDED, fake_run), pytest.raises(JadxError) as caught:
+        client.decompile(apk, out, "类")
+
+    assert caught.value.code == "not_found"
+
+
 def test_a_bare_name_that_matches_nothing_stays_not_found(tmp_path: Path) -> None:
     client, apk, out = _jadx(tmp_path)
     fake_run = _writes(out, "sources/x/b.java", "sources/y/b.java")
