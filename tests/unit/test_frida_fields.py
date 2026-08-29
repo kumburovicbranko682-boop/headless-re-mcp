@@ -80,44 +80,63 @@ def test_frida_modules_says_when_the_page_is_not_the_whole_list() -> None:
     assert "has_more" in doc
 
 class _ExportApi:
+    """Fake exports RPC: a module with ``total`` exports, page bounded by count.
+
+    Mirrors the embedded JS -- it enumerates every export, returns at most the
+    requested page, and reports the full ``total`` (all.length) independently of
+    the page size -- so a truncated page carries the real count, not len(page).
+    """
+
+    def __init__(self, total: int = 200) -> None:
+        self._total = total
+
     def exports(self, name: str, count: int) -> dict[str, Any]:
+        emitted = min(int(count), self._total)
         return {
             "found": True,
             "module": name,
             "base": "0x1",
             "exports": [
                 {"name": f"e{index}", "address": "0x2", "type": "function"}
-                for index in range(int(count))
+                for index in range(emitted)
             ],
+            "total": self._total,
         }
 
 
 class _ExportScript:
-    exports_sync = _ExportApi()
+    def __init__(self, total: int) -> None:
+        self.exports_sync = _ExportApi(total=total)
 
     def load(self) -> None:
         return None
 
 
 class _ExportSession:
+    def __init__(self, total: int) -> None:
+        self._total = total
+
     def create_script(self, source: str) -> _ExportScript:
-        return _ExportScript()
+        return _ExportScript(self._total)
 
     def detach(self) -> None:
         return None
 
 
 class _ExportFrida:
+    def __init__(self, total: int = 200) -> None:
+        self._total = total
+
     def attach(self, pid: int) -> _ExportSession:
-        return _ExportSession()
+        return _ExportSession(self._total)
 
 
 def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     """The catalog named found, module, base and exports, and stopped there.
 
-    Measured: 11 exports requested for a page of 10 -> count 10, has_more
-    True. An overnight pass that treated exports as the whole table had no
-    field to notice the rest.
+    Measured: a module of 200 exports, page of 10 -> count 10, total 200,
+    has_more True. An overnight pass that treated exports as the whole table
+    had no field to notice the rest.
     """
     client = FridaClient()
     client._available = True
@@ -125,9 +144,29 @@ def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     payload = client.exports(1, "ntdll.dll", allowed_pid=1, limit=10)
     assert payload["count"] == 10
     assert len(payload["exports"]) == 10
+    assert payload["total"] == 200
     assert payload["has_more"] is True
     doc = _tool_docstring("frida.exports")
     assert "has_more" in doc
+    assert "total" in doc
+
+
+def test_frida_exports_of_a_small_module_reports_the_real_total_and_no_more() -> None:
+    """A module with fewer exports than the page reports total == count, no more.
+
+    The complementary branch to the truncated case: total is read from the
+    script's field on both sides, so a small module (5 exports, page of 10) must
+    come back count 5, total 5, has_more False -- not an inflated total that
+    fakes a next page, and not a has_more that sends an agent chasing exports
+    that are not there.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _ExportFrida(total=5)
+    payload = client.exports(1, "libc.so", allowed_pid=1, limit=10)
+    assert payload["count"] == 5
+    assert payload["total"] == 5
+    assert payload["has_more"] is False
 
 
 class _ModulesDictExports:

@@ -106,7 +106,7 @@ rpc.exports = {
   exports: function (moduleName, limit) {
     var mod = Process.findModuleByName(moduleName);
     if (mod === null) {
-      return {found: false, exports: []};
+      return {found: false, exports: [], total: 0};
     }
     var all = mod.enumerateExports();
     var items = [];
@@ -114,7 +114,14 @@ rpc.exports = {
       var e = all[i];
       items.push({name: e.name, address: e.address.toString(), type: e.type});
     }
-    return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
+    // total is the module's full export count, not items.length: an agent
+    // deciding whether to page a large module's exports needs the real size,
+    // exactly as the modules RPC returns all.length. Free here -- the whole
+    // list is already enumerated -- so only the page is bounded, not the count.
+    return {
+      found: true, module: mod.name, base: mod.base.toString(),
+      exports: items, total: all.length
+    };
   },
   read: function (address, size) {
     // Read through the NativePointer method, not the legacy Memory.read* free
@@ -427,13 +434,19 @@ class FridaClient:
         session = self._attach_local(pid)
         try:
             raw = _script_rpc(
-                session, lambda exports: exports.exports(module_name.strip(), capped + 1)
+                session, lambda exports: exports.exports(module_name.strip(), capped)
             )
             if not isinstance(raw, dict):
                 raise FridaError("backend_error", "unexpected frida exports payload")
-            page, has_more = _page(list(raw.get("exports") or []), capped)
+            # total is the module's full export count from the script (all.length),
+            # not len(page): pinned to the field the way modules does, so a
+            # truncated page reports the real size and has_more, and an agent does
+            # not stop at page one believing it saw every export. The bare-array
+            # fallback tolerates an older script shape, matching modules.
+            held = list(raw.get("exports") or [])
+            total = int(raw.get("total") or len(held))
             items = []
-            for item in page:
+            for item in held[:capped]:
                 if not isinstance(item, dict):
                     continue
                 items.append(
@@ -449,7 +462,8 @@ class FridaClient:
                 "base": str(raw.get("base") or ""),
                 "exports": items,
                 "count": len(items),
-                "has_more": has_more,
+                "total": total,
+                "has_more": total > len(items),
             }
         except FridaError:
             raise
