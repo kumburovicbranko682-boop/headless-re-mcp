@@ -127,6 +127,17 @@ def test_m11_frida_live_attach_modules_exports() -> None:
         assert exports.get("found") is True
         assert exports.get("count", 0) >= 1
         assert isinstance(exports.get("exports"), list)
+        # total is the module's full export count, distinct from this page's
+        # count, and has_more must mean exactly "there are more than this page".
+        # A system library (libc, kernel32) exports far more than the 16 asked
+        # for, so this pins the pagination fields frida.exports reports -- total
+        # and its derived has_more -- against the real tool, the live counterpart
+        # to the unit fakes. Written as a biconditional so a has_more stuck True
+        # or False both fail, and data-independent: it holds whatever the exact
+        # export count is.
+        assert isinstance(exports.get("total"), int)
+        assert exports["total"] >= exports["count"]
+        assert bool(exports.get("has_more")) is (exports["total"] > exports["count"])
 
         # A module's base maps its image header, so a short read there returns
         # the real magic bytes of the target's memory -- ELF on POSIX, MZ on

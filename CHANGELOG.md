@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（frida.exports 的 total/has_more 分页字段补上活体断言，并在 Linux 实测整条非 PE 线）
+
+- 承接上一轮给 `frida.exports` 补 `total` 的改动:活体门禁 `test_m11_frida_live_gate.py` 此前只断言
+  `count`/`exports`,新增的 `total` 与由它派生的 `has_more` 在真实工具上没有覆盖。补一段**数据无关**的
+  双向断言:`total >= count`,且 `has_more` 当且仅当 `total > count`。系统库(libc/kernel32)导出数以千计,
+  一页 16 个必然 `has_more=True`;实测 libc.so.6 `count=16 / total=3069 / has_more=True`,断言写成双向式,
+  `has_more` 卡死为 True 或 False 都会红。mutation 验证:把客户端 exports 的 `has_more` 改成常量 `False`,
+  门禁即在该断言处红,还原后复绿。
+- 在装了真实工具的 Linux VM 上把整条非 PE 线跑成"门禁执行而非跳过":radare2 5.5.0(3 例活体门禁全过,
+  该老版本还顺带验了 5.x 的 `offset`/`lib`/`plt:0` 键漂移归一)、androguard 4.1.4、apktool 2.7.0、
+  apksigner 0.9(配合 keytool 生成标准 debug keystore)、jadx 1.5.0、frida 17.17.0——`test_android_re_gate.py`
+  7 例**零跳过**全过,`test_m11_r2_live_gate.py`/`test_m11_frida_live_gate.py` 全过,ELF 载入基址
+  对 readelf 的独立比对门禁(gcc/readelf)亦过。这与 CI `linux-integration` 作业安装的工具集一致,
+  等于在本地复核了 CI 的诚实通道。
+
 ### 测试（jsre 在 Linux 实测通过，并补上 wasm.wat 截断→output_path 的活体门禁）
 
 - 承接"Linux 上诚实的 CI/测试"这条线,在装了真实工具的 VM 上实跑 jsre 全部门禁:apt 装
