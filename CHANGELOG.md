@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Agent 工具调用 id 越界/跨轮重复会让整个 run 失败）
+
+- 工具调用 id 只是一个关联键，但编排器把供应商给的 id 原样送进两个有硬约束的地方：
+  `propose_tool_call` 对超过 `tool_call_id_max_chars`（128）的 id 抛 `ValueError`，
+  而供应商流式装配只用共享的 4 MiB 工具缓冲约束 id 长度；`tool_calls` 表以
+  `(run_id, id)` 为主键，而流缺省 id 时的 `call_{index}` 兜底每轮从 0 重排，
+  第二个这样的轮次插入重复键抛 `sqlite3.IntegrityError`。两者都逃逸到 run 的
+  异常边界：铸造 incident、整个 run 失败，只因一个模型从未选择的字符串。
+- `_run_loop` 现在在会话、事件、存储引用 id 之前经 `_usable_tool_calls` 重铸：
+  超长、为空或本 run 已用过的 id 换成新的 `call_{uuid4 hex}`，首次出现保留供应商
+  原 id。替换发生在 assistant tool_calls 回显与 tool 结果构造之前，会话内两处
+  继续引用同一字符串，事件与存储也与之一致。
+- 新增 `tests/unit/test_orchestrator_loop_edges.py` 两个回归用例：越界（4096 字符）
+  与空 id 被重铸且 run 正常完成；跨轮重复的 `call_0` 第二次得到新 id，不再触发
+  主键冲突。revert-and-check 验证无修复时两例按原故障形态失败。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

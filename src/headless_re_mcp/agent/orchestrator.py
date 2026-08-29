@@ -538,11 +538,10 @@ class AgentOrchestrator:
             if not call_id or len(call_id) > id_limit or call_id in used_ids:
                 call_id = f"call_{uuid.uuid4().hex}"
             used_ids.add(call_id)
-            usable.append(
-                call
-                if call_id == call.id
-                else ProviderToolCall(call_id, call.name, call.arguments)
-            )
+            if call_id == call.id:
+                usable.append(call)
+            else:
+                usable.append(ProviderToolCall(call_id, call.name, call.arguments))
         return tuple(usable)
 
     def _arguments_too_large(self, arguments: JsonObject) -> JsonObject | None:
