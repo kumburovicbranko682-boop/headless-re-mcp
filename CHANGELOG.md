@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（js.deobfuscate/beautify 截断时把完整代码落盘到 output_path，消除"尾巴丢失/需二次跑"）
+
+- webcrack 走 stdout(无 `-o`)输出反混淆代码,因此结果一旦超过 400KB 内联上限,尾巴就无处可寻——旧 docstring
+  只能让调用方改跑 `js.unpack_bundle`(第二次完整 webcrack,最长 120s,且会把单文件重构成 deobfuscated.js)。
+  而 `wasm.wat`/`wasm.info` 早已通过共享的 `_bounded_output(spill_path=...)` 把全文落盘到 `output_path`,
+  deobfuscate/beautify 只是从没传 spill_path。现在 service 给它们一个 jsre 区落盘路径(与 wasm 落盘、unpack 树共用同一把
+  `prune_capped_dir` 清扫),截断结果即在**同一次调用**里带上 `output_path`,内含全部字节。docstring 改为以 output_path
+  为主;`js.deobfuscate` 仍保留 unpack_bundle 说明(用于把 bundle 拆成逐模块文件)。
+- 已在真实 webcrack 2.16.0(Node 22)上活体验证:977KB 输入被反混淆成 1,277,780 字节,client 与 service 两条路径均
+  `truncated=True`、内联码封顶 400,000 字节、`output_path` 落盘全部 1,277,780 字节(service 落在 artifact_root/jsre 下);
+  单测覆盖 spill/非-spill 两态并经变异验证(去掉 spill_path 即令两条落盘断言变红)。
+
 ### 改进（frida.java.methods 补上 total，补齐 frida 后端内部的分页一致性）
 
 - `frida.modules`/`exports`/`applications` 都回 `total`(后端全量,区别于本页),但 `frida.java.methods` 只回
