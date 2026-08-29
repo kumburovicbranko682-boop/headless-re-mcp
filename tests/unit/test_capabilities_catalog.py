@@ -37,6 +37,55 @@ def test_every_advertised_tool_name_is_a_real_catalog_tool() -> None:
     assert not stale, f"capability catalog names tools that no longer exist: {stale}"
 
 
+# The tool-name prefixes whose capabilities are meant to list every tool they
+# expose. r2.pipe/ghidra.headless/jsre.webcrack/wasm.wabt already do (all 8 r2
+# tools, all 5 ghidra, all 3 js, both wasm), which is what makes the omissions
+# on the sibling backends drift rather than curation. web owns three prefixes
+# (its CDP, webcrack and wabt capabilities). The PE/Windows backends (static.,
+# dynamic., ui., windbg., ...) are curated to headline tools and are out of the
+# non-PE scope this reverse check guards.
+_NONPE_TOOL_PREFIXES = (
+    "r2.",
+    "ghidra.",
+    "frida.",
+    "apk.",
+    "device.",
+    "web.",
+    "js.",
+    "wasm.",
+    "proxy.",
+)
+
+
+def test_every_nonpe_backend_tool_is_advertised_by_a_capability() -> None:
+    """The forward check catches a stale name; nothing caught a missing one.
+
+    ``test_every_advertised_tool_name_is_a_real_catalog_tool`` proves the
+    catalog names no ghost tool, but a real tool added to a backend and never
+    listed in its capability is invisible to that one-way check -- and that is
+    exactly how apk.certificates, device.pull, web.har.export, frida.applications
+    and proxy.stop came to be shipped, callable, and gated on their backend, yet
+    absent from the capability that an operator reads to learn what installing
+    that backend buys. This pins the reverse direction for the non-PE backends
+    whose lists are exhaustive by design, so the next added tool must join its
+    capability or fail here.
+    """
+    real = _real_tool_names()
+    advertised: set[str] = set()
+    for cap in _CORE_CAPABILITIES:
+        advertised.update(cap["tools"])
+    unadvertised: dict[str, list[str]] = {}
+    for prefix in _NONPE_TOOL_PREFIXES:
+        missing = sorted(
+            name for name in real if name.startswith(prefix) and name not in advertised
+        )
+        if missing:
+            unadvertised[prefix] = missing
+    assert not unadvertised, (
+        f"non-PE tools registered but not advertised by any capability: {unadvertised}"
+    )
+
+
 def test_every_status_probe_matches_a_real_doctor_probe() -> None:
     probe_names = {probe.name for probe in run_doctor(None).probes}
     stale = {
