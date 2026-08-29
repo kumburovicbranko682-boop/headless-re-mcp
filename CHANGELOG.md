@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（device.packages 先排序整表再开窗，补 offset/total，杜绝"截断页伪装成字母序")
+
+- `device.packages` 过去在 `pm list packages` 的**原始顺序**(大致是安装顺序)里数到页大小就 `break`,然后**只对这
+  一页**排序——于是设备包数超过上限时,返回的是一段任意子集却摆出字母序的样子,且没有 `offset` 根本够不到其余的包。
+  当 pm 恰好逆字母序输出时,`limit=3` 返回的竟是字母序的**尾部**(c、d、e),而 a、b 永远翻不到。现在照其余分页读取器
+  的做法:先把整表收齐(上限 2000),排序,再按 `offset`/`limit` 开窗,回 `packages`(本页)、`count`、`total`、
+  `offset`、`has_more`,设备包超过 2000 时置 `scan_capped`。工具新增 `offset` 参数(`ge=0`,schema 拒负值)。
+- 逻辑为与设备无关的纯列表处理,已用注入式 fake device 单测覆盖:排序头页、offset 走完整表、超 2000 触发 `scan_capped`、
+  第三方过滤位,并经变异验证(改回"只排本页"即令头页/offset 两条断言变红);另用 2500 包的乱序 dump 端到端核对——
+  收集上限 2000、逐页 offset 可复原严格有序且去重的整表。
+
 ### 修复（proxy.flow.get 面对 errored flow 不再崩，且把失败原因带进详情）
 
 - `proxy.flows` 会把一条"请求还没解析就失败"的 flow(早期 TLS/连接失败,`error` 钩子捕获)也记进环形缓冲——摘要侧
