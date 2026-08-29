@@ -170,6 +170,93 @@ def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
         service.close_all()
 
 
+def _uleb(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _sleb(value: int) -> bytes:
+    out = bytearray()
+    more = True
+    while more:
+        byte = value & 0x7F
+        value >>= 7
+        if (value == 0 and not byte & 0x40) or (value == -1 and byte & 0x40):
+            more = False
+        else:
+            byte |= 0x80
+        out.append(byte)
+    return bytes(out)
+
+
+def _many_function_wasm(function_count: int) -> bytes:
+    """A valid wasm of N no-arg i32 functions, each returning its own index.
+
+    Hand-built rather than compiled so the fixture needs only wasm2wat (the tool
+    under test), not wat2wasm too. N functions disassemble to well over the
+    400 KiB inline cap, which is the whole point: a module this size is exactly
+    what the output_path spill exists to recover.
+    """
+    section_type = _uleb(1) + b"\x60\x00\x01\x7f"  # one type: () -> i32
+    section_func = _uleb(function_count) + b"\x00" * function_count  # all type 0
+    bodies = bytearray(_uleb(function_count))
+    for index in range(function_count):
+        body = b"\x00\x41" + _sleb(index) + b"\x0b"  # 0 locals; i32.const index; end
+        bodies += _uleb(len(body)) + body
+    return (
+        b"\x00asm\x01\x00\x00\x00"
+        + bytes([1]) + _uleb(len(section_type)) + section_type
+        + bytes([3]) + _uleb(len(section_func)) + section_func
+        + bytes([10]) + _uleb(len(bodies)) + bytes(bodies)
+    )
+
+
+@pytest.mark.integration
+def test_wasm_wat_truncation_spills_the_full_module_to_output_path(tmp_path: Path) -> None:
+    """A WAT over the inline cap must spill the complete text to output_path.
+
+    The small-module wat gate above only ever exercises the inline path; the
+    recovery an agent relies on for a real (large) module -- truncated set, the
+    full disassembly written to output_path so the functions past the cut are
+    not lost -- had no live coverage. Build a module whose WAT clears the 400 KiB
+    cap, then prove the spill file holds every byte and begins with the inline
+    prefix. skip != pass: skips when wasm2wat is not installed.
+    """
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm2wat) not installed — WASM truncation Gate not run (skip != pass)")
+    from headless_re_mcp.backends.jsre.client import _MAX_INLINE
+
+    module = tmp_path / "big.wasm"
+    module.write_bytes(_many_function_wasm(12000))
+    service = AnalysisService()
+    try:
+        result = service.wasm_wat(str(module))
+        assert result.ok, result.error
+        data = result.data
+        assert data["truncated"] is True
+        # The inline text is capped; the full size is larger and is the length
+        # the spill must match.
+        assert len(data["wat"].encode("utf-8")) <= _MAX_INLINE
+        assert data["bytes"] > _MAX_INLINE
+        spill = data.get("output_path")
+        assert isinstance(spill, str) and spill, data
+        spilled = Path(spill).read_bytes()
+        assert len(spilled) == data["bytes"]
+        # The inline field is the leading buffer of the spilled file, not a
+        # separate rendering: an agent reading output_path continues where wat
+        # was cut, it does not get a different disassembly.
+        assert spilled.decode("utf-8", "ignore").startswith(data["wat"][:1000])
+    finally:
+        service.close_all()
+
+
 @pytest.mark.integration
 def test_wasm_info_reports_sections_and_the_export(tmp_path: Path) -> None:
     """wasm.info runs wasm-objdump; the header dump must name real sections.
