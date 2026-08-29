@@ -510,6 +510,27 @@ def test_connect_maps_a_raised_connect_to_backend_error() -> None:
     assert exc.value.code == "backend_error"
 
 
+def test_connect_maps_a_timeout_to_timeout_not_backend_error() -> None:
+    """connect() has its own 10s deadline, so a timeout is retryable, not a hard fail.
+
+    Every other adb entry (_client/_device/list_devices) classifies a deadline
+    as code=timeout (which the service layer marks retryable); connect was the
+    lone method that folded a timed-out, unreachable endpoint into a
+    non-retryable backend_error, so a caller that would have retried gave up.
+    """
+
+    class _Client:
+        def __init__(self, **kwargs: Any) -> None: ...
+
+        def connect(self, endpoint: str, timeout: float | None = None) -> str:
+            raise TimeoutError("adb connect deadline exceeded")
+
+    with pytest.raises(AdbError) as exc:
+        _backend_with_adbutils(_Client).connect("127.0.0.1", 5555)
+    assert exc.value.code == "timeout"
+    assert exc.value.details.get("endpoint") == "127.0.0.1:5555"
+
+
 # --------------------------------------------------------------------------- #
 # Device operations: verify/except arms via an injected device
 # --------------------------------------------------------------------------- #

@@ -518,7 +518,16 @@ class AdbBackend:
         _check_serial(endpoint)
         try:
             message = client.connect(endpoint, timeout=10.0)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
+            # connect() carries its own 10s deadline, so a timeout is an expected
+            # outcome (an unreachable endpoint), not a hard failure. Classify it
+            # as timeout/retryable like _client/_device/list_devices do; without
+            # this an unreachable host reads as a non-retryable backend_error and
+            # a caller that would have retried gives up.
+            if _is_timeout(exc):
+                raise AdbError("timeout", f"connect timed out: {exc}", endpoint=endpoint) from exc
             raise AdbError("backend_error", f"connect failed: {exc}", endpoint=endpoint) from exc
         return {
             "endpoint": endpoint,
