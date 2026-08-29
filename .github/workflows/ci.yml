@@ -199,9 +199,31 @@ jobs:
       - name: Install FOSS analysis backends
         # adb is the host server the device.* gate talks to; it needs no
         # attached device (the gate starts a private server on a free port).
+        #
+        # Each package installs on its own so a single one the archive has
+        # dropped, renamed, or temporarily broken only makes its own gate skip
+        # honestly (skip != pass, printed by -rs below) instead of failing this
+        # step and taking every unrelated backend down with it. apt-get install
+        # A B C is all-or-nothing: one unlocatable package aborts the whole
+        # command, and this step runs before the Python extras and before any
+        # gate, so that single miss would blank out radare2, Frida, androguard,
+        # the web console and the proxy at once -- backends that have nothing to
+        # do with the package that went missing. apktool and apksigner in
+        # particular have come and gone across Ubuntu releases. A miss is raised
+        # as a ::warning:: annotation so a silently shrunk backend set shows up
+        # in the run summary rather than passing unnoticed. This mirrors the
+        # best-effort jadx/webcrack/Ghidra steps below, extending the same
+        # philosophy to the apt-installed backends. apt-get update stays a hard
+        # requirement: a broken index is infra, not an optional backend.
         run: |
           sudo apt-get update
-          sudo apt-get install -y radare2 upx-ucl wabt apktool apksigner adb
+          for pkg in radare2 upx-ucl wabt apktool apksigner adb; do
+            if sudo apt-get install -y "$pkg"; then
+              echo "installed $pkg"
+            else
+              echo "::warning::apt package $pkg unavailable; its gate will skip (skip != pass)"
+            fi
+          done
 
       - name: Create an Android debug keystore for the apk.sign gate
         # apk.sign defaults to the standard Android debug keystore; keytool ships

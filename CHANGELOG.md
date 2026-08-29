@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Linux 集成 CI 逐个安装 apt 后端,一个包缺失不再连坐整条非-PE 覆盖）
+
+- `linux-integration` 用 `apt-get install -y radare2 upx-ucl wabt apktool apksigner adb` 一次装齐六个**互不相干**的后端。
+  apt 的批量安装是全有或全无:任一包在归档里被下架、改名或临时损坏(apktool、apksigner 在 Ubuntu 各版本间就反复出现
+  又消失——本机上连 radare2、apksigner 都 `Unable to locate package`),整条命令即以非零退出。而该步跑在装 Python
+  extras 之前、跑在任何网关之前,又没有任何容错,于是一个无关的缺包会在跑测前就**中止整个 job**,把 radare2、Frida、
+  androguard、web 控制台、代理——统统连坐掉,尽管它们和那个缺失的包毫无关系。这与本 job 自己写明、且 jadx/webcrack/
+  Ghidra 各步已落实的"尽力而为:装得上就真跑,装不上就诚实跳过(skip≠pass)"哲学相悖。
+- 改为逐包安装:每个包各装各的,缺一个只让**它自己**的网关诚实跳过(`-rs` 打印原因),其余照跑。缺包以 `::warning::`
+  注解抛出,让"后端集合悄悄缩水"显示在 run summary 里而非无声通过。`apt-get update` 仍是硬性要求(索引坏了是基础设施
+  问题,不是可选后端)。已用 GitHub 默认 shell 语义(`bash -eo pipefail`)在本地打桩验证:令 apksigner 装失败时,循环
+  照常抛出告警、继续装完 adb、且该步以 0 退出——旧写法则会在首个缺包处中止。
+
 ### 修复（Android 证书活体网关在缺 androguard 时诚实跳过而非失败,守住 skip≠pass）
 
 - `test_android_certificates_report_v2_v3_on_a_real_signature` 过去只守 apksigner 和 debug keystore,随后调用
