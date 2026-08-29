@@ -5,7 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
+### 修复（Web 控制台 bootstrap 会话满时随机逐出，应逐出最旧的）
+
+- `web/app.py` 把单次性 bootstrap 会话存在一个 `set` 里，满了就用 `set.pop()` 丢一个——
+  而 `set.pop()` 删的是任意成员。于是一波超过上限的 `/?token=` 打开，可能把刚刚签发的会话
+  作废，却留着更旧、闲置的那个，正在用的浏览器下一次 /api 调用就 401。改为存进有界的
+  `collections.deque(maxlen=32)`：append 逐出最旧的，且 `deque.append` 是原子的，也顺带
+  消除了 `set` 那个"先判 len 再 pop"在线程池并发路由处理间的竞态。`web/routes/legacy.py`
+  的 index 路由随之只 `append`，逐出交给 deque 的 maxlen。
+- 新增 `tests/unit/test_legacy_routes_surface.py` 两个用例：直接钉住存储是有界 deque 且满时
+  逐出最旧（保留其后每一个），以及驱动真实 `/?token=` 路由在存储填满时只逐出最旧的哨兵。
+  改回 `set()` 两个用例都转红（非平凡）。
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
   `request_workflow_module_refresh` 对未跟踪的模块 key 必须拒绝（抛
