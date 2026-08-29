@@ -57,6 +57,23 @@ class ProxyError(RuntimeError):
         self.details = details
 
 
+def _require_str(value: object, name: str) -> str:
+    """Refuse an id whose shape the proxy.* tool schemas already forbid.
+
+    Every ``session_id``/``flow_id`` here keys a plain dict (the instance map,
+    the recorder's raw-flow map), but the agent and OpenAI-bridge transports
+    call the handlers straight from model arguments with no pydantic coercion.
+    A list or dict id reached ``dict.get``/``dict.pop``/``in`` and raised
+    ``TypeError: unhashable type``, which the service's ``except BaseException``
+    filed as a logged internal_error incident; a hashable wrong type (an int)
+    instead missed silently and was reported as a state problem ("no proxy
+    running") rather than the parameter fault it is. Name the actual mistake.
+    """
+    if not isinstance(value, str):
+        raise ProxyError("invalid_params", f"{name} must be a string")
+    return value
+
+
 def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
     """Cancel and await every remaining task, then close the loop.
 
@@ -556,6 +573,7 @@ class ProxyBackend:
             raise ProxyError("capability_unavailable", "mitmproxy is not installed")
 
     def _get(self, session_id: str) -> _ProxyInstance:
+        _require_str(session_id, "session_id")
         with self._lock:
             inst = self._instances.get(session_id)
         if inst is None:
@@ -563,6 +581,11 @@ class ProxyBackend:
         return inst
 
     def start(self, session_id: str, host: str = "127.0.0.1", port: int = 8080) -> JsonObject:
+        # Before _check_available: a malformed request is the caller's fault
+        # whether or not mitmproxy is installed, and answering
+        # capability_unavailable for it would send the operator installing a
+        # dependency that was never the problem.
+        _require_str(session_id, "session_id")
         self._check_available()
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise ProxyError("invalid_params", "port must be 1..65535", port=port)
@@ -604,6 +627,7 @@ class ProxyBackend:
         raise ProxyError("invalid_state", "proxy was stopped while starting")
 
     def stop(self, session_id: str) -> JsonObject:
+        _require_str(session_id, "session_id")
         with self._lock:
             inst = self._instances.pop(session_id, None)
         if inst is None:
@@ -612,6 +636,7 @@ class ProxyBackend:
         return {"stopped": True}
 
     def status(self, session_id: str) -> JsonObject:
+        _require_str(session_id, "session_id")
         with self._lock:
             inst = self._instances.get(session_id)
         if inst is None:
@@ -646,6 +671,7 @@ class ProxyBackend:
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
         inst = self._get(session_id)
+        _require_str(flow_id, "flow_id")
         flow = inst.recorder.raw(flow_id)
         if flow is None:
             raise ProxyError(
@@ -683,6 +709,7 @@ class ProxyBackend:
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:
         inst = self._get(session_id)
+        _require_str(flow_id, "flow_id")
         flow = inst.recorder.raw(flow_id)
         master = inst._master
         if flow is None:

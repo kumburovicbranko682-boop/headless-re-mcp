@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（proxy 后端对非字符串 session_id/flow_id 崩溃或误报状态问题）
+
+- `ProxyBackend` 的每个 `session_id`/`flow_id` 都用作普通 dict 的键（实例表、
+  flow 记录器的原始表），但 agent 与 OpenAI 桥接传输直接用模型参数调用处理器、
+  无 pydantic 强制转换：list/dict 形状的 id 走到 `dict.get`/`dict.pop`/`in` 就抛
+  `TypeError: unhashable type`，被服务层 `except BaseException` 记成 internal_error
+  事故；而可哈希的错误类型（如 int）则静默未命中，被误报成 "no proxy running"
+  的状态问题而非参数错误。新增 `_require_str` 守卫接入 `start`/`stop`/`status`/
+  `_get`（覆盖 flows/flow_get/replay/export_har）及 `flow_get`/`replay` 的
+  `flow_id`，统一拒绝为 `invalid_params`。
+- `start` 的守卫放在 `_check_available()` 之前：未装 mitmproxy 的环境此前会对
+  坏参数回答 capability_unavailable，把操作者支去装一个从来不是问题的依赖。
+- 新增 `tests/unit/test_proxy_id_arg_types.py`：参数化覆盖 7 个入口 × 8 种坏形状、
+  flow_id 两入口、start 的守卫先于能力探测，以及字符串 id 仍走正常应答
+  （running False / stopped False / invalid_state / not_found）的对照组。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
