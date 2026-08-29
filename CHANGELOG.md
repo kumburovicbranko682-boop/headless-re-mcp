@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（钉住 capture 读取工具"溢出即注册产物但仍属只读"的分类约定）
+
+- `proxy.flow.get` 与 `web.network.get` 读取的是"已捕获"的流（分别发生在
+  `proxy.start` / `web.navigate` 期间），当某个 body 过大而无法内联、或不是合法 UTF-8
+  时会把它落到 `.bin` 文件并由服务注册成受保留策略跟踪的产物
+  （`proxy_flow_request_body` / `web_response_body` 等）。"注册产物"很容易被误当成写入
+  —— Ghidra 导出确实是写入 —— 但这里的产物只是"读取结果的溢出形态"，与 `static.decompile`
+  把超长反编译落到 `static/<sid>/oversized` 后仍属查询完全同类。这条区别有实际后果：
+  只读（READ_ONLY）工具才是 agent 自动执行、且只读部署仍放行的那批；一旦被误标成
+  FILE_WRITE，每次查看抓包流都会要求确认，并在关闭写入时凭空消失。
+- 新增 `tests/unit/test_tool_catalog_agent.py::test_capture_read_tools_stay_read_only_even_though_they_register_a_spill`：
+  钉住这两个 capture 读取工具（并以 `static.decompile` 作为溢出约定的锚点）为只读、
+  可自动执行、不需确认；同时以反例 `proxy.export_har` / `web.har.export` / `js.unpack_bundle`
+  钉住"把捕获物导出成新文件本身就是目的"的那批仍是 FILE_WRITE、需确认。只加测试、不改源码。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

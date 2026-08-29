@@ -96,3 +96,38 @@ def test_stealth_set_is_a_file_write() -> None:
     assert spec.write is True
     assert spec.agent_auto_execute is False
     assert spec.effects == frozenset({ToolEffect.STATE_CHANGE, ToolEffect.FILE_WRITE})
+
+
+def test_capture_read_tools_stay_read_only_even_though_they_register_a_spill() -> None:
+    """A read that spills an oversized result to a registered artifact is READ_ONLY.
+
+    ``proxy.flow.get`` and ``web.network.get`` read a flow that was *already*
+    captured (during ``proxy.start`` / ``web.navigate``) and, when a body is too
+    large to inline or is not valid UTF-8, spill it to a ``.bin`` file that the
+    service registers as a retention-tracked artifact (``proxy_flow_request_body``,
+    ``web_response_body``, ...). Registering an artifact is easy to mistake for a
+    write -- the Ghidra exports genuinely were one -- but here the artifact is only
+    the overflow form of a read, exactly like ``static.decompile`` writing an
+    oversized decompilation to ``static/<sid>/oversized`` and still being a query.
+    The distinction matters: READ_ONLY tools are what the agent auto-executes and
+    what a read-only deployment still allows, so misclassifying these as FILE_WRITE
+    would make every captured-flow inspection demand a confirmation and vanish when
+    writes are disabled. Anchored against a static spiller so the convention they
+    follow is pinned alongside them.
+    """
+    for name in ("proxy.flow.get", "web.network.get", "static.decompile"):
+        spec = COMMAND_CATALOG.require(name)
+        assert spec.effects == frozenset({ToolEffect.READ_ONLY}), name
+        assert spec.write is False, name
+        assert spec.confirm_required is False, name
+        assert spec.agent_auto_execute is True, name
+
+    # The counter-case that fixes the boundary: turning captures into a *new*
+    # exported file (a HAR, an unpacked bundle) is the tool's purpose, not an
+    # overflow of a read, so those are FILE_WRITE and confirmation-gated.
+    for name in ("proxy.export_har", "web.har.export", "js.unpack_bundle"):
+        spec = COMMAND_CATALOG.require(name)
+        assert spec.effects == frozenset({ToolEffect.STATE_CHANGE, ToolEffect.FILE_WRITE}), name
+        assert spec.write is True, name
+        assert spec.confirm_required is True, name
+        assert spec.agent_auto_execute is False, name
