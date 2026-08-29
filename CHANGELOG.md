@@ -248,6 +248,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   就会明文落进事故日志与 500 响应——正是 SECURITY.md 列为漏洞的那类泄露。现补齐这四个关键字;
   仍用严格的 `[:=]` 边界(不加尾随 `\w*`),避免把 `tokenized=false` 这类诊断文本误抹。回归矩阵
   相应增加 `private_key`/`private-key`/`access_key`/`passwd`/`credential` 五种形态。
+- 进一步:行内脱敏的主漏形态其实是 **dict/JSON 的 repr**——`str(dict)` 把 `{'api_key': 'sk-x'}`、
+  `{"authorization": "Bearer y"}` 直接拼进异常消息,而这正是落进事故日志、500 体、CLI stderr 的东西。
+  结构化脱敏器因为按键名掩码,会把这些字典值抹掉;但行内 scrubber 的锚定 `keyword[:=]` 在键名与 `:`
+  之间隔着引号、值本身也带引号时完全不触发,于是整条 repr 明文漏出(`{'api_key': 'sk-x'}` 原样落盘)。
+  现在键名后允许一个可选引号,值的匹配先吃掉整段带引号字符串(含内部空格)再回退到裸 `key=value`,
+  与结构化脱敏器掩码同一批字典键值对齐。刻意 **不** 给关键字加复数 `s?`:那会让 `token` 命中
+  `max_tokens=`/`prompt_tokens=` 等用量诊断字段并把它们抹掉,代价远大于收益(裸 `tokens=` 机密远比这些
+  诊断罕见)。新增两组回归:引号包裹的 dict-repr 机密被单次掩码;`max_tokens`/`output_tokens`/`tokenized`
+  等字段保持原样可读。已 revert-and-check 确认无修复时四种 dict-repr 形态泄漏、可读性用例不受影响。
 
 ### 修复（CLI 适配器超时在后端边界夹取越界输入）
 

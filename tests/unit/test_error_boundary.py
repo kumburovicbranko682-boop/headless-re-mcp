@@ -100,11 +100,61 @@ def test_a_bare_bearer_token_is_redacted_without_an_authorization_prefix() -> No
     assert "[REDACTED]" in redacted
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "config error: {'api_key': 'sk-DEADBEEFsecret'}",
+        'header map {"authorization": "Bearer sk-DEADBEEFsecret"} was rejected',
+        "KeyError while sending {'token': 'sk-DEADBEEFsecret'} upstream",
+        "{'access_key': \"sk-DEADBEEFsecret\", 'region': 'us'}",
+        "{'password': 'sk-DEADBEEFsecret', 'user': 'alice'}",
+    ],
+)
+def test_a_quoted_dict_repr_secret_is_redacted_inline(message: str) -> None:
+    """The dominant inline secret form is a dict/JSON repr, and it must be masked.
+
+    Exception text overwhelmingly carries secrets as ``str(dict)`` -- an echoed
+    config, an interpolated header map -- e.g. ``{'api_key': 'sk-x'}``. The
+    structured redactor masks that value because it sits under a secret key, but
+    the inline scrubber's anchored ``keyword[:=]`` never fired: a quote sits
+    between the key and the ``:`` and the value is quoted too, so the whole
+    repr sailed into the incident log, the 500 body and the CLI stderr envelope
+    untouched. This pins the quoted-key / quoted-value handling.
+    """
+    redacted = boundary._redact_text(message)
+
+    assert "sk-DEADBEEFsecret" not in redacted
+    assert "[REDACTED]" in redacted
+
+
 def test_redaction_leaves_ordinary_diagnostics_intact() -> None:
     """Over-redaction would blind an operator; only secret keywords are touched."""
     text = "read 4096 bytes at offset=1234 for session id=abc (retryable=false)"
 
     assert boundary._redact_text(text) == text
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "max_tokens=4096",
+        "output_tokens=128, prompt_tokens=64, total_tokens=192",
+        "completion_tokens: 2048",
+        "tokenized=false",
+        "secretive=no",
+    ],
+)
+def test_token_accounting_fields_stay_readable(diagnostic: str) -> None:
+    """``*_tokens=`` usage fields must survive the scrubber verbatim.
+
+    The keyword ``token`` deliberately is *not* pluralised with a trailing
+    ``s?``: adding it would make ``max_tokens=``/``prompt_tokens=`` match and
+    redact the usage accounting an operator relies on, for the sake of a bare
+    ``tokens=`` secret that is far rarer than these diagnostics. The anchored
+    ``token[:=]`` boundary keeps them readable, and this pins that trade-off so a
+    future "align the plurals too" edit cannot silently blind the token counters.
+    """
+    assert boundary._redact_text(diagnostic) == diagnostic
 
 
 def test_a_bearer_secret_never_reaches_the_envelope_or_the_log(

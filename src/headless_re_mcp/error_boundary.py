@@ -38,7 +38,11 @@ _LOG_PATH: Path | None = None
 # masked when it appears inline in an exception message, because that message is
 # what reaches the on-disk incident log, the HTTP 500 body and the CLI stderr
 # envelope. The strict ``[:=]`` boundary (rather than a trailing ``\w*``) is
-# deliberate -- it keeps "tokenized=false" and similar diagnostics readable.
+# deliberate -- it keeps "tokenized=false" and "max_tokens=4096" readable. It is
+# also why the keyword is *not* pluralised with a trailing ``s?``: that would
+# make ``token`` swallow every ``max_tokens=`` / ``prompt_tokens=`` usage field
+# and blind an operator to token accounting for a payoff (a bare ``tokens=``
+# secret) that is far rarer than those diagnostics.
 _SECRET_PATTERNS = (
     # Mask any bearer credential, not only one introduced by an authorization
     # key. httpx/urllib errors quote header values and URLs verbatim, so a raw
@@ -50,10 +54,19 @@ _SECRET_PATTERNS = (
     # Inline "key: value" / "key=value" secrets. The key set mirrors
     # redaction.py's structured _SECRET_KEY -- including ``authorization`` (for
     # non-bearer schemes) and ``providerApiKeys`` -- so a field masked under a
-    # dict key is masked here too when it lands in a message instead.
+    # dict key is masked here too when it lands in a message instead. The
+    # dominant inline form is a dict/JSON repr -- ``{'api_key': 'sk-x'}`` from an
+    # interpolated config, ``{"authorization": "Bearer y"}`` from an echoed
+    # header map -- where a quote sits between the key and the ``:`` and the
+    # value itself is quoted. So the key admits an optional closing quote before
+    # the separator, and the value alternation consumes a fully quoted string
+    # (spaces and all) before falling back to the bare ``key=value`` token; the
+    # structured redactor masks exactly these dict-keyed values, and without the
+    # quote handling the inline scrubber let every one of them through.
     re.compile(
         r"(?i)((?:api[_-]?key|private[_-]?key|access[_-]?key|authorization|token"
-        r"|secret|password|passwd|credential|providerapikeys)\s*[:=]\s*)[^\s,;]+"
+        r"|secret|password|passwd|credential|providerapikeys)['\"]?\s*[:=]\s*)"
+        r"(?:'[^']*'|\"[^\"]*\"|[^\s,;]+)"
     ),
 )
 
