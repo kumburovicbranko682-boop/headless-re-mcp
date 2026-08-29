@@ -435,6 +435,23 @@ class AdbBackend:
     def _client(self, *, socket_timeout: float = _ADB_SHELL_TIMEOUT_S) -> Any:
         if not self._available or self._adbutils is None:
             raise AdbError("capability_unavailable", "adbutils is not installed")
+        if self._adb_path is not None and not self._adb_path.is_file():
+            # A configured HEADLESS_RE_ADB that is not a file. adbutils would
+            # export it as ADBUTILS_ADB_PATH and then fail deep inside server
+            # auto-spawn -- surfacing as an opaque "cannot reach adb server"
+            # (or a raw FileNotFoundError from the spawn) on the first command,
+            # not on construction. The doctor already reports such a path
+            # MISSING; match every other configured-path backend (r2/jadx/
+            # apktool/webcrack) and refuse up front with the bad path named,
+            # rather than pinning it into the environment and letting the spawn
+            # fail obscurely later. The backend pins itself to the configured
+            # path and does not fall back to PATH, so there is nothing else to
+            # try.
+            raise AdbError(
+                "capability_unavailable",
+                "adb configured path is not a file",
+                executable=str(self._adb_path),
+            )
         if self._adb_path is not None:
             # adbutils honours this env var to find the adb executable and to
             # auto-spawn a server if one is not already running.

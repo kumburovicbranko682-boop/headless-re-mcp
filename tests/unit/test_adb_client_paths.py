@@ -329,12 +329,53 @@ def test_client_sets_the_adb_path_env_and_falls_back_on_typeerror(
             seen["port"] = port
 
     adb_path = tmp_path / "platform-tools" / "adb"
+    adb_path.parent.mkdir(parents=True)
+    adb_path.write_text("#!/bin/sh\n", encoding="utf-8")  # a real file: not the dangling arm
     backend = _backend_with_adbutils(_Client, adb_path=adb_path)
     client = backend._client()
     assert isinstance(client, _Client)
     import os
 
     assert os.environ["ADBUTILS_ADB_PATH"] == str(adb_path)
+
+
+def test_client_refuses_a_configured_adb_path_that_is_not_a_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dangling HEADLESS_RE_ADB must refuse up front, not poison the spawn.
+
+    adbutils pins itself to ADBUTILS_ADB_PATH and does not fall back to PATH,
+    so a configured path that is not a file used to sail through _client (a
+    fake AdbClient constructs fine) and only blow up on the first real command
+    -- deep in server auto-spawn, as an opaque "cannot reach adb server" or a
+    raw FileNotFoundError. The doctor already flags this path MISSING; the
+    runtime must agree with a clean capability_unavailable that names the path,
+    the way r2/jadx/apktool/webcrack do. The env var must not be set on refusal.
+    """
+    monkeypatch.delenv("ADBUTILS_ADB_PATH", raising=False)
+
+    class _Client:
+        def __init__(self, **kwargs: Any) -> None:  # would succeed if reached
+            pass
+
+    dangling = tmp_path / "no-such-sdk" / "adb"  # never created
+    backend = _backend_with_adbutils(_Client, adb_path=dangling)
+    with pytest.raises(AdbError) as exc:
+        backend._client()
+    assert exc.value.code == "capability_unavailable"
+    assert str(dangling) in str(exc.value.details.get("executable", ""))
+    import os
+
+    assert "ADBUTILS_ADB_PATH" not in os.environ
+
+    # A configured path pointing at a directory is refused the same way -- adb
+    # is a file, and a directory cannot be spawned.
+    directory = tmp_path / "no-such-sdk"
+    directory.mkdir(parents=True)
+    backend_dir = _backend_with_adbutils(_Client, adb_path=directory)
+    with pytest.raises(AdbError) as dir_exc:
+        backend_dir._client()
+    assert dir_exc.value.code == "capability_unavailable"
 
 
 def test_client_maps_a_timeout_and_a_generic_error() -> None:
