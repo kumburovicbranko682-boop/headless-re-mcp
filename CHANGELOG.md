@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（doctor 与客户端对 radare2 的发现名不一致,把可用后端报成 MISSING）
+
+- `run_doctor` 用 `probe_optional_tool("radare2", ..., ("r2", "rizin"))` 探测,而
+  `R2Client._discover` 扫描的是 `("r2", "rizin", "radare2")`——少了 `radare2`。
+  radare2 的 apt 包同时装 `/usr/bin/r2` 与 `/usr/bin/radare2`,源码构建的规范名是
+  `radare2`(而 `r2` 是别名);在只把 `radare2` 暴露到 PATH 的机器上,`r2.*` 工具照常
+  运行,但 doctor 却报 MISSING。这与之前 `probe_wabt` 为 `wasm-objdump` 补的能力
+  诚实性同类(已在 r2 5.5.0 上以"仅 radare2 在 PATH"的场景端到端复现:客户端解析成功,
+  旧 doctor 报 missing,补名后 detected)。
+- 探测元组补上 `radare2`,与客户端发现名对齐。新增两个回归测试:一个驱动 `run_doctor`
+  在"仅 radare2 在 PATH"时应 DETECTED,一个用 AST 把 doctor 的发现名钉死为
+  `("r2", "rizin", "radare2")`,防止两份名单再次漂移(变异去掉 radare2 后两测均失败)。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

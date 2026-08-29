@@ -112,6 +112,64 @@ def test_radare2_probe_missing_when_neither_configured_nor_on_path(
     assert probe.status == ProbeStatus.MISSING
 
 
+def test_radare2_probe_detects_a_radare2_named_binary_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """doctor must find the binary under every name R2Client._discover does.
+
+    The apt package installs both /usr/bin/r2 and /usr/bin/radare2, and a
+    source build's canonical name is radare2 with r2 the alias. The client's
+    _discover scans ("r2", "rizin", "radare2"), so on a host exposing only
+    radare2 the r2.* tools run -- but run_doctor omitted radare2 from its
+    tuple and answered MISSING, the capability-honesty gap probe_wabt closed
+    for wasm-objdump. Drive run_doctor (the wiring under test), not the helper
+    with a hand-passed tuple, so a future edit that drops the name regresses.
+    """
+    only_radare2 = tmp_path / "radare2"
+    only_radare2.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_module.shutil,
+        "which",
+        lambda cmd: str(only_radare2) if cmd == "radare2" else None,
+    )
+    settings = replace(_settings(None, tmp_path / "artifacts"), r2=None)
+
+    report = run_doctor(settings)
+
+    probe = next(p for p in report.probes if p.name == "radare2")
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.details.get("radare2") == str(only_radare2)
+
+
+def test_radare2_doctor_names_match_the_client_discover_order() -> None:
+    """The probe's PATH names are exactly R2Client._discover's, in order.
+
+    Pins the two lists together at the source so they cannot drift again:
+    the divergence was doctor searching ("r2", "rizin") while the client
+    searched ("r2", "rizin", "radare2").
+    """
+    import ast
+
+    source = Path(doctor_module.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    probe_names: tuple[str, ...] | None = None
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "probe_optional_tool"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "radare2"
+        ):
+            probe_names = tuple(
+                element.value
+                for element in node.args[-1].elts  # type: ignore[attr-defined]
+                if isinstance(element, ast.Constant)
+            )
+    assert probe_names == ("r2", "rizin", "radare2")
+
+
 def test_x64dbg_source_probe_requires_official_target(tmp_path: Path) -> None:
     source = tmp_path / "x64dbg"
     (source / "src" / "headless").mkdir(parents=True)

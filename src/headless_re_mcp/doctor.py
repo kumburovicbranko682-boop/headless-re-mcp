@@ -186,7 +186,13 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             if on_windows
             else windows_only("scylla", "Scylla dump/IAT adapter requires Windows")
         ),
-        probe_optional_tool("radare2", current, "r2", ("r2", "rizin")),
+        # Discovery names must match R2Client._discover, which also accepts
+        # "radare2": the apt package installs the binary as both /usr/bin/r2
+        # and /usr/bin/radare2, and a source build's canonical name is radare2
+        # with r2 the alias. Omitting it here made doctor report MISSING on a
+        # host where only radare2 is on PATH while the r2.* tools ran fine --
+        # the same capability-honesty gap probe_wabt closed for wasm-objdump.
+        probe_optional_tool("radare2", current, "r2", ("r2", "rizin", "radare2")),
         probe_ghidra(current),
         probe_python_module("frida", "frida"),
         probe_command("java", ("java",)),
