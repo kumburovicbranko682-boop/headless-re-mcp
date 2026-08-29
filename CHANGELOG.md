@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（adb connect 的超时归类为 timeout/可重试，不再当成硬失败）
+
+- 承接非 PE 后端"超时统一归类"这条线(此前修过 web 导航、以及 `rpc_from_backend_error` 把
+  timeout 标 retryable),核查 adb 客户端时发现:`_client`/`_device`/`list_devices` 都用
+  `_is_timeout(exc)` 把截止时间到点归为 `timeout`,唯独 `connect()`——它自己就带 `timeout=10.0`
+  的截止——把**所有**异常一律折成 `backend_error`。于是一个不可达 endpoint 的**超时**被报成
+  非可重试的 backend_error,本可重试的调用方就此放弃。
+- `connect()` 改为与同类方法一致:先放行已是 `AdbError` 的重抛,再 `_is_timeout(exc)` → `timeout`
+  (带 endpoint 上下文)、否则 `backend_error`。服务层 `rpc_from_backend_error` 据此把 timeout
+  标记 retryable。
+- 测试:新增 `test_connect_maps_a_timeout_to_timeout_not_backend_error`(TimeoutError → code
+  timeout、details.endpoint 点名);既有 "no route to host" 的 backend_error 用例不含超时关键字,
+  仍如实归 backend_error。mutation 验证(删掉 timeout 归类臂,超时测即红)。ruff+mypy 通过。
+
 ### 修复（配置了却不存在的 adb 路径在运行时干脆拒绝，不再毒化 server 自启）
 
 - 把上一轮"配置诊断诚实性"从 doctor 侧补到运行时侧。doctor 早已对配置了却不是文件的
