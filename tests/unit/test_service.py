@@ -5,6 +5,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import BackendKind, Session, SessionState
@@ -591,6 +593,12 @@ def test_a_worker_that_cannot_be_terminated_still_ends_the_session(
     assert not service.registry.get(session_id).backends
 
 
+# 2.4s on Linux, but each cycle commits several audit rows and a degraded
+# Windows CI disk charges an fsync for every one: a 3.12 runner blew through
+# the default 120s budget mid-loop while the 3.11 job passed the same commit.
+# 240s absorbs that variance and stays under the 300s faulthandler backstop,
+# so a genuine hang still dumps stacks and names this test.
+@pytest.mark.timeout(240)
 def test_repeated_session_cycles_leave_nothing_behind(tmp_path: Path) -> None:
     """What a long-lived server actually does: open and close, forever.
 
