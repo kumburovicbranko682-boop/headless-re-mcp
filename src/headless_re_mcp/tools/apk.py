@@ -254,10 +254,13 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Decompile the whole APK to a Java source tree via jadx.
 
         Answers with output_dir, sources_dir, java_file_count and java_files,
-        plus has_more when the listed files were cut at the buffer. There is
-        no files or sources field. If jadx exited non-zero but still wrote a
-        tree, the reply carries exit_code, tool_failed and stderr so a tree
-        that is missing classes is not read as a complete decompile. An
+        plus has_more when the listed files were cut at the buffer. java_files
+        is sorted and the listing is its alphabetical head, so a cut preview is
+        the first paths, not an arbitrary subset of the tree; the full tree is
+        on disk under output_dir and a single class is read via apk.decompile.
+        There is no files or sources field. If jadx exited non-zero but still
+        wrote a tree, the reply carries exit_code, tool_failed and stderr so a
+        tree that is missing classes is not read as a complete decompile. An
         output tree over the capture cap is deleted and refused as too_large
         rather than left on disk.
         """

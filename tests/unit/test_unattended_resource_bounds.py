@@ -3456,9 +3456,11 @@ class TestDeviceListsDiscloseTruncation:
 
 
 class TestExportedFileListsDiscloseTruncation:
-    def test_jadx_source_list_past_the_cap_says_so(
+    def test_jadx_source_list_past_the_cap_is_the_sorted_head(
         self, tmp_path: Any, monkeypatch: Any
     ) -> None:
+        from pathlib import Path
+
         from headless_re_mcp.backends.jadx import client as mod
 
         monkeypatch.setattr(mod, "_MAX_LISTED_FILES", 4)
@@ -3467,12 +3469,29 @@ class TestExportedFileListsDiscloseTruncation:
         sources.mkdir(parents=True)
         for index in range(6):
             (sources / f"C{index}.java").write_text("class C {}", encoding="utf-8")
+
+        # Force rglob to yield in reverse-sorted order so the old slice-then-sort
+        # and the sort-then-slice fix diverge: the old code kept the reverse-order
+        # prefix (C5..C2) and sorted only that, so the page was an arbitrary
+        # subset; the head must instead be the true alphabetical first four.
+        real_rglob = Path.rglob
+
+        def reversed_rglob(self: Path, pattern: str) -> list[Path]:
+            return sorted(real_rglob(self, pattern), reverse=True)
+
+        monkeypatch.setattr(Path, "rglob", reversed_rglob)
+
         client = mod.JadxClient(tmp_path / "jadx.bat")
         (tmp_path / "jadx.bat").write_text("x", encoding="utf-8")
         client._run = lambda *args, **kwargs: ("", "", 0)  # type: ignore[method-assign]
         result = client.export_sources(tmp_path / "app.apk", out)
         assert result["java_file_count"] == 6
-        assert len(result["java_files"]) == 4
+        assert result["java_files"] == [
+            "sources/C0.java",
+            "sources/C1.java",
+            "sources/C2.java",
+            "sources/C3.java",
+        ]
         assert result["has_more"] is True
 
     def test_jadx_decompile_does_not_return_a_homonym_class(self, tmp_path: Any) -> None:

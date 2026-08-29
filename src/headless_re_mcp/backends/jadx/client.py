@@ -30,24 +30,31 @@ _MAX_COUNTED_FILES = 50_000
 
 
 def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
-    names: list[str] = []
-    total = 0
-    has_more = False
+    # Collect every .java path (bounded), sort, then take the head. The earlier
+    # version kept the first `cap` in rglob's filesystem order and sorted only
+    # that page, so a decompiled tree with more than the cap (any non-trivial
+    # app easily clears 2000 classes) returned an arbitrary subset dressed up as
+    # alphabetical -- rglob is not sorted, so which files the preview kept was a
+    # coin toss and the names that actually sort first were often absent. Sorting
+    # the whole collected set first makes the page the real alphabetical head.
+    # There is no offset here, so the tail past the cap stays unreachable through
+    # this preview -- has_more says so, and the full tree is on disk for the
+    # class-level reader. The collect bound keeps a pathological tree from
+    # materialising unboundedly.
     if not root.is_dir():
         return [], 0, False
+    names: list[str] = []
+    counted_capped = False
     for path in root.rglob("*.java"):
         if not path.is_file():
             continue
-        total += 1
-        if len(names) < cap:
-            names.append(str(path.relative_to(root)))
-        else:
-            has_more = True
-        if total >= _MAX_COUNTED_FILES:
-            has_more = True
+        if len(names) >= _MAX_COUNTED_FILES:
+            counted_capped = True
             break
+        names.append(str(path.relative_to(root)))
     names.sort()
-    return names, total, has_more
+    total = len(names)
+    return names[:cap], total, total > cap or counted_capped
 
 
 class JadxError(RuntimeError):
