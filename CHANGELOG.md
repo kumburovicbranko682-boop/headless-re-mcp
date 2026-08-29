@@ -5,6 +5,27 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 改进（apk.xrefs 与 classes/methods/strings 对齐：排序 + offset 翻页）
+
+- 核查 Android 静态读取面的分页一致性时发现:`apk.xrefs` 是四个列表读取器里唯一**只有 limit、
+  没有 offset**的——它在 androguard 遍历顺序里累积到 limit 就早退。两条真实缺陷:(1) 一个热点
+  工具方法的调用者若多于一页,offset 缺失使**第一页之后的调用者永远取不到**;(2) 结果**未排序**,
+  截断时保留哪些调用者取决于分析遍历顺序,既不确定也无法稳定翻页(classes/methods/strings 三者
+  早已"去重→排序→按 offset 开窗")。
+- 把 `apk.xrefs` 改成同款"收集去重→排序→开窗":按 `(class, method)` 去重收集到 `_MAX_XREFS_COLLECT`
+  (5000,与 strings 收集上限同级)后排序,再用 `_clamp_page(offset, limit, max=_MAX_XREFS_PAGE)`
+  开窗。返回体新增 `total`(已收集的去重调用者数)、`offset`、`scan_capped`(去重调用者多于收集
+  上限时为真),沿用原有 `callers`/`method_name`/`count`/`has_more`。工具 schema 增补 `offset>=0`
+  (与其余 apk 列表工具一致,agent/桥接路径经 `_clamp_page` 兜底),docstring 如实说明排序与翻页。
+- 该改动是**加字段 + 加可选参数**,向后兼容:老调用只读 `callers`/`count`/`has_more` 仍成立。
+  行为上的唯一变化是截断页保留的是**字典序最小**的调用者(而非分析序最先),这正是让 offset
+  翻页自洽的前提。
+- 测试:更新 `test_xrefs_cap_counts_distinct_callers_not_callsites` 断言排序后的留存集并验证被挤掉
+  的调用者可由 offset 取回;新增排序确定性 + 双页无重叠无遗漏、以及 `scan_capped` 触发两条单测;
+  把 `apk.xrefs` 纳入 offset schema 元测试;同步三处 fake ApkClient 的 xrefs 签名。mutation 验证
+  (去掉 `sorted(seen)` 使两条翻页测即红)。Android live gate(真实 androguard 4.1.4)加钉
+  `total`/`offset`/`scan_capped`,三例通过。ruff+mypy 通过,全量单测 6649 passed / 55 skipped。
+
 ### 修复（能力目录把 apk.sign 挂到 apksigner 探针，不再随 apktool 谎报就绪）
 
 - 承接"配置诊断诚实性"这条线,核查 `list_capabilities` 的 `status_probe` 映射是否与工具真正

@@ -611,6 +611,12 @@ def test_android_apk_xrefs_finds_the_real_caller(tmp_path: Path) -> None:
         assert caller_names == {"caller"}, callers_of_callee.data
         assert callers_of_callee.data["count"] == 1
         assert callers_of_callee.data["has_more"] is False
+        # The paging fields the sorted/offset rewrite added, pinned on real
+        # androguard output: one distinct caller collected without hitting the
+        # collect bound.
+        assert callers_of_callee.data["total"] == 1
+        assert callers_of_callee.data["offset"] == 0
+        assert callers_of_callee.data["scan_capped"] is False
 
         # callee makes no calls, so nothing cross-references caller: the empty
         # result must come back as a real (successful) empty page.
