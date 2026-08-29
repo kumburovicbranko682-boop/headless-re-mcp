@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 安全（非 ASCII 凭据让四处鉴权点从 401 崩成 500 并写 incident——未鉴权者的日志灌注杠杆）
+
+- `secrets.compare_digest` 一旦某个 str 操作数含非 ASCII 字符就抛 `TypeError`，而控制台
+  的每种凭据都是 str：`?token=` 值（query 按 UTF-8 解码）、Authorization 头与 cookie
+  （ASGI 服务器把原始头字节按 latin-1 解码，线上一个字节 `0xe9` 就变成 `'\xe9'`）。于是
+  带一个此类字符的敌意凭据把「鉴权失败」变成未捕获的 `TypeError`——HTTP 500 且往磁盘
+  incident 日志写一条（响应体连日志路径都带出来），而不是本该返回的 401；这正好给未鉴权
+  的本机调用方一个刷爆 incident 日志的杠杆，也违背了 loopback 守卫早已恪守的「畸形凭据=
+  干净拒绝」契约。四处调用点同源：`legacy.py` 的 `_require_token` 与 `_bootstrap_cookie_ok`、
+  `agent.py` 的 `authorize`、`spa.py` 的 `require_token`。修复：新增 `web/auth.py::tokens_match`
+  在 UTF-8 字节上做常数时间比较（compare_digest 接受任意字节），四处统一改走它；顺带删掉
+  `_bootstrap_cookie_ok` 里那个多余的 `len()` 预检——它正是让「同长度非 ASCII cookie」够到
+  崩溃比较的那道门。实测五条通道（query 两处、Bearer 头、agent 路由、43 字节 cookie、SPA
+  兜底）全部回到干净 401，合法凭据（Bearer/query 签发/cookie 提升）不受影响。新增
+  `test_tokens_match_refuses_non_ascii_instead_of_raising` 与
+  `test_a_non_ascii_credential_is_a_clean_401_not_a_500_incident`（后者用裸 ASGI scope 送
+  httpx 拒发的非 ASCII 头字节，覆盖线上路径）。
+
 ### 安全（工件下载路由从「按后缀猜测渲染」改为不透明附件——防未来 .html 工件在控制台源内执行）
 
 - `GET /api/artifacts/{id}/file` 此前返回裸 `FileResponse(resolved)`：按工件扩展名猜

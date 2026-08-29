@@ -15,6 +15,26 @@ from headless_re_mcp.config import Settings, default_config_path
 _MAX_TOKEN_FILE_BYTES = 16 * 1024
 
 
+def tokens_match(provided: str, expected: str) -> bool:
+    """Constant-time credential check that tolerates any input byte.
+
+    ``secrets.compare_digest`` raises ``TypeError`` the moment a *str* operand
+    carries a non-ASCII character, and every console credential arrives as a
+    str: a ``?token=`` value (UTF-8 decoded from the query), an Authorization
+    header or a cookie (latin-1 decoded from raw header bytes by the ASGI
+    server, so a wire byte ``0xe9`` becomes ``'\\xe9'``). A hostile value with
+    one such character therefore turned a failed auth into an uncaught
+    ``TypeError`` -- an HTTP 500 that wrote an incident to the on-disk log --
+    instead of the promised 401, handing an unauthenticated caller a
+    log-flooding vector and breaking the "malformed credential is a clean
+    refusal" contract the loopback guard already upholds. Comparing on UTF-8
+    bytes sidesteps the ASCII-only rule (compare_digest accepts arbitrary
+    bytes) while keeping the comparison constant-time; a mismatch is just
+    False, never an exception.
+    """
+    return secrets.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+
 def web_token_path(settings: Settings | None = None) -> Path:
     """Token file lives next to the user config, never inside artifacts."""
     _ = settings

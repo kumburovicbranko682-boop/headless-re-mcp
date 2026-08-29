@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import secrets
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from headless_re_mcp.web.auth import tokens_match
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -22,7 +23,7 @@ def register_spa_fallback(app: FastAPI, *, token: str) -> None:
             provided = authorization[7:].strip()
         elif token_query:
             provided = token_query.strip()
-        if not provided or not secrets.compare_digest(provided, token):
+        if not provided or not tokens_match(provided, token):
             raise HTTPException(status_code=401, detail="unauthorized")
 
     @app.get("/{spa_path:path}", response_class=HTMLResponse)

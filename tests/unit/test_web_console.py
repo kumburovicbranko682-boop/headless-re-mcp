@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 from threading import Barrier, Lock
+from typing import Any
 
 import httpx
 import pytest
@@ -249,6 +250,111 @@ def test_a_forged_bootstrap_cookie_does_not_authenticate(tmp_path: Path) -> None
 
     client.cookies.set("headless_re_bootstrap", "forged-cookie-value-0123456789")
     assert client.get("/api/sessions").status_code == 401
+
+
+def test_tokens_match_refuses_non_ascii_instead_of_raising() -> None:
+    """A non-ASCII credential is a clean False, never a TypeError.
+
+    secrets.compare_digest raises TypeError the instant a str operand carries a
+    non-ASCII char, and every console credential is a str. tokens_match compares
+    on UTF-8 bytes so any input is a plain mismatch. Both directions matter:
+    equal ASCII stays True (real auth keeps working), and a non-ASCII value that
+    would have crashed compare_digest returns False.
+    """
+    from headless_re_mcp.web.auth import tokens_match
+
+    expected = "test-token-value-0123456789abcdef"
+    assert tokens_match(expected, expected) is True
+    assert tokens_match(expected[:-1] + "X", expected) is False
+    # These raise TypeError under a bare secrets.compare_digest(str, str).
+    assert tokens_match("h\xe9llo", expected) is False
+    assert tokens_match("\xe9" * len(expected), expected) is False
+    assert tokens_match("токен-пример", expected) is False
+
+
+def _drive_raw_asgi(
+    app: object, path: str, raw_headers: list[tuple[bytes, bytes]]
+) -> tuple[int, bytes]:
+    """GET through the ASGI app with header bytes an HTTP client would refuse.
+
+    httpx (and thus TestClient) enforces ASCII/latin-1 on outgoing headers, so
+    it cannot reproduce what a raw socket sends. A real ASGI server hands header
+    *bytes* straight through; byte 0xe9 in an Authorization or Cookie value is
+    latin-1 decoded to '\\xe9' before it reaches the token check. This drives the
+    app the same way to exercise that wire path.
+    """
+
+    async def call() -> tuple[int, bytes]:
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": raw_headers,
+            "client": ("127.0.0.1", 5555),
+            "server": ("127.0.0.1", 8765),
+            "scheme": "http",
+            "root_path": "",
+        }
+        messages: list[dict[str, Any]] = []
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: dict[str, Any]) -> None:
+            messages.append(message)
+
+        await app(scope, receive, send)  # type: ignore[operator]
+        status = next(m["status"] for m in messages if m["type"] == "http.response.start")
+        body = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
+        return status, body
+
+    return asyncio.run(call())
+
+
+def test_a_non_ascii_credential_is_a_clean_401_not_a_500_incident(
+    tmp_path: Path,
+) -> None:
+    """A hostile credential must refuse cleanly, never crash into the incident log.
+
+    secrets.compare_digest raises TypeError on a non-ASCII str, so a token with
+    one such character used to become an uncaught TypeError -> HTTP 500 that
+    wrote an incident to the on-disk log (verified before the fix), instead of
+    the 401 the loopback guard's sibling contract promises -- an unauthenticated
+    caller's log-flooding lever. Cover every credential channel: the query token
+    (both the SPA index and an /api route), the Authorization header, the agent
+    router's own check, the bootstrap cookie (length-matched to token_urlsafe(32)
+    so it clears the length guard), and the SPA fallback. compare_digest over
+    bytes makes each a plain mismatch.
+    """
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    app = create_app(service, token=token, settings=settings)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # Query token: %C3%A9 decodes to é. Reproducible straight through the client.
+    query_paths = (
+        "/?token=h%C3%A9llo",
+        "/api/sessions?token=h%C3%A9llo",
+        "/deep/link?token=h%C3%A9llo",
+    )
+    for path in query_paths:
+        response = client.get(path)
+        assert response.status_code == 401, f"{path} -> {response.status_code}"
+
+    # Header and cookie bytes only a raw socket can send.
+    bearer = [(b"authorization", b"Bearer h\xe9llo-token")]
+    assert _drive_raw_asgi(app, "/api/sessions", bearer)[0] == 401
+    assert _drive_raw_asgi(app, "/api/agent/threads", bearer)[0] == 401
+    cookie = [(b"cookie", b"headless_re_bootstrap=" + b"\xe9" * 43)]
+    status, body = _drive_raw_asgi(app, "/api/sessions", cookie)
+    assert status == 401
+    # Not the crash shape: no incident id, no internal_error, in the body.
+    assert b"incident_id" not in body and b"internal_error" not in body
 
 
 def _get_off_loopback(
