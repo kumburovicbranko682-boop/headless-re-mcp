@@ -39,6 +39,14 @@ class _HelloHandler(http.server.BaseHTTPRequestHandler):
     hits = 0
 
     def do_GET(self) -> None:
+        # A server-side 302 so the proxy sees a real redirect hop: the client
+        # follows it to /probe, giving two flows the capture must both record.
+        if self.path == "/go":
+            self.send_response(302)
+            self.send_header("Location", "/probe")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         type(self).hits += 1
         body = b"hello-through-proxy"
         self.send_response(200)
@@ -374,6 +382,75 @@ def test_proxy_records_a_real_request_and_exports_it_to_har(tmp_path: Path) -> N
         assert failed_entry is not None, failed_entries.keys()
         assert failed_entry["_error"] == errored[0]["error_msg"], failed_entry
         assert failed_entry["response"]["status"] == 0, failed_entry
+    finally:
+        backend.close_all()
+        server.shutdown()
+        server_thread.join(timeout=5.0)
+
+
+@pytest.mark.integration
+def test_proxy_captures_a_redirect_flow_with_its_location(tmp_path: Path) -> None:
+    """A real 302 through the proxy keeps its Location and reaches HAR redirectURL.
+
+    mitmproxy records each redirect hop as its own flow, so the 302 is already a
+    row -- but the recorder must keep its Location as redirect_url and the export
+    must thread it into the spec's response.redirectURL, the parity to the
+    browser capture's redirect handling. The unit tests drive fake flows; this
+    proves it against a real mitmproxy response object, whose headers are a
+    case-insensitive multidict rather than a plain dict. skip != pass: skips only
+    when mitmproxy is unavailable.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy redirect Gate not run (skip != pass)")
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _HelloHandler)
+    upstream_port = server.server_address[1]
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    backend.start("redirect", host="127.0.0.1", port=proxy_port)
+    try:
+        go = f"http://127.0.0.1:{upstream_port}/go"
+        probe = f"http://127.0.0.1:{upstream_port}/probe"
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
+        )
+        # The default opener follows the 302, so this lands on /probe.
+        with opener.open(go, timeout=10.0) as response:
+            assert response.status == 200
+            assert response.read() == b"hello-through-proxy"
+
+        def redirect_row() -> dict | None:
+            for flow in backend.flows("redirect")["flows"]:
+                if flow.get("url") == go and flow.get("status") == 302:
+                    return dict(flow)
+            return None
+
+        deadline = time.monotonic() + 10.0
+        hop = None
+        while time.monotonic() < deadline:
+            hop = redirect_row()
+            if hop is not None:
+                break
+            time.sleep(0.1)
+        assert hop is not None, backend.flows("redirect")["flows"]
+        assert hop["status"] == 302, hop
+        # The recorder stored the raw Location header ("/probe"); a non-3xx flow
+        # (the /probe landing) carries no redirect_url at all.
+        assert hop["redirect_url"].endswith("/probe"), hop
+        landing = [f for f in backend.flows("redirect")["flows"] if f.get("url") == probe]
+        assert landing, backend.flows("redirect")["flows"]
+        assert "redirect_url" not in landing[0], landing[0]
+
+        exported = backend.export_har("redirect", tmp_path / "redirect.har")
+        assert exported["entry_count"] >= 2
+        document = json.loads((tmp_path / "redirect.har").read_text(encoding="utf-8"))
+        by_url = {e["request"]["url"]: e for e in document["log"]["entries"]}
+        assert by_url[go]["response"]["status"] == 302
+        assert by_url[go]["response"]["redirectURL"].endswith("/probe")
+        assert by_url[probe]["response"]["redirectURL"] == ""
     finally:
         backend.close_all()
         server.shutdown()

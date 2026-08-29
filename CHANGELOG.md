@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（proxy 记录 3xx 流的 Location 并写入 HAR 的 redirectURL,与浏览器捕获对齐）
+
+- mitmproxy 本就把重定向每一跳作为独立的 flow 记录,所以这一跳早就是一行——但 flow 摘要过去丢掉了 `Location`,于是
+  proxy 的 HAR 把 `response.redirectURL` 留空,查看器无法把一个 302 连到它的目标。现在 recorder 对**真正的 3xx 状态**
+  保留其 `Location` 为 `redirect_url`(与其它摘要字段一样有界;且只在重定向状态下——某些 API 会在 200 上回 Location,
+  那不是重定向目标),`proxy.flows` 把它露出,`export_har` 把它穿进规范的 `redirectURL`。`har_entry` 在浏览器侧改动里
+  已接受 `redirect_url`,所以这里只是 proxy 生产侧的一处小补全。
+- 已用单测覆盖(驱动 `_FlowRecorder`):3xx 流留存 Location 而非 3xx 不留、超长 Location 有界并置 `metadata_truncated`;
+  `export_har` 补 redirectURL 断言。经变异验证(把 3xx 判定改为恒假,3 条测试齐红)。并在真实 mitmproxy 上新增活体网关:
+  环回上游发一个真 302,断言代理把该跳录为 status 302、`redirect_url` 指向 /probe、落地跳无 `redirect_url`,且 302 带着
+  redirectURL 进入 HAR——用真实 mitmproxy 的大小写不敏感 headers 多值字典验证,补上单测里普通 dict 覆盖不到的一环。
+
 ### 新增（web 网络捕获把重定向每一跳单独留存为一行，并在 HAR 里补 redirectURL）
 
 - CDP 在一条重定向链里**复用同一个 requestId**:每一跳都是一条新的 `requestWillBeSent`,带着上一跳的响应
