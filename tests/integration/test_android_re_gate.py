@@ -515,7 +515,10 @@ def test_android_certificates_report_v2_v3_on_a_real_signature(tmp_path: Path) -
     an APK read as v1_signed False with an empty signature_files and looked
     unsigned. Sign the fixture with the real apksigner, open a session on the
     signed file, and assert androguard reports the v2/v3 schemes through the
-    tool. skip != pass: skips when apksigner or the debug keystore is absent.
+    tool. skip != pass: skips when apksigner, the debug keystore, or androguard
+    is absent -- reading the certificates is an androguard-backed call, so
+    without the optional extra this must skip like its siblings, not fail on a
+    capability_unavailable the way it did when only the signer was guarded.
     """
     settings = Settings.load()
     if settings.apksigner is None:
@@ -523,6 +526,11 @@ def test_android_certificates_report_v2_v3_on_a_real_signature(tmp_path: Path) -
     debug_keystore = Path.home() / ".android" / "debug.keystore"
     if not debug_keystore.is_file():
         pytest.skip("no Android debug keystore to sign against (skip != pass)")
+    # apk.certificates degrades to capability_unavailable without androguard, so
+    # the assertions below cannot run without it. Guard before signing: the
+    # apksigner path itself is covered by test_android_apksigner_signs_the_
+    # repacked_apk, so skipping here loses no signer coverage.
+    _require_androguard()
 
     unsigned = _build_valid_apk(tmp_path / "unsigned.apk")
     signed = tmp_path / "signed.apk"
