@@ -98,18 +98,53 @@ def test_logcat_clamps_the_requested_line_count() -> None:
     assert dev.calls == [["logcat", "-d", "-t", "5000"]]
 
 
-def test_packages_reports_has_more_and_sorts_the_page() -> None:
-    """A list longer than the cap says has_more and comes back sorted."""
+def test_packages_first_page_is_the_sorted_head_not_pms_order() -> None:
+    """A page over the cap is the alphabetical *head*, with total for the rest.
+
+    pm lists in roughly install order; here that is reverse-alphabetical
+    (com.e..com.a). The old code took the first three pm returned (e, d, c) and
+    sorted only those, so the "first page" was the alphabetical *tail* and a, b
+    were unreachable. Sorting the whole list first makes the page the real head
+    (a, b, c); total names the full count so has_more is not the only signal.
+    """
     listing = "\n".join(
         f"package:{name}" for name in ("com.e", "com.d", "com.c", "com.b", "com.a")
     )
     dev = _ScriptedDev({("pm", "list", "packages"): listing})
     payload = _backend_with(dev).packages("emulator-5554", limit=3)
+    assert payload["packages"] == ["com.a", "com.b", "com.c"]
     assert payload["count"] == 3
+    assert payload["total"] == 5
+    assert payload["offset"] == 0
     assert payload["has_more"] is True
     assert payload["third_party_only"] is False
-    assert payload["packages"] == sorted(payload["packages"])
-    assert set(payload["packages"]) <= {"com.a", "com.b", "com.c", "com.d", "com.e"}
+
+
+def test_packages_offset_pages_through_the_whole_sorted_list() -> None:
+    """offset walks the sorted list; the last page reports has_more false.
+
+    Without a real sorted window plus offset the tail (com.d, com.e) could never
+    be reached -- the bug this pins closed. Concatenating the pages must recover
+    the full sorted list exactly once.
+    """
+    listing = "\n".join(
+        f"package:{name}" for name in ("com.e", "com.d", "com.c", "com.b", "com.a")
+    )
+    dev = _ScriptedDev({("pm", "list", "packages"): listing})
+    backend = _backend_with(dev)
+    first = backend.packages("emulator-5554", offset=0, limit=3)
+    second = backend.packages("emulator-5554", offset=3, limit=3)
+    assert first["packages"] == ["com.a", "com.b", "com.c"]
+    assert second["packages"] == ["com.d", "com.e"]
+    assert second["offset"] == 3
+    assert second["has_more"] is False
+    assert first["packages"] + second["packages"] == [
+        "com.a",
+        "com.b",
+        "com.c",
+        "com.d",
+        "com.e",
+    ]
 
 
 def test_packages_complete_list_is_not_labelled_partial() -> None:
@@ -119,6 +154,7 @@ def test_packages_complete_list_is_not_labelled_partial() -> None:
     payload = _backend_with(dev).packages("emulator-5554", limit=500)
     assert payload["has_more"] is False
     assert payload["count"] == 2
+    assert payload["total"] == 2
     assert payload["packages"] == ["com.a", "com.b"]
 
 

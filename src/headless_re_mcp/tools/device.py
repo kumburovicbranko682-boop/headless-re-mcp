@@ -75,17 +75,22 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_packages(
         serial: str,
         third_party_only: bool = False,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=2000)] = 500,
     ) -> dict[str, Any]:
         """List installed package names, optionally only third-party ones.
 
-        Answers with packages, count, has_more, and third_party_only so a
-        page that filled the cap is not read as every package. An adb error
-        line (a dead or offline device) is a failure, not an empty device.
+        The full list is sorted, then windowed: answers with packages (this
+        page), count, total, offset, has_more and third_party_only, so a page
+        that filled the cap is not read as every package and offset can walk to
+        the rest -- the page is a real alphabetical window, not an arbitrary
+        subset. scan_capped is set only if the device holds more than 2000
+        packages (the collection bound). An adb error line (a dead or offline
+        device) is a failure, not an empty device.
         """
         return _dump(
             analysis.device_packages(
-                serial, third_party_only=third_party_only, limit=limit
+                serial, third_party_only=third_party_only, offset=offset, limit=limit
             )
         )
 

@@ -582,34 +582,49 @@ class AdbBackend:
         return {"properties": props, "count": len(props), "has_more": has_more}
 
     def packages(
-        self, serial: str, *, third_party_only: bool = False, limit: int = 500
+        self, serial: str, *, third_party_only: bool = False, offset: int = 0, limit: int = 500
     ) -> JsonObject:
         dev = self._device(serial)
         capped = max(1, min(int(limit), _MAX_PACKAGES))
+        start = max(0, int(offset))
         args = "pm list packages -3" if third_party_only else "pm list packages"
         raw = _device_shell(dev, args)
         text = str(raw)
         if _is_host_error_output(text):
             raise AdbError("backend_error", "pm list failed", output=text[:800])
-        pkgs: list[str] = []
-        has_more = False
+        # Collect the whole list (bounded), then sort, then window. The old code
+        # broke at the page size in pm's own (roughly install) order and sorted
+        # only that prefix, so a device with more packages than the cap returned
+        # an arbitrary subset dressed up as alphabetical -- and with no offset the
+        # rest was unreachable. Sorting the full list first makes the page a real
+        # sorted window and offset able to reach every package, like every other
+        # paged reader here.
+        names: list[str] = []
+        scan_capped = False
         for line in text.splitlines():
             if not line.startswith("package:"):
                 continue
             name = line.split(":", 1)[1].strip()
             if not name:
                 continue
-            if len(pkgs) >= capped:
-                has_more = True
+            if len(names) >= _MAX_PACKAGES:
+                scan_capped = True
                 break
-            pkgs.append(name)
-        pkgs.sort()
-        return {
-            "packages": pkgs,
-            "count": len(pkgs),
-            "has_more": has_more,
+            names.append(name)
+        names.sort()
+        total = len(names)
+        window = names[start : start + capped]
+        result: JsonObject = {
+            "packages": window,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
             "third_party_only": third_party_only,
         }
+        if scan_capped:
+            result["scan_capped"] = True
+        return result
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a
