@@ -180,7 +180,17 @@ def _page(raw: bytes, offset: int, limit: int) -> tuple[int, list[str]]:
             end = len(raw)
             break
         end = nxt + 1
-    return total, raw[start:end].decode("utf-8", errors="replace").splitlines()
+    # Split on the same separator the window was counted and sliced by. total and
+    # the start/end offsets only ever count byte ``\n``, but str.splitlines()
+    # also breaks on ``\r``, ``\v``, ``\f``, ``\x1c``-``\x1e`` and -- reachably --
+    # the Unicode separators U+2028/U+2029/U+0085, which json.dumps(ensure_ascii=
+    # False) writes verbatim into a value. An entry carrying one would be split
+    # into fragments that each fail to parse (the whole entry vanishes) and would
+    # inflate len(chunk), so has_more = offset + len(chunk) < total goes false a
+    # page early and silently drops the tail. Splitting on ``\n`` alone keeps the
+    # decoded window one-to-one with the entries the offsets addressed.
+    window = raw[start:end].decode("utf-8", errors="replace")
+    return total, [line for line in window.split("\n") if line]
 
 
 def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:

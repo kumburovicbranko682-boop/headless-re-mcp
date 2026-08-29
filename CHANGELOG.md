@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（timeline 分页按 `\n` 计数却用 `splitlines()` 断行，含 U+2028 的条目丢失且分页提前截断）
+
+- `core/store/timeline.py` 的 `_page` 用字节 `\n` 计数总数(`total`)、并按 `\n` 定位窗口的
+  `start`/`end`,但返回窗口时却用 `str.splitlines()`——它还会在 `\r`、`\v`、`\f`、
+  `\x1c`-`\x1e` 以及 **Unicode 的 U+2028/U+2029/U+0085** 处断行。而 `json.dumps(...,
+  ensure_ascii=False)`(本模块第 74 行)**不转义** U+2028/U+2029(它们不是 JSON 控制字符),
+  会把它们原样写进某条记录的字符串值里。逆向目标内容/JS 片段里 U+2028 很常见(它正是 JS 的
+  换行分隔符隐患)。于是:一条含 U+2028 的 timeline 记录被 `splitlines()` 拆成两片,两片都
+  非法 JSON、`json.loads` 双双失败被跳过——**整条记录从 `list_session_timeline` 输出中消失**;
+  同时 `len(chunk)` 被虚高,`has_more = offset + len(chunk) < total` 提前变 False,**分页调用方
+  会提前一页停止、静默漏读尾部条目**。timeline 是审计/取证日志,这属于静默数据丢失。
+- 改法:窗口只按 `\n` 切分并丢弃空片(`[line for line in window.split("\n") if line]`),
+  与计数/切片所用的分隔符一致,让解码窗口与偏移寻址的条目一一对应。`_trim_timeline` 用的是
+  **字节** 版 `bytes.splitlines()`,它不识别多字节的 U+2028,且 json.dumps 已转义所有 `<0x20`
+  控制字节,故它只会在 `\n` 处断行、本就正确,无需改动。
+- 新增回归:`tests/unit/test_timeline_store.py` 覆盖含 U+2028/U+2029/U+0085 的条目读回为单条
+  (参数化三种分隔符),以及带 U+2028 条目时分页 `has_more` 不被提前截断。已 revert-and-check
+  确认无修复时四个用例全红(条目丢失 / 首页误报 has_more=False),修复后 14 例全绿。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

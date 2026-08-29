@@ -141,6 +141,61 @@ def test_a_torn_final_line_does_not_corrupt_the_next_append(tmp_path: Path) -> N
     assert [item["event"] for item in listed["events"]] == ["e0000", "e0001"]
 
 
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\u0085"])
+def test_an_entry_with_a_unicode_line_separator_survives_a_read(
+    tmp_path: Path, separator: str
+) -> None:
+    """A value carrying U+2028/U+2029/U+0085 must still list as one entry.
+
+    json.dumps(ensure_ascii=False) does not escape those code points -- they are
+    not JSON control characters -- so they land as literal bytes in a stored
+    line. The pager counts and slices the file by byte ``\\n``, but str
+    .splitlines() also breaks on them, which split the entry into fragments that
+    each failed json.loads: the entry vanished from the read entirely. Splitting
+    the decoded window on ``\\n`` alone keeps it whole. RE targets routinely carry
+    U+2028 (it is the JS line-separator hazard), so this is reachable content.
+    """
+    path = tmp_path / "timeline.jsonl"
+    store.append_session_timeline(path, event="before", message="plain")
+    store.append_session_timeline(
+        path, event="mid", message=f"line{separator}break", details={"k": separator}
+    )
+    store.append_session_timeline(path, event="after", message="plain")
+
+    listed = store.list_session_timeline(path)
+
+    assert [item["event"] for item in listed["events"]] == ["before", "mid", "after"]
+    assert listed["total"] == 3
+    assert listed["count"] == 3
+
+
+def test_pagination_is_not_truncated_by_a_unicode_line_separator(
+    tmp_path: Path,
+) -> None:
+    """has_more must not go false a page early because of an embedded separator.
+
+    The pager derived has_more from len(chunk); str.splitlines() over-counted the
+    U+2028 entry, so a first page that had a successor reported has_more=False and
+    a caller walking pages stopped one short. Counting ``\\n``-delimited lines
+    keeps the window count honest.
+    """
+    path = tmp_path / "timeline.jsonl"
+    store.append_session_timeline(path, event="p0", message="plain")
+    store.append_session_timeline(path, event="p1", message="line\u2028break")
+    store.append_session_timeline(path, event="p2", message="plain")
+
+    first = store.list_session_timeline(path, offset=0, limit=2)
+
+    assert [item["event"] for item in first["events"]] == ["p0", "p1"]
+    assert first["has_more"] is True
+
+    second = store.list_session_timeline(
+        path, offset=first["offset"] + first["count"], limit=2
+    )
+    assert [item["event"] for item in second["events"]] == ["p2"]
+    assert second["has_more"] is False
+
+
 def test_an_oversized_external_timeline_is_rejected_after_a_bounded_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
