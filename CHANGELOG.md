@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 改进（frida.exports 补上 total，与 frida.modules/applications 分页字段对齐）
+
+- 核查 frida 枚举面的分页一致性时发现:`frida.modules` 与 `frida.applications` 都回 `total`
+  (真实总数,便于调用方决定是否翻页),唯独 `frida.exports` 只回 `has_more`——尽管其 JS 侧
+  `mod.enumerateExports()` **本就枚举了全部导出**(`all.length` 触手可得,正是 `modules` 用来
+  产出 total 的同一个值),却把它丢弃了。这是一处真实的表面不一致:同类枚举器,信息量却不同。
+- 让 `exports` 与 `modules` 完全对齐:内嵌 JS 的 exports RPC 增回 `total: all.length`(未命中
+  模块的分支回 `total: 0` 保持形状一致);Python 侧改用与 `modules` 相同的"total-based"分页——
+  从字段读 `total`(缺失时回退 `len(held)`,与 modules 的防御式回退一致)、`has_more = total >
+  count`。内嵌脚本与 Python 恒同版本(脚本随客户端一起发),故 total 始终可靠,`modules` 已在
+  生产/live gate 验证过这一模式。工具 docstring 补 `total`(模块导出总数)。
+- 该改动是**加字段**,向后兼容:老调用只读 found/module/base/exports/count/has_more 仍成立。
+  测试:把 `_ExportApi` 假件改为按"模块共 total 个导出、页受 count 限"建模(镜像真实 JS),
+  截断用例断言 count 10/total 200/has_more True(pin total 读字段而非 len(page)),新增小模块
+  用例(5 个导出、页 10 → count 5/total 5/has_more False)钉死非截断分支。mutation 验证:把
+  exports 的 total 改成按页长重算,截断用例即红(assert 10==200)——注意 `modules`/`exports`
+  的 total 赋值行文本相同,mutation 必须用 `raw.get("exports")` 这条 exports 专属上文精确定位。
+  ruff+mypy 通过,全量单测 6652 passed / 55 skipped。
+
 ### 修复（adb connect 的超时归类为 timeout/可重试，不再当成硬失败）
 
 - 承接非 PE 后端"超时统一归类"这条线(此前修过 web 导航、以及 `rpc_from_backend_error` 把
