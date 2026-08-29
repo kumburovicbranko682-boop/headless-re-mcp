@@ -64,6 +64,22 @@ def _as_rpc(exc: JsReError) -> XdbgRpcError:
     return XdbgRpcError(exc.code, exc.message, details=dict(exc.details))
 
 
+def _reject_non_string_path(path: object) -> None:
+    """Refuse a path whose shape the tool schema already forbids.
+
+    Every method here is schema-typed to take a string path, but the agent and
+    OpenAI-bridge transports call the handler straight from model arguments
+    with no pydantic coercion, so an int/list/null reached ``Path(path)`` and
+    raised TypeError -- filed by each method's ``except BaseException`` as an
+    internal_error incident -- rather than the invalid_params a bad path earns.
+    The backend's own path guards run too late to help: the service constructs
+    the Path before the client ever sees it, and js_unpack_bundle had already
+    created its output directory for a call that could never run.
+    """
+    if not isinstance(path, str):
+        raise JsReError("invalid_params", "path must be a string")
+
+
 class JsReAnalysisMixin:
     settings: Settings
 
@@ -74,6 +90,7 @@ class JsReAnalysisMixin:
 
     def js_deobfuscate(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
+            _reject_non_string_path(path)
             data = JsClient(getattr(self.settings, "webcrack", None)).deobfuscate(
                 Path(path), timeout=timeout
             )
@@ -85,6 +102,7 @@ class JsReAnalysisMixin:
 
     def js_beautify(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
+            _reject_non_string_path(path)
             data = JsClient(getattr(self.settings, "webcrack", None)).beautify(
                 Path(path), timeout=timeout
             )
@@ -103,6 +121,7 @@ class JsReAnalysisMixin:
     ) -> Result[JsonObject]:
         out_dir: Path | None = None
         try:
+            _reject_non_string_path(path)
             out_dir = self._jsre_out_dir("unpack")
             data = JsClient(getattr(self.settings, "webcrack", None)).unpack_bundle(
                 Path(path), out_dir, timeout=timeout, offset=offset, limit=limit
@@ -123,6 +142,7 @@ class JsReAnalysisMixin:
 
     def wasm_wat(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
+            _reject_non_string_path(path)
             data = WasmClient(getattr(self.settings, "wabt", None)).wat(
                 Path(path), timeout=timeout
             )
@@ -134,6 +154,7 @@ class JsReAnalysisMixin:
 
     def wasm_info(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
+            _reject_non_string_path(path)
             data = WasmClient(getattr(self.settings, "wabt", None)).info(
                 Path(path), timeout=timeout
             )

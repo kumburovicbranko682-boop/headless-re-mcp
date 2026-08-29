@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（jsre/wasm 服务方法对非字符串 path 抛 TypeError 记为 internal_error）
+
+- `service_jsre.py` 的五个方法（`js_deobfuscate`、`js_beautify`、`js_unpack_bundle`、
+  `wasm_wat`、`wasm_info`）都把 `path` 原样传给 `Path(path)`。工具 schema 把 path
+  定为字符串，但 agent 与 OpenAI-bridge 两条 transport 直接用模型参数调 handler、
+  无 pydantic 强制转换，int/list/null 会在 `Path(path)` 抛 `TypeError`，被各方法的
+  `except BaseException` 记成 internal_error incident——而这只是一个坏参数。后端
+  自己的路径守卫（expanduser、存在性检查）跑在服务构造 `Path` 之后，救不了这里；
+  `js_unpack_bundle` 还在看 path 之前就先建好了输出目录，留下一棵垃圾树。
+- 新增 `_reject_non_string_path` 服务层守卫：非字符串 path 抛
+  `JsReError("invalid_params")`，由既有的 `except JsReError` 映射为结构化
+  invalid_params；`js_unpack_bundle` 的守卫放在建目录之前，被拒的调用不再留目录。
+- 新增 `tests/unit/test_service_jsre_path_type_guard.py`：五方法 × 七种坏形状断言
+  invalid_params，字符串路径对照例仍到达后端（`capability_unavailable`），被拒的
+  unpack 不留输出目录。revert-and-check 验证无修复时 36 例按原故障形态失败。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
