@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（apk.permissions/components/native_libs 先排序整表再取头，杜绝"截断页伪装成字母序")
+
+- `_cap_names`(供 `apk.permissions`、`apk.components` 用)与 `apk.native_libs` 过去在 androguard 的**原始列表顺序**里
+  数到上限就 `break`,然后**只对这一段**排序——于是清单条目超过上限时(大型 app 的 activities、框架的 permissions、
+  多 ABI 的 .so),返回的是一段任意子集却摆出字母序的样子,真正排在最前的名字被悄悄丢掉。这与刚修的 `device.packages`
+  同源。现在先把整表(来自 manifest/zip,本就规模有限且已在内存)排序,再取头页,和已分页的 `classes`/`strings`/
+  `xrefs` 一致;`native_libs` 的 `abis` 仍扫描**每一个** lib/ 条目,故被截断的路径页绝不会漏掉某个 ABI。三者无 offset,
+  截断后的尾部仍够不到——`has_more` 如实说明。docstring 改为写明返回页即字母序头页。
+- 已用直查 `_cap_names` 与注入式 fake apk 的单测覆盖(排序头页、短列表整表、permissions/components/native_libs 各一),
+  并经变异验证(还原"只排本页"即令四条断言变红);另在真实 androguard 4.1.4 上活体核对:手工装配含 4 个逆序 native
+  lib、跨两个 ABI 的真 APK,压低上限触发截断分支,返回页确为字母序头(两个 arm64),而 abis 仍覆盖落在页外的 x86_64。
+
 ### 修复（device.packages 先排序整表再开窗，补 offset/total，杜绝"截断页伪装成字母序")
 
 - `device.packages` 过去在 `pm list packages` 的**原始顺序**(大致是安装顺序)里数到页大小就 `break`,然后**只对这
