@@ -70,15 +70,17 @@ def _scheme_flag(apk: Any, method_name: str) -> bool:
 
 
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
-    items: list[str] = []
-    has_more = False
-    for item in values or []:
-        if len(items) >= limit:
-            has_more = True
-            break
-        items.append(str(item))
-    items.sort()
-    return items, has_more
+    # Sort the whole list, then take the head -- the same sort-then-window the
+    # paged readers (classes/strings/xrefs) use. The earlier version broke at the
+    # cap in androguard's own order and sorted only that prefix, so a manifest
+    # with more than the cap (a large app's activities, a framework's
+    # permissions) returned an arbitrary subset dressed up as alphabetical, with
+    # the names that actually sort first silently dropped. These lists come from
+    # the manifest and are inherently small, so materialising them is cheap;
+    # sorting first makes a truncated page the real alphabetical head. No offset
+    # here, so the tail past the cap stays unreachable -- has_more says so.
+    names = sorted(str(item) for item in (values or []))
+    return names[:limit], len(names) > limit
 
 
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
@@ -356,9 +358,16 @@ class ApkClient:
 
     def native_libs(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        libs: list[str] = []
+        # Collect every lib/ path, then sort and take the head -- the same
+        # sort-then-window fix _cap_names uses. The earlier version capped the
+        # list at _MAX_NATIVE_LIBS in the zip's own entry order and sorted only
+        # that prefix, so an APK with more shared objects than the cap returned
+        # an arbitrary subset that looked alphabetical. abis is scanned from the
+        # whole file list regardless, so a capped path list never hides an abi.
+        # get_files() is already materialised by androguard, so gathering the
+        # lib subset adds no unbounded allocation.
+        all_libs: list[str] = []
         abis: set[str] = set()
-        has_more = False
         for name in apk.get_files() or []:
             text = str(name)
             if not text.startswith("lib/"):
@@ -366,16 +375,14 @@ class ApkClient:
             parts = text.split("/")
             if len(parts) >= 3:
                 abis.add(parts[1])
-            if len(libs) >= _MAX_NATIVE_LIBS:
-                has_more = True
-                continue
-            libs.append(text)
-        libs.sort()
+            all_libs.append(text)
+        all_libs.sort()
+        libs = all_libs[:_MAX_NATIVE_LIBS]
         return {
             "native_libs": libs,
             "abis": sorted(abis),
             "count": len(libs),
-            "has_more": has_more,
+            "has_more": len(all_libs) > _MAX_NATIVE_LIBS,
         }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:

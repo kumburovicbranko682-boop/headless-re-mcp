@@ -46,8 +46,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List declared and requested permissions.
 
         Answers with permissions, requested_permissions, count, and has_more
-        so a list that filled the cap is not read as every permission. There
-        is no declared or requested field.
+        so a list that filled the cap is not read as every permission. Each
+        list is sorted and the returned page is its alphabetical head, so a
+        capped page is the first names, not an arbitrary subset. There is no
+        declared or requested field.
         """
         return _dump(analysis.apk_permissions(session_id))
 
@@ -74,7 +76,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with activities, services, receivers, providers,
         main_activity, and has_more so a list that filled the cap is not
-        read as every component. There is no components field.
+        read as every component. Each list is sorted and the returned page is
+        its alphabetical head, so a capped page is the first names, not an
+        arbitrary subset. There is no components field.
         """
         return _dump(analysis.apk_components(session_id))
 
@@ -83,8 +87,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List bundled native libraries and their ABIs.
 
         Answers with native_libs, abis, count, and has_more so a list that
-        filled the cap is not read as every .so. There is no libs or
-        libraries field.
+        filled the cap is not read as every .so. native_libs is sorted and the
+        returned page is its alphabetical head, so a capped page is the first
+        paths, not an arbitrary subset; abis is scanned from every entry, so a
+        capped path list never hides an ABI. There is no libs or libraries
+        field.
         """
         return _dump(analysis.apk_native_libs(session_id))
 

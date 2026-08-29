@@ -23,6 +23,7 @@ from headless_re_mcp.backends.apk.client import (
     _CACHE_LIMIT,
     ApkClient,
     ApkError,
+    _cap_names,
     _dotted_to_smali,
 )
 
@@ -708,3 +709,112 @@ def test_native_libs_ignore_lib_paths_without_an_abi_segment(
     assert payload["abis"] == ["arm64-v8a"]
     assert payload["native_libs"] == ["lib/arm64-v8a/libnative.so", "lib/toplevel.so"]
     assert payload["has_more"] is False
+
+
+def test_cap_names_returns_the_sorted_head_not_an_arbitrary_subset() -> None:
+    # The names arrive in a non-alphabetical order and there are more than the
+    # cap. The old code took the first `limit` in source order and sorted only
+    # those, dropping the names that actually sort first; the head must be the
+    # true alphabetical head instead.
+    values = ["zeta", "yankee", "xray", "alpha", "bravo"]
+    page, has_more = _cap_names(values, 3)
+    assert page == ["alpha", "bravo", "xray"]
+    assert has_more is True
+
+
+def test_cap_names_of_a_short_list_is_the_whole_list_sorted() -> None:
+    page, has_more = _cap_names(["c", "a", "b"], 10)
+    assert page == ["a", "b", "c"]
+    assert has_more is False
+
+
+class _PermissionsApk:
+    def __init__(self, permissions: list[str]) -> None:
+        self._permissions = permissions
+
+    def get_permissions(self) -> list[str]:
+        return list(self._permissions)
+
+    def get_requested_permissions(self) -> list[str]:
+        return list(self._permissions)
+
+
+def test_permissions_capped_page_is_the_sorted_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import headless_re_mcp.backends.apk.client as apk_client
+
+    monkeypatch.setattr(apk_client, "_MAX_PERMISSIONS", 2)
+    # Reverse-sorted input over the cap: the honest page is the alphabetical
+    # head ("a.perm", "b.perm"), never the source-order prefix ("z.perm"...).
+    apk = _PermissionsApk(["z.perm", "y.perm", "a.perm", "b.perm"])
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: apk)
+
+    payload = client.permissions(tmp_path / "app.apk")
+
+    assert payload["permissions"] == ["a.perm", "b.perm"]
+    assert payload["requested_permissions"] == ["a.perm", "b.perm"]
+    assert payload["has_more"] is True
+
+
+class _ComponentsApk:
+    def __init__(self, activities: list[str]) -> None:
+        self._activities = activities
+
+    def get_activities(self) -> list[str]:
+        return list(self._activities)
+
+    def get_services(self) -> list[str]:
+        return []
+
+    def get_receivers(self) -> list[str]:
+        return []
+
+    def get_providers(self) -> list[str]:
+        return []
+
+    def get_main_activity(self) -> str:
+        return self._activities[0] if self._activities else ""
+
+
+def test_components_capped_page_is_the_sorted_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import headless_re_mcp.backends.apk.client as apk_client
+
+    monkeypatch.setattr(apk_client, "_MAX_COMPONENT_NAMES", 2)
+    apk = _ComponentsApk(["com.z.Z", "com.y.Y", "com.a.A", "com.b.B"])
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: apk)
+
+    payload = client.components(tmp_path / "app.apk")
+
+    assert payload["activities"] == ["com.a.A", "com.b.B"]
+    assert payload["has_more"] is True
+
+
+def test_native_libs_capped_page_is_the_sorted_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import headless_re_mcp.backends.apk.client as apk_client
+
+    monkeypatch.setattr(apk_client, "_MAX_NATIVE_LIBS", 2)
+    # More libs than the cap, in reverse order across two ABIs. The page must be
+    # the alphabetical head, and abis must still cover every entry -- including
+    # the ABI (x86) of a .so that falls past the truncated path list.
+    apk = _NativeLibApk(
+        [
+            "lib/x86/libz.so",
+            "lib/arm64-v8a/liby.so",
+            "lib/arm64-v8a/liba.so",
+        ]
+    )
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: apk)
+
+    payload = client.native_libs(tmp_path / "app.apk")
+
+    assert payload["native_libs"] == ["lib/arm64-v8a/liba.so", "lib/arm64-v8a/liby.so"]
+    assert payload["has_more"] is True
+    assert payload["abis"] == ["arm64-v8a", "x86"]
