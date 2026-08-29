@@ -8,11 +8,6 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-# Cap on live single-use bootstrap sessions. A bounded deque so a burst of
-# ?token= opens evicts the OLDEST session rather than a set.pop()'s arbitrary
-# one -- see the comment where it is created.
-_MAX_BOOTSTRAP_SESSIONS = 32
-
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.error_boundary import (
@@ -25,6 +20,11 @@ from headless_re_mcp.web.body_limit import RequestBodyLimitMiddleware
 from headless_re_mcp.web.routes.agent import register_agent_routes
 from headless_re_mcp.web.routes.legacy import register_legacy_routes
 from headless_re_mcp.web.routes.spa import register_spa_fallback
+
+# Cap on live single-use bootstrap sessions. A bounded deque so a burst of
+# ?token= opens evicts the OLDEST session rather than a set.pop()'s arbitrary
+# one -- see the comment where it is created.
+_MAX_BOOTSTRAP_SESSIONS = 32
 
 
 def create_app(
